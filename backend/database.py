@@ -1,22 +1,22 @@
 from sqlalchemy import create_engine
+from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-import os
-
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://centraldsp:centraldsp@postgres:5432/centraldsp")
+from config import settings
 
 engine = create_engine(
-    DATABASE_URL,
-    pool_pre_ping=True,      # auto-reconnect on connection loss
+    settings.database_url,
     pool_size=10,
     max_overflow=20,
-    pool_timeout=30,
+    pool_pre_ping=True,  # reconnect on stale connections
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+Base = declarative_base()
+
 
 def get_db():
-    """FastAPI dependency — yields DB session, always closes on exit"""
+    """FastAPI dependency — yields DB session, always closes on exit."""
     db = SessionLocal()
     try:
         yield db
