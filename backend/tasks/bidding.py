@@ -1,87 +1,129 @@
-from celery_app import app
-from bid_optimizer import CentralBidOptimizer
 import logging
-import os
-import redis
+from celery_app import app
+from database import SessionLocal
+from models import CampaignDB, TargetingRuleDB, AuctionLogDB
+from sqlalchemy import func
 
 logger = logging.getLogger(__name__)
 
 
-@app.task(name="tasks.bidding.auto_adjust_bids", bind=True, max_retries=3)
-def auto_adjust_bids(self):
+@app.task(name="tasks.bidding.optimize_all_bids", bind=True, max_retries=2)
+def optimize_all_bids(self):
     """
-    Runs every 5 minutes.
-    Recalculates bid_adjustments for all active campaigns based on:
-    - Win rate trends (last 24h)
-    - CVR by country/device/hour
-    - Budget utilization (if daily_budget set and < 50% used by 18:00 — increase bids)
-    Results are stored in targeting_rules.bid_floor / bid_ceiling
-    and cached in Redis for CentralBidder to pick up.
+    RTB Bid Optimizer — runs every 5 minutes.
+    Adjusts bid_floor/bid_ceiling per campaign based on win rate and ROI.
+    Phase 7 implementation.
     """
-    from database import SessionLocal, CampaignDB, TargetingRuleDB
-    from sqlalchemy import select
-    from datetime import datetime, timezone
-
-    session = SessionLocal()
+    db = SessionLocal()
     try:
-        campaigns = session.execute(
-            select(CampaignDB).where(CampaignDB.status == "active")
-        ).scalars().all()
-
-        optimizer = CentralBidOptimizer(session)
-        adjusted = 0
-
-        for camp in campaigns:
-            targeting = session.execute(
-                select(TargetingRuleDB).where(TargetingRuleDB.campaign_id == camp.id)
-            ).scalar_one_or_none()
-
-            if not targeting:
-                continue
-
-            # Calculate new bid ceiling based on safety margin
-            margin = optimizer._get_safety_margin(camp.id)
-            new_ceiling = round(float(targeting.bid_ceiling) * (margin / 0.80), 4)
-
-            # Clamp to reasonable bounds
-            new_ceiling = max(float(targeting.bid_floor) * 1.1, min(new_ceiling, 10.0))
-
-            if abs(new_ceiling - float(targeting.bid_ceiling)) > 0.001:
-                targeting.bid_ceiling = new_ceiling
-                session.commit()
-                adjusted += 1
-
-                logger.info(
-                    f"[CentralBidder] Adjusted campaign={camp.id} "
-                    f"new_ceiling={new_ceiling} margin={margin}"
-                )
-
-        # Invalidate campaign cache so CentralBidder picks up new prices
-        if adjusted > 0:
-            _invalidate_cache()
-
-        logger.info(f"[CentralBidder] auto_adjust_bids complete: {adjusted} campaigns adjusted")
-        return {"adjusted": adjusted}
-
+        campaigns = db.query(CampaignDB).filter(CampaignDB.status == "active").all()
+        optimized = 0
+        for campaign in campaigns:
+            result = BidOptimizer(db).maybe_adjust(campaign)
+            if result:
+                optimized += 1
+        db.commit()
+        logger.info(f"[BidOptimizer] Adjusted bids for {optimized} campaigns")
+        return {"optimized": optimized}
     except Exception as exc:
-        session.rollback()
-        logger.error(f"[CentralBidder auto_adjust_bids ERROR] {exc}")
-        raise self.retry(exc=exc, countdown=60)
+        db.rollback()
+        raise self.retry(exc=exc, countdown=30)
     finally:
-        session.close()
+        db.close()
 
 
-@app.task(name="tasks.bidding.invalidate_campaign_cache")
-def invalidate_campaign_cache():
+class BidOptimizer:
     """
-    Invalidates CentralBidder Redis campaign feed cache.
-    Runs every 60 seconds as a safety net.
-    Also called directly when campaigns/creatives are updated via API.
+    Core bidding logic.
+    MVP strategy: adjust bid based on win rate and CPA vs target.
     """
-    _invalidate_cache()
-    return {"status": "ok"}
+    WIN_RATE_TOO_LOW  = 0.01   # < 1% → raise bid ceiling
+    WIN_RATE_TOO_HIGH = 0.20   # > 20% → lower bid (we’re overbidding)
+    CPA_OVER_TARGET   = 1.5    # CPA > target * 1.5 → lower bid
+    BID_STEP          = 0.15   # 15% adjustment per cycle
 
+    def __init__(self, db):
+        self.db = db
 
-def _invalidate_cache():
-    r = redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"))
-    r.delete("central:rtb:campaign_feed")
+    def calculate_bid(self, campaign: CampaignDB, context: dict) -> float:
+        """
+        Calculate optimal bid for a specific context (geo, device, hour, site).
+        Formula (MVP): bid = cpa_target * historical_cvr(context) * safety_margin
+        """
+        targeting = self.db.query(TargetingRuleDB).filter(
+            TargetingRuleDB.campaign_id == campaign.id
+        ).first()
+
+        if not targeting:
+            return 0.10  # default safe bid
+
+        cvr = self._get_historical_cvr(campaign.id, context)
+        cpa_target = float(campaign.offer_value) if campaign.offer_value else 5.0
+        bid = cpa_target * cvr * 0.8  # 20% safety margin
+
+        # Clamp to targeting limits
+        return max(
+            float(targeting.bid_floor),
+            min(bid, float(targeting.bid_ceiling))
+        )
+
+    def maybe_adjust(self, campaign: CampaignDB) -> bool:
+        """Check last hour stats and adjust bid_ceiling if needed"""
+        targeting = self.db.query(TargetingRuleDB).filter(
+            TargetingRuleDB.campaign_id == campaign.id
+        ).first()
+        if not targeting:
+            return False
+
+        stats = self._get_last_hour_stats(campaign.id)
+        if not stats or stats["auctions"] < 100:  # not enough data
+            return False
+
+        win_rate = stats["wins"] / stats["auctions"]
+        changed = False
+
+        if win_rate < self.WIN_RATE_TOO_LOW:
+            # Raise ceiling by BID_STEP, stay within 3x floor
+            new_ceiling = min(
+                float(targeting.bid_ceiling) * (1 + self.BID_STEP),
+                float(targeting.bid_floor) * 3
+            )
+            targeting.bid_ceiling = new_ceiling
+            logger.info(f"Campaign {campaign.id}: win_rate {win_rate:.1%} → raised bid_ceiling to {new_ceiling:.4f}")
+            changed = True
+
+        elif win_rate > self.WIN_RATE_TOO_HIGH:
+            # Lower ceiling by BID_STEP, never go below floor
+            new_ceiling = max(
+                float(targeting.bid_ceiling) * (1 - self.BID_STEP),
+                float(targeting.bid_floor) * 1.1
+            )
+            targeting.bid_ceiling = new_ceiling
+            logger.info(f"Campaign {campaign.id}: win_rate {win_rate:.1%} → lowered bid_ceiling to {new_ceiling:.4f}")
+            changed = True
+
+        return changed
+
+    def _get_historical_cvr(self, campaign_id: int, context: dict) -> float:
+        """Get conversion rate for a specific context from auction_logs + events"""
+        # TODO Phase 7: implement proper CVR lookup by context dimensions
+        return 0.02  # 2% default CVR until Phase 7
+
+    def _get_last_hour_stats(self, campaign_id: int) -> dict | None:
+        """Get auction stats for the last hour"""
+        from datetime import datetime, timezone, timedelta
+        hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
+
+        row = self.db.query(
+            func.count(AuctionLogDB.id).label("auctions"),
+            func.sum(
+                func.cast(AuctionLogDB.won, Integer) if False else AuctionLogDB.won.cast("int")
+            ).label("wins")
+        ).filter(
+            AuctionLogDB.campaign_id == campaign_id,
+            AuctionLogDB.created_at >= hour_ago
+        ).first()
+
+        if not row or not row.auctions:
+            return None
+        return {"auctions": row.auctions, "wins": row.wins or 0}
