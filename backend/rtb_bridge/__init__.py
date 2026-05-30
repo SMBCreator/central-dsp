@@ -1,2 +1,2 @@
-# RTB Bridge — FastAPI router bridging CentralDSP backend with RTB4FREE Java bidder
-# Docs: /api/rtb/*
+# CentralBidder RTB Bridge
+# Connects CentralBidder (Java OpenRTB engine) with CentralDSP backend
