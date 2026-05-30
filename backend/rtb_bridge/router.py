@@ -1,299 +1,188 @@
 import logging
-from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy.orm import Session
-from sqlalchemy import select
-from pydantic import BaseModel
-from typing import Optional
 from datetime import datetime, timezone
-
+from typing import Optional
+from fastapi import APIRouter, Request, HTTPException
+from sqlalchemy.orm import Session
+from fastapi import Depends
 from database import get_db
-from models import CampaignDB, CreativeDB, TargetingRuleDB, AuctionLogDB, EventDB
+from models import Campaign, Creative, TargetingRule, AuctionLog, Event, Pixel
+from config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/rtb", tags=["RTB Bridge"])
 
 
-# ─────────────────────────────────────────
-# Pydantic schemas for RTB4FREE communication
-# ─────────────────────────────────────────
-class RTBCreative(BaseModel):
-    id: int
-    format: str
-    width: Optional[int] = None
-    height: Optional[int] = None
-    adm: Optional[str] = None         # ad markup (banner HTML or VAST)
-    image_url: Optional[str] = None
-    title: Optional[str] = None
-    description: Optional[str] = None
-    click_url: Optional[str] = None
+def _campaign_to_rtb4free(campaign: Campaign) -> Optional[dict]:
+    """Convert CentralDSP campaign to RTB4FREE campaign format."""
+    if campaign.status != "active":
+        return None
+    tr = campaign.targeting_rules[0] if campaign.targeting_rules else None
+    creatives_data = []
+    for cr in campaign.creatives:
+        if cr.status != "active":
+            continue
+        creatives_data.append({
+            "id": str(cr.id),
+            "type": cr.format,
+            "w": cr.width,
+            "h": cr.height,
+            "imageurl": cr.image_url,
+            "title": cr.title,
+            "adomain": [],
+            "adm": cr.adm or "",
+            "clickurl": cr.click_url or "",
+        })
+    if not creatives_data:
+        return None
+    return {
+        "id": str(campaign.id),
+        "name": campaign.name,
+        "status": "active",
+        "bidfloor": float(tr.bid_floor) if tr else settings.RTB_DEFAULT_BID_FLOOR,
+        "bidceiling": float(tr.bid_ceiling) if tr else settings.RTB_MAX_BID_PRICE,
+        "budget": float(campaign.daily_budget) if campaign.daily_budget else 0,
+        "geo_whitelist": list(tr.geo_countries) if tr and tr.geo_countries else [],
+        "device_types": list(tr.device_types) if tr and tr.device_types else [],
+        "site_blacklist": list(tr.site_blacklist) if tr and tr.site_blacklist else [],
+        "site_whitelist": list(tr.site_whitelist) if tr and tr.site_whitelist else [],
+        "creatives": creatives_data,
+        "win_url": f"http://backend:8000/api/rtb/win-notice",
+        "loss_url": f"http://backend:8000/api/rtb/loss-notice",
+    }
 
 
-class RTBTargeting(BaseModel):
-    bid_floor: float = 0.01
-    bid_ceiling: float = 5.00
-    geo_countries: list[str] = []
-    device_types: list[str] = []
-    os_list: list[str] = []
-    site_whitelist: list[str] = []
-    site_blacklist: list[str] = []
-    hour_schedule: dict = {}
-
-
-class RTBCampaign(BaseModel):
-    """Campaign format expected by RTB4FREE bidder"""
-    id: int
-    name: str
-    status: str
-    daily_budget: Optional[float] = None
-    total_budget: Optional[float] = None
-    targeting: RTBTargeting
-    creatives: list[RTBCreative]
-
-
-class WinNotice(BaseModel):
-    """RTB4FREE win notice payload"""
-    bid_request_id: str
-    imp_id: Optional[str] = None
-    campaign_id: int
-    creative_id: Optional[int] = None
-    win_price: float
-    clearing_price: Optional[float] = None
-    ssp_name: Optional[str] = None
-    site_domain: Optional[str] = None
-    app_bundle: Optional[str] = None
-    geo_country: Optional[str] = None
-    device_type: Optional[str] = None
-    auction_id: Optional[str] = None
-
-
-class LossNotice(BaseModel):
-    """RTB4FREE loss notice payload"""
-    bid_request_id: str
-    imp_id: Optional[str] = None
-    campaign_id: int
-    creative_id: Optional[int] = None
-    bid_price: float
-    loss_reason: Optional[int] = None   # OpenRTB loss reason code
-    ssp_name: Optional[str] = None
-    site_domain: Optional[str] = None
-    geo_country: Optional[str] = None
-    device_type: Optional[str] = None
-
-
-# ─────────────────────────────────────────
-# GET /api/rtb/campaigns
-# RTB4FREE polls this to get active campaigns + targeting + creatives
-# ─────────────────────────────────────────
-@router.get("/campaigns", response_model=list[RTBCampaign])
+@router.get("/campaigns")
 def get_rtb_campaigns(db: Session = Depends(get_db)):
     """
-    Returns ALL active campaigns with their targeting rules and approved creatives.
-    RTB4FREE bidder polls this endpoint (configurable interval, default 60s).
-    Only campaigns with status='active' and at least one approved creative are returned.
+    RTB4FREE bidder polls this every N seconds to get active campaigns.
+    Returns campaigns in RTB4FREE-compatible JSON format.
     """
-    campaigns = (
-        db.query(CampaignDB)
-        .filter(CampaignDB.status == "active")
-        .all()
-    )
-
-    result = []
-    for camp in campaigns:
-        # Only include campaigns that have at least one approved creative
-        approved_creatives = [
-            c for c in camp.creatives
-            if c.status == "active" and c.audit_status == "approved"
-        ]
-        if not approved_creatives:
-            continue
-
-        targeting = camp.targeting
-        rtb_targeting = RTBTargeting(
-            bid_floor=float(targeting.bid_floor) if targeting else 0.01,
-            bid_ceiling=float(targeting.bid_ceiling) if targeting else 5.00,
-            geo_countries=targeting.geo_countries if targeting else [],
-            device_types=targeting.device_types if targeting else [],
-            os_list=targeting.os_list if targeting else [],
-            site_whitelist=targeting.site_whitelist if targeting else [],
-            site_blacklist=targeting.site_blacklist if targeting else [],
-            hour_schedule=targeting.hour_schedule if targeting else {},
-        )
-
-        rtb_creatives = [
-            RTBCreative(
-                id=c.id,
-                format=c.format,
-                width=c.width,
-                height=c.height,
-                adm=c.adm,
-                image_url=c.image_url,
-                title=c.title,
-                description=c.description,
-                click_url=c.click_url,
-            )
-            for c in approved_creatives
-        ]
-
-        result.append(RTBCampaign(
-            id=camp.id,
-            name=camp.name,
-            status=camp.status,
-            daily_budget=float(camp.daily_budget) if camp.daily_budget else None,
-            total_budget=float(camp.total_budget) if camp.total_budget else None,
-            targeting=rtb_targeting,
-            creatives=rtb_creatives,
-        ))
-
-    logger.debug(f"[RTB Bridge] Returning {len(result)} active campaigns to bidder")
-    return result
+    campaigns = db.query(Campaign).filter(Campaign.status == "active").all()
+    rtb_campaigns = []
+    for c in campaigns:
+        rtb_c = _campaign_to_rtb4free(c)
+        if rtb_c:
+            rtb_campaigns.append(rtb_c)
+    logger.debug(f"[RTB Bridge] Serving {len(rtb_campaigns)} campaigns")
+    return {"campaigns": rtb_campaigns, "count": len(rtb_campaigns)}
 
 
-# ─────────────────────────────────────────
-# POST /api/rtb/win-notice
-# Called by bidder when we WIN an auction
-# ─────────────────────────────────────────
+@router.get("/creatives/{creative_id}")
+def get_creative(creative_id: int, db: Session = Depends(get_db)):
+    """Return creative markup for RTB4FREE bidder."""
+    cr = db.query(Creative).filter(Creative.id == creative_id, Creative.status == "active").first()
+    if not cr:
+        raise HTTPException(status_code=404, detail="Creative not found")
+    return {
+        "id": cr.id, "format": cr.format, "width": cr.width, "height": cr.height,
+        "image_url": cr.image_url, "title": cr.title, "description": cr.description,
+        "click_url": cr.click_url, "adm": cr.adm,
+    }
+
+
 @router.post("/win-notice")
-def win_notice(notice: WinNotice, db: Session = Depends(get_db)):
+async def win_notice(request: Request, db: Session = Depends(get_db)):
     """
-    RTB4FREE calls this when our bid wins an auction.
-    1. Record in auction_logs (won=True, win_price)
-    2. Create 'impression' event in events table for attribution chain
+    Called by RTB4FREE bidder when we WIN an auction.
+    Body (RTB4FREE format): {bid_request_id, imp_id, campaign_id, creative_id,
+                              bid_price, win_price, ssp, site_domain, geo, device}
     """
-    # 1. Auction log
-    log = AuctionLogDB(
-        campaign_id=notice.campaign_id,
-        creative_id=notice.creative_id,
-        bid_request_id=notice.bid_request_id,
-        imp_id=notice.imp_id,
-        win_price=notice.win_price,
-        clearing_price=notice.clearing_price,
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    campaign_id = int(body.get("campaign_id", 0))
+    creative_id = body.get("creative_id")
+    win_price = float(body.get("win_price") or body.get("clearing_price") or 0)
+    bid_price = float(body.get("bid_price") or 0)
+
+    # 1. Write to auction_logs
+    log = AuctionLog(
+        campaign_id=campaign_id if campaign_id else None,
+        creative_id=int(creative_id) if creative_id else None,
+        bid_request_id=body.get("bid_request_id"),
+        imp_id=body.get("imp_id"),
+        bid_price=bid_price,
+        win_price=win_price,
+        clearing_price=win_price,
         won=True,
-        ssp_name=notice.ssp_name,
-        site_domain=notice.site_domain,
-        app_bundle=notice.app_bundle,
-        geo_country=notice.geo_country,
-        device_type=notice.device_type,
+        ssp_name=body.get("ssp"),
+        site_domain=body.get("site_domain"),
+        geo_country=body.get("geo"),
+        device_type=body.get("device"),
     )
     db.add(log)
 
-    # 2. Impression event — start of attribution chain: impression → click → postback
-    event = EventDB(
-        auction_id=notice.auction_id or notice.bid_request_id,
-        imp_id=notice.imp_id,
-        event_name="impression",
-        value=notice.win_price,
-        currency="USD",
-        country_code=notice.geo_country,
-        device_type=notice.device_type,
-        metadata={
-            "ssp": notice.ssp_name,
-            "site_domain": notice.site_domain,
-            "creative_id": notice.creative_id,
-        },
-    )
-    db.add(event)
+    # 2. Write impression event to events table
+    if campaign_id:
+        campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+        if campaign and campaign.pixels:
+            pixel = campaign.pixels[0]
+            event = Event(
+                pixel_id=pixel.pixel_id,
+                auction_id=body.get("bid_request_id"),
+                imp_id=body.get("imp_id"),
+                event_name="impression",
+                creative_id=str(creative_id) if creative_id else None,
+                value=win_price,
+                currency="USD",
+                country_code=body.get("geo"),
+                device_type=body.get("device"),
+                metadata_={"source": "rtb", "ssp": body.get("ssp"), "win_price": win_price},
+            )
+            db.add(event)
+            # Update pixel stats
+            pixel.total_events = (pixel.total_events or 0) + 1
+            pixel.last_fire_at = datetime.now(timezone.utc)
+            db.add(pixel)
+
     db.commit()
-
-    logger.info(
-        f"[RTB WIN] campaign={notice.campaign_id} win_price={notice.win_price:.4f} "
-        f"ssp={notice.ssp_name} geo={notice.geo_country}"
-    )
-    return {"status": "ok", "auction_log_id": log.id}
-
-
-# ─────────────────────────────────────────
-# POST /api/rtb/loss-notice
-# Called by bidder when we LOSE an auction
-# ─────────────────────────────────────────
-@router.post("/loss-notice")
-def loss_notice(notice: LossNotice, db: Session = Depends(get_db)):
-    """
-    RTB4FREE calls this when our bid loses.
-    Records in auction_logs for win_rate calculation by BidOptimizer.
-    """
-    log = AuctionLogDB(
-        campaign_id=notice.campaign_id,
-        creative_id=notice.creative_id,
-        bid_request_id=notice.bid_request_id,
-        imp_id=notice.imp_id,
-        bid_price=notice.bid_price,
-        won=False,
-        ssp_name=notice.ssp_name,
-        site_domain=notice.site_domain,
-        geo_country=notice.geo_country,
-        device_type=notice.device_type,
-    )
-    db.add(log)
-    db.commit()
-
-    logger.debug(
-        f"[RTB LOSS] campaign={notice.campaign_id} bid={notice.bid_price:.4f} "
-        f"reason={notice.loss_reason} ssp={notice.ssp_name}"
-    )
+    logger.info(f"[RTB WIN] campaign={campaign_id} bid={bid_price:.4f} win={win_price:.4f}")
     return {"status": "ok"}
 
 
-# ─────────────────────────────────────────
-# GET /api/rtb/creatives/{creative_id}
-# RTB4FREE fetches individual creative markup
-# ─────────────────────────────────────────
-@router.get("/creatives/{creative_id}", response_model=RTBCreative)
-def get_creative(creative_id: int, db: Session = Depends(get_db)):
-    creative = db.query(CreativeDB).filter(
-        CreativeDB.id == creative_id,
-        CreativeDB.status == "active",
-    ).first()
-    if not creative:
-        raise HTTPException(status_code=404, detail="Creative not found")
-    return RTBCreative(
-        id=creative.id,
-        format=creative.format,
-        width=creative.width,
-        height=creative.height,
-        adm=creative.adm,
-        image_url=creative.image_url,
-        title=creative.title,
-        description=creative.description,
-        click_url=creative.click_url,
+@router.post("/loss-notice")
+async def loss_notice(request: Request, db: Session = Depends(get_db)):
+    """Record auction loss for win rate analytics."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    log = AuctionLog(
+        campaign_id=int(body.get("campaign_id", 0)) or None,
+        bid_request_id=body.get("bid_request_id"),
+        imp_id=body.get("imp_id"),
+        bid_price=float(body.get("bid_price") or 0),
+        won=False,
+        ssp_name=body.get("ssp"),
+        site_domain=body.get("site_domain"),
+        geo_country=body.get("geo"),
+        device_type=body.get("device"),
     )
+    db.add(log)
+    db.commit()
+    return {"status": "ok"}
 
 
-# ─────────────────────────────────────────
-# GET /api/rtb/stats/{campaign_id}
-# RTB performance summary for a campaign (for UI dashboard)
-# ─────────────────────────────────────────
 @router.get("/stats/{campaign_id}")
 def get_rtb_stats(campaign_id: int, db: Session = Depends(get_db)):
-    """
-    RTB performance summary for the UI 'RTB Bidder' tab.
-    Returns: total auctions, wins, win_rate, avg_win_price, total_spend.
-    """
+    """Quick RTB stats for a campaign: auctions, wins, win_rate, avg_cpm."""
+    total = db.query(AuctionLog).filter(AuctionLog.campaign_id == campaign_id).count()
+    wins = db.query(AuctionLog).filter(
+        AuctionLog.campaign_id == campaign_id, AuctionLog.won == True
+    ).count()
     from sqlalchemy import func as sqlfunc
-    from datetime import datetime, timezone
-    import datetime as dt
-
-    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-
-    row = db.query(
-        sqlfunc.count(AuctionLogDB.id).label("total_auctions"),
-        sqlfunc.sum(
-            sqlfunc.cast(AuctionLogDB.won, db.bind.dialect.type_descriptor(type(True)))
-        ).label("wins"),
-        sqlfunc.avg(AuctionLogDB.win_price).label("avg_win_price"),
-        sqlfunc.sum(AuctionLogDB.win_price).label("total_spend"),
-    ).filter(
-        AuctionLogDB.campaign_id == campaign_id,
-        AuctionLogDB.created_at >= today_start,
-    ).first()
-
-    total = row.total_auctions or 0
-    wins  = int(row.wins or 0)
+    avg_win_price = db.query(sqlfunc.avg(AuctionLog.win_price)).filter(
+        AuctionLog.campaign_id == campaign_id, AuctionLog.won == True
+    ).scalar()
+    win_rate = (wins / total * 100) if total else 0
+    avg_cpm = float(avg_win_price or 0) * 1000  # CPM = win_price * 1000
     return {
-        "campaign_id":    campaign_id,
-        "period":         "today",
+        "campaign_id": campaign_id,
         "total_auctions": total,
-        "wins":           wins,
-        "win_rate":        round(wins / total * 100, 2) if total else 0,
-        "avg_win_price":  round(float(row.avg_win_price or 0), 6),
-        "total_spend":    round(float(row.total_spend or 0), 4),
+        "wins": wins,
+        "win_rate": round(win_rate, 2),
+        "avg_cpm": round(avg_cpm, 4),
     }
