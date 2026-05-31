@@ -1,22 +1,27 @@
+"""SQLAlchemy ORM models for Central DSP."""
+import uuid
+from datetime import datetime
 from sqlalchemy import (
-    Column, Integer, BigInteger, String, Boolean, Numeric, Text,
-    DateTime, ForeignKey, JSON, ARRAY, UniqueConstraint, CheckConstraint
+    Column, Integer, BigInteger, String, Boolean, Float, Numeric,
+    Text, DateTime, ForeignKey, JSON, ARRAY, UniqueConstraint, Index
 )
 from sqlalchemy.dialects.postgresql import UUID, INET, JSONB
-from sqlalchemy.orm import relationship, declarative_base
+from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
-import uuid
-
-Base = declarative_base()
+from backend.database import Base
 
 
+# ─────────────────────────────────────────────────────────
+# USERS
+# ─────────────────────────────────────────────────────────
 class User(Base):
     __tablename__ = "users"
-    id = Column(Integer, primary_key=True)
-    email = Column(String(255), unique=True, nullable=False)
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String(255), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
     full_name = Column(String(255))
-    role = Column(String(20), nullable=False, default="viewer")
+    role = Column(String(20), nullable=False, default="viewer")  # admin|manager|viewer
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -25,17 +30,21 @@ class User(Base):
     settings = relationship("Setting", back_populates="user")
 
 
+# ─────────────────────────────────────────────────────────
+# CAMPAIGNS
+# ─────────────────────────────────────────────────────────
 class Campaign(Base):
     __tablename__ = "campaigns"
-    id = Column(Integer, primary_key=True)
+
+    id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     name = Column(String(255), nullable=False)
-    status = Column(String(20), nullable=False, default="active")
-    camp_code = Column(String(32), unique=True, nullable=False)
+    status = Column(String(20), nullable=False, default="active")  # active|stopped|paused|archived
+    camp_code = Column(String(32), unique=True, nullable=False, index=True)
     is_ab = Column(Boolean, nullable=False, default=False)
     ab_limit = Column(Integer)
     offer_value = Column(Numeric(10, 4), default=0)
-    attribution_model = Column(String(20), nullable=False, default="last_click")
+    attribution_model = Column(String(20), nullable=False, default="last_click")  # last_click|first_click|linear
     daily_budget = Column(Numeric(10, 4))
     total_budget = Column(Numeric(10, 4))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -46,23 +55,27 @@ class Campaign(Base):
     pixels = relationship("Pixel", back_populates="campaign", cascade="all, delete-orphan")
     rules = relationship("Rule", back_populates="campaign", cascade="all, delete-orphan")
     creatives = relationship("Creative", back_populates="campaign", cascade="all, delete-orphan")
-    targeting_rules = relationship("TargetingRule", back_populates="campaign", cascade="all, delete-orphan")
+    targeting = relationship("TargetingRule", back_populates="campaign", uselist=False, cascade="all, delete-orphan")
 
 
+# ─────────────────────────────────────────────────────────
+# LINKS
+# ─────────────────────────────────────────────────────────
 class Link(Base):
     __tablename__ = "links"
-    id = Column(Integer, primary_key=True)
+
+    id = Column(Integer, primary_key=True, index=True)
     campaign_id = Column(Integer, ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False)
     platform = Column(String(100))
     external_id = Column(String(255))
     original_url = Column(Text, nullable=False)
-    short_code = Column(String(32), unique=True, nullable=False)
+    short_code = Column(String(32), unique=True, nullable=False, index=True)
     custom_slug = Column(String(128), unique=True)
     is_active = Column(Boolean, nullable=False, default=True)
     cost_per_click = Column(Numeric(10, 6), default=0)
     expires_at = Column(DateTime(timezone=True))
-    geo_rules = Column(JSONB, default={})
-    device_rules = Column(JSONB, default={})
+    geo_rules = Column(JSONB, default=dict)
+    device_rules = Column(JSONB, default=dict)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     campaign = relationship("Campaign", back_populates="links")
@@ -70,36 +83,43 @@ class Link(Base):
     stats = relationship("Stat", back_populates="link")
 
 
+# ─────────────────────────────────────────────────────────
+# PIXELS
+# ─────────────────────────────────────────────────────────
 class Pixel(Base):
     __tablename__ = "pixels"
-    id = Column(Integer, primary_key=True)
+
+    id = Column(Integer, primary_key=True, index=True)
     campaign_id = Column(Integer, ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False)
     name = Column(String(255), nullable=False)
-    pixel_id = Column(UUID(as_uuid=True), default=uuid.uuid4, unique=True, nullable=False)
+    pixel_id = Column(UUID(as_uuid=True), unique=True, nullable=False, default=uuid.uuid4, index=True)
     is_active = Column(Boolean, nullable=False, default=True)
     last_fire_at = Column(DateTime(timezone=True))
     total_events = Column(BigInteger, nullable=False, default=0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     campaign = relationship("Campaign", back_populates="pixels")
-    events = relationship("Event", back_populates="pixel")
 
 
+# ─────────────────────────────────────────────────────────
+# EVENTS (TimeSeries)
+# ─────────────────────────────────────────────────────────
 class Event(Base):
     __tablename__ = "events"
+
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    pixel_id = Column(UUID(as_uuid=True), ForeignKey("pixels.pixel_id"))
-    link_id = Column(Integer, ForeignKey("links.id"))
+    pixel_id = Column(UUID(as_uuid=True), ForeignKey("pixels.pixel_id"), index=True)
+    link_id = Column(Integer, ForeignKey("links.id"), index=True)
     auction_id = Column(String(128))
     imp_id = Column(String(128))
     session_id = Column(String(64))
-    event_name = Column(String(64), nullable=False)
-    sub_id = Column(String(255))
+    event_name = Column(String(64), nullable=False, index=True)
+    sub_id = Column(String(255), index=True)
     creative_id = Column(String(255))
-    click_id = Column(String(128))
+    click_id = Column(String(128), index=True)
     value = Column(Numeric(12, 6), default=0)
     currency = Column(String(8), default="USD")
-    metadata_ = Column("metadata", JSONB, default={})
+    metadata_ = Column("metadata", JSONB, default=dict)
     ip = Column(INET)
     country_code = Column(String(4))
     device_type = Column(String(20))
@@ -107,44 +127,67 @@ class Event(Base):
     browser = Column(String(50))
     user_agent = Column(Text)
     referer = Column(Text)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
-    pixel = relationship("Pixel", back_populates="events")
+    __table_args__ = (
+        Index("idx_events_created_at", "created_at"),
+        Index("idx_events_link_created", "link_id", "created_at"),
+        Index("idx_events_pixel_created", "pixel_id", "created_at"),
+        Index("idx_events_name_created", "event_name", "created_at"),
+        Index("idx_events_sub_created", "sub_id", "created_at"),
+    )
 
 
+# ─────────────────────────────────────────────────────────
+# CLICKS (TimeSeries)
+# ─────────────────────────────────────────────────────────
 class Click(Base):
     __tablename__ = "clicks"
+
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    link_id = Column(Integer, ForeignKey("links.id"), nullable=False)
+    link_id = Column(Integer, ForeignKey("links.id"), nullable=False, index=True)
     sub_id = Column(String(255))
     creative_id = Column(String(255))
     session_id = Column(String(64))
-    click_id = Column(UUID(as_uuid=True), default=uuid.uuid4, nullable=False)
+    click_id = Column(UUID(as_uuid=True), unique=True, nullable=False, default=uuid.uuid4, index=True)
     ip = Column(INET)
     country_code = Column(String(4))
     device_type = Column(String(20))
     cost = Column(Numeric(10, 6), default=0)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
     link = relationship("Link", back_populates="clicks")
 
+    __table_args__ = (
+        Index("idx_clicks_created_at", "created_at"),
+        Index("idx_clicks_link_created", "link_id", "created_at"),
+    )
 
+
+# ─────────────────────────────────────────────────────────
+# POSTBACKS (S2S audit)
+# ─────────────────────────────────────────────────────────
 class Postback(Base):
     __tablename__ = "postbacks"
+
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    click_id = Column(UUID(as_uuid=True))
+    click_id = Column(UUID(as_uuid=True), index=True)
     payout = Column(Numeric(10, 6), default=0)
     currency = Column(String(8), default="USD")
     status = Column(String(50))
-    raw_params = Column(JSONB, default={})
+    raw_params = Column(JSONB, default=dict)
     processed = Column(Boolean, nullable=False, default=False)
     ip = Column(INET)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
+# ─────────────────────────────────────────────────────────
+# RTB — CREATIVES
+# ─────────────────────────────────────────────────────────
 class Creative(Base):
     __tablename__ = "creatives"
-    id = Column(Integer, primary_key=True)
+
+    id = Column(Integer, primary_key=True, index=True)
     campaign_id = Column(Integer, ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False)
     name = Column(String(255))
     format = Column(String(20), nullable=False)  # banner|native|video|push
@@ -156,56 +199,73 @@ class Creative(Base):
     click_url = Column(Text)
     adm = Column(Text)  # raw ad markup
     status = Column(String(20), nullable=False, default="active")
-    audit_status = Column(String(20), nullable=False, default="pending")
+    audit_status = Column(String(20), nullable=False, default="pending")  # pending|approved|rejected
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     campaign = relationship("Campaign", back_populates="creatives")
 
 
+# ─────────────────────────────────────────────────────────
+# RTB — TARGETING RULES
+# ─────────────────────────────────────────────────────────
 class TargetingRule(Base):
     __tablename__ = "targeting_rules"
-    id = Column(Integer, primary_key=True)
-    campaign_id = Column(Integer, ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False)
+
+    id = Column(Integer, primary_key=True, index=True)
+    campaign_id = Column(Integer, ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False, unique=True)
     bid_floor = Column(Numeric(8, 6), default=0.01)
     bid_ceiling = Column(Numeric(8, 6), default=5.00)
-    geo_countries = Column(ARRAY(Text), default=[])
-    device_types = Column(ARRAY(Text), default=[])
-    os_list = Column(ARRAY(Text), default=[])
-    browser_list = Column(ARRAY(Text), default=[])
-    site_whitelist = Column(ARRAY(Text), default=[])
-    site_blacklist = Column(ARRAY(Text), default=[])
-    hour_schedule = Column(JSONB, default={})
+    geo_countries = Column(ARRAY(String), default=list)
+    device_types = Column(ARRAY(String), default=list)
+    os_list = Column(ARRAY(String), default=list)
+    browser_list = Column(ARRAY(String), default=list)
+    site_whitelist = Column(ARRAY(String), default=list)
+    site_blacklist = Column(ARRAY(String), default=list)
+    hour_schedule = Column(JSONB, default=dict)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
-    campaign = relationship("Campaign", back_populates="targeting_rules")
+    campaign = relationship("Campaign", back_populates="targeting")
 
 
+# ─────────────────────────────────────────────────────────
+# RTB — AUCTION LOGS (TimeSeries)
+# ─────────────────────────────────────────────────────────
 class AuctionLog(Base):
     __tablename__ = "auction_logs"
+
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    campaign_id = Column(Integer, ForeignKey("campaigns.id"))
+    campaign_id = Column(Integer, ForeignKey("campaigns.id"), index=True)
     creative_id = Column(Integer, ForeignKey("creatives.id"))
     bid_request_id = Column(String(128))
     imp_id = Column(String(128))
     bid_price = Column(Numeric(10, 6))
     win_price = Column(Numeric(10, 6))
     clearing_price = Column(Numeric(10, 6))
-    won = Column(Boolean, nullable=False, default=False)
+    won = Column(Boolean, nullable=False, default=False, index=True)
     ssp_name = Column(String(100))
     site_domain = Column(String(255))
     app_bundle = Column(String(255))
     geo_country = Column(String(4))
     device_type = Column(String(20))
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    __table_args__ = (
+        Index("idx_auction_campaign_created", "campaign_id", "created_at"),
+        Index("idx_auction_won_created", "won", "created_at"),
+    )
 
 
+# ─────────────────────────────────────────────────────────
+# AUTOPILOT RULES
+# ─────────────────────────────────────────────────────────
 class Rule(Base):
     __tablename__ = "rules"
-    id = Column(Integer, primary_key=True)
+
+    id = Column(Integer, primary_key=True, index=True)
     campaign_id = Column(Integer, ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False)
-    level = Column(String(20), nullable=False, default="campaign")
+    level = Column(String(20), nullable=False, default="campaign")  # campaign|sub_id|bid
     metric = Column(String(50), nullable=False)
-    condition = Column(String(10), nullable=False)
+    condition = Column(String(10), nullable=False)  # <|>|<=|>=|==
     threshold = Column(Numeric(12, 6), nullable=False)
     action = Column(String(50), nullable=False)
     triggered = Column(Boolean, nullable=False, default=False)
@@ -216,11 +276,15 @@ class Rule(Base):
     logs = relationship("RuleLog", back_populates="rule")
 
 
+# ─────────────────────────────────────────────────────────
+# AUTOPILOT RULE LOGS
+# ─────────────────────────────────────────────────────────
 class RuleLog(Base):
     __tablename__ = "rule_logs"
+
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     rule_id = Column(Integer, ForeignKey("rules.id"), nullable=False)
-    campaign_id = Column(Integer, ForeignKey("campaigns.id"), nullable=False)
+    campaign_id = Column(Integer, ForeignKey("campaigns.id"), nullable=False, index=True)
     triggered_at = Column(DateTime(timezone=True), server_default=func.now())
     metric_value = Column(Numeric(12, 6))
     action_taken = Column(String(100))
@@ -229,13 +293,17 @@ class RuleLog(Base):
     rule = relationship("Rule", back_populates="logs")
 
 
+# ─────────────────────────────────────────────────────────
+# AD ACCOUNTS
+# ─────────────────────────────────────────────────────────
 class AdAccount(Base):
     __tablename__ = "ad_accounts"
-    id = Column(Integer, primary_key=True)
+
+    id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    platform = Column(String(50), nullable=False)
+    platform = Column(String(50), nullable=False)  # push_house|yandex|kadam|propellerads|google
     name = Column(String(255))
-    credentials = Column(JSONB, default={})  # encrypted at app layer
+    credentials = Column(JSONB, default=dict)  # encrypted at app layer
     is_active = Column(Boolean, nullable=False, default=True)
     balance = Column(Numeric(12, 4))
     currency = Column(String(8), default="USD")
@@ -245,21 +313,29 @@ class AdAccount(Base):
     user = relationship("User", back_populates="ad_accounts")
 
 
+# ─────────────────────────────────────────────────────────
+# SETTINGS
+# ─────────────────────────────────────────────────────────
 class Setting(Base):
     __tablename__ = "settings"
-    id = Column(Integer, primary_key=True)
+
+    id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
     key = Column(String(100), nullable=False)
     value = Column(Text)
-    __table_args__ = (UniqueConstraint("user_id", "key"),)
 
     user = relationship("User", back_populates="settings")
 
+    __table_args__ = (UniqueConstraint("user_id", "key", name="uq_settings_user_key"),)
 
+
+# ─────────────────────────────────────────────────────────
+# LEGACY STATS (backward compat with v2)
+# ─────────────────────────────────────────────────────────
 class Stat(Base):
-    """Legacy aggregated stats table — backward compat with v2."""
     __tablename__ = "stats"
-    id = Column(Integer, primary_key=True)
+
+    id = Column(Integer, primary_key=True, index=True)
     link_id = Column(Integer, ForeignKey("links.id"), nullable=False)
     sub_id = Column(String(255))
     creative_id = Column(String(255))
@@ -270,6 +346,7 @@ class Stat(Base):
     cost = Column(Numeric(12, 6), default=0)
     revenue = Column(Numeric(12, 6), default=0)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    __table_args__ = (UniqueConstraint("link_id", "sub_id", "creative_id"),)
 
     link = relationship("Link", back_populates="stats")
+
+    __table_args__ = (UniqueConstraint("link_id", "sub_id", "creative_id", name="uq_stats_link_sub_creative"),)

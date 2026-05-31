@@ -1,3 +1,4 @@
+"""JWT auth helpers and password hashing."""
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from jose import JWTError, jwt
@@ -5,12 +6,12 @@ from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
-from database import get_db
-from models import User
-from config import settings
+from backend.config import settings
+from backend.database import get_db
+from backend import models
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
 
 
 def hash_password(password: str) -> str:
@@ -24,48 +25,52 @@ def verify_password(plain: str, hashed: str) -> bool:
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + (
-        expires_delta or timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
+        expires_delta or timedelta(minutes=settings.jwt_access_token_expire_minutes)
     )
-    to_encode.update({"exp": expire, "type": "access"})
-    return jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+    to_encode["exp"] = expire
+    return jwt.encode(to_encode, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
-def create_refresh_token(data: dict) -> str:
-    to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + timedelta(days=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS)
-    to_encode.update({"exp": expire, "type": "refresh"})
-    return jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
-
-
-def decode_token(token: str) -> dict:
+def get_current_user(
+    token: Optional[str] = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+) -> models.User:
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    if not token:
+        raise credentials_exception
     try:
-        return jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+        payload = jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
+        user_id: int = payload.get("sub")
+        if user_id is None:
+            raise credentials_exception
     except JWTError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise credentials_exception
 
-
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
-    payload = decode_token(token)
-    user_id: int = payload.get("sub")
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Invalid token payload")
-    user = db.query(User).filter(User.id == int(user_id), User.is_active == True).first()
-    if not user:
-        raise HTTPException(status_code=401, detail="User not found or inactive")
+    user = db.query(models.User).filter(models.User.id == int(user_id)).first()
+    if not user or not user.is_active:
+        raise credentials_exception
     return user
 
 
 def require_role(*roles: str):
-    """Dependency factory: require_role('admin') or require_role('admin', 'manager')"""
-    def checker(current_user: User = Depends(get_current_user)) -> User:
+    """Dependency factory — checks user role."""
+    def checker(current_user: models.User = Depends(get_current_user)) -> models.User:
         if current_user.role not in roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Access denied. Required roles: {list(roles)}"
+                detail=f"Role '{current_user.role}' not allowed. Required: {roles}",
             )
         return current_user
     return checker
+
+
+def ensure_admin(current_user: models.User = Depends(get_current_user)) -> models.User:
+    return require_role("admin")(current_user)
+
+
+def ensure_manager_or_admin(current_user: models.User = Depends(get_current_user)) -> models.User:
+    return require_role("admin", "manager")(current_user)

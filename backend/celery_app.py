@@ -1,52 +1,54 @@
+"""Celery configuration for Central DSP."""
 from celery import Celery
-from config import settings
+from celery.schedules import crontab
+from backend.config import settings
 
-app = Celery(
+celery_app = Celery(
     "centraldsp",
-    broker=settings.REDIS_URL,
-    backend=settings.REDIS_URL,
+    broker=settings.redis_url,
+    backend=settings.redis_url,
     include=[
-        "tasks.rules",
-        "tasks.sync",
-        "tasks.reports",
-        "tasks.cleanup",
+        "backend.tasks.rules",
+        "backend.tasks.sync",
+        "backend.tasks.reports",
+        "backend.tasks.cleanup",
     ],
 )
 
-app.conf.update(
+celery_app.conf.update(
     task_serializer="json",
     accept_content=["json"],
     result_serializer="json",
     timezone="UTC",
     enable_utc=True,
-    # Queues
-    task_default_queue="default",
-    task_queues={
-        "default": {},
-        "rtb": {},
-        "sync": {},
+    task_acks_late=True,
+    worker_prefetch_multiplier=1,
+    task_routes={
+        "backend.tasks.rules.*": {"queue": "default"},
+        "backend.tasks.sync.*": {"queue": "sync"},
+        "backend.tasks.reports.*": {"queue": "default"},
+        "backend.tasks.cleanup.*": {"queue": "default"},
     },
-    # Beat schedule — periodic tasks
     beat_schedule={
-        "evaluate-rules-every-30s": {
-            "task": "tasks.rules.evaluate_all_rules",
+        # AutoPilot rules: every 30 seconds
+        "evaluate-rules": {
+            "task": "backend.tasks.rules.evaluate_all_rules",
             "schedule": 30.0,
-            "options": {"queue": "default"},
         },
-        "sync-ad-network-costs-every-15m": {
-            "task": "tasks.sync.sync_all_ad_networks",
+        # Sync ad network costs: every 15 minutes
+        "sync-ad-costs": {
+            "task": "backend.tasks.sync.sync_all_ad_accounts",
             "schedule": 900.0,
-            "options": {"queue": "sync"},
         },
-        "daily-report-8am": {
-            "task": "tasks.reports.send_daily_report",
-            "schedule": 86400.0,  # override with crontab in prod
-            "options": {"queue": "default"},
+        # Daily report at 08:00 UTC
+        "daily-report": {
+            "task": "backend.tasks.reports.send_daily_report",
+            "schedule": crontab(hour=8, minute=0),
         },
-        "cleanup-expired-links-hourly": {
-            "task": "tasks.cleanup.cleanup_expired_links",
-            "schedule": 3600.0,
-            "options": {"queue": "default"},
+        # Cleanup expired links: every hour
+        "cleanup-expired": {
+            "task": "backend.tasks.cleanup.cleanup_expired_links",
+            "schedule": crontab(minute=0),
         },
     },
 )

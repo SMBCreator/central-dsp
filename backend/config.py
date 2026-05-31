@@ -1,53 +1,55 @@
 from pydantic_settings import BaseSettings
-from typing import Optional
+from functools import lru_cache
 
 
 class Settings(BaseSettings):
     # Database
-    DATABASE_URL: str = "postgresql://centraldsp:password@postgres:5432/centraldsp"
+    database_url: str = "postgresql://centraldsp:password@postgres:5432/centraldsp"
 
     # Redis
-    REDIS_URL: str = "redis://redis:6379/0"
+    redis_url: str = "redis://redis:6379/0"
 
     # JWT
-    JWT_SECRET_KEY: str = "change-me-in-production"
-    JWT_ALGORITHM: str = "HS256"
-    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440  # 24h
-    JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 30
+    jwt_secret_key: str = "change-me-256-bit-secret"
+    jwt_algorithm: str = "HS256"
+    jwt_access_token_expire_minutes: int = 1440  # 24h
+    jwt_refresh_token_expire_days: int = 30
 
-    # Encryption for ad network credentials
-    ENCRYPTION_KEY: str = "change-me-32-byte-key-here------"  # must be 32 chars
+    # Encryption (AES for ad_accounts credentials)
+    encryption_key: str = "change-me-32-byte-aes-key-here!!"
 
     # First admin (auto-created if users table empty)
-    FIRST_ADMIN_EMAIL: str = "admin@centraldsp.local"
-    FIRST_ADMIN_PASSWORD: str = "admin123"
+    first_admin_email: str = "admin@centraldsp.local"
+    first_admin_password: str = "admin123"
 
-    # RTB Bidder
-    RTB_BIDDER_HOST: str = "bidder"
-    RTB_BIDDER_PORT: int = 8080
-    RTB_DEFAULT_BID_FLOOR: float = 0.01
-    RTB_MAX_BID_PRICE: float = 5.00
-    RTB_RESPONSE_TIMEOUT_MS: int = 100
+    # RTB4FREE Bidder
+    rtb_bidder_host: str = "bidder"
+    rtb_bidder_port: int = 8080
+    rtb_default_bid_floor: float = 0.01
+    rtb_max_bid_price: float = 5.00
+    rtb_response_timeout_ms: int = 100
 
     # Notifications (Apprise)
-    TELEGRAM_BOT_TOKEN: Optional[str] = None
-    TELEGRAM_CHAT_ID: Optional[str] = None
-    SMTP_HOST: Optional[str] = None
-    SMTP_PORT: int = 587
-    SMTP_USER: Optional[str] = None
-    SMTP_PASSWORD: Optional[str] = None
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
 
-    # Ad Networks
-    PUSH_HOUSE_API_TOKEN: Optional[str] = None
+    # GeoIP
+    maxmind_license_key: str = ""
+    use_local_geoip: bool = False  # True = MaxMind mmdb, False = ip-api.com
 
     # Environment
-    ENVIRONMENT: str = "development"
-    DEBUG: bool = True
-    LOG_LEVEL: str = "info"
+    environment: str = "development"
+    debug: bool = True
+    log_level: str = "info"
 
     class Config:
         env_file = ".env"
-        extra = "allow"
+        extra = "ignore"
 
 
-settings = Settings()
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
+
+
+settings = get_settings()
