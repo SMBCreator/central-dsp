@@ -8,7 +8,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID, INET, JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
-from backend.database import Base
+from database import Base  # fix: no 'backend.' prefix inside container
 
 
 # ─────────────────────────────────────────────────────────
@@ -110,8 +110,8 @@ class Event(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     pixel_id = Column(UUID(as_uuid=True), ForeignKey("pixels.pixel_id"), index=True)
     link_id = Column(Integer, ForeignKey("links.id"), index=True)
-    auction_id = Column(String(128))
-    imp_id = Column(String(128))
+    auction_id = Column(String(128))  # RTB auction linkage
+    imp_id = Column(String(128))      # RTB impression linkage
     session_id = Column(String(64))
     event_name = Column(String(64), nullable=False, index=True)
     sub_id = Column(String(255), index=True)
@@ -197,16 +197,17 @@ class Creative(Base):
     title = Column(String(255))
     description = Column(Text)
     click_url = Column(Text)
-    adm = Column(Text)  # raw ad markup
+    adm = Column(Text)  # raw ad markup (VAST/HTML/native JSON)
     status = Column(String(20), nullable=False, default="active")
     audit_status = Column(String(20), nullable=False, default="pending")  # pending|approved|rejected
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     campaign = relationship("Campaign", back_populates="creatives")
+    auction_logs = relationship("AuctionLog", back_populates="creative")
 
 
 # ─────────────────────────────────────────────────────────
-# RTB — TARGETING RULES
+# RTB — TARGETING RULES (one per campaign)
 # ─────────────────────────────────────────────────────────
 class TargetingRule(Base):
     __tablename__ = "targeting_rules"
@@ -216,12 +217,12 @@ class TargetingRule(Base):
     bid_floor = Column(Numeric(8, 6), default=0.01)
     bid_ceiling = Column(Numeric(8, 6), default=5.00)
     geo_countries = Column(ARRAY(String), default=list)
-    device_types = Column(ARRAY(String), default=list)
-    os_list = Column(ARRAY(String), default=list)
-    browser_list = Column(ARRAY(String), default=list)
+    device_types = Column(ARRAY(String), default=list)   # desktop|mobile|tablet|ctv
+    os_list = Column(ARRAY(String), default=list)        # iOS|Android|Windows|macOS
+    browser_list = Column(ARRAY(String), default=list)   # Chrome|Firefox|Safari
     site_whitelist = Column(ARRAY(String), default=list)
     site_blacklist = Column(ARRAY(String), default=list)
-    hour_schedule = Column(JSONB, default=dict)
+    hour_schedule = Column(JSONB, default=dict)          # {"0":[0,1,..23], "1":[9..18]} weekday→hours
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     campaign = relationship("Campaign", back_populates="targeting")
@@ -235,8 +236,8 @@ class AuctionLog(Base):
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     campaign_id = Column(Integer, ForeignKey("campaigns.id"), index=True)
-    creative_id = Column(Integer, ForeignKey("creatives.id"))
-    bid_request_id = Column(String(128))
+    creative_id = Column(Integer, ForeignKey("creatives.id"), index=True)
+    bid_request_id = Column(String(128), index=True)
     imp_id = Column(String(128))
     bid_price = Column(Numeric(10, 6))
     win_price = Column(Numeric(10, 6))
@@ -249,9 +250,13 @@ class AuctionLog(Base):
     device_type = Column(String(20))
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
+    campaign = relationship("Campaign")
+    creative = relationship("Creative", back_populates="auction_logs")
+
     __table_args__ = (
         Index("idx_auction_campaign_created", "campaign_id", "created_at"),
         Index("idx_auction_won_created", "won", "created_at"),
+        Index("idx_auction_ssp_created", "ssp_name", "created_at"),
     )
 
 
@@ -264,10 +269,10 @@ class Rule(Base):
     id = Column(Integer, primary_key=True, index=True)
     campaign_id = Column(Integer, ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False)
     level = Column(String(20), nullable=False, default="campaign")  # campaign|sub_id|bid
-    metric = Column(String(50), nullable=False)
-    condition = Column(String(10), nullable=False)  # <|>|<=|>=|==
+    metric = Column(String(50), nullable=False)   # roi|cpa|cr|win_rate|spend_pct|cpm
+    condition = Column(String(10), nullable=False) # <|>|<=|>=|==
     threshold = Column(Numeric(12, 6), nullable=False)
-    action = Column(String(50), nullable=False)
+    action = Column(String(50), nullable=False)    # pause|stop|bid_up_20pct|bid_down_15pct|blacklist_site
     triggered = Column(Boolean, nullable=False, default=False)
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -294,14 +299,14 @@ class RuleLog(Base):
 
 
 # ─────────────────────────────────────────────────────────
-# AD ACCOUNTS
+# AD ACCOUNTS (SSP / network connections)
 # ─────────────────────────────────────────────────────────
 class AdAccount(Base):
     __tablename__ = "ad_accounts"
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    platform = Column(String(50), nullable=False)  # push_house|yandex|kadam|propellerads|google
+    platform = Column(String(50), nullable=False)  # push_house|yandex|kadam|propellerads|beeswax|smaato
     name = Column(String(255))
     credentials = Column(JSONB, default=dict)  # encrypted at app layer
     is_active = Column(Boolean, nullable=False, default=True)
@@ -314,7 +319,7 @@ class AdAccount(Base):
 
 
 # ─────────────────────────────────────────────────────────
-# SETTINGS
+# SETTINGS (per-user key-value)
 # ─────────────────────────────────────────────────────────
 class Setting(Base):
     __tablename__ = "settings"
