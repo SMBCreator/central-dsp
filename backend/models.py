@@ -8,12 +8,10 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID, INET, JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
-from database import Base  # fix: no 'backend.' prefix inside container
+from database import Base
 
 
-# ─────────────────────────────────────────────────────────
-# USERS
-# ─────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────
 class User(Base):
     __tablename__ = "users"
 
@@ -28,11 +26,10 @@ class User(Base):
     campaigns = relationship("Campaign", back_populates="user")
     ad_accounts = relationship("AdAccount", back_populates="user")
     settings = relationship("Setting", back_populates="user")
+    ssp_connections = relationship("SSPConnection", back_populates="user", cascade="all, delete-orphan")
 
 
-# ─────────────────────────────────────────────────────────
-# CAMPAIGNS
-# ─────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────
 class Campaign(Base):
     __tablename__ = "campaigns"
 
@@ -58,9 +55,7 @@ class Campaign(Base):
     targeting = relationship("TargetingRule", back_populates="campaign", uselist=False, cascade="all, delete-orphan")
 
 
-# ─────────────────────────────────────────────────────────
-# LINKS
-# ─────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────
 class Link(Base):
     __tablename__ = "links"
 
@@ -83,9 +78,7 @@ class Link(Base):
     stats = relationship("Stat", back_populates="link")
 
 
-# ─────────────────────────────────────────────────────────
-# PIXELS
-# ─────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────
 class Pixel(Base):
     __tablename__ = "pixels"
 
@@ -101,17 +94,15 @@ class Pixel(Base):
     campaign = relationship("Campaign", back_populates="pixels")
 
 
-# ─────────────────────────────────────────────────────────
-# EVENTS (TimeSeries)
-# ─────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────
 class Event(Base):
     __tablename__ = "events"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     pixel_id = Column(UUID(as_uuid=True), ForeignKey("pixels.pixel_id"), index=True)
     link_id = Column(Integer, ForeignKey("links.id"), index=True)
-    auction_id = Column(String(128))  # RTB auction linkage
-    imp_id = Column(String(128))      # RTB impression linkage
+    auction_id = Column(String(128))
+    imp_id = Column(String(128))
     session_id = Column(String(64))
     event_name = Column(String(64), nullable=False, index=True)
     sub_id = Column(String(255), index=True)
@@ -138,9 +129,7 @@ class Event(Base):
     )
 
 
-# ─────────────────────────────────────────────────────────
-# CLICKS (TimeSeries)
-# ─────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────
 class Click(Base):
     __tablename__ = "clicks"
 
@@ -164,9 +153,7 @@ class Click(Base):
     )
 
 
-# ─────────────────────────────────────────────────────────
-# POSTBACKS (S2S audit)
-# ─────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────
 class Postback(Base):
     __tablename__ = "postbacks"
 
@@ -181,9 +168,7 @@ class Postback(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
-# ─────────────────────────────────────────────────────────
-# RTB — CREATIVES
-# ─────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────
 class Creative(Base):
     __tablename__ = "creatives"
 
@@ -206,9 +191,7 @@ class Creative(Base):
     auction_logs = relationship("AuctionLog", back_populates="creative")
 
 
-# ─────────────────────────────────────────────────────────
-# RTB — TARGETING RULES (one per campaign)
-# ─────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────
 class TargetingRule(Base):
     __tablename__ = "targeting_rules"
 
@@ -216,21 +199,19 @@ class TargetingRule(Base):
     campaign_id = Column(Integer, ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False, unique=True)
     bid_floor = Column(Numeric(8, 6), default=0.01)
     bid_ceiling = Column(Numeric(8, 6), default=5.00)
-    geo_countries = Column(ARRAY(String), default=list)
-    device_types = Column(ARRAY(String), default=list)   # desktop|mobile|tablet|ctv
-    os_list = Column(ARRAY(String), default=list)        # iOS|Android|Windows|macOS
-    browser_list = Column(ARRAY(String), default=list)   # Chrome|Firefox|Safari
+    geo_countries = Column(ARRAY(String), default=list)    # ISO 3166-1 alpha-3: RUS, UKR, BLR
+    device_types = Column(ARRAY(String), default=list)    # desktop|mobile|tablet|ctv
+    os_list = Column(ARRAY(String), default=list)          # iOS|Android|Windows|macOS
+    browser_list = Column(ARRAY(String), default=list)    # Chrome|Firefox|Safari
     site_whitelist = Column(ARRAY(String), default=list)
     site_blacklist = Column(ARRAY(String), default=list)
-    hour_schedule = Column(JSONB, default=dict)          # {"0":[0,1,..23], "1":[9..18]} weekday→hours
+    hour_schedule = Column(JSONB, default=dict)            # {"0":[0,1..23], "*":[9..22]}
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     campaign = relationship("Campaign", back_populates="targeting")
 
 
-# ─────────────────────────────────────────────────────────
-# RTB — AUCTION LOGS (TimeSeries)
-# ─────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────
 class AuctionLog(Base):
     __tablename__ = "auction_logs"
 
@@ -243,7 +224,7 @@ class AuctionLog(Base):
     win_price = Column(Numeric(10, 6))
     clearing_price = Column(Numeric(10, 6))
     won = Column(Boolean, nullable=False, default=False, index=True)
-    ssp_name = Column(String(100))
+    ssp_name = Column(String(100), index=True)
     site_domain = Column(String(255))
     app_bundle = Column(String(255))
     geo_country = Column(String(4))
@@ -260,9 +241,42 @@ class AuctionLog(Base):
     )
 
 
-# ─────────────────────────────────────────────────────────
-# AUTOPILOT RULES
-# ─────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────
+# SSP CONNECTIONS
+# ────────────────────────────────────────────────────────
+class SSPConnection(Base):
+    """
+    Stores connection credentials and metadata for each connected SSP.
+    One record per SSP integration per user.
+    """
+    __tablename__ = "ssp_connections"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    platform = Column(String(50), nullable=False)   # kadam|sape|getintent|buzzoola|hybrid|yandex
+    name = Column(String(255), nullable=False)       # human label
+    secret = Column(String(512))                     # shared secret (stored encrypted at app level)
+    ip_whitelist = Column(ARRAY(String), default=list)  # allowed SSP IPs
+    extra_config = Column(JSONB, default=dict)       # platform-specific settings
+    is_active = Column(Boolean, nullable=False, default=True)
+
+    # Stats (updated by win/loss notice handlers)
+    total_requests = Column(BigInteger, default=0)
+    total_wins = Column(BigInteger, default=0)
+    last_bid_at = Column(DateTime(timezone=True))
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    user = relationship("User", back_populates="ssp_connections")
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "platform", "name", name="uq_ssp_conn_user_platform_name"),
+        Index("idx_ssp_conn_user_active", "user_id", "is_active"),
+    )
+
+
+# ────────────────────────────────────────────────────────
 class Rule(Base):
     __tablename__ = "rules"
 
@@ -281,9 +295,7 @@ class Rule(Base):
     logs = relationship("RuleLog", back_populates="rule")
 
 
-# ─────────────────────────────────────────────────────────
-# AUTOPILOT RULE LOGS
-# ─────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────
 class RuleLog(Base):
     __tablename__ = "rule_logs"
 
@@ -298,17 +310,15 @@ class RuleLog(Base):
     rule = relationship("Rule", back_populates="logs")
 
 
-# ─────────────────────────────────────────────────────────
-# AD ACCOUNTS (SSP / network connections)
-# ─────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────
 class AdAccount(Base):
     __tablename__ = "ad_accounts"
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    platform = Column(String(50), nullable=False)  # push_house|yandex|kadam|propellerads|beeswax|smaato
+    platform = Column(String(50), nullable=False)
     name = Column(String(255))
-    credentials = Column(JSONB, default=dict)  # encrypted at app layer
+    credentials = Column(JSONB, default=dict)
     is_active = Column(Boolean, nullable=False, default=True)
     balance = Column(Numeric(12, 4))
     currency = Column(String(8), default="USD")
@@ -318,9 +328,7 @@ class AdAccount(Base):
     user = relationship("User", back_populates="ad_accounts")
 
 
-# ─────────────────────────────────────────────────────────
-# SETTINGS (per-user key-value)
-# ─────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────
 class Setting(Base):
     __tablename__ = "settings"
 
@@ -334,9 +342,7 @@ class Setting(Base):
     __table_args__ = (UniqueConstraint("user_id", "key", name="uq_settings_user_key"),)
 
 
-# ─────────────────────────────────────────────────────────
-# LEGACY STATS (backward compat with v2)
-# ─────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────
 class Stat(Base):
     __tablename__ = "stats"
 

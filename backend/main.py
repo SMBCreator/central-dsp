@@ -1,11 +1,8 @@
 """Central DSP — FastAPI application entry point.
 
-This file is intentionally thin: it wires together all routers
-and handles startup logic only. Business logic lives in routers/.
-
 Router map:
   /auth/*          → routers/auth.py
-  /api/users/*     → inline (admin only, tiny)
+  /api/users/*     → inline (admin only)
   /api/campaigns/* → routers/campaigns.py
   /api/links/*     → routers/links.py
   /api/pixels/*    → routers/pixels.py
@@ -13,7 +10,7 @@ Router map:
   /api/targeting/* → routers/targeting.py
   /api/creatives/* → routers/creatives.py
   /api/stats/*     → routers/stats.py
-  /api/accounts/*  → routers/accounts.py (future)
+  /api/ssp/*       → routers/ssp.py
   /s/* /c/* /px/*  → routers/tracking.py
   /postback        → routers/postback.py
   /rtb/*           → rtb_bridge/router.py
@@ -32,7 +29,8 @@ from database import get_db, engine
 from models import (
     Base, User, Campaign, Link, Pixel, Event, Click, Postback,
     Stat, Rule, RuleLog, Setting, AdAccount,
-    Creative, TargetingRule, AuctionLog,  # RTB models
+    Creative, TargetingRule, AuctionLog,
+    SSPConnection,
 )
 from auth import hash_password, get_current_user, require_role
 
@@ -47,18 +45,17 @@ from routers.rules import router as rules_router
 from routers.targeting import router as targeting_router
 from routers.creatives import router as creatives_router
 from routers.stats import router as stats_router
+from routers.ssp import router as ssp_router
 from rtb_bridge.router import router as rtb_router
 
 logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO))
 logger = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────
-# App init
-# ─────────────────────────────────────────
+# ──────────────────────────────────────────
 app = FastAPI(
     title="Central DSP API",
     version="3.0.0",
-    description="Self-hosted DSP: SmartLink + Tracker + AutoPilot + RTB",
+    description="Self-hosted DSP: SmartLink + Tracker + AutoPilot + RTB (OpenRTB 2.5)",
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -71,7 +68,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Include all routers ────────────────────────────────────────────────────
+# ── Include all routers ─────────────────────────────────────────────────
 app.include_router(auth_router)       # /auth/login, /auth/me, /auth/refresh
 app.include_router(campaigns_router)  # /api/campaigns/*
 app.include_router(links_router)      # /api/campaigns/{id}/links/*
@@ -82,18 +79,18 @@ app.include_router(rules_router)      # /api/campaigns/{id}/rules/*
 app.include_router(targeting_router)  # /api/campaigns/{id}/targeting
 app.include_router(creatives_router)  # /api/campaigns/{id}/creatives/*
 app.include_router(stats_router)      # /api/analytics/*
-app.include_router(rtb_router)        # /rtb/*
+app.include_router(ssp_router)        # /api/ssp/*  — SSP connection management
+app.include_router(rtb_router)        # /rtb/*      — OpenRTB 2.5 bid endpoint
 
 
-# ─────────────────────────────────────────
-# Startup: create all tables + first admin
-# ─────────────────────────────────────────
+# ── Startup ────────────────────────────────────────────────────────────────
 @app.on_event("startup")
 def startup():
-    # Creates ALL tables including RTB models (Creative, TargetingRule, AuctionLog)
+    # Create all tables (including SSPConnection)
     Base.metadata.create_all(bind=engine)
     db = next(get_db())
     try:
+        # Create first admin if DB is empty
         if db.query(User).count() == 0:
             admin = User(
                 email=settings.FIRST_ADMIN_EMAIL,
@@ -106,23 +103,30 @@ def startup():
             db.commit()
             logger.warning(
                 f"[STARTUP] First admin created: {settings.FIRST_ADMIN_EMAIL} "
-                f"/ {settings.FIRST_ADMIN_PASSWORD} — CHANGE PASSWORD IMMEDIATELY!"
+                f"/ {settings.FIRST_ADMIN_PASSWORD} — CHANGE PASSWORD!"
             )
+
+        # Load SSP connections into manager
+        from ssp.manager import ssp_manager
+        ssp_manager.refresh(db)
+        logger.info("[STARTUP] SSP manager loaded")
+
     finally:
         db.close()
 
 
-# ─────────────────────────────────────────
-# HEALTH CHECK
-# ─────────────────────────────────────────
+# ── Health ────────────────────────────────────────────────────────────────
 @app.get("/health", tags=["System"])
 def health():
-    return {"status": "ok", "version": "3.0.0", "service": "central-dsp"}
+    return {
+        "status": "ok",
+        "version": "3.0.0",
+        "service": "central-dsp",
+        "rtb_endpoint": f"{settings.BACKEND_BASE_URL}/rtb/bid",
+    }
 
 
-# ─────────────────────────────────────────
-# USERS (admin only — inline, tiny surface)
-# ─────────────────────────────────────────
+# ── Users (admin only) ──────────────────────────────────────────────────
 class UserOut(BaseModel):
     id: int
     email: str
