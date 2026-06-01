@@ -4,6 +4,8 @@ from datetime import datetime, timezone, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func, and_
 
+from models import Campaign, AuctionLog, Event
+
 logger = logging.getLogger(__name__)
 
 
@@ -69,9 +71,8 @@ class CentralBidOptimizer:
         CPA target = offer_value from campaigns table.
         This is what the advertiser is willing to pay per conversion.
         """
-        from database import CampaignDB
         row = self.db.execute(
-            select(CampaignDB.offer_value).where(CampaignDB.id == campaign_id)
+            select(Campaign.offer_value).where(Campaign.id == campaign_id)
         ).scalar_one_or_none()
         return float(row) if row else None
 
@@ -82,23 +83,21 @@ class CentralBidOptimizer:
         Falls back to campaign-level CVR if context-specific CVR not available.
         Minimum CVR floor: 0.001 (0.1%) to avoid zero bids.
         """
-        from database import AuctionLogDB, EventDB
-
         # Time window: last 7 days
         since = datetime.now(timezone.utc) - timedelta(days=7)
 
         # Count impressions (won auctions) in context
-        imp_query = select(func.count()).select_from(AuctionLogDB).where(
+        imp_query = select(func.count()).select_from(AuctionLog).where(
             and_(
-                AuctionLogDB.campaign_id == campaign_id,
-                AuctionLogDB.won == True,
-                AuctionLogDB.created_at >= since,
+                AuctionLog.campaign_id == campaign_id,
+                AuctionLog.won == True,
+                AuctionLog.created_at >= since,
             )
         )
         if context.get("country_code"):
-            imp_query = imp_query.where(AuctionLogDB.geo_country == context["country_code"])
+            imp_query = imp_query.where(AuctionLog.geo_country == context["country_code"])
         if context.get("device_type"):
-            imp_query = imp_query.where(AuctionLogDB.device_type == context["device_type"])
+            imp_query = imp_query.where(AuctionLog.device_type == context["device_type"])
 
         impressions = self.db.execute(imp_query).scalar() or 0
 
@@ -107,17 +106,18 @@ class CentralBidOptimizer:
             return self._get_campaign_level_cvr(campaign_id, since)
 
         # Count conversions in context
-        conv_query = select(func.count()).select_from(EventDB).where(
+        # NOTE: Event.metadata_ is the Python attr; DB column name is "metadata"
+        conv_query = select(func.count()).select_from(Event).where(
             and_(
-                EventDB.event_name.in_(["lead", "purchase", "registration"]),
-                EventDB.created_at >= since,
-                EventDB.metadata["campaign_id"].astext == str(campaign_id),
+                Event.event_name.in_(["lead", "purchase", "registration"]),
+                Event.created_at >= since,
+                Event.metadata_["campaign_id"].astext == str(campaign_id),
             )
         )
         if context.get("country_code"):
-            conv_query = conv_query.where(EventDB.country_code == context["country_code"])
+            conv_query = conv_query.where(Event.country_code == context["country_code"])
         if context.get("device_type"):
-            conv_query = conv_query.where(EventDB.device_type == context["device_type"])
+            conv_query = conv_query.where(Event.device_type == context["device_type"])
 
         conversions = self.db.execute(conv_query).scalar() or 0
 
@@ -126,24 +126,22 @@ class CentralBidOptimizer:
 
     def _get_campaign_level_cvr(self, campaign_id: int, since: datetime) -> float:
         """Fallback: campaign-level CVR (no context filtering)"""
-        from database import AuctionLogDB, EventDB
-
         impressions = self.db.execute(
-            select(func.count()).select_from(AuctionLogDB).where(
+            select(func.count()).select_from(AuctionLog).where(
                 and_(
-                    AuctionLogDB.campaign_id == campaign_id,
-                    AuctionLogDB.won == True,
-                    AuctionLogDB.created_at >= since,
+                    AuctionLog.campaign_id == campaign_id,
+                    AuctionLog.won == True,
+                    AuctionLog.created_at >= since,
                 )
             )
         ).scalar() or 0
 
         conversions = self.db.execute(
-            select(func.count()).select_from(EventDB).where(
+            select(func.count()).select_from(Event).where(
                 and_(
-                    EventDB.event_name.in_(["lead", "purchase", "registration"]),
-                    EventDB.created_at >= since,
-                    EventDB.metadata["campaign_id"].astext == str(campaign_id),
+                    Event.event_name.in_(["lead", "purchase", "registration"]),
+                    Event.created_at >= since,
+                    Event.metadata_["campaign_id"].astext == str(campaign_id),
                 )
             )
         ).scalar() or 0
@@ -161,15 +159,13 @@ class CentralBidOptimizer:
         Win rate > 10% -> we're winning too easily, might overpay (margin = 0.65)
         Win rate > 20% -> significantly reduce bids (margin = 0.50)
         """
-        from database import AuctionLogDB
-
         since = datetime.now(timezone.utc) - timedelta(hours=24)
 
         total = self.db.execute(
-            select(func.count()).select_from(AuctionLogDB).where(
+            select(func.count()).select_from(AuctionLog).where(
                 and_(
-                    AuctionLogDB.campaign_id == campaign_id,
-                    AuctionLogDB.created_at >= since,
+                    AuctionLog.campaign_id == campaign_id,
+                    AuctionLog.created_at >= since,
                 )
             )
         ).scalar() or 0
@@ -178,11 +174,11 @@ class CentralBidOptimizer:
             return 0.80  # Default margin when no data
 
         won = self.db.execute(
-            select(func.count()).select_from(AuctionLogDB).where(
+            select(func.count()).select_from(AuctionLog).where(
                 and_(
-                    AuctionLogDB.campaign_id == campaign_id,
-                    AuctionLogDB.won == True,
-                    AuctionLogDB.created_at >= since,
+                    AuctionLog.campaign_id == campaign_id,
+                    AuctionLog.won == True,
+                    AuctionLog.created_at >= since,
                 )
             )
         ).scalar() or 0
