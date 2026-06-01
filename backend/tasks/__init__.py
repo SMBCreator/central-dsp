@@ -1,1 +1,1 @@
-# Central DSP Celery tasks package
+"""Central DSP Celery tasks package."""
