@@ -1,188 +1,465 @@
+"""
+RTB Bridge Router — FastAPI endpoints для взаимодействия
+RTB4FREE Java биддера с CentralDSP.
+
+Все маршруты: /api/rtb/*
+
+Endpoints:
+  GET  /api/rtb/campaigns              — список активных кампаний для биддера
+  GET  /api/rtb/creatives/{id}         — детали конкретного креатива
+  POST /api/rtb/win-notice             — биддер победил в аукционе
+  POST /api/rtb/loss-notice            — биддер проиграл аукцион
+  GET  /api/rtb/status                 — статус биддера (alive, QPS, win rate)
+  GET  /api/rtb/stats/{campaign_id}    — RTB статистика кампании
+  GET  /api/rtb/campaigns/{id}/targeting   — таргетинг кампании
+  PUT  /api/rtb/campaigns/{id}/targeting   — обновить таргетинг
+  GET  /api/rtb/campaigns/{id}/creatives   — список креативов кампании
+  POST /api/rtb/campaigns/{id}/creatives   — создать новый креатив
+  PATCH /api/rtb/creatives/{id}/status     — изменить статус/audit_status
+"""
+from __future__ import annotations
 import logging
-from datetime import datetime, timezone
-from typing import Optional
-from fastapi import APIRouter, Request, HTTPException
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from fastapi import Depends
+
 from database import get_db
-from models import Campaign, Creative, TargetingRule, AuctionLog, Event, Pixel
-from config import settings
+from models import Campaign
+from auth import get_current_user, require_role
+from models import User
+from rtb_bridge.models import Creative, TargetingRule, AuctionLog, BidAdjustment
+from rtb_bridge.schemas import (
+    RTBCampaignOut, CreativeOut, TargetingOut,
+    WinNotice, LossNotice,
+    BidderStatusOut, RTBStatsOut,
+)
+from rtb_bridge.service import RTBService
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/rtb", tags=["RTB Bridge"])
 
 
-def _campaign_to_rtb4free(campaign: Campaign) -> Optional[dict]:
-    """Convert CentralDSP campaign to RTB4FREE campaign format."""
-    if campaign.status != "active":
-        return None
-    tr = campaign.targeting_rules[0] if campaign.targeting_rules else None
-    creatives_data = []
-    for cr in campaign.creatives:
-        if cr.status != "active":
-            continue
-        creatives_data.append({
-            "id": str(cr.id),
-            "type": cr.format,
-            "w": cr.width,
-            "h": cr.height,
-            "imageurl": cr.image_url,
-            "title": cr.title,
-            "adomain": [],
-            "adm": cr.adm or "",
-            "clickurl": cr.click_url or "",
-        })
-    if not creatives_data:
-        return None
-    return {
-        "id": str(campaign.id),
-        "name": campaign.name,
-        "status": "active",
-        "bidfloor": float(tr.bid_floor) if tr else settings.RTB_DEFAULT_BID_FLOOR,
-        "bidceiling": float(tr.bid_ceiling) if tr else settings.RTB_MAX_BID_PRICE,
-        "budget": float(campaign.daily_budget) if campaign.daily_budget else 0,
-        "geo_whitelist": list(tr.geo_countries) if tr and tr.geo_countries else [],
-        "device_types": list(tr.device_types) if tr and tr.device_types else [],
-        "site_blacklist": list(tr.site_blacklist) if tr and tr.site_blacklist else [],
-        "site_whitelist": list(tr.site_whitelist) if tr and tr.site_whitelist else [],
-        "creatives": creatives_data,
-        "win_url": f"http://backend:8000/api/rtb/win-notice",
-        "loss_url": f"http://backend:8000/api/rtb/loss-notice",
-    }
+# ──────────────────────────────────────────────────────────────────
+# Pydantic schemas для запросов/ответов роутера
+# ──────────────────────────────────────────────────────────────────
+
+class TargetingUpdate(BaseModel):
+    bid_floor: Optional[float] = None
+    bid_ceiling: Optional[float] = None
+    geo_countries: Optional[List[str]] = None
+    device_types: Optional[List[str]] = None
+    os_list: Optional[List[str]] = None
+    browser_list: Optional[List[str]] = None
+    site_whitelist: Optional[List[str]] = None
+    site_blacklist: Optional[List[str]] = None
+    hour_schedule: Optional[dict] = None
 
 
-@router.get("/campaigns")
+class CreativeCreate(BaseModel):
+    format: str                         # banner | native | video
+    width: Optional[int] = None
+    height: Optional[int] = None
+    image_url: Optional[str] = None
+    click_url: Optional[str] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    icon_url: Optional[str] = None
+    sponsored_by: Optional[str] = None
+    vast_url: Optional[str] = None
+    video_url: Optional[str] = None
+    duration_sec: Optional[int] = None
+    adm: Optional[str] = None
+
+
+class CreativeStatusUpdate(BaseModel):
+    status: Optional[str] = None        # active|paused|archived
+    audit_status: Optional[str] = None  # pending|approved|rejected
+    audit_feedback: Optional[str] = None
+
+
+class BidAdjustmentCreate(BaseModel):
+    dimension: str   # country|device|os|hour|site
+    value: str
+    multiplier: float
+
+
+# ──────────────────────────────────────────────────────────────────
+# Кампании — для биддера (без авторизации, внутренняя сеть)
+# ──────────────────────────────────────────────────────────────────
+
+@router.get(
+    "/campaigns",
+    response_model=List[RTBCampaignOut],
+    summary="Активные кампании для RTB4FREE биддера",
+)
 def get_rtb_campaigns(db: Session = Depends(get_db)):
     """
-    RTB4FREE bidder polls this every N seconds to get active campaigns.
-    Returns campaigns in RTB4FREE-compatible JSON format.
+    Вызывается RTB4FREE Java биддером каждые N секунд.
+    Возвращает кампании с таргетингом и одобренными креативами.
+    Только активные кампании с остатком бюджета.
     """
-    campaigns = db.query(Campaign).filter(Campaign.status == "active").all()
-    rtb_campaigns = []
-    for c in campaigns:
-        rtb_c = _campaign_to_rtb4free(c)
-        if rtb_c:
-            rtb_campaigns.append(rtb_c)
-    logger.debug(f"[RTB Bridge] Serving {len(rtb_campaigns)} campaigns")
-    return {"campaigns": rtb_campaigns, "count": len(rtb_campaigns)}
+    return RTBService.get_active_campaigns(db)
 
 
-@router.get("/creatives/{creative_id}")
-def get_creative(creative_id: int, db: Session = Depends(get_db)):
-    """Return creative markup for RTB4FREE bidder."""
-    cr = db.query(Creative).filter(Creative.id == creative_id, Creative.status == "active").first()
-    if not cr:
+# ──────────────────────────────────────────────────────────────────
+# Win / Loss Notices — от биддера
+# ──────────────────────────────────────────────────────────────────
+
+@router.post(
+    "/win-notice",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Win Notice — биддер победил в аукционе",
+)
+def win_notice(body: WinNotice, db: Session = Depends(get_db)):
+    """
+    Вызывается RTB4FREE биддером после победы в аукционе.
+    Создаёт AuctionLog(won=True) + Event(impression) для attribution.
+    """
+    RTBService.process_win_notice(body, db)
+
+
+@router.post(
+    "/loss-notice",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Loss Notice — биддер проиграл аукцион",
+)
+def loss_notice(body: LossNotice, db: Session = Depends(get_db)):
+    """
+    Вызывается RTB4FREE биддером при проигрыше.
+    Создаёт AuctionLog(won=False) для расчёта win rate.
+    """
+    RTBService.process_loss_notice(body, db)
+
+
+# ──────────────────────────────────────────────────────────────────
+# Статус биддера
+# ──────────────────────────────────────────────────────────────────
+
+@router.get(
+    "/status",
+    response_model=BidderStatusOut,
+    summary="Статус RTB4FREE биддера",
+)
+async def bidder_status(db: Session = Depends(get_db)):
+    """Проверяет доступность биддера и возвращает метрики за сегодня."""
+    return await RTBService.get_bidder_status(db)
+
+
+# ──────────────────────────────────────────────────────────────────
+# RTB Статистика кампании
+# ──────────────────────────────────────────────────────────────────
+
+@router.get(
+    "/stats/{campaign_id}",
+    response_model=RTBStatsOut,
+    summary="RTB статистика кампании",
+)
+def campaign_rtb_stats(
+    campaign_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Win rate, spend, avg CPM для кампании."""
+    camp = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+    if not camp:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return RTBService.get_campaign_stats(campaign_id, db)
+
+
+# ──────────────────────────────────────────────────────────────────
+# Таргетинг
+# ──────────────────────────────────────────────────────────────────
+
+@router.get(
+    "/campaigns/{campaign_id}/targeting",
+    response_model=TargetingOut,
+    summary="Получить таргетинг кампании",
+)
+def get_targeting(
+    campaign_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    rule = db.query(TargetingRule).filter(
+        TargetingRule.campaign_id == campaign_id
+    ).first()
+    if not rule:
+        # Возвращаем дефолтный таргетинг
+        return TargetingOut()
+    return TargetingOut(
+        bid_floor=rule.bid_floor or 0.0,
+        bid_ceiling=rule.bid_ceiling or 10.0,
+        geo_countries=rule.geo_countries or [],
+        device_types=rule.device_types or [],
+        os_list=rule.os_list or [],
+        browser_list=rule.browser_list or [],
+        site_whitelist=rule.site_whitelist or [],
+        site_blacklist=rule.site_blacklist or [],
+        hour_schedule=rule.hour_schedule or {},
+    )
+
+
+@router.put(
+    "/campaigns/{campaign_id}/targeting",
+    response_model=TargetingOut,
+    summary="Создать или обновить таргетинг кампании",
+)
+def upsert_targeting(
+    campaign_id: int,
+    body: TargetingUpdate,
+    current_user: User = Depends(require_role("admin", "manager")),
+    db: Session = Depends(get_db),
+):
+    camp = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+    if not camp:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    rule = db.query(TargetingRule).filter(
+        TargetingRule.campaign_id == campaign_id
+    ).first()
+
+    if not rule:
+        rule = TargetingRule(campaign_id=campaign_id)
+        db.add(rule)
+
+    if body.bid_floor is not None:
+        rule.bid_floor = body.bid_floor
+    if body.bid_ceiling is not None:
+        rule.bid_ceiling = body.bid_ceiling
+    if body.geo_countries is not None:
+        rule.geo_countries = body.geo_countries
+    if body.device_types is not None:
+        rule.device_types = body.device_types
+    if body.os_list is not None:
+        rule.os_list = body.os_list
+    if body.browser_list is not None:
+        rule.browser_list = body.browser_list
+    if body.site_whitelist is not None:
+        rule.site_whitelist = body.site_whitelist
+    if body.site_blacklist is not None:
+        rule.site_blacklist = body.site_blacklist
+    if body.hour_schedule is not None:
+        rule.hour_schedule = body.hour_schedule
+
+    db.commit()
+    db.refresh(rule)
+
+    return TargetingOut(
+        bid_floor=rule.bid_floor,
+        bid_ceiling=rule.bid_ceiling,
+        geo_countries=rule.geo_countries or [],
+        device_types=rule.device_types or [],
+        os_list=rule.os_list or [],
+        browser_list=rule.browser_list or [],
+        site_whitelist=rule.site_whitelist or [],
+        site_blacklist=rule.site_blacklist or [],
+        hour_schedule=rule.hour_schedule or {},
+    )
+
+
+# ──────────────────────────────────────────────────────────────────
+# Креативы
+# ──────────────────────────────────────────────────────────────────
+
+@router.get(
+    "/campaigns/{campaign_id}/creatives",
+    response_model=List[CreativeOut],
+    summary="Список креативов кампании",
+)
+def list_creatives(
+    campaign_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return db.query(Creative).filter(
+        Creative.campaign_id == campaign_id
+    ).order_by(Creative.created_at.desc()).all()
+
+
+@router.post(
+    "/campaigns/{campaign_id}/creatives",
+    response_model=CreativeOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Добавить новый креатив",
+)
+def create_creative(
+    campaign_id: int,
+    body: CreativeCreate,
+    current_user: User = Depends(require_role("admin", "manager")),
+    db: Session = Depends(get_db),
+):
+    camp = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+    if not camp:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    if body.format not in ("banner", "native", "video"):
+        raise HTTPException(status_code=400, detail="format must be: banner | native | video")
+
+    creative = Creative(
+        campaign_id=campaign_id,
+        format=body.format,
+        width=body.width,
+        height=body.height,
+        image_url=body.image_url,
+        click_url=body.click_url,
+        title=body.title,
+        description=body.description,
+        icon_url=body.icon_url,
+        sponsored_by=body.sponsored_by,
+        vast_url=body.vast_url,
+        video_url=body.video_url,
+        duration_sec=body.duration_sec,
+        adm=body.adm,
+        status="active",
+        audit_status="pending",  # новые креативы — на проверку
+    )
+    db.add(creative)
+    db.commit()
+    db.refresh(creative)
+    return creative
+
+
+@router.get(
+    "/creatives/{creative_id}",
+    response_model=CreativeOut,
+    summary="Детали конкретного креатива",
+)
+def get_creative(
+    creative_id: int,
+    db: Session = Depends(get_db),
+):
+    """Вызывается биддером для получения рекламного материала."""
+    creative = db.query(Creative).filter(Creative.id == creative_id).first()
+    if not creative:
         raise HTTPException(status_code=404, detail="Creative not found")
-    return {
-        "id": cr.id, "format": cr.format, "width": cr.width, "height": cr.height,
-        "image_url": cr.image_url, "title": cr.title, "description": cr.description,
-        "click_url": cr.click_url, "adm": cr.adm,
-    }
+    return creative
 
 
-@router.post("/win-notice")
-async def win_notice(request: Request, db: Session = Depends(get_db)):
-    """
-    Called by RTB4FREE bidder when we WIN an auction.
-    Body (RTB4FREE format): {bid_request_id, imp_id, campaign_id, creative_id,
-                              bid_price, win_price, ssp, site_domain, geo, device}
-    """
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
+@router.patch(
+    "/creatives/{creative_id}/status",
+    response_model=CreativeOut,
+    summary="Обновить статус / результат аудита креатива",
+)
+def update_creative_status(
+    creative_id: int,
+    body: CreativeStatusUpdate,
+    current_user: User = Depends(require_role("admin", "manager")),
+    db: Session = Depends(get_db),
+):
+    creative = db.query(Creative).filter(Creative.id == creative_id).first()
+    if not creative:
+        raise HTTPException(status_code=404, detail="Creative not found")
 
-    campaign_id = int(body.get("campaign_id", 0))
-    creative_id = body.get("creative_id")
-    win_price = float(body.get("win_price") or body.get("clearing_price") or 0)
-    bid_price = float(body.get("bid_price") or 0)
+    if body.status is not None:
+        if body.status not in ("active", "paused", "archived"):
+            raise HTTPException(status_code=400, detail="Invalid status")
+        creative.status = body.status
 
-    # 1. Write to auction_logs
-    log = AuctionLog(
-        campaign_id=campaign_id if campaign_id else None,
-        creative_id=int(creative_id) if creative_id else None,
-        bid_request_id=body.get("bid_request_id"),
-        imp_id=body.get("imp_id"),
-        bid_price=bid_price,
-        win_price=win_price,
-        clearing_price=win_price,
-        won=True,
-        ssp_name=body.get("ssp"),
-        site_domain=body.get("site_domain"),
-        geo_country=body.get("geo"),
-        device_type=body.get("device"),
-    )
-    db.add(log)
+    if body.audit_status is not None:
+        if body.audit_status not in ("pending", "approved", "rejected"):
+            raise HTTPException(status_code=400, detail="Invalid audit_status")
+        creative.audit_status = body.audit_status
 
-    # 2. Write impression event to events table
-    if campaign_id:
-        campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
-        if campaign and campaign.pixels:
-            pixel = campaign.pixels[0]
-            event = Event(
-                pixel_id=pixel.pixel_id,
-                auction_id=body.get("bid_request_id"),
-                imp_id=body.get("imp_id"),
-                event_name="impression",
-                creative_id=str(creative_id) if creative_id else None,
-                value=win_price,
-                currency="USD",
-                country_code=body.get("geo"),
-                device_type=body.get("device"),
-                metadata_={"source": "rtb", "ssp": body.get("ssp"), "win_price": win_price},
-            )
-            db.add(event)
-            # Update pixel stats
-            pixel.total_events = (pixel.total_events or 0) + 1
-            pixel.last_fire_at = datetime.now(timezone.utc)
-            db.add(pixel)
+    if body.audit_feedback is not None:
+        creative.audit_feedback = body.audit_feedback
 
     db.commit()
-    logger.info(f"[RTB WIN] campaign={campaign_id} bid={bid_price:.4f} win={win_price:.4f}")
-    return {"status": "ok"}
+    db.refresh(creative)
+    return creative
 
 
-@router.post("/loss-notice")
-async def loss_notice(request: Request, db: Session = Depends(get_db)):
-    """Record auction loss for win rate analytics."""
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
+# ──────────────────────────────────────────────────────────────────
+# Bid Adjustments
+# ──────────────────────────────────────────────────────────────────
 
-    log = AuctionLog(
-        campaign_id=int(body.get("campaign_id", 0)) or None,
-        bid_request_id=body.get("bid_request_id"),
-        imp_id=body.get("imp_id"),
-        bid_price=float(body.get("bid_price") or 0),
-        won=False,
-        ssp_name=body.get("ssp"),
-        site_domain=body.get("site_domain"),
-        geo_country=body.get("geo"),
-        device_type=body.get("device"),
+@router.get(
+    "/campaigns/{campaign_id}/bid-adjustments",
+    summary="Корректировки ставок по срезам",
+)
+def list_bid_adjustments(
+    campaign_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    rows = db.query(BidAdjustment).filter(
+        BidAdjustment.campaign_id == campaign_id
+    ).order_by(BidAdjustment.dimension, BidAdjustment.value).all()
+    return [
+        {
+            "id": r.id,
+            "dimension": r.dimension,
+            "value": r.value,
+            "multiplier": r.multiplier,
+            "updated_at": r.updated_at,
+        }
+        for r in rows
+    ]
+
+
+@router.post(
+    "/campaigns/{campaign_id}/bid-adjustments",
+    status_code=status.HTTP_201_CREATED,
+    summary="Добавить корректировку ставки",
+)
+def create_bid_adjustment(
+    campaign_id: int,
+    body: BidAdjustmentCreate,
+    current_user: User = Depends(require_role("admin", "manager")),
+    db: Session = Depends(get_db),
+):
+    if body.dimension not in ("country", "device", "os", "hour", "site"):
+        raise HTTPException(
+            status_code=400,
+            detail="dimension must be: country | device | os | hour | site"
+        )
+    if not (0.01 <= body.multiplier <= 10.0):
+        raise HTTPException(status_code=400, detail="multiplier must be between 0.01 and 10.0")
+
+    # Upsert: обновляем если уже есть, создаём если нет
+    existing = db.query(BidAdjustment).filter(
+        BidAdjustment.campaign_id == campaign_id,
+        BidAdjustment.dimension == body.dimension,
+        BidAdjustment.value == body.value,
+    ).first()
+
+    if existing:
+        existing.multiplier = body.multiplier
+        db.commit()
+        db.refresh(existing)
+        return {"id": existing.id, "dimension": existing.dimension,
+                "value": existing.value, "multiplier": existing.multiplier}
+
+    adj = BidAdjustment(
+        campaign_id=campaign_id,
+        dimension=body.dimension,
+        value=body.value,
+        multiplier=body.multiplier,
     )
-    db.add(log)
+    db.add(adj)
     db.commit()
-    return {"status": "ok"}
+    db.refresh(adj)
+    return {"id": adj.id, "dimension": adj.dimension,
+            "value": adj.value, "multiplier": adj.multiplier}
 
 
-@router.get("/stats/{campaign_id}")
-def get_rtb_stats(campaign_id: int, db: Session = Depends(get_db)):
-    """Quick RTB stats for a campaign: auctions, wins, win_rate, avg_cpm."""
-    total = db.query(AuctionLog).filter(AuctionLog.campaign_id == campaign_id).count()
-    wins = db.query(AuctionLog).filter(
-        AuctionLog.campaign_id == campaign_id, AuctionLog.won == True
-    ).count()
-    from sqlalchemy import func as sqlfunc
-    avg_win_price = db.query(sqlfunc.avg(AuctionLog.win_price)).filter(
-        AuctionLog.campaign_id == campaign_id, AuctionLog.won == True
-    ).scalar()
-    win_rate = (wins / total * 100) if total else 0
-    avg_cpm = float(avg_win_price or 0) * 1000  # CPM = win_price * 1000
-    return {
-        "campaign_id": campaign_id,
-        "total_auctions": total,
-        "wins": wins,
-        "win_rate": round(win_rate, 2),
-        "avg_cpm": round(avg_cpm, 4),
-    }
+@router.delete(
+    "/campaigns/{campaign_id}/bid-adjustments/{adj_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Удалить корректировку ставки",
+)
+def delete_bid_adjustment(
+    campaign_id: int,
+    adj_id: int,
+    current_user: User = Depends(require_role("admin", "manager")),
+    db: Session = Depends(get_db),
+):
+    adj = db.query(BidAdjustment).filter(
+        BidAdjustment.id == adj_id,
+        BidAdjustment.campaign_id == campaign_id,
+    ).first()
+    if not adj:
+        raise HTTPException(status_code=404, detail="Adjustment not found")
+    db.delete(adj)
+    db.commit()
