@@ -20,22 +20,26 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - centraldsp
 
   # ─────────────────────────────────────────
-  # REDIS (broker + cache)
+  # REDIS (broker + cache + RTB counters)
   # ─────────────────────────────────────────
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - centraldsp
 
   # ─────────────────────────────────────────
-  # BACKEND (FastAPI)
+  # BACKEND (FastAPI — Campaign API + RTB Bridge)
   # ─────────────────────────────────────────
   backend:
     build: ./backend
@@ -44,18 +48,22 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      RTB_API_TOKEN: ${RTB_API_TOKEN:-changeme-rtb-token}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     volumes:
-      - ./backend:/app  # hot reload in dev
+      - ./backend:/app                        # hot reload dev
+      - geoip_data:/data:ro                   # GeoLite2 DB (read-only)
     ports:
       - "8000:8000"
+    networks:
+      - centraldsp
 
   # ─────────────────────────────────────────
-  # RTB4FREE BIDDER (Java)
+  # CENTRALBIDDER (Java OpenRTB 2.5 Engine)
   # ─────────────────────────────────────────
   bidder:
     build: ./bidder
@@ -73,13 +81,18 @@ services:
         condition: service_healthy
       backend:
         condition: service_started
+    volumes:
+      - geoip_data:/data:ro                   # GeoLite2 DB
     ports:
-      - "8080:8080"
+      - "8080:8080"                           # OpenRTB endpoint
+      - "9090:9090"                           # Prometheus metrics
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 3
+    networks:
+      - centraldsp
 
   # ─────────────────────────────────────────
   # CELERY WORKER
@@ -89,11 +102,15 @@ services:
     restart: unless-stopped
     command: celery -A celery_app worker --loglevel=info --concurrency=4 -Q default,rtb,sync
     env_file: .env
+    environment:
+      RTB_API_TOKEN: ${RTB_API_TOKEN:-changeme-rtb-token}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    networks:
+      - centraldsp
 
   # ─────────────────────────────────────────
   # CELERY BEAT (scheduler)
@@ -101,23 +118,27 @@ services:
   beat:
     build: ./backend
     restart: unless-stopped
-    command: celery -A celery_app beat --loglevel=info --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    command: celery -A celery_app beat --loglevel=info
     env_file: .env
     depends_on:
       - worker
+    networks:
+      - centraldsp
 
   # ─────────────────────────────────────────
-  # FLOWER (Celery monitoring UI)
+  # FLOWER (Celery monitoring)
   # ─────────────────────────────────────────
   flower:
     build: ./backend
     restart: unless-stopped
-    command: celery -A celery_app flower --port=5555 --basic_auth=admin:admin123
+    command: celery -A celery_app flower --port=5555 --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-admin123}
     env_file: .env
     ports:
       - "5555:5555"
     depends_on:
       - worker
+    networks:
+      - centraldsp
 
   # ─────────────────────────────────────────
   # FRONTEND (Vue 3 + nginx)
@@ -129,10 +150,16 @@ services:
       - "80:80"
     depends_on:
       - backend
+    networks:
+      - centraldsp
 
 volumes:
   postgres_data:
+  geoip_data:            # Mount your GeoLite2-City.mmdb here in production
+                         # docker run --rm -v centraldsp_geoip_data:/data alpine
+                         # wget -O /data/GeoLite2-City.mmdb <maxmind_url>
 
 networks:
-  default:
+  centraldsp:
     name: centraldsp-network
+    driver: bridge
