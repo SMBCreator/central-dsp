@@ -1,11 +1,14 @@
 <template>
   <RouterLink
     :to="to"
-    class="flex items-center gap-2.5 px-3 py-2 rounded text-sm transition-all duration-150
-           text-[#8b949e] hover:text-gray-100 hover:bg-[#21262d]"
-    :class="{ 'bg-[#21262d] !text-[#00d4ff]': isActive }"
+    :class="[
+      'flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium',
+      'transition-all duration-100 ease-smooth',
+      isActive
+        ? 'bg-brand text-white'
+        : 'text-text-secondary hover:bg-surface-hover hover:text-text-primary'
+    ]"
   >
-    <span class="text-base w-5 text-center">{{ icon }}</span>
     <span>{{ label }}</span>
   </RouterLink>
 </template>
@@ -16,12 +19,13 @@ import { useRoute } from 'vue-router'
 
 const props = defineProps({
   to:    { type: String, required: true },
-  icon:  { type: String, required: true },
   label: { type: String, required: true },
 })
 
 const route = useRoute()
 const isActive = computed(() =>
-  props.to === '/' ? route.path === '/' : route.path.startsWith(props.to)
+  props.to === '/'
+    ? route.path === '/'
+    : route.path.startsWith(props.to)
 )
 </script>

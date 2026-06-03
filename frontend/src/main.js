@@ -1,37 +1,47 @@
-import { createApp } from 'vue'
-import { createPinia } from 'pinia'
+import { createApp }    from 'vue'
 import { createRouter, createWebHistory } from 'vue-router'
-import App from './App.vue'
+import App             from './App.vue'
 import './style.css'
 
-// ─────────────────────────────────────────
-// Routes
-// ─────────────────────────────────────────
-const routes = [
-  { path: '/',              component: () => import('./views/Dashboard.vue'),   meta: { title: 'Dashboard' } },
-  { path: '/campaigns',     component: () => import('./views/Campaigns.vue'),   meta: { title: 'Campaigns' } },
-  { path: '/pixels',        component: () => import('./views/Pixels.vue'),      meta: { title: 'Pixel Center' } },
-  { path: '/rtb',           component: () => import('./views/RtbBidder.vue'),   meta: { title: 'RTB Bidder' } },
-  { path: '/creatives',     component: () => import('./views/Creatives.vue'),   meta: { title: 'Creatives' } },
-  { path: '/targeting',     component: () => import('./views/Targeting.vue'),   meta: { title: 'Targeting' } },
-  { path: '/networks',      component: () => import('./views/AdNetworks.vue'),  meta: { title: 'Ad Networks' } },
-  { path: '/analytics',     component: () => import('./views/Analytics.vue'),   meta: { title: 'Analytics' } },
-  { path: '/autopilot',     component: () => import('./views/AutoPilot.vue'),   meta: { title: 'AutoPilot' } },
-  { path: '/settings',      component: () => import('./views/Settings.vue'),    meta: { title: 'Settings' } },
-]
+// ── Views ────────────────────────────────────────────────
+import Dashboard  from './views/Dashboard.vue'
+import Campaigns  from './views/Campaigns.vue'
+import Analytics  from './views/Analytics.vue'
+import RtbBidder  from './views/RtbBidder.vue'
+import Settings   from './views/Settings.vue'
 
+// Lazy-loaded views (not yet implemented — show placeholder)
+const Placeholder = {
+  template: `
+    <div class="empty-state">
+      <div class="empty-icon">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="1.5">
+          <circle cx="12" cy="12" r="9"/>
+          <path d="M12 8v4l3 3"/>
+        </svg>
+      </div>
+      <div class="empty-title">Coming soon</div>
+      <div class="empty-desc">This section is under active development</div>
+    </div>
+  `
+}
+
+// ── Router ───────────────────────────────────────────────
 const router = createRouter({
   history: createWebHistory(),
-  routes,
+  routes: [
+    { path: '/',          component: Dashboard,  meta: { title: 'Dashboard' } },
+    { path: '/campaigns', component: Campaigns,  meta: { title: 'Campaigns' } },
+    { path: '/analytics', component: Analytics,  meta: { title: 'Analytics' } },
+    { path: '/pixels',    component: Placeholder, meta: { title: 'Pixel Center' } },
+    { path: '/rtb',       component: RtbBidder,  meta: { title: 'RTB Bidder' } },
+    { path: '/creatives', component: Placeholder, meta: { title: 'Creatives' } },
+    { path: '/targeting', component: Placeholder, meta: { title: 'Targeting' } },
+    { path: '/autopilot', component: Placeholder, meta: { title: 'AutoPilot' } },
+    { path: '/networks',  component: Placeholder, meta: { title: 'Ad Networks' } },
+    { path: '/settings',  component: Settings,   meta: { title: 'Settings' } },
+  ],
 })
 
-// Update page title on route change
-router.afterEach((to) => {
-  document.title = to.meta.title ? `${to.meta.title} — Central DSP` : 'Central DSP'
-})
-
-// ─────────────────────────────────────────
-const app = createApp(App)
-app.use(createPinia())
-app.use(router)
-app.mount('#app')
+createApp(App).use(router).mount('#app')
