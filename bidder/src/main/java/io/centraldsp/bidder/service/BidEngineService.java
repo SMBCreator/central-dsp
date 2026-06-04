@@ -44,7 +44,13 @@ public class BidEngineService {
     private final FrequencyCapService frequencyCapService;
     private final AdMarkupService adMarkupService;
 
-    @Value("${win.notify.url:http://backend:8000/api/rtb/win-notice}")
+    /**
+     * Win-notice base URL. Matches {@code bidder.win.url} in application.properties.
+     * The SSP replaces ${AUCTION_PRICE} macro in the NURL before firing.
+     *
+     * <p>Default: http://bidder:8080/bidder/win (Docker Compose internal hostname).</p>
+     */
+    @Value("${bidder.win.url:http://bidder:8080/bidder/win}")
     private String winNotifyUrl;
 
     @Value("${auction.default.floor:0.01}")
