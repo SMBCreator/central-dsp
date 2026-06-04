@@ -1,102 +1,81 @@
 <template>
-  <div class="min-h-screen flex bg-surface-page">
+  <div class="layout">
 
-    <!-- ── Sidebar ─────────────────────────────────────── -->
-    <aside
-      class="w-[220px] flex-shrink-0 border-r border-surface-border
-             bg-surface flex flex-col fixed left-0 top-0 bottom-0 z-30">
+    <!-- ══ SIDEBAR ══════════════════════════════════════════ -->
+    <aside class="sidebar">
 
       <!-- Logo -->
-      <div class="h-14 flex items-center px-5 border-b border-surface-border">
-        <div class="flex items-center gap-2.5">
-          <!-- Wordmark SVG logo -->
-          <svg width="22" height="22" viewBox="0 0 22 22" fill="none" aria-hidden="true">
-            <rect width="22" height="22" rx="6" fill="#18181b"/>
-            <rect x="5" y="5" width="5" height="5" rx="1.5" fill="white" opacity="0.9"/>
-            <rect x="12" y="5" width="5" height="5" rx="1.5" fill="white" opacity="0.5"/>
-            <rect x="5" y="12" width="5" height="5" rx="1.5" fill="white" opacity="0.5"/>
-            <rect x="12" y="12" width="5" height="5" rx="1.5" fill="#a5b4fc" opacity="0.9"/>
-          </svg>
-          <span class="text-sm font-semibold text-text-primary tracking-tight">Central DSP</span>
-        </div>
+      <div class="sidebar-logo">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+          <rect width="20" height="20" rx="5" fill="#1a1a1a"/>
+          <rect x="4" y="4" width="5" height="5" rx="1.5" fill="white" opacity="0.9"/>
+          <rect x="11" y="4" width="5" height="5" rx="1.5" fill="white" opacity="0.3"/>
+          <rect x="4" y="11" width="5" height="5" rx="1.5" fill="white" opacity="0.3"/>
+          <rect x="11" y="11" width="5" height="5" rx="1.5" fill="white" opacity="0.7"/>
+        </svg>
+        <span class="logo-text">Central DSP</span>
       </div>
 
-      <!-- Nav -->
-      <nav class="flex-1 py-3 overflow-y-auto px-3 space-y-0.5">
-
+      <!-- Navigation -->
+      <nav class="sidebar-nav">
         <NavItem to="/"          label="Dashboard" />
         <NavItem to="/campaigns" label="Campaigns" />
         <NavItem to="/analytics" label="Analytics" />
         <NavItem to="/pixels"    label="Pixel Center" />
 
-        <div class="section-label">RTB Bidder</div>
-
-        <NavItem to="/rtb"       label="Overview" />
+        <div class="section-label">RTB</div>
+        <NavItem to="/rtb"       label="Bidder" />
         <NavItem to="/creatives" label="Creatives" />
         <NavItem to="/targeting" label="Targeting" />
 
-        <div class="section-label">Automation</div>
-
+        <div class="section-label">System</div>
         <NavItem to="/autopilot" label="AutoPilot" />
         <NavItem to="/networks"  label="Ad Networks" />
         <NavItem to="/settings"  label="Settings" />
-
       </nav>
 
-      <!-- Bidder status + version -->
-      <div class="p-4 border-t border-surface-border">
-        <div class="flex items-center justify-between">
-          <div class="flex items-center gap-2">
-            <span :class="['status-dot', bidderOnline ? 'online' : 'offline']"></span>
-            <span class="text-xs text-text-secondary">
-              Bidder {{ bidderOnline ? 'Live' : 'Offline' }}
+      <!-- Footer -->
+      <div class="sidebar-footer">
+        <div class="flex items-center gap-2">
+          <span :class="['status-dot', bidderOnline ? 'online' : 'offline']" />
+          <span class="text-xs" style="color:#444">
+            Bidder&nbsp;<span :style="bidderOnline ? 'color:#4ade80' : 'color:#555'">
+              {{ bidderOnline ? 'Live' : 'Offline' }}
             </span>
-          </div>
-          <span class="text-2xs text-text-muted font-mono">v1.0</span>
+          </span>
         </div>
+        <span style="font-size:10px;color:#333;font-family:'JetBrains Mono',monospace">v1.0</span>
       </div>
     </aside>
 
-    <!-- ── Main ───────────────────────────────────────── -->
-    <div class="flex-1 flex flex-col ml-[220px] min-h-screen">
+    <!-- ══ MAIN ═════════════════════════════════════════════ -->
+    <div class="main-wrap">
 
-      <!-- Top bar -->
-      <header class="h-14 flex items-center justify-between px-6
-                     border-b border-surface-border bg-surface flex-shrink-0 sticky top-0 z-20">
-        <div class="flex items-center gap-2">
-          <!-- Breadcrumb -->
-          <span class="text-sm text-text-muted">Central DSP</span>
-          <span class="text-text-muted text-sm">/</span>
-          <span class="text-sm font-medium text-text-primary">{{ currentTitle }}</span>
+      <!-- Topbar -->
+      <header class="topbar">
+        <div class="topbar-left">
+          <span class="topbar-breadcrumb">Central DSP</span>
+          <span class="topbar-sep">/</span>
+          <span class="topbar-page">{{ currentTitle }}</span>
         </div>
-
-        <div class="flex items-center gap-3">
-          <!-- Period selector -->
-          <div class="flex items-center gap-1 bg-surface-hover rounded-md p-1">
-            <button v-for="p in periods" :key="p.v"
+        <div class="topbar-right">
+          <div class="period-switcher">
+            <button
+              v-for="p in periods" :key="p.v"
               @click="activePeriod = p.v"
-              :class="['px-3 py-1 text-xs font-medium rounded transition-all duration-150',
-                activePeriod === p.v
-                  ? 'bg-surface shadow-sm text-text-primary'
-                  : 'text-text-muted hover:text-text-primary'
-              ]">
+              :class="['period-btn', activePeriod === p.v ? 'active' : '']">
               {{ p.l }}
             </button>
           </div>
-
-          <!-- Avatar -->
-          <div class="w-8 h-8 rounded-full bg-brand flex items-center justify-center">
-            <span class="text-xs font-semibold text-white">AD</span>
-          </div>
+          <div class="avatar">AD</div>
         </div>
       </header>
 
-      <!-- Page -->
-      <main class="flex-1 overflow-auto p-6">
+      <!-- Content -->
+      <main class="main-content">
         <RouterView :period="activePeriod" />
       </main>
     </div>
-
   </div>
 </template>
 
@@ -105,14 +84,14 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import NavItem from './components/NavItem.vue'
 
-const route        = useRoute()
+const route = useRoute()
 const bidderOnline = ref(false)
 const activePeriod = ref('7d')
 
 const periods = [
   { v: 'today', l: 'Today' },
-  { v: '7d',    l: '7d' },
-  { v: '30d',   l: '30d' },
+  { v: '7d',    l: '7 days' },
+  { v: '30d',   l: '30 days' },
 ]
 
 const currentTitle = computed(() => route.meta?.title || 'Dashboard')
@@ -130,3 +109,128 @@ async function checkBidderHealth() {
 onMounted(() => { checkBidderHealth(); healthTimer = setInterval(checkBidderHealth, 15000) })
 onUnmounted(() => clearInterval(healthTimer))
 </script>
+
+<style scoped>
+.layout {
+  display: flex;
+  min-height: 100dvh;
+  background: #0a0a0a;
+}
+
+/* ── SIDEBAR ── */
+.sidebar {
+  width: 212px;
+  flex-shrink: 0;
+  background: #0d0d0d;
+  border-right: 1px solid rgba(255,255,255,0.06);
+  display: flex;
+  flex-direction: column;
+  position: fixed;
+  inset: 0 auto 0 0;
+  z-index: 30;
+}
+
+.sidebar-logo {
+  height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 18px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  flex-shrink: 0;
+}
+.logo-text {
+  font-size: 13px;
+  font-weight: 600;
+  color: #d0d0d0;
+  letter-spacing: -0.2px;
+}
+
+.sidebar-nav {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 10px;
+}
+
+.sidebar-footer {
+  padding: 14px 18px;
+  border-top: 1px solid rgba(255,255,255,0.05);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* ── TOPBAR ── */
+.main-wrap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  margin-left: 212px;
+  min-width: 0;
+  min-height: 100dvh;
+}
+
+.topbar {
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  background: #0a0a0a;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  flex-shrink: 0;
+}
+
+.topbar-left { display: flex; align-items: center; gap: 6px; }
+.topbar-breadcrumb { font-size: 12px; color: #333; }
+.topbar-sep        { font-size: 12px; color: #2a2a2a; }
+.topbar-page       { font-size: 12px; font-weight: 500; color: #888; }
+
+.topbar-right { display: flex; align-items: center; gap: 12px; }
+
+.period-switcher {
+  display: flex;
+  align-items: center;
+  background: rgba(255,255,255,0.04);
+  border-radius: 7px;
+  padding: 3px;
+  gap: 1px;
+  border: 1px solid rgba(255,255,255,0.06);
+}
+.period-btn {
+  padding: 4px 10px;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #444;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: all 120ms;
+}
+.period-btn:hover { color: #888; }
+.period-btn.active {
+  background: rgba(255,255,255,0.08);
+  color: #d0d0d0;
+}
+
+.avatar {
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  background: #1f1f1f;
+  border: 1px solid rgba(255,255,255,0.1);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 600;
+  color: #888;
+  letter-spacing: 0.02em;
+}
+
+.main-content {
+  flex: 1;
+  overflow: auto;
+  padding: 24px;
+}
+</style>
