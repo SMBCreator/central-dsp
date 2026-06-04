@@ -14,8 +14,12 @@ import java.time.LocalDate;
 
 /**
  * Budget enforcement using Redis counters.
- * Uses a daily key pattern: cdsp:budget:{campaignId}:{YYYY-MM-DD}
- * TTL = 25 hours (covers timezone overlap safely).
+ *
+ * <p>Key pattern: {@code cdsp:budget:{campaignId}:{YYYY-MM-DD}}
+ * TTL = 25 hours (covers timezone overlap safely).</p>
+ *
+ * <p>Fail-open policy: on Redis errors we allow bids to continue
+ * rather than blocking revenue. Errors are logged for ops alerts.</p>
  */
 @Slf4j
 @Service
@@ -51,22 +55,21 @@ public class BudgetService {
         String key = dailyKey(campaign.getId());
         try (Jedis jedis = jedisPool.getResource()) {
             jedis.select(redisDb);
-            // Set only if key doesn't exist (SETNX)
             Long result = jedis.setnx(key, "0");
             if (result == 1) {
                 jedis.expire(key, DAILY_TTL_SECONDS);
             }
         } catch (Exception e) {
-            log.error("[BudgetService] initBudget failed for campaign {}: {}",
-                    campaign.getId(), e.getMessage());
+            log.error("[BudgetService] initBudget failed for campaign {}: {}", campaign.getId(), e.getMessage());
         }
     }
 
     /**
      * Check if campaign has remaining daily budget.
-     * @param campaign Campaign to check
-     * @param bidPrice Proposed bid price to deduct
-     * @return true if budget available
+     *
+     * @param campaign  Campaign to check
+     * @param bidPrice  Proposed bid price in CPM USD
+     * @return true if budget is available (fail-open on Redis errors)
      */
     public boolean hasBudget(CampaignDTO campaign, double bidPrice) {
         if (campaign.getDailyBudget() == null) return true;
@@ -78,26 +81,46 @@ public class BudgetService {
             return (spent + bidPrice) <= campaign.getDailyBudget();
         } catch (Exception e) {
             log.warn("[BudgetService] hasBudget check error: {}", e.getMessage());
-            return true; // fail-open on Redis errors
+            return true; // fail-open
         }
     }
 
     /**
-     * Atomically increment daily spend (called on win notice).
+     * Atomically increment daily spend when a bid wins.
+     *
+     * <p>Called from WinLossController with actual clearing price.</p>
+     *
+     * @param campaignId  Campaign ID
+     * @param amountUsd   Amount to deduct in USD (NOT CPM - actual cost per impression)
+     */
+    public void deductBudget(Long campaignId, double amountUsd) {
+        recordSpend(campaignId, amountUsd);
+    }
+
+    /**
+     * Alias kept for backwards compatibility with internal callers.
+     *
      * @param campaignId Campaign ID
-     * @param winPrice   Actual clearing price (CPM)
+     * @param winPrice   CPM price (will be recorded as-is; divide by 1000 before calling
+     *                   if you want per-impression cost)
      */
     public void recordSpend(Long campaignId, double winPrice) {
         String key = dailyKey(campaignId);
         try (Jedis jedis = jedisPool.getResource()) {
             jedis.select(redisDb);
+            // Ensure key exists with TTL before incrementing.
             jedis.incrbyfloat(key, winPrice);
+            // Set TTL only if key is brand new (EXPIRE NX - Redis 7+).
+            // Fallback: always set TTL if close to 0 (first increment).
+            if (jedis.ttl(key) < 0) {
+                jedis.expire(key, DAILY_TTL_SECONDS);
+            }
         } catch (Exception e) {
-            log.error("[BudgetService] recordSpend failed: {}", e.getMessage());
+            log.error("[BudgetService] recordSpend failed for campaign {}: {}", campaignId, e.getMessage());
         }
     }
 
-    /** Get today's spend for a campaign. */
+    /** Get today's accumulated spend for a campaign in USD. */
     public double getDailySpend(Long campaignId) {
         String key = dailyKey(campaignId);
         try (Jedis jedis = jedisPool.getResource()) {
@@ -105,6 +128,7 @@ public class BudgetService {
             String val = jedis.get(key);
             return val != null ? Double.parseDouble(val) : 0.0;
         } catch (Exception e) {
+            log.warn("[BudgetService] getDailySpend error for campaign {}: {}", campaignId, e.getMessage());
             return 0.0;
         }
     }
