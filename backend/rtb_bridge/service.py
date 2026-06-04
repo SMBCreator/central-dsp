@@ -197,16 +197,17 @@ class RTBService:
     def process_win_notice(notice: WinNotice, db: Session) -> AuctionLog:
         """
         Биддер выиграл аукцион.
-        1. Записываем AuctionLog(won=True)
+        1. Записываем AuctionLog(won=True, bid_price=..., win_price=...)
         2. Создаём Event(event_name='impression') для attribution chain
         """
         log = AuctionLog(
             campaign_id=notice.campaign_id,
             creative_id=notice.creative_id,
             auction_id=notice.auction_id,
-            imp_id=notice.imp_id,
+            imp_id=notice.imp_id or None,
+            bid_price=notice.bid_price,           # наша ставка (может быть None)
             win_price=notice.win_price,
-            clearing_price=notice.clearing_price,
+            clearing_price=notice.clearing_price or notice.win_price,
             won=True,
             site_domain=notice.site_domain,
             app_bundle=notice.app_bundle,
@@ -228,6 +229,7 @@ class RTBService:
             metadata_={
                 "auction_id": notice.auction_id,
                 "imp_id": notice.imp_id,
+                "bid_price_cpm": notice.bid_price,
                 "win_price_cpm": notice.win_price,
                 "site_domain": notice.site_domain,
                 "app_bundle": notice.app_bundle,
@@ -240,24 +242,34 @@ class RTBService:
 
         logger.info(
             f"[WIN] campaign={notice.campaign_id} creative={notice.creative_id} "
-            f"price={notice.win_price:.4f} site={notice.site_domain}"
+            f"bid={notice.bid_price} win={notice.win_price:.4f} site={notice.site_domain}"
         )
         return log
 
     @staticmethod
     def process_loss_notice(notice: LossNotice, db: Session) -> AuctionLog:
-        """Биддер проиграл аукцион. Записываем AuctionLog(won=False)."""
+        """
+        Биддер проиграл аукцион.
+        Записываем AuctionLog(won=False, bid_price=...) для расчёта win rate
+        и avg bid price в статистике.
+        """
         log = AuctionLog(
             campaign_id=notice.campaign_id,
             creative_id=notice.creative_id,
             auction_id=notice.auction_id,
-            imp_id=notice.imp_id,
+            imp_id=notice.imp_id or None,
+            bid_price=notice.bid_price,   # наша ставка — для avg_bid_price в stats
             won=False,
             loss_reason=notice.loss_reason,
         )
         db.add(log)
         db.commit()
         db.refresh(log)
+
+        logger.debug(
+            f"[LOSS] campaign={notice.campaign_id} bid={notice.bid_price} "
+            f"reason={notice.loss_reason} auction={notice.auction_id}"
+        )
         return log
 
     # ──────────────────────────────────────────────────────
@@ -276,8 +288,11 @@ class RTBService:
             AuctionLog.won == True,
         ).scalar() or 0
 
+        # avg_bid_price учитывает все аукционы (и выигранные, и проигранные)
+        # где bid_price сохранён (не NULL)
         avg_bid = db.query(func.avg(AuctionLog.bid_price)).filter(
             AuctionLog.campaign_id == campaign_id,
+            AuctionLog.bid_price.isnot(None),
         ).scalar()
 
         avg_win = db.query(func.avg(AuctionLog.win_price)).filter(

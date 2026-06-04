@@ -118,28 +118,31 @@ def get_rtb_campaigns(db: Session = Depends(get_db)):
 )
 def win_notice_nurl(
     auction_id: str = Query(..., description="ID аукциона из BidRequest"),
-    imp_id: str = Query(..., description="ID impression из BidRequest"),
     campaign_id: int = Query(..., description="ID кампании"),
     creative_id: int = Query(..., description="ID креатива"),
     win_price: float = Query(..., description="Цена победы в CPM USD (${AUCTION_PRICE} macro)"),
+    # imp_id — optional: некоторые SSP не передают его в NURL
+    imp_id: Optional[str] = Query(None, description="ID impression из BidRequest (опционально)"),
+    # bid_price — ставка, которую мы подали (Java передаёт при server-side fanout)
+    bid_price: Optional[float] = Query(None, description="Ставка биддера в CPM USD"),
     db: Session = Depends(get_db),
 ):
     """
-    GET /api/rtb/win?auction_id=...&imp_id=...&campaign_id=...&creative_id=...&win_price=...
+    GET /api/rtb/win?auction_id=...&campaign_id=...&creative_id=...&win_price=...[&imp_id=...&bid_price=...]
 
-    Вызывается SSP когда срабатывает NURL из BidResponse.
-    Java биддер помещает этот URL в поле bid.nurl; SSP заменяет
-    макрос ${AUCTION_PRICE} реальной ценой клиринга и делает GET-запрос.
+    Вызывается либо напрямую SSP (через NURL с макросом ${AUCTION_PRICE}),
+    либо WinLossController Java-биддера после server-side fanout.
 
     Создаёт AuctionLog(won=True) + Event(impression) для attribution chain.
     """
     notice = WinNotice(
         auction_id=auction_id,
-        imp_id=imp_id,
+        imp_id=imp_id or "",
         campaign_id=campaign_id,
         creative_id=creative_id,
         win_price=win_price,
-        clearing_price=win_price,  # для первой цены = win_price
+        bid_price=bid_price,
+        clearing_price=win_price,  # first-price: clearing == win
     )
     RTBService.process_win_notice(notice, db)
 
