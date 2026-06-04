@@ -3,13 +3,20 @@ package io.centraldsp.bidder.model.campaign;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
+import lombok.NoArgsConstructor;
+
 import java.util.List;
 
 /**
- * Campaign object as returned by Central DSP backend GET /api/rtb/campaigns.
- * Bidder uses this to make bid decisions.
+ * Campaign DTO deserialized from GET /api/rtb/campaigns.
+ * Mirrors Python's RTBCampaignOut schema.
+ *
+ * <p>CampaignLoaderService fetches this list from the backend
+ * every {@code campaigns.update.interval} seconds and caches
+ * it in memory for the bid engine.</p>
  */
 @Data
+@NoArgsConstructor
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class CampaignDTO {
 
@@ -19,68 +26,61 @@ public class CampaignDTO {
     @JsonProperty("name")
     private String name;
 
-    @JsonProperty("advertiser_id")
-    private Long advertiserId;
-
+    /** Campaign status: "active", "paused", "stopped", "archived". */
     @JsonProperty("status")
-    private String status;  // active, paused, exhausted
+    private String status;
 
-    // ── Budget ────────────────────────────────────────────────────────────────
-    @JsonProperty("daily_budget")
-    private Double dailyBudget;
+    /**
+     * Base bid price in CPM (USD).
+     * BidEngine uses this as the starting bid before adjustments.
+     */
+    @JsonProperty("bid_price")
+    private Double bidPrice;
 
+    /**
+     * Minimum CPM bid (from TargetingDTO.bid_floor).
+     * Kept at CampaignDTO level for quick access in BidEngine.
+     */
+    @JsonProperty("bid_floor")
+    private Double bidFloor;
+
+    /**
+     * Maximum CPM bid (from TargetingDTO.bid_ceiling).
+     */
+    @JsonProperty("bid_ceiling")
+    private Double bidCeiling;
+
+    /** Total lifetime budget in USD. Null = no total budget limit. */
     @JsonProperty("total_budget")
     private Double totalBudget;
 
-    @JsonProperty("daily_spent")
-    private Double dailySpent;
+    /** Daily budget in USD. Null = no daily budget limit. */
+    @JsonProperty("daily_budget")
+    private Double dailyBudget;
 
-    @JsonProperty("total_spent")
-    private Double totalSpent;
+    /**
+     * Remaining budget in USD (computed by backend service).
+     * Used by BudgetService for quick in-bidder budget checks.
+     * Null = budget not limited or not yet computed.
+     */
+    @JsonProperty("budget_remaining")
+    private Double budgetRemaining;
 
-    // ── Bid Prices ────────────────────────────────────────────────────────────
-    @JsonProperty("bid_floor")
-    private Double bidFloor;    // minimum to participate
+    /** Targeting rules for this campaign. May be null if no targeting configured. */
+    @JsonProperty("targeting")
+    private TargetingDTO targeting;
 
-    @JsonProperty("bid_ceiling")
-    private Double bidCeiling;  // maximum we ever bid
-
-    @JsonProperty("bid_price")
-    private Double bidPrice;    // default/base bid price in CPM USD
-
-    // ── Targeting ─────────────────────────────────────────────────────────────
-    @JsonProperty("geo_countries")
-    private List<String> geoCountries;  // ISO 3166-1 alpha-2: ["US", "GB", "DE"]
-
-    @JsonProperty("device_types")
-    private List<Integer> deviceTypes;  // 1=desktop, 2=mobile, 3=tablet, 4=CTV
-
-    @JsonProperty("os_list")
-    private List<String> osList;  // ["android", "ios", "windows"]
-
-    @JsonProperty("browser_list")
-    private List<String> browserList;
-
-    @JsonProperty("site_whitelist")
-    private List<String> siteWhitelist;  // only these domains
-
-    @JsonProperty("site_blacklist")
-    private List<String> siteBlacklist;  // never these domains
-
-    @JsonProperty("hour_schedule")
-    private int[][] hourSchedule;  // [7][24] — true/false per day/hour
-
-    // ── Creatives ─────────────────────────────────────────────────────────────
+    /** Active, approved creatives ready to serve. */
     @JsonProperty("creatives")
     private List<CreativeDTO> creatives;
 
-    // ── Frequency Cap ─────────────────────────────────────────────────────────
-    @JsonProperty("freq_cap_impressions")
-    private Integer freqCapImpressions;  // max per user per day
-
-    @JsonProperty("click_url")
-    private String clickUrl;
-
-    @JsonProperty("tracking_pixel")
-    private String trackingPixel;
+    /**
+     * Convenience: returns true if campaign is currently active
+     * and has at least one servable creative.
+     */
+    public boolean isReadyToServe() {
+        if (!"active".equals(status)) return false;
+        if (creatives == null || creatives.isEmpty()) return false;
+        return creatives.stream().anyMatch(CreativeDTO::isServable);
+    }
 }
