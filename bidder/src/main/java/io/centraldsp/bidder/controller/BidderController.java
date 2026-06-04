@@ -9,45 +9,58 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.List;
 
 /**
- * OpenRTB 2.5 bidding endpoint.
- * SSPs send Bid Requests here and receive Bid Responses.
+ * Main OpenRTB 2.5 endpoint.
  *
- * POST /bidder/ortb — main bid endpoint
- * GET  /health      — health check
+ * <p>SSPs send Bid Requests to POST /bidder/ortb.
+ * We respond within {@code bidder.timeout} ms or the SSP discards the response.</p>
+ *
+ * <p>Protocol:
+ * <ul>
+ *   <li>204 No Content — no bid (preferred over empty 200 for some SSPs)</li>
+ *   <li>200 OK + BidResponse JSON — bid placed</li>
+ * </ul>
+ * </p>
  */
 @Slf4j
 @RestController
+@RequestMapping("/bidder")
 @RequiredArgsConstructor
 public class BidderController {
 
     private final BidEngineService bidEngine;
 
-    private final AtomicLong requestCount = new AtomicLong(0);
-
     /**
-     * Main OpenRTB 2.5 bid endpoint.
-     * Accept: application/json
-     * Return: 200 with BidResponse OR 204 (no bid)
+     * OpenRTB 2.5 Bid Request endpoint.
+     *
+     * <p>Accept: application/json (standard) or application/x-openrtb-bid+json.
+     * Both content types are supported for compatibility.</p>
+     *
+     * @param bidRequest deserialized BidRequest from SSP
+     * @return 200 + BidResponse if we place a bid, 204 if no bid
      */
     @PostMapping(
-        value = "/bidder/ortb",
-        consumes = MediaType.APPLICATION_JSON_VALUE,
-        produces = MediaType.APPLICATION_JSON_VALUE
+            value = "/ortb",
+            consumes = {MediaType.APPLICATION_JSON_VALUE, "application/x-openrtb-bid+json"},
+            produces = MediaType.APPLICATION_JSON_VALUE
     )
     public ResponseEntity<BidResponse> bid(@RequestBody BidRequest bidRequest) {
-        long count = requestCount.incrementAndGet();
+        // Validate minimal required fields
+        if (bidRequest.getId() == null || bidRequest.getImp() == null || bidRequest.getImp().isEmpty()) {
+            log.warn("[Bidder] Invalid BidRequest: missing id or imp");
+            return ResponseEntity.badRequest().build();
+        }
 
-        // Log every 1000th request to avoid log spam
-        if (count % 1000 == 0) {
-            log.info("[Bidder] Processed {} bid requests total", count);
+        // Test mode: process normally but log it
+        if (bidRequest.isTest()) {
+            log.debug("[Bidder] TEST request id={}", bidRequest.getId());
         }
 
         BidResponse response = bidEngine.process(bidRequest);
 
-        // No seatbid = no bid → HTTP 204
+        // No seatbid = no bid. Return 204 (standard no-bid response).
         if (response.getSeatbid() == null || response.getSeatbid().isEmpty()) {
             return ResponseEntity.noContent().build();
         }
@@ -55,13 +68,11 @@ public class BidderController {
         return ResponseEntity.ok(response);
     }
 
-    /** Health check endpoint for Docker HEALTHCHECK and monitoring. */
-    @GetMapping("/health")
-    public ResponseEntity<Object> health() {
-        return ResponseEntity.ok(java.util.Map.of(
-                "status", "UP",
-                "service", "CentralBidder",
-                "requests", requestCount.get()
-        ));
+    /**
+     * Some SSPs probe /bidder with GET to validate the endpoint is alive.
+     */
+    @GetMapping("/ortb")
+    public ResponseEntity<String> probe() {
+        return ResponseEntity.ok("{\"status\":\"ready\"}");
     }
 }
