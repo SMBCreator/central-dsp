@@ -8,7 +8,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID, INET, JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
-from backend.database import Base
+from database import Base
 
 
 # ─────────────────────────────────────────────────────
@@ -63,7 +63,7 @@ class Campaign(Base):
     # Fallback click URL для AdMarkupService (если у креатива нет своего click_url).
     click_url = Column(Text, nullable=True)
 
-    # 1×1 impression pixel URL — FrequencyCapService + attribution.
+    # 1x1 impression pixel URL — FrequencyCapService + attribution.
     tracking_pixel = Column(Text, nullable=True)
 
     # Макс показов на одного пользователя (FrequencyCapService).
@@ -213,6 +213,7 @@ class Creative(Base):
     width = Column(Integer)
     height = Column(Integer)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     status = Column(String(20), nullable=False, default="active")
     audit_status = Column(String(20), nullable=False, default="pending")  # pending|approved|rejected
     audit_feedback = Column(Text, nullable=True)
@@ -224,19 +225,19 @@ class Creative(Base):
     # ─── Native ───
     title = Column(String(255))
     description = Column(Text)
-    icon_url = Column(Text, nullable=True)          # иконка для Native
-    sponsored_by = Column(String(255), nullable=True)  # "Sponsored by ..."
+    icon_url = Column(Text, nullable=True)
+    sponsored_by = Column(String(255), nullable=True)
 
     # ─── Video ───
-    vast_url = Column(Text, nullable=True)          # VAST wrapper URL
-    video_url = Column(Text, nullable=True)         # прямая ссылка на MP4
-    duration_sec = Column(Integer, nullable=True)   # длительность видео
+    vast_url = Column(Text, nullable=True)
+    video_url = Column(Text, nullable=True)
+    duration_sec = Column(Integer, nullable=True)
 
     # ─── Raw markup ───
-    adm = Column(Text)                              # HTML/VAST/native JSON
+    adm = Column(Text)  # HTML/VAST/native JSON
 
     # ─── OpenRTB adomain ───
-    adomain = Column(String(255), nullable=True)    # example.com — домен рекламодателя
+    adomain = Column(String(255), nullable=True)  # example.com
 
     campaign = relationship("Campaign", back_populates="creatives")
 
@@ -272,8 +273,6 @@ class AuctionLog(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     campaign_id = Column(Integer, ForeignKey("campaigns.id"), index=True)
     creative_id = Column(Integer, ForeignKey("creatives.id"))
-    # Исправлено: было bid_request_id, но service.py пишет auction_id=...
-    # Объединяем в одно поле auction_id (и добавляем alias bid_request_id для совместимости)
     auction_id = Column(String(128), index=True)
     imp_id = Column(String(128))
     bid_price = Column(Numeric(10, 6))
@@ -298,7 +297,7 @@ class AuctionLog(Base):
 # RTB — BID ADJUSTMENTS
 # ─────────────────────────────────────────────────────
 class BidAdjustment(Base):
-    """Per-dimension bid multipliers (ктрана, девайс, OS, час, сайт)."""
+    """Per-dimension bid multipliers (страна, девайс, OS, час, сайт)."""
     __tablename__ = "bid_adjustments"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -307,6 +306,8 @@ class BidAdjustment(Base):
     value = Column(String(128), nullable=False)     # US|mobile|iOS|14|cnn.com
     multiplier = Column(Numeric(6, 4), nullable=False, default=1.0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    # updated_at нужен router.py для ответа в list_bid_adjustments
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (
         UniqueConstraint("campaign_id", "dimension", "value", name="uq_bid_adj_camp_dim_val"),
