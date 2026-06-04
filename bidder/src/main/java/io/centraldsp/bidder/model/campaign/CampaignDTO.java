@@ -10,10 +10,6 @@ import java.util.List;
 /**
  * Campaign DTO deserialized from GET /api/rtb/campaigns.
  * Mirrors Python's RTBCampaignOut schema.
- *
- * <p>CampaignLoaderService fetches this list from the backend
- * every {@code campaigns.update.interval} seconds and caches
- * it in memory for the bid engine.</p>
  */
 @Data
 @NoArgsConstructor
@@ -37,16 +33,9 @@ public class CampaignDTO {
     @JsonProperty("bid_price")
     private Double bidPrice;
 
-    /**
-     * Minimum CPM bid (from TargetingDTO.bid_floor).
-     * Kept at CampaignDTO level for quick access in BidEngine.
-     */
     @JsonProperty("bid_floor")
     private Double bidFloor;
 
-    /**
-     * Maximum CPM bid (from TargetingDTO.bid_ceiling).
-     */
     @JsonProperty("bid_ceiling")
     private Double bidCeiling;
 
@@ -59,20 +48,40 @@ public class CampaignDTO {
     private Double dailyBudget;
 
     /**
-     * Remaining budget in USD (computed by backend service).
-     * Used by BudgetService for quick in-bidder budget checks.
-     * Null = budget not limited or not yet computed.
+     * Remaining budget (computed by backend).
+     * Used for quick in-bidder budget checks.
      */
     @JsonProperty("budget_remaining")
     private Double budgetRemaining;
 
-    /** Targeting rules for this campaign. May be null if no targeting configured. */
+    /**
+     * Default click-through URL for creatives that don't specify their own.
+     * Used by AdMarkupService as fallback.
+     */
+    @JsonProperty("click_url")
+    private String clickUrl;
+
+    /**
+     * 1x1 impression tracking pixel URL.
+     * Injected into banner/native/VAST markup by AdMarkupService.
+     */
+    @JsonProperty("tracking_pixel")
+    private String trackingPixel;
+
+    /** Targeting rules. May be null if no targeting configured. */
     @JsonProperty("targeting")
     private TargetingDTO targeting;
 
     /** Active, approved creatives ready to serve. */
     @JsonProperty("creatives")
     private List<CreativeDTO> creatives;
+
+    /**
+     * Max frequency cap impressions per user per window.
+     * 0 or null = no frequency cap.
+     */
+    @JsonProperty("freq_cap")
+    private Integer freqCap;
 
     /**
      * Convenience: returns true if campaign is currently active

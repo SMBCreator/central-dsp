@@ -17,9 +17,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
@@ -31,11 +29,7 @@ import java.util.stream.Collectors;
  * <p>Endpoint: GET {backend.url}/api/rtb/campaigns?status=active</p>
  *
  * <p>Campaigns are stored in a thread-safe in-memory map:
- * {@code Map<campaignId, CampaignDTO>} — O(1) lookup in BidEngine.</p>
- *
- * <p>Refresh interval is configurable: {@code campaigns.update.interval} (seconds).
- * Default: 30 seconds. On first load failure, bidder stays in "starting" state
- * and HealthController returns 503 until campaigns are loaded.</p>
+ * {@code Map<Long, CampaignDTO>} — O(1) lookup in BidEngine.</p>
  */
 @Slf4j
 @Service
@@ -55,10 +49,9 @@ public class CampaignLoaderService {
     private final ObjectMapper objectMapper;
     private final BudgetService budgetService;
 
-    /** Campaigns cache: campaignId → CampaignDTO */
+    /** campaignId → CampaignDTO */
     private volatile Map<Long, CampaignDTO> campaigns = new ConcurrentHashMap<>();
 
-    /** True once at least one successful load has completed. */
     @Getter
     private final AtomicBoolean initialized = new AtomicBoolean(false);
 
@@ -70,51 +63,43 @@ public class CampaignLoaderService {
                 .connectTimeout(Duration.ofSeconds(5))
                 .build();
         log.info("[CampaignLoader] Starting. Backend: {} Interval: {}s", backendUrl, updateIntervalSeconds);
-        // Eager first load on startup (blocking).
         loadCampaigns();
     }
 
-    /**
-     * Scheduled refresh. Spring @Scheduled fixedDelayString reads from property.
-     * Falls back to 30s if property missing.
-     */
     @Scheduled(fixedDelayString = "${campaigns.update.interval:30}000")
     public void scheduledRefresh() {
         loadCampaigns();
     }
 
-    /**
-     * Return the live campaign map (read-only view).
-     * BidEngine calls this on every bid request.
-     */
+    /** Full map (unmodifiable). */
     public Map<Long, CampaignDTO> getCampaigns() {
         return Collections.unmodifiableMap(campaigns);
     }
 
     /**
-     * Return a specific campaign by ID, or null if not found / not active.
+     * Returns active campaigns as a List.
+     * Used by BidEngineService to iterate over all candidates.
      */
+    public List<CampaignDTO> getActiveCampaigns() {
+        return new ArrayList<>(campaigns.values());
+    }
+
+    /** Lookup by ID. */
     public CampaignDTO getCampaign(Long campaignId) {
         return campaigns.get(campaignId);
     }
 
-    /**
-     * Number of currently loaded campaigns.
-     * Used by HealthController.
-     */
+    /** Campaign count for HealthController. */
     public int getCampaignCount() {
         return campaigns.size();
     }
 
-    /**
-     * Whether at least one successful load has completed.
-     * HealthController uses this to determine readiness.
-     */
+    /** True after at least one successful load. */
     public boolean isInitialized() {
         return initialized.get();
     }
 
-    // ─────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────────
 
     private void loadCampaigns() {
         String url = backendUrl + "/api/rtb/campaigns?status=active";
@@ -129,29 +114,22 @@ public class CampaignLoaderService {
             }
 
             HttpResponse<String> response = httpClient.send(
-                    reqBuilder.build(),
-                    HttpResponse.BodyHandlers.ofString()
-            );
+                    reqBuilder.build(), HttpResponse.BodyHandlers.ofString());
 
             if (response.statusCode() != 200) {
-                log.warn("[CampaignLoader] Backend returned HTTP {}: {}", response.statusCode(), url);
+                log.warn("[CampaignLoader] Backend returned HTTP {}", response.statusCode());
                 return;
             }
 
             List<CampaignDTO> list = objectMapper.readValue(
-                    response.body(),
-                    new TypeReference<List<CampaignDTO>>() {}
-            );
+                    response.body(), new TypeReference<List<CampaignDTO>>() {});
 
-            // Filter: only campaigns ready to serve.
             Map<Long, CampaignDTO> newMap = list.stream()
                     .filter(CampaignDTO::isReadyToServe)
                     .collect(Collectors.toMap(CampaignDTO::getId, Function.identity()));
 
-            // Initialize budget counters for any new campaigns.
             newMap.values().forEach(budgetService::initBudget);
 
-            // Atomic swap.
             this.campaigns = new ConcurrentHashMap<>(newMap);
             initialized.set(true);
 
@@ -163,7 +141,7 @@ public class CampaignLoaderService {
             log.warn("[CampaignLoader] Load interrupted");
         } catch (Exception e) {
             log.error("[CampaignLoader] Failed to load campaigns from {}: {}", url, e.getMessage());
-            // Do NOT clear campaigns on error — keep serving with stale data.
+            // Fail-soft: keep serving with stale data.
         }
     }
 }

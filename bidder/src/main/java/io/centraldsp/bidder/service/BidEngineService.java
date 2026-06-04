@@ -18,16 +18,20 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Core bid engine.
- * For each impression in a BidRequest:
- *   1. Get all active campaigns
- *   2. Apply targeting (TargetingService)
- *   3. Check budget + frequency cap
- *   4. Select best creative
- *   5. Calculate bid price
- *   6. Build BidResponse
+ * Core bid engine — the hot path.
  *
- * Target latency: < 50ms total.
+ * <p>For each Impression in a BidRequest:
+ * <ol>
+ *   <li>Iterate active campaigns (in-memory, O(N) per imp)</li>
+ *   <li>Evaluate targeting (TargetingService)</li>
+ *   <li>Check daily budget (BudgetService → Redis)</li>
+ *   <li>Check frequency cap (FrequencyCapService → Redis)</li>
+ *   <li>Pick highest bidding eligible campaign (internal first-price auction)</li>
+ *   <li>Build Bid object with NURL and ad markup</li>
+ * </ol>
+ * </p>
+ *
+ * <p>Target latency: &lt;50ms total per BidRequest.</p>
  */
 @Slf4j
 @Service
@@ -43,25 +47,18 @@ public class BidEngineService {
     @Value("${win.notify.url:http://backend:8000/api/rtb/win-notice}")
     private String winNotifyUrl;
 
-    @Value("${loss.notify.url:http://backend:8000/api/rtb/loss-notice}")
-    private String lossNotifyUrl;
-
     @Value("${auction.default.floor:0.01}")
     private double defaultFloor;
 
-    @Value("${server.port:8080}")
-    private int serverPort;
-
     /**
      * Process a BidRequest and return a BidResponse.
-     * Returns no-bid (empty seatbid) if no eligible campaigns found.
+     * Returns empty seatbid (no bid) if no eligible campaigns found.
      */
     public BidResponse process(BidRequest bidRequest) {
         long start = System.currentTimeMillis();
 
         List<BidResponse.Bid> bids = new ArrayList<>();
         List<CampaignDTO> campaigns = campaignLoader.getActiveCampaigns();
-
         String userId = resolveUserId(bidRequest);
 
         for (Impression imp : bidRequest.getImp()) {
@@ -69,28 +66,31 @@ public class BidEngineService {
             double bestPrice = 0;
 
             for (CampaignDTO campaign : campaigns) {
-                // Targeting check
+
+                // 1. Targeting
                 Optional<CreativeDTO> creativeOpt =
                         targetingService.match(campaign, bidRequest, imp);
                 if (creativeOpt.isEmpty()) continue;
 
-                // Budget check
+                // 2. Bid price
                 double bidPrice = calculateBidPrice(campaign, imp);
+
+                // 3. Budget check (bidPrice is CPM; divide by 1000 for per-imp cost)
                 if (!budgetService.hasBudget(campaign, bidPrice / 1000.0)) continue;
-                // Note: bidPrice is CPM, budget is in total dollars; divide by 1000
 
-                // Frequency cap check
-                if (!frequencyCapService.canServe(campaign.getId(), userId)) continue;
+                // 4. Frequency cap
+                int freqCapLimit = (campaign.getFreqCap() != null && campaign.getFreqCap() > 0)
+                        ? campaign.getFreqCap() : Integer.MAX_VALUE;
+                if (!frequencyCapService.isWithinCap(campaign.getId(), userId, freqCapLimit)) continue;
 
-                // Select highest bidder (internal auction)
+                // 5. Internal auction: highest CPM wins
                 if (bidPrice > bestPrice) {
                     bestPrice = bidPrice;
                     CreativeDTO creative = creativeOpt.get();
 
-                    String nurl = buildWinNoticeUrl(bidRequest.getId(), imp.getId(),
-                            campaign.getId(), creative.getId());
-                    String adm = adMarkupService.buildMarkup(campaign, creative,
-                            bidRequest, imp);
+                    String nurl = buildWinNoticeUrl(
+                            bidRequest.getId(), imp.getId(), campaign.getId(), creative.getId());
+                    String adm = adMarkupService.buildMarkup(campaign, creative, bidRequest, imp);
 
                     bestBid = BidResponse.Bid.builder()
                             .id(UUID.randomUUID().toString())
@@ -115,13 +115,13 @@ public class BidEngineService {
 
         long elapsed = System.currentTimeMillis() - start;
         if (elapsed > 80) {
-            log.warn("[BidEngine] Slow response: {}ms for request {}", elapsed, bidRequest.getId());
+            log.warn("[BidEngine] Slow response: {}ms request={}", elapsed, bidRequest.getId());
         }
 
         if (bids.isEmpty()) {
             return BidResponse.builder()
                     .id(bidRequest.getId())
-                    .build();  // no seatbid = no bid
+                    .build();
         }
 
         return BidResponse.builder()
@@ -137,31 +137,42 @@ public class BidEngineService {
                 .build();
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+
     /**
-     * Calculate bid price for a campaign/impression combo.
-     * Formula: base bid * bid adjustments (from Redis/cache).
-     * Clamped between bid_floor and bid_ceiling.
+     * Calculate CPM bid price for a campaign/impression.
+     *
+     * <p>Logic:
+     * <ol>
+     *   <li>Start with campaign.bidPrice (base CPM)</li>
+     *   <li>Ensure we meet the SSP bid floor</li>
+     *   <li>Clamp between campaign's bid_floor and bid_ceiling</li>
+     * </ol>
+     * </p>
      */
     private double calculateBidPrice(CampaignDTO campaign, Impression imp) {
         double base = campaign.getBidPrice() != null ? campaign.getBidPrice() : defaultFloor;
-        // Clamp
-        double floor   = campaign.getBidFloor()   != null ? campaign.getBidFloor()   : defaultFloor;
-        double ceiling = campaign.getBidCeiling()  != null ? campaign.getBidCeiling() : base * 3;
-        // Also respect SSP floor
+
+        // Respect SSP bid floor
         double sspFloor = imp.getBidfloor() != null ? imp.getBidfloor() : 0.0;
         double effective = Math.max(base, sspFloor);
+
+        // Clamp to campaign's bid floor/ceiling
+        double floor   = campaign.getBidFloor()   != null ? campaign.getBidFloor()   : defaultFloor;
+        double ceiling = campaign.getBidCeiling()  != null ? campaign.getBidCeiling() : base * 3;
+
         return Math.max(floor, Math.min(ceiling, effective));
     }
 
     /**
-     * Win notice URL with macros that SSP expands before firing.
-     * ${AUCTION_PRICE} = actual clearing price (SSP fills this in).
+     * Build NURL with ${AUCTION_PRICE} macro.
+     * SSP replaces ${AUCTION_PRICE} with the actual clearing price before firing.
      */
     private String buildWinNoticeUrl(String auctionId, String impId,
                                      Long campaignId, Long creativeId) {
         return winNotifyUrl
-                + "?auction_id=" + encode(auctionId)
-                + "&imp_id="     + encode(impId)
+                + "?auction_id="  + encode(auctionId)
+                + "&imp_id="      + encode(impId)
                 + "&campaign_id=" + campaignId
                 + "&creative_id=" + creativeId
                 + "&win_price=${AUCTION_PRICE}";
@@ -170,7 +181,7 @@ public class BidEngineService {
     private String resolveUserId(BidRequest request) {
         if (request.getUser() != null) {
             if (request.getUser().getBuyeruid() != null) return request.getUser().getBuyeruid();
-            if (request.getUser().getId() != null)       return request.getUser().getId();
+            if (request.getUser().getId()       != null) return request.getUser().getId();
         }
         if (request.getDevice() != null && request.getDevice().getIfa() != null) {
             return request.getDevice().getIfa();
@@ -179,6 +190,7 @@ public class BidEngineService {
     }
 
     private String encode(String s) {
+        if (s == null) return "";
         try { return URLEncoder.encode(s, StandardCharsets.UTF_8); }
         catch (Exception e) { return s; }
     }

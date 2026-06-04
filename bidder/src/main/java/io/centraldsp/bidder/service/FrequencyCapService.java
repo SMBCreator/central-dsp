@@ -13,12 +13,8 @@ import javax.annotation.PostConstruct;
  * Frequency cap enforcement using Redis INCR counters.
  *
  * <p>Key pattern: {@code cdsp:fcap:{campaignId}:{userId}}</p>
- *
- * <p>TTL = configurable per-campaign window ({@code fcap.window.hours}).
- * Default: 24 hours (daily frequency cap).</p>
- *
- * <p>Fail-open: on Redis errors the impression is allowed.
- * This prevents Redis outages from blocking all bids.</p>
+ * <p>TTL = {@code fcap.window.hours} (default 24h).</p>
+ * <p>Fail-open: on Redis errors impression is allowed.</p>
  */
 @Slf4j
 @Service
@@ -55,15 +51,15 @@ public class FrequencyCapService {
     }
 
     /**
-     * Check whether the user has NOT exceeded the frequency cap for this campaign.
+     * Check whether user is within the frequency cap.
      *
-     * @param campaignId  Campaign ID
-     * @param userId      User ID (buyer UID / cookie / device ID)
-     * @param maxImpressions Maximum allowed impressions in the window
-     * @return true if the user is within cap (bid is allowed), false if capped
+     * @param campaignId     Campaign ID
+     * @param userId         User/device identifier
+     * @param maxImpressions Max allowed impressions in the window
+     * @return true = bid allowed, false = user is capped
      */
     public boolean isWithinCap(Long campaignId, String userId, int maxImpressions) {
-        if (userId == null || userId.isBlank()) return true; // no user ID = no cap
+        if (userId == null || userId.isBlank()) return true;
         String key = fcapKey(campaignId, userId);
         try (Jedis jedis = jedisPool.getResource()) {
             jedis.select(redisDb);
@@ -71,27 +67,28 @@ public class FrequencyCapService {
             int count = val != null ? Integer.parseInt(val) : 0;
             return count < maxImpressions;
         } catch (Exception e) {
-            log.warn("[FrequencyCap] isWithinCap error campaign={} user={}: {}",
-                    campaignId, userId, e.getMessage());
-            return true; // fail-open
+            log.warn("[FrequencyCap] isWithinCap error campaign={} user={}: {}", campaignId, userId, e.getMessage());
+            return true;
         }
     }
 
-    /**
-     * Overload using default limit from configuration.
-     */
+    /** Overload with default limit from config. */
     public boolean isWithinCap(Long campaignId, String userId) {
         return isWithinCap(campaignId, userId, defaultFcapLimit);
     }
 
     /**
-     * Record an impression (called on win notice).
-     *
-     * <p>Atomically increments the counter and sets TTL on first call.
-     * Uses INCR + conditional EXPIRE to avoid race conditions.</p>
-     *
-     * @param campaignId  Campaign ID
-     * @param userId      User ID
+     * BidEngineService calls this method (canServe is the legacy name).
+     * Alias: canServe == isWithinCap with defaultFcapLimit.
+     */
+    public boolean canServe(Long campaignId, String userId) {
+        if (userId == null) return true;
+        return isWithinCap(campaignId, userId, defaultFcapLimit);
+    }
+
+    /**
+     * Record an impression win (called from WinLossController).
+     * Atomically increments counter; sets TTL on first call.
      */
     public void recordImpression(Long campaignId, String userId) {
         if (userId == null || userId.isBlank()) return;
@@ -99,22 +96,16 @@ public class FrequencyCapService {
         try (Jedis jedis = jedisPool.getResource()) {
             jedis.select(redisDb);
             long newCount = jedis.incr(key);
-            // Set TTL only on first increment (avoids resetting window on every impression).
             if (newCount == 1) {
                 jedis.expire(key, (long) fcapWindowHours * 3600);
             }
-            log.debug("[FrequencyCap] campaign={} user={} impressions={}",
-                    campaignId, userId, newCount);
+            log.debug("[FrequencyCap] campaign={} user={} count={}", campaignId, userId, newCount);
         } catch (Exception e) {
-            log.error("[FrequencyCap] recordImpression error campaign={} user={}: {}",
-                    campaignId, userId, e.getMessage());
+            log.error("[FrequencyCap] recordImpression error campaign={} user={}: {}", campaignId, userId, e.getMessage());
         }
     }
 
-    /**
-     * Get current impression count for a user/campaign pair.
-     * Useful for debug endpoints and monitoring.
-     */
+    /** Get current impression count (debug/monitoring). */
     public int getImpressionCount(Long campaignId, String userId) {
         if (userId == null || userId.isBlank()) return 0;
         String key = fcapKey(campaignId, userId);
@@ -127,9 +118,7 @@ public class FrequencyCapService {
         }
     }
 
-    /**
-     * Reset frequency cap for a user/campaign (for testing or manual overrides).
-     */
+    /** Manual reset (testing / admin override). */
     public void resetCap(Long campaignId, String userId) {
         String key = fcapKey(campaignId, userId);
         try (Jedis jedis = jedisPool.getResource()) {
