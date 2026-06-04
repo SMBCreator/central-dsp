@@ -20,9 +20,9 @@ class Banner(BaseModel):
     w: Optional[int] = None
     h: Optional[int] = None
     format: Optional[List[Format]] = None
-    btype: Optional[List[int]] = None   # запрещённые типы баннеров
-    battr: Optional[List[int]] = None   # запрещённые атрибуты
-    pos: Optional[int] = None           # позиция (0=unknown, 1=above fold...)
+    btype: Optional[List[int]] = None
+    battr: Optional[List[int]] = None
+    pos: Optional[int] = None
     mimes: Optional[List[str]] = None
 
 
@@ -39,7 +39,7 @@ class Video(BaseModel):
 
 
 class Native(BaseModel):
-    request: Optional[str] = None       # JSON-строка нативного запроса
+    request: Optional[str] = None
     ver: Optional[str] = None
     battr: Optional[List[int]] = None
 
@@ -51,12 +51,12 @@ class Impression(BaseModel):
     native: Optional[Native] = None
     displaymanager: Optional[str] = None
     displaymanagerver: Optional[str] = None
-    instl: int = 0                      # 1 = interstitial
+    instl: int = 0
     tagid: Optional[str] = None
-    bidfloor: float = 0.0               # минимальная цена в CPM
+    bidfloor: float = 0.0
     bidfloorcur: str = "USD"
-    secure: Optional[int] = None        # 1 = https required
-    exp: Optional[int] = None           # время жизни показа (сек)
+    secure: Optional[int] = None
+    exp: Optional[int] = None
 
 
 class Publisher(BaseModel):
@@ -75,7 +75,7 @@ class Site(BaseModel):
     id: Optional[str] = None
     name: Optional[str] = None
     domain: Optional[str] = None
-    cat: Optional[List[str]] = None     # IAB категории
+    cat: Optional[List[str]] = None
     page: Optional[str] = None
     ref: Optional[str] = None
     publisher: Optional[Publisher] = None
@@ -86,7 +86,7 @@ class Site(BaseModel):
 class App(BaseModel):
     id: Optional[str] = None
     name: Optional[str] = None
-    bundle: Optional[str] = None        # com.example.app
+    bundle: Optional[str] = None
     domain: Optional[str] = None
     storeurl: Optional[str] = None
     cat: Optional[List[str]] = None
@@ -99,7 +99,7 @@ class Geo(BaseModel):
     lon: Optional[float] = None
     type: Optional[int] = None
     accuracy: Optional[int] = None
-    country: Optional[str] = None       # ISO-3166-1 alpha-3
+    country: Optional[str] = None
     region: Optional[str] = None
     city: Optional[str] = None
     zip: Optional[str] = None
@@ -113,7 +113,7 @@ class Device(BaseModel):
     lmt: Optional[int] = None
     ip: Optional[str] = None
     ipv6: Optional[str] = None
-    devicetype: Optional[int] = None    # 1=mobile, 2=PC, 3=TV, 4=phone, 5=tablet
+    devicetype: Optional[int] = None
     make: Optional[str] = None
     model: Optional[str] = None
     os: Optional[str] = None
@@ -122,8 +122,8 @@ class Device(BaseModel):
     browserv: Optional[str] = None
     language: Optional[str] = None
     carrier: Optional[str] = None
-    connectiontype: Optional[int] = None  # 0=unknown, 1=ethernet, 2=wifi, 3=cellular
-    ifa: Optional[str] = None           # IDFA/GAID
+    connectiontype: Optional[int] = None
+    ifa: Optional[str] = None
 
 
 class User(BaseModel):
@@ -142,38 +142,38 @@ class BidRequest(BaseModel):
     app: Optional[App] = None
     device: Optional[Device] = None
     user: Optional[User] = None
-    test: int = 0                       # 1 = тестовый аукцион, не считается
-    at: int = 2                         # тип аукциона: 1=first price, 2=second price
-    tmax: Optional[int] = None          # timeout ms
-    wseat: Optional[List[str]] = None   # whitelist seat
-    bseat: Optional[List[str]] = None   # blacklist seat
+    test: int = 0
+    at: int = 2
+    tmax: Optional[int] = None
+    wseat: Optional[List[str]] = None
+    bseat: Optional[List[str]] = None
     allimps: int = 0
     cur: Optional[List[str]] = None
-    bcat: Optional[List[str]] = None    # запрещённые IAB категории
-    badv: Optional[List[str]] = None    # запрещённые домены рекламодателей
-    bapp: Optional[List[str]] = None    # запрещённые app bundle
+    bcat: Optional[List[str]] = None
+    badv: Optional[List[str]] = None
+    bapp: Optional[List[str]] = None
 
 
 # ──────────────────────────────────────────────────────────────
-# OpenRTB 2.5 — Bid Response объекты
+# OpenRTB 2.5 — Bid Response
 # ──────────────────────────────────────────────────────────────
 
 class Bid(BaseModel):
     id: str
-    impid: str                          # ID из BidRequest.imp[]
-    price: float                        # CPM в USD
-    nurl: Optional[str] = None          # Win Notice URL
-    lurl: Optional[str] = None          # Loss Notice URL
+    impid: str
+    price: float
+    nurl: Optional[str] = None
+    lurl: Optional[str] = None
     adid: Optional[str] = None
     adomain: Optional[List[str]] = None
     bundle: Optional[str] = None
-    iurl: Optional[str] = None          # URL превью баннера
-    cid: Optional[str] = None           # campaign ID
-    crid: Optional[str] = None          # creative ID
+    iurl: Optional[str] = None
+    cid: Optional[str] = None
+    crid: Optional[str] = None
     cat: Optional[List[str]] = None
     attr: Optional[List[int]] = None
     api: Optional[int] = None
-    adm: Optional[str] = None           # рекламный материал (HTML/VAST/native JSON)
+    adm: Optional[str] = None
     w: Optional[int] = None
     h: Optional[int] = None
     exp: Optional[int] = None
@@ -186,12 +186,12 @@ class SeatBid(BaseModel):
 
 
 class BidResponse(BaseModel):
-    id: str                             # echo BidRequest.id
+    id: str
     seatbid: List[SeatBid] = []
     bidid: Optional[str] = None
     cur: str = "USD"
     customdata: Optional[str] = None
-    nbr: Optional[int] = None           # No Bid Reason code
+    nbr: Optional[int] = None
 
 
 # ──────────────────────────────────────────────────────────────
@@ -199,11 +199,11 @@ class BidResponse(BaseModel):
 # ──────────────────────────────────────────────────────────────
 
 class WinNotice(BaseModel):
-    auction_id: str                     # BidRequest.id
-    imp_id: str                         # Impression.id
+    auction_id: str
+    imp_id: str
     campaign_id: int
     creative_id: int
-    win_price: float                    # реальная цена победы (CPM)
+    win_price: float
     clearing_price: Optional[float] = None
     site_domain: Optional[str] = None
     app_bundle: Optional[str] = None
@@ -216,24 +216,44 @@ class LossNotice(BaseModel):
     imp_id: str
     campaign_id: int
     creative_id: Optional[int] = None
-    loss_reason: Optional[int] = None   # OpenRTB loss reason codes
-    # 0=error, 1=internal, 2=price, 3=blocked, 4=freq cap...
+    loss_reason: Optional[int] = None
 
 
 # ──────────────────────────────────────────────────────────────
-# CentralDSP RTB API — Campaign format для биддера
+# CentralDSP RTB API — формат кампании для биддера
 # ──────────────────────────────────────────────────────────────
 
 class CreativeOut(BaseModel):
+    """
+    Креатив в формате, который отдаётся Java-биддеру.
+    Содержит все поля, необходимые AdMarkupService для генерации
+    HTML/Native JSON/VAST разметки.
+    """
     id: int
-    format: str                         # banner|native|video
+    format: str                             # banner | native | video
     width: Optional[int] = None
     height: Optional[int] = None
+
+    # Banner
     image_url: Optional[str] = None
+    click_url: Optional[str] = None
+
+    # Native
     title: Optional[str] = None
     description: Optional[str] = None
-    click_url: Optional[str] = None
-    adm: Optional[str] = None           # готовый HTML/VAST
+    icon_url: Optional[str] = None
+    sponsored_by: Optional[str] = None
+
+    # Video
+    vast_url: Optional[str] = None
+    video_url: Optional[str] = None
+    duration_sec: Optional[int] = None
+
+    # Raw markup (overrides format-specific fields if set)
+    adm: Optional[str] = None
+
+    # Advertiser domain for adomain field in Bid
+    adomain: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -248,20 +268,40 @@ class TargetingOut(BaseModel):
     browser_list: List[str] = []
     site_whitelist: List[str] = []
     site_blacklist: List[str] = []
-    hour_schedule: Dict[str, Any] = {}  # {"0": {"0": 1.0, "1": 0.5, ...}, ...}
+    hour_schedule: Dict[str, Any] = {}
 
     class Config:
         from_attributes = True
 
 
 class RTBCampaignOut(BaseModel):
-    """Формат кампании для RTB4FREE биддера."""
+    """
+    Полный формат кампании для Java-биддера.
+    Java CampaignDTO должен иметь все эти поля — они используются
+    BidEngineService и AdMarkupService.
+    """
     id: int
     name: str
     status: str
+
+    # Bid pricing — необходимы BidEngineService
+    bid_price: Optional[float] = None       # базовая ставка CPM
+    bid_floor: Optional[float] = None       # минимальная ставка
+    bid_ceiling: Optional[float] = None     # максимальная ставка
+
+    # Budget
     daily_budget: Optional[float] = None
     total_budget: Optional[float] = None
     budget_remaining: Optional[float] = None
+
+    # Ad markup helpers — используются AdMarkupService
+    click_url: Optional[str] = None         # fallback click URL для всех креативов
+    tracking_pixel: Optional[str] = None    # 1x1 impression pixel
+
+    # Frequency cap
+    freq_cap: Optional[int] = None          # макс показов на пользователя
+
+    # Targeting & creatives
     targeting: Optional[TargetingOut] = None
     creatives: List[CreativeOut] = []
 

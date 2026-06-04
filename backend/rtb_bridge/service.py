@@ -9,7 +9,7 @@ RTB Bridge Service — бизнес-логика между биддером и 
 """
 from __future__ import annotations
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 
 import httpx
@@ -17,7 +17,6 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from config import settings
-from database import get_db
 from models import Campaign, Event
 from rtb_bridge.models import (
     Creative, TargetingRule, AuctionLog, BidAdjustment
@@ -39,10 +38,11 @@ class RTBService:
     @staticmethod
     def get_active_campaigns(db: Session) -> List[RTBCampaignOut]:
         """
-        Возвращает активные кампании в формате, понятном RTB4FREE биддеру.
-        Фильтрует кампании по:
+        Возвращает активные кампании в формате, понятном Java-биддеру.
+        Фильтрует по:
         - status == 'active'
         - бюджет не исчерпан
+        - есть хотя бы один одобренный активный креатив
         """
         campaigns = db.query(Campaign).filter(
             Campaign.status == "active"
@@ -54,7 +54,7 @@ class RTBService:
             if not RTBService._has_budget(camp, db):
                 continue
 
-            # Собираем таргетинг
+            # Таргетинг
             targeting_rule = db.query(TargetingRule).filter(
                 TargetingRule.campaign_id == camp.id
             ).first()
@@ -73,12 +73,16 @@ class RTBService:
                     hour_schedule=targeting_rule.hour_schedule or {},
                 )
 
-            # Собираем активные одобренные креативы
+            # Активные одобренные креативы
             creatives = db.query(Creative).filter(
                 Creative.campaign_id == camp.id,
                 Creative.status == "active",
                 Creative.audit_status == "approved",
             ).all()
+
+            # Пропускаем кампании без сервируемых креативов
+            if not creatives:
+                continue
 
             creatives_out = [
                 CreativeOut(
@@ -87,10 +91,16 @@ class RTBService:
                     width=c.width,
                     height=c.height,
                     image_url=c.image_url,
+                    click_url=c.click_url,
                     title=c.title,
                     description=c.description,
-                    click_url=c.click_url,
+                    icon_url=c.icon_url,
+                    sponsored_by=c.sponsored_by,
+                    vast_url=c.vast_url,
+                    video_url=c.video_url,
+                    duration_sec=c.duration_sec,
                     adm=c.adm,
+                    adomain=getattr(c, "adomain", None),
                 )
                 for c in creatives
             ]
@@ -98,13 +108,28 @@ class RTBService:
             # Остаток бюджета
             budget_remaining = RTBService._get_budget_remaining(camp, db)
 
+            # Bid floor/ceiling: приоритет — поля кампании,
+            # fallback — targeting rule.
+            bid_floor = getattr(camp, "bid_floor", None)
+            bid_ceiling = getattr(camp, "bid_ceiling", None)
+            if bid_floor is None and targeting_rule:
+                bid_floor = targeting_rule.bid_floor
+            if bid_ceiling is None and targeting_rule:
+                bid_ceiling = targeting_rule.bid_ceiling
+
             result.append(RTBCampaignOut(
                 id=camp.id,
                 name=camp.name,
                 status=camp.status,
+                bid_price=getattr(camp, "bid_price", None),
+                bid_floor=bid_floor,
+                bid_ceiling=bid_ceiling,
                 daily_budget=camp.daily_budget,
                 total_budget=camp.total_budget,
                 budget_remaining=budget_remaining,
+                click_url=getattr(camp, "click_url", None),
+                tracking_pixel=getattr(camp, "tracking_pixel", None),
+                freq_cap=getattr(camp, "freq_cap", None),
                 targeting=targeting_out,
                 creatives=creatives_out,
             ))
@@ -165,7 +190,7 @@ class RTBService:
         return remaining
 
     # ──────────────────────────────────────────────────────
-    # Win / Loss Notice обработка
+    # Win / Loss Notice
     # ──────────────────────────────────────────────────────
 
     @staticmethod
@@ -191,9 +216,8 @@ class RTBService:
         db.add(log)
 
         # Attribution: impression event привязан к auction_id
-        # Позволяет связать impression → click → conversion
         impression_event = Event(
-            pixel_id=None,              # RTB impression, не JS pixel
+            pixel_id=None,
             event_name="impression",
             sub_id="rtb",
             creative_id=str(notice.creative_id),
@@ -222,10 +246,7 @@ class RTBService:
 
     @staticmethod
     def process_loss_notice(notice: LossNotice, db: Session) -> AuctionLog:
-        """
-        Биддер проиграл аукцион.
-        Записываем AuctionLog(won=False) для статистики win rate.
-        """
+        """Биддер проиграл аукцион. Записываем AuctionLog(won=False)."""
         log = AuctionLog(
             campaign_id=notice.campaign_id,
             creative_id=notice.creative_id,
@@ -245,16 +266,7 @@ class RTBService:
 
     @staticmethod
     def get_campaign_stats(campaign_id: int, db: Session) -> RTBStatsOut:
-        """RTB статистика кампании за все время."""
-        total = db.query(
-            func.count(AuctionLog.id).label("auctions"),
-            func.sum(
-                func.cast(AuctionLog.won, db.bind.dialect.type_descriptor(None).__class__)
-                if False else AuctionLog.won.cast(None)
-            ).label("wins"),
-        ).filter(AuctionLog.campaign_id == campaign_id).first()
-
-        # Используем прямые запросы для ясности
+        """RTB статистика кампании за всё время."""
         auctions = db.query(func.count(AuctionLog.id)).filter(
             AuctionLog.campaign_id == campaign_id
         ).scalar() or 0
@@ -266,32 +278,32 @@ class RTBService:
 
         avg_bid = db.query(func.avg(AuctionLog.bid_price)).filter(
             AuctionLog.campaign_id == campaign_id,
-        ).scalar() or 0.0
+        ).scalar()
 
         avg_win = db.query(func.avg(AuctionLog.win_price)).filter(
             AuctionLog.campaign_id == campaign_id,
             AuctionLog.won == True,
-        ).scalar() or 0.0
+        ).scalar()
 
         total_spend = db.query(func.sum(AuctionLog.win_price)).filter(
             AuctionLog.campaign_id == campaign_id,
             AuctionLog.won == True,
-        ).scalar() or 0.0
+        ).scalar()
 
         losses = auctions - wins
-        win_rate = (wins / auctions * 100) if auctions else 0.0
-        avg_cpm = float(avg_win) if avg_win else 0.0
+        win_rate = round((wins / auctions * 100), 2) if auctions else 0.0
+        avg_cpm = round(float(avg_win or 0.0), 4)
 
         return RTBStatsOut(
             campaign_id=campaign_id,
             auctions=auctions,
             wins=wins,
             losses=losses,
-            win_rate_pct=round(win_rate, 2),
-            avg_bid_price=round(float(avg_bid), 4),
-            avg_win_price=round(float(avg_win), 4),
-            total_spend=round(float(total_spend), 4),
-            avg_cpm=round(avg_cpm, 4),
+            win_rate_pct=win_rate,
+            avg_bid_price=round(float(avg_bid or 0.0), 4),
+            avg_win_price=round(float(avg_win or 0.0), 4),
+            total_spend=round(float(total_spend or 0.0), 4),
+            avg_cpm=avg_cpm,
         )
 
     # ──────────────────────────────────────────────────────
@@ -300,7 +312,7 @@ class RTBService:
 
     @staticmethod
     async def get_bidder_status(db: Session) -> BidderStatusOut:
-        """Проверяет доступность RTB4FREE биддера по HTTP."""
+        """Проверяет доступность Java-биддера по HTTP."""
         bidder_url = getattr(settings, "BIDDER_URL", "http://bidder:8080")
         alive = False
 
@@ -311,7 +323,6 @@ class RTBService:
         except Exception as e:
             logger.warning(f"[BIDDER STATUS] Cannot reach bidder: {e}")
 
-        # Статистика сегодня
         today_start = datetime.now(timezone.utc).replace(
             hour=0, minute=0, second=0, microsecond=0
         )
@@ -329,12 +340,12 @@ class RTBService:
             AuctionLog.won == True,
         ).scalar() or 0.0
 
-        win_rate = (wins_today / auctions_today * 100) if auctions_today else 0.0
+        win_rate = round((wins_today / auctions_today * 100), 2) if auctions_today else 0.0
 
         return BidderStatusOut(
             bidder_alive=alive,
             endpoint=f"{bidder_url}/bidder",
-            win_rate_pct=round(win_rate, 2),
+            win_rate_pct=win_rate,
             auctions_today=auctions_today,
             wins_today=wins_today,
             spend_today=round(float(spend_today), 4),
@@ -351,14 +362,14 @@ class RTBService:
         db: Session,
     ) -> float:
         """
-        Возвращает итоговый множитель ставки для данного контекста.
+        Итоговый множитель ставки для данного контекста показа.
         Перемножает корректировки по всем применимым измерениям.
 
         context = {
             "country": "US",
             "device_type": "mobile",
             "os": "iOS",
-            "hour": 14,          # UTC час
+            "hour": 14,
             "site_domain": "cnn.com"
         }
         """
@@ -376,8 +387,9 @@ class RTBService:
         }
 
         for adj in adjustments:
-            expected_value = dimension_map.get(adj.dimension)
-            if expected_value and expected_value.lower() == adj.value.lower():
+            expected = dimension_map.get(adj.dimension, "")
+            if expected and expected.lower() == adj.value.lower():
                 multiplier *= adj.multiplier
 
-        return max(0.1, min(multiplier, 5.0))  # ограничиваем диапазон 0.1x–5.0x
+        # Ограничиваем диапазон: 0.1x – 5.0x
+        return max(0.1, min(multiplier, 5.0))
