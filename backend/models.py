@@ -11,9 +11,9 @@ from sqlalchemy.sql import func
 from backend.database import Base
 
 
-# ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
 # USERS
-# ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
 class User(Base):
     __tablename__ = "users"
 
@@ -30,9 +30,9 @@ class User(Base):
     settings = relationship("Setting", back_populates="user")
 
 
-# ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
 # CAMPAIGNS
-# ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
 class Campaign(Base):
     __tablename__ = "campaigns"
 
@@ -44,11 +44,30 @@ class Campaign(Base):
     is_ab = Column(Boolean, nullable=False, default=False)
     ab_limit = Column(Integer)
     offer_value = Column(Numeric(10, 4), default=0)
-    attribution_model = Column(String(20), nullable=False, default="last_click")  # last_click|first_click|linear
+    attribution_model = Column(String(20), nullable=False, default="last_click")
     daily_budget = Column(Numeric(10, 4))
     total_budget = Column(Numeric(10, 4))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # ─── RTB поля ───
+    # Базовая ставка CPM. BidEngineService берёт это значение
+    # как основу и применяет bid_adjustments.
+    bid_price = Column(Numeric(10, 6), nullable=True, default=1.0)
+
+    # bid_floor / bid_ceiling на уровне кампании (глобальные).
+    # Если заданы — переопределяют targeting_rule.bid_floor/ceiling.
+    bid_floor = Column(Numeric(8, 6), nullable=True)
+    bid_ceiling = Column(Numeric(8, 6), nullable=True)
+
+    # Fallback click URL для AdMarkupService (если у креатива нет своего click_url).
+    click_url = Column(Text, nullable=True)
+
+    # 1×1 impression pixel URL — FrequencyCapService + attribution.
+    tracking_pixel = Column(Text, nullable=True)
+
+    # Макс показов на одного пользователя (FrequencyCapService).
+    freq_cap = Column(Integer, nullable=True)
 
     user = relationship("User", back_populates="campaigns")
     links = relationship("Link", back_populates="campaign", cascade="all, delete-orphan")
@@ -58,9 +77,9 @@ class Campaign(Base):
     targeting = relationship("TargetingRule", back_populates="campaign", uselist=False, cascade="all, delete-orphan")
 
 
-# ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
 # LINKS
-# ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
 class Link(Base):
     __tablename__ = "links"
 
@@ -83,9 +102,9 @@ class Link(Base):
     stats = relationship("Stat", back_populates="link")
 
 
-# ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
 # PIXELS
-# ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
 class Pixel(Base):
     __tablename__ = "pixels"
 
@@ -101,9 +120,9 @@ class Pixel(Base):
     campaign = relationship("Campaign", back_populates="pixels")
 
 
-# ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
 # EVENTS (TimeSeries)
-# ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
 class Event(Base):
     __tablename__ = "events"
 
@@ -138,9 +157,9 @@ class Event(Base):
     )
 
 
-# ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
 # CLICKS (TimeSeries)
-# ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
 class Click(Base):
     __tablename__ = "clicks"
 
@@ -164,9 +183,9 @@ class Click(Base):
     )
 
 
-# ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
 # POSTBACKS (S2S audit)
-# ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
 class Postback(Base):
     __tablename__ = "postbacks"
 
@@ -181,9 +200,9 @@ class Postback(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
-# ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
 # RTB — CREATIVES
-# ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
 class Creative(Base):
     __tablename__ = "creatives"
 
@@ -193,21 +212,38 @@ class Creative(Base):
     format = Column(String(20), nullable=False)  # banner|native|video|push
     width = Column(Integer)
     height = Column(Integer)
-    image_url = Column(Text)
-    title = Column(String(255))
-    description = Column(Text)
-    click_url = Column(Text)
-    adm = Column(Text)  # raw ad markup
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
     status = Column(String(20), nullable=False, default="active")
     audit_status = Column(String(20), nullable=False, default="pending")  # pending|approved|rejected
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    audit_feedback = Column(Text, nullable=True)
+
+    # ─── Banner ───
+    image_url = Column(Text)
+    click_url = Column(Text)
+
+    # ─── Native ───
+    title = Column(String(255))
+    description = Column(Text)
+    icon_url = Column(Text, nullable=True)          # иконка для Native
+    sponsored_by = Column(String(255), nullable=True)  # "Sponsored by ..."
+
+    # ─── Video ───
+    vast_url = Column(Text, nullable=True)          # VAST wrapper URL
+    video_url = Column(Text, nullable=True)         # прямая ссылка на MP4
+    duration_sec = Column(Integer, nullable=True)   # длительность видео
+
+    # ─── Raw markup ───
+    adm = Column(Text)                              # HTML/VAST/native JSON
+
+    # ─── OpenRTB adomain ───
+    adomain = Column(String(255), nullable=True)    # example.com — домен рекламодателя
 
     campaign = relationship("Campaign", back_populates="creatives")
 
 
-# ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
 # RTB — TARGETING RULES
-# ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
 class TargetingRule(Base):
     __tablename__ = "targeting_rules"
 
@@ -227,21 +263,24 @@ class TargetingRule(Base):
     campaign = relationship("Campaign", back_populates="targeting")
 
 
-# ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
 # RTB — AUCTION LOGS (TimeSeries)
-# ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
 class AuctionLog(Base):
     __tablename__ = "auction_logs"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     campaign_id = Column(Integer, ForeignKey("campaigns.id"), index=True)
     creative_id = Column(Integer, ForeignKey("creatives.id"))
-    bid_request_id = Column(String(128))
+    # Исправлено: было bid_request_id, но service.py пишет auction_id=...
+    # Объединяем в одно поле auction_id (и добавляем alias bid_request_id для совместимости)
+    auction_id = Column(String(128), index=True)
     imp_id = Column(String(128))
     bid_price = Column(Numeric(10, 6))
     win_price = Column(Numeric(10, 6))
     clearing_price = Column(Numeric(10, 6))
     won = Column(Boolean, nullable=False, default=False, index=True)
+    loss_reason = Column(Integer, nullable=True)  # OpenRTB Loss Reason codes
     ssp_name = Column(String(100))
     site_domain = Column(String(255))
     app_bundle = Column(String(255))
@@ -255,17 +294,36 @@ class AuctionLog(Base):
     )
 
 
-# ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
+# RTB — BID ADJUSTMENTS
+# ─────────────────────────────────────────────────────
+class BidAdjustment(Base):
+    """Per-dimension bid multipliers (ктрана, девайс, OS, час, сайт)."""
+    __tablename__ = "bid_adjustments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    campaign_id = Column(Integer, ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False)
+    dimension = Column(String(20), nullable=False)  # country|device|os|hour|site
+    value = Column(String(128), nullable=False)     # US|mobile|iOS|14|cnn.com
+    multiplier = Column(Numeric(6, 4), nullable=False, default=1.0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "dimension", "value", name="uq_bid_adj_camp_dim_val"),
+    )
+
+
+# ─────────────────────────────────────────────────────
 # AUTOPILOT RULES
-# ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
 class Rule(Base):
     __tablename__ = "rules"
 
     id = Column(Integer, primary_key=True, index=True)
     campaign_id = Column(Integer, ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False)
-    level = Column(String(20), nullable=False, default="campaign")  # campaign|sub_id|bid
+    level = Column(String(20), nullable=False, default="campaign")
     metric = Column(String(50), nullable=False)
-    condition = Column(String(10), nullable=False)  # <|>|<=|>=|==
+    condition = Column(String(10), nullable=False)
     threshold = Column(Numeric(12, 6), nullable=False)
     action = Column(String(50), nullable=False)
     triggered = Column(Boolean, nullable=False, default=False)
@@ -276,9 +334,9 @@ class Rule(Base):
     logs = relationship("RuleLog", back_populates="rule")
 
 
-# ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
 # AUTOPILOT RULE LOGS
-# ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
 class RuleLog(Base):
     __tablename__ = "rule_logs"
 
@@ -293,17 +351,17 @@ class RuleLog(Base):
     rule = relationship("Rule", back_populates="logs")
 
 
-# ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
 # AD ACCOUNTS
-# ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
 class AdAccount(Base):
     __tablename__ = "ad_accounts"
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    platform = Column(String(50), nullable=False)  # push_house|yandex|kadam|propellerads|google
+    platform = Column(String(50), nullable=False)
     name = Column(String(255))
-    credentials = Column(JSONB, default=dict)  # encrypted at app layer
+    credentials = Column(JSONB, default=dict)
     is_active = Column(Boolean, nullable=False, default=True)
     balance = Column(Numeric(12, 4))
     currency = Column(String(8), default="USD")
@@ -313,9 +371,9 @@ class AdAccount(Base):
     user = relationship("User", back_populates="ad_accounts")
 
 
-# ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
 # SETTINGS
-# ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
 class Setting(Base):
     __tablename__ = "settings"
 
@@ -329,9 +387,9 @@ class Setting(Base):
     __table_args__ = (UniqueConstraint("user_id", "key", name="uq_settings_user_key"),)
 
 
-# ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
 # LEGACY STATS (backward compat with v2)
-# ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────
 class Stat(Base):
     __tablename__ = "stats"
 
