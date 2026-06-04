@@ -16,6 +16,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Win and Loss notification endpoints.
@@ -32,10 +33,11 @@ import java.util.Map;
  * <ol>
  *   <li>Handle in-bidder side-effects synchronously:
  *       deduct budget from Redis, increment frequency cap counter.</li>
- *   <li>Forward the win notice asynchronously to the Python backend
- *       (GET /api/rtb/win) so it can write AuctionLog + impression Event
- *       to PostgreSQL. Uses a background thread — the SSP does not wait
- *       for this call; response is already sent.</li>
+ *   <li>Forward the win/loss notice asynchronously to the Python backend
+ *       (GET /api/rtb/win, POST /api/rtb/loss-notice) so it can write
+ *       AuctionLog + impression Event to PostgreSQL. Uses
+ *       CompletableFuture.runAsync (ForkJoinPool) — the SSP already
+ *       received 204 before the backend call starts.</li>
  * </ol>
  * </p>
  */
@@ -52,7 +54,10 @@ public class WinLossController {
     @Value("${backend.url:http://backend:8000}")
     private String backendUrl;
 
-    /** Shared HTTP client — reused across calls (keep-alive pool). */
+    /**
+     * Shared HTTP client — reused across calls (keep-alive connection pool).
+     * java.net.http.HttpClient is thread-safe and connection-pooling.
+     */
     private static final HttpClient HTTP = HttpClient.newBuilder()
             .connectTimeout(Duration.ofMillis(500))
             .build();
@@ -69,12 +74,12 @@ public class WinLossController {
      */
     @GetMapping("/win")
     public ResponseEntity<Void> winNoticeGet(
-            @RequestParam("campaign_id")                           Long   campaignId,
+            @RequestParam("campaign_id")                             Long   campaignId,
             @RequestParam(value = "win_price",   defaultValue = "0") double winPrice,
-            @RequestParam(value = "creative_id", required = false)  Long   creativeId,
-            @RequestParam(value = "auction_id",  required = false)  String auctionId,
-            @RequestParam(value = "imp_id",       required = false)  String impId,
-            @RequestParam(value = "user_id",      required = false)  String userId
+            @RequestParam(value = "creative_id", required = false)   Long   creativeId,
+            @RequestParam(value = "auction_id",  required = false)   String auctionId,
+            @RequestParam(value = "imp_id",       required = false)   String impId,
+            @RequestParam(value = "user_id",      required = false)   String userId
     ) {
         handleWin(campaignId, winPrice, userId, auctionId);
         forwardWinToBackendAsync(auctionId, impId, campaignId, creativeId, winPrice);
@@ -84,12 +89,12 @@ public class WinLossController {
     /** Win notice — POST variant (some SSPs use POST). */
     @PostMapping("/win")
     public ResponseEntity<Void> winNoticePost(@RequestBody Map<String, Object> body) {
-        Long   campaignId  = parseLong(body, "campaign_id");
-        Long   creativeId  = parseLong(body, "creative_id");
-        double winPrice    = parseDouble(body, "win_price");
-        String userId      = parseString(body, "user_id");
-        String auctionId   = parseString(body, "auction_id");
-        String impId       = parseString(body, "imp_id");
+        Long   campaignId = parseLong(body, "campaign_id");
+        Long   creativeId = parseLong(body, "creative_id");
+        double winPrice   = parseDouble(body, "win_price");
+        String userId     = parseString(body, "user_id");
+        String auctionId  = parseString(body, "auction_id");
+        String impId      = parseString(body, "imp_id");
 
         if (campaignId != null) {
             handleWin(campaignId, winPrice, userId, auctionId);
@@ -119,12 +124,12 @@ public class WinLossController {
     /** Loss notice — POST variant. */
     @PostMapping("/loss")
     public ResponseEntity<Void> lossNoticePost(@RequestBody Map<String, Object> body) {
-        Long    campaignId  = parseLong(body, "campaign_id");
-        Long    creativeId  = parseLong(body, "creative_id");
-        Integer lossReason  = body.containsKey("loss_reason")
+        Long    campaignId = parseLong(body, "campaign_id");
+        Long    creativeId = parseLong(body, "creative_id");
+        Integer lossReason = body.containsKey("loss_reason")
                 ? Integer.parseInt(body.get("loss_reason").toString()) : null;
-        String  auctionId   = parseString(body, "auction_id");
-        String  impId       = parseString(body, "imp_id");
+        String auctionId   = parseString(body, "auction_id");
+        String impId       = parseString(body, "imp_id");
 
         log.debug("[LOSS POST] campaign={} auction={}", campaignId, auctionId);
         forwardLossToBackendAsync(auctionId, impId, campaignId, creativeId, lossReason);
@@ -132,7 +137,7 @@ public class WinLossController {
     }
 
     // ───────────────────────────────────────────────────────────
-    // Internal
+    // Internal helpers
     // ───────────────────────────────────────────────────────────
 
     /**
@@ -150,7 +155,7 @@ public class WinLossController {
 
     /**
      * Async forward of win notice to Python backend.
-     * Runs in a daemon thread — SSP already received 204 by this point.
+     * Uses CompletableFuture (Java 11 compatible).
      * Best-effort: failures are logged but do not affect bidder operation.
      */
     private void forwardWinToBackendAsync(
@@ -162,14 +167,14 @@ public class WinLossController {
             return;
         }
 
-        String url = backendUrl + "/api/rtb/win"
-                + "?auction_id="   + enc(auctionId)
-                + "&imp_id="       + enc(impId)
-                + "&campaign_id="  + campaignId
-                + "&creative_id="  + (creativeId != null ? creativeId : 0)
-                + "&win_price="    + winPrice;
+        final String url = backendUrl + "/api/rtb/win"
+                + "?auction_id="  + enc(auctionId)
+                + "&imp_id="      + enc(impId)
+                + "&campaign_id=" + campaignId
+                + "&creative_id=" + (creativeId != null ? creativeId : 0)
+                + "&win_price="   + winPrice;
 
-        Thread.ofVirtual().name("win-fwd-" + auctionId).start(() -> {
+        CompletableFuture.runAsync(() -> {
             try {
                 HttpRequest req = HttpRequest.newBuilder()
                         .uri(URI.create(url))
@@ -189,7 +194,7 @@ public class WinLossController {
     }
 
     /**
-     * Async forward of loss notice to Python backend.
+     * Async forward of loss notice to Python backend (POST).
      */
     private void forwardLossToBackendAsync(
             String auctionId, String impId,
@@ -197,18 +202,17 @@ public class WinLossController {
 
         if (auctionId == null || campaignId == null) return;
 
-        String url = backendUrl + "/api/rtb/loss-notice";
-        // Loss notice uses POST (no GET endpoint on Python side)
-        String body = String.format(
+        final String url = backendUrl + "/api/rtb/loss-notice";
+        final String body = String.format(
                 "{\"auction_id\":\"%s\",\"imp_id\":\"%s\",\"campaign_id\":%d%s%s}",
                 auctionId,
                 impId != null ? impId : "",
                 campaignId,
-                creativeId  != null ? ",\"creative_id\":\""  + creativeId  + "\"" : "",
-                lossReason  != null ? ",\"loss_reason\":"    + lossReason         : ""
+                creativeId != null ? ",\"creative_id\":" + creativeId : "",
+                lossReason != null ? ",\"loss_reason\":" + lossReason : ""
         );
 
-        Thread.ofVirtual().name("loss-fwd-" + auctionId).start(() -> {
+        CompletableFuture.runAsync(() -> {
             try {
                 HttpRequest req = HttpRequest.newBuilder()
                         .uri(URI.create(url))
@@ -235,12 +239,14 @@ public class WinLossController {
 
     private Long parseLong(Map<String, Object> m, String key) {
         if (!m.containsKey(key)) return null;
-        try { return Long.parseLong(m.get(key).toString()); } catch (Exception e) { return null; }
+        try { return Long.parseLong(m.get(key).toString()); }
+        catch (Exception e) { return null; }
     }
 
     private double parseDouble(Map<String, Object> m, String key) {
         if (!m.containsKey(key)) return 0.0;
-        try { return Double.parseDouble(m.get(key).toString()); } catch (Exception e) { return 0.0; }
+        try { return Double.parseDouble(m.get(key).toString()); }
+        catch (Exception e) { return 0.0; }
     }
 
     private String parseString(Map<String, Object> m, String key) {
