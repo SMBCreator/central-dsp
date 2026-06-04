@@ -1,27 +1,31 @@
 """
 RTB Bridge Router — FastAPI endpoints для взаимодействия
-RTB4FREE Java биддера с CentralDSP.
+Java биддера с CentralDSP.
 
 Все маршруты: /api/rtb/*
 
 Endpoints:
-  GET  /api/rtb/campaigns              — список активных кампаний для биддера
-  GET  /api/rtb/creatives/{id}         — детали конкретного креатива
-  POST /api/rtb/win-notice             — биддер победил в аукционе
-  POST /api/rtb/loss-notice            — биддер проиграл аукцион
-  GET  /api/rtb/status                 — статус биддера (alive, QPS, win rate)
-  GET  /api/rtb/stats/{campaign_id}    — RTB статистика кампании
-  GET  /api/rtb/campaigns/{id}/targeting   — таргетинг кампании
-  PUT  /api/rtb/campaigns/{id}/targeting   — обновить таргетинг
-  GET  /api/rtb/campaigns/{id}/creatives   — список креативов кампании
-  POST /api/rtb/campaigns/{id}/creatives   — создать новый креатив
-  PATCH /api/rtb/creatives/{id}/status     — изменить статус/audit_status
+  GET  /api/rtb/campaigns                      — список активных кампаний для биддера
+  GET  /api/rtb/creatives/{id}                 — детали конкретного креатива
+  GET  /api/rtb/win                            — Win Notice по NURL (query params, SSP-стандарт)
+  POST /api/rtb/win-notice                     — Win Notice по JSON body (API-стандарт)
+  POST /api/rtb/loss-notice                    — Loss Notice по JSON body
+  GET  /api/rtb/status                         — статус биддера (alive, QPS, win rate)
+  GET  /api/rtb/stats/{campaign_id}            — RTB статистика кампании
+  GET  /api/rtb/campaigns/{id}/targeting       — таргетинг кампании
+  PUT  /api/rtb/campaigns/{id}/targeting       — обновить таргетинг
+  GET  /api/rtb/campaigns/{id}/creatives       — список креативов кампании
+  POST /api/rtb/campaigns/{id}/creatives       — создать новый креатив
+  PATCH /api/rtb/creatives/{id}/status         — изменить статус/audit_status
+  GET  /api/rtb/campaigns/{id}/bid-adjustments — список корректировок ставок
+  POST /api/rtb/campaigns/{id}/bid-adjustments — добавить корректировку
+  DELETE /api/rtb/campaigns/{id}/bid-adjustments/{adj_id} — удалить корректировку
 """
 from __future__ import annotations
 import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -92,11 +96,11 @@ class BidAdjustmentCreate(BaseModel):
 @router.get(
     "/campaigns",
     response_model=List[RTBCampaignOut],
-    summary="Активные кампании для RTB4FREE биддера",
+    summary="Активные кампании для Java биддера",
 )
 def get_rtb_campaigns(db: Session = Depends(get_db)):
     """
-    Вызывается RTB4FREE Java биддером каждые N секунд.
+    Вызывается Java биддером каждые N секунд (CampaignLoaderService).
     Возвращает кампании с таргетингом и одобренными креативами.
     Только активные кампании с остатком бюджета.
     """
@@ -104,21 +108,63 @@ def get_rtb_campaigns(db: Session = Depends(get_db)):
 
 
 # ──────────────────────────────────────────────────────────────────
-# Win / Loss Notices — от биддера
+# Win Notice — два варианта
 # ──────────────────────────────────────────────────────────────────
+
+@router.get(
+    "/win",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Win Notice via NURL (query params) — SSP-стандарт",
+)
+def win_notice_nurl(
+    auction_id: str = Query(..., description="ID аукциона из BidRequest"),
+    imp_id: str = Query(..., description="ID impression из BidRequest"),
+    campaign_id: int = Query(..., description="ID кампании"),
+    creative_id: int = Query(..., description="ID креатива"),
+    win_price: float = Query(..., description="Цена победы в CPM USD (${AUCTION_PRICE} macro)"),
+    db: Session = Depends(get_db),
+):
+    """
+    GET /api/rtb/win?auction_id=...&imp_id=...&campaign_id=...&creative_id=...&win_price=...
+
+    Вызывается SSP когда срабатывает NURL из BidResponse.
+    Java биддер помещает этот URL в поле bid.nurl; SSP заменяет
+    макрос ${AUCTION_PRICE} реальной ценой клиринга и делает GET-запрос.
+
+    Создаёт AuctionLog(won=True) + Event(impression) для attribution chain.
+    """
+    notice = WinNotice(
+        auction_id=auction_id,
+        imp_id=imp_id,
+        campaign_id=campaign_id,
+        creative_id=creative_id,
+        win_price=win_price,
+        clearing_price=win_price,  # для первой цены = win_price
+    )
+    RTBService.process_win_notice(notice, db)
+
 
 @router.post(
     "/win-notice",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Win Notice — биддер победил в аукционе",
+    summary="Win Notice via JSON body — для прямых API вызовов",
 )
-def win_notice(body: WinNotice, db: Session = Depends(get_db)):
+def win_notice(
+    body: WinNotice,
+    db: Session = Depends(get_db),
+):
     """
-    Вызывается RTB4FREE биддером после победы в аукционе.
-    Создаёт AuctionLog(won=True) + Event(impression) для attribution.
+    POST /api/rtb/win-notice  {WinNotice JSON}
+
+    Альтернативный эндпоинт для прямых API-вызовов (тестирование,
+    внутренние сервисы). Принимает тот же WinNotice payload в теле запроса.
     """
     RTBService.process_win_notice(body, db)
 
+
+# ──────────────────────────────────────────────────────────────────
+# Loss Notice
+# ──────────────────────────────────────────────────────────────────
 
 @router.post(
     "/loss-notice",
@@ -127,7 +173,6 @@ def win_notice(body: WinNotice, db: Session = Depends(get_db)):
 )
 def loss_notice(body: LossNotice, db: Session = Depends(get_db)):
     """
-    Вызывается RTB4FREE биддером при проигрыше.
     Создаёт AuctionLog(won=False) для расчёта win rate.
     """
     RTBService.process_loss_notice(body, db)
@@ -140,7 +185,7 @@ def loss_notice(body: LossNotice, db: Session = Depends(get_db)):
 @router.get(
     "/status",
     response_model=BidderStatusOut,
-    summary="Статус RTB4FREE биддера",
+    summary="Статус Java биддера",
 )
 async def bidder_status(db: Session = Depends(get_db)):
     """Проверяет доступность биддера и возвращает метрики за сегодня."""
@@ -186,7 +231,6 @@ def get_targeting(
         TargetingRule.campaign_id == campaign_id
     ).first()
     if not rule:
-        # Возвращаем дефолтный таргетинг
         return TargetingOut()
     return TargetingOut(
         bid_floor=rule.bid_floor or 0.0,
@@ -313,7 +357,7 @@ def create_creative(
         duration_sec=body.duration_sec,
         adm=body.adm,
         status="active",
-        audit_status="pending",  # новые креативы — на проверку
+        audit_status="pending",
     )
     db.add(creative)
     db.commit()
@@ -330,7 +374,6 @@ def get_creative(
     creative_id: int,
     db: Session = Depends(get_db),
 ):
-    """Вызывается биддером для получения рекламного материала."""
     creative = db.query(Creative).filter(Creative.id == creative_id).first()
     if not creative:
         raise HTTPException(status_code=404, detail="Creative not found")
@@ -417,7 +460,6 @@ def create_bid_adjustment(
     if not (0.01 <= body.multiplier <= 10.0):
         raise HTTPException(status_code=400, detail="multiplier must be between 0.01 and 10.0")
 
-    # Upsert: обновляем если уже есть, создаём если нет
     existing = db.query(BidAdjustment).filter(
         BidAdjustment.campaign_id == campaign_id,
         BidAdjustment.dimension == body.dimension,
