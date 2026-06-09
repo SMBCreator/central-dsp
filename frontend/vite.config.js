@@ -7,13 +7,13 @@ module.exports = defineConfig({
     host: '0.0.0.0',
     port: 5173,
     proxy: {
-      '/api':     'http://backend:8000',
-      '/s':       'http://backend:8000',
-      '/c':       'http://backend:8000',
-      '/track':   'http://backend:8000',
-      '/px':      'http://backend:8000',
-      '/postback':'http://backend:8000',
-      '/health':  'http://backend:8000',
+      '/api':      'http://localhost:8777',
+      '/s':        'http://localhost:8777',
+      '/c':        'http://localhost:8777',
+      '/track':    'http://localhost:8777',
+      '/px':       'http://localhost:8777',
+      '/postback': 'http://localhost:8777',
+      '/health':   'http://localhost:8777',
     }
   },
   build: {

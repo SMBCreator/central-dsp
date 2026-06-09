@@ -15,6 +15,8 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./backend/db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5433:5432"                           # exposed on 5433 to avoid conflicts
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-centraldsp}"]
       interval: 10s
@@ -58,7 +60,7 @@ services:
       - ./backend:/app                        # hot reload dev
       - geoip_data:/data:ro                   # GeoLite2 DB (read-only)
     ports:
-      - "8000:8000"
+      - "8777:8000"                           # FastAPI → localhost:8777
     networks:
       - centraldsp
 
@@ -82,10 +84,10 @@ services:
       backend:
         condition: service_started
     volumes:
-      - geoip_data:/data:ro                   # GeoLite2 DB
+      - geoip_data:/data:ro
     ports:
-      - "8080:8080"                           # OpenRTB endpoint
-      - "9090:9090"                           # Prometheus metrics
+      - "8778:8080"                           # OpenRTB endpoint → localhost:8778
+      - "9779:9090"                           # Prometheus metrics → localhost:9779
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
       interval: 15s
@@ -134,7 +136,7 @@ services:
     command: celery -A celery_app flower --port=5555 --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-admin123}
     env_file: .env
     ports:
-      - "5555:5555"
+      - "8780:5555"                           # Flower UI → localhost:8780
     depends_on:
       - worker
     networks:
@@ -147,7 +149,7 @@ services:
     build: ./frontend
     restart: unless-stopped
     ports:
-      - "80:80"
+      - "8779:80"                             # UI → localhost:8779
     depends_on:
       - backend
     networks:
@@ -155,9 +157,7 @@ services:
 
 volumes:
   postgres_data:
-  geoip_data:            # Mount your GeoLite2-City.mmdb here in production
-                         # docker run --rm -v centraldsp_geoip_data:/data alpine
-                         # wget -O /data/GeoLite2-City.mmdb <maxmind_url>
+  geoip_data:
 
 networks:
   centraldsp:
