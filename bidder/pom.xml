@@ -13,11 +13,11 @@
     <description>OpenRTB 2.5 bidding engine for Central DSP</description>
 
     <properties>
-        <java.version>11</java.version>
-        <maven.compiler.source>11</maven.compiler.source>
-        <maven.compiler.target>11</maven.compiler.target>
+        <java.version>17</java.version>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <spring-boot.version>2.7.18</spring-boot.version>
+        <spring-boot.version>3.2.5</spring-boot.version>
     </properties>
 
     <dependencyManagement>
@@ -72,14 +72,14 @@
         <dependency>
             <groupId>org.apache.httpcomponents.client5</groupId>
             <artifactId>httpclient5</artifactId>
-            <version>5.2.1</version>
+            <version>5.3.1</version>
         </dependency>
 
         <!-- MaxMind GeoLite2 -->
         <dependency>
             <groupId>com.maxmind.geoip2</groupId>
             <artifactId>geoip2</artifactId>
-            <version>4.1.0</version>
+            <version>4.2.0</version>
         </dependency>
 
         <!-- Lombok -->

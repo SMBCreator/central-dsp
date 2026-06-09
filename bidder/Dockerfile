@@ -1,6 +1,5 @@
-# CentralBidder — Java 11 OpenRTB 2.x bidding engine
-# Based on RTB4FREE bidder, rebranded as CentralBidder
-FROM maven:3.9.6-eclipse-temurin-11 AS build
+# CentralBidder — Java 17 OpenRTB 2.x bidding engine
+FROM maven:3.9.6-eclipse-temurin-17 AS build
 
 WORKDIR /build
 
@@ -13,7 +12,7 @@ COPY src ./src
 RUN mvn package -DskipTests -B
 
 # Runtime image
-FROM eclipse-temurin:11-jre-alpine
+FROM eclipse-temurin:17-jre-alpine
 
 WORKDIR /app
 
