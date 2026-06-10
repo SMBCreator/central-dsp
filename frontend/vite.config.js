@@ -1,7 +1,7 @@
-const { defineConfig } = require('@vitejs/plugin-vue')
-const vue = require('@vitejs/plugin-vue')
+import { defineConfig } from 'vite'
+import vue from '@vitejs/plugin-vue'
 
-module.exports = defineConfig({
+export default defineConfig({
   plugins: [vue()],
   server: {
     host: '0.0.0.0',
