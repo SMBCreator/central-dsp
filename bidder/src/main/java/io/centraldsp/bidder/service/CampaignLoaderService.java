@@ -11,7 +11,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
-import javax.annotation.PostConstruct;
+import jakarta.annotation.PostConstruct;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -49,7 +49,7 @@ public class CampaignLoaderService {
     private final ObjectMapper objectMapper;
     private final BudgetService budgetService;
 
-    /** campaignId → CampaignDTO */
+    /** campaignId -> CampaignDTO */
     private volatile Map<Long, CampaignDTO> campaigns = new ConcurrentHashMap<>();
 
     @Getter
@@ -99,7 +99,7 @@ public class CampaignLoaderService {
         return initialized.get();
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
 
     private void loadCampaigns() {
         String url = backendUrl + "/api/rtb/campaigns?status=active";
@@ -141,7 +141,6 @@ public class CampaignLoaderService {
             log.warn("[CampaignLoader] Load interrupted");
         } catch (Exception e) {
             log.error("[CampaignLoader] Failed to load campaigns from {}: {}", url, e.getMessage());
-            // Fail-soft: keep serving with stale data.
         }
     }
 }

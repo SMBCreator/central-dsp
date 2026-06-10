@@ -9,7 +9,7 @@ import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.JedisPoolConfig;
 
-import javax.annotation.PostConstruct;
+import jakarta.annotation.PostConstruct;
 import java.time.LocalDate;
 
 /**
@@ -108,10 +108,7 @@ public class BudgetService {
         String key = dailyKey(campaignId);
         try (Jedis jedis = jedisPool.getResource()) {
             jedis.select(redisDb);
-            // Ensure key exists with TTL before incrementing.
             jedis.incrbyfloat(key, winPrice);
-            // Set TTL only if key is brand new (EXPIRE NX - Redis 7+).
-            // Fallback: always set TTL if close to 0 (first increment).
             if (jedis.ttl(key) < 0) {
                 jedis.expire(key, DAILY_TTL_SECONDS);
             }
