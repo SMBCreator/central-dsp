@@ -15,35 +15,14 @@ import java.util.Optional;
 
 /**
  * Targeting evaluation service.
- *
- * <p>For a campaign + BidRequest + Impression triple, determines:
- * <ol>
- *   <li>Does the campaign's targeting rules match this request?</li>
- *   <li>Which creative is the best match for this impression?</li>
- * </ol>
- * </p>
- *
- * <p>All checks are fail-open when data is missing:
- * if the SSP doesn't send geo/device info we assume it passes.
- * This maximizes fill rate for partial signals.</p>
  */
 @Slf4j
 @Service
 public class TargetingService {
 
-    /**
-     * Main entry point. Returns the best matching creative,
-     * or empty if this campaign should not bid on this impression.
-     *
-     * @param campaign   Campaign with targeting rules and creatives
-     * @param request    OpenRTB BidRequest
-     * @param imp        The specific Impression being evaluated
-     * @return Optional with the best matching CreativeDTO, or empty
-     */
     public Optional<CreativeDTO> match(CampaignDTO campaign, BidRequest request, Impression imp) {
         TargetingDTO t = campaign.getTargeting();
 
-        // No targeting rules = match everything.
         if (t != null) {
             if (!checkGeo(t, request))        return Optional.empty();
             if (!checkDevice(t, request))     return Optional.empty();
@@ -51,25 +30,21 @@ public class TargetingService {
             if (!checkSchedule(t))            return Optional.empty();
         }
 
-        // Find first creative that matches impression dimensions & format.
         return campaign.getCreatives().stream()
                 .filter(CreativeDTO::isServable)
                 .filter(c -> matchesImpression(c, imp))
                 .findFirst();
     }
 
-    // ── Geo ───────────────────────────────────────────────────────────────────
+    // ── Geo ───────────────────────────────────────────────────────────────
 
     private boolean checkGeo(TargetingDTO t, BidRequest request) {
         List<String> allowedCountries = t.getGeoCountries();
         if (allowedCountries == null || allowedCountries.isEmpty()) return true;
 
-        String country = null;
-        if (request.getDevice() != null && request.getDevice().getGeo() != null) {
-            country = request.getDevice().getGeo().getCountry();
-        } else if (request.getUser() != null && request.getUser().getGeo() != null) {
-            country = request.getUser().getGeo().getCountry();
-        }
+        // Extract country into a single effectively-final local variable
+        // by using a helper method — avoids "not effectively final" lambda error.
+        final String country = resolveCountry(request);
 
         // If no geo signal, fail-open.
         if (country == null) return true;
@@ -78,13 +53,23 @@ public class TargetingService {
                 .anyMatch(c -> c.equalsIgnoreCase(country));
     }
 
+    /** Extract country code from device.geo or user.geo. */
+    private String resolveCountry(BidRequest request) {
+        if (request.getDevice() != null && request.getDevice().getGeo() != null
+                && request.getDevice().getGeo().getCountry() != null) {
+            return request.getDevice().getGeo().getCountry();
+        }
+        if (request.getUser() != null && request.getUser().getGeo() != null) {
+            return request.getUser().getGeo().getCountry();
+        }
+        return null;
+    }
+
     // ── Device type / OS / Browser ───────────────────────────────────────────
 
     private boolean checkDevice(TargetingDTO t, BidRequest request) {
         if (request.getDevice() == null) return true;
 
-        // Device type check
-        // Field in Device.java is `deviceType` (camelCase) -> Lombok generates getDeviceType()
         if (t.getDeviceTypes() != null && !t.getDeviceTypes().isEmpty()) {
             Integer deviceType = request.getDevice().getDeviceType();
             if (deviceType != null) {
@@ -95,7 +80,6 @@ public class TargetingService {
             }
         }
 
-        // OS check
         if (t.getOsList() != null && !t.getOsList().isEmpty()) {
             String os = request.getDevice().getOs();
             if (os != null && !containsIgnoreCase(t.getOsList(), os)) {
@@ -103,7 +87,6 @@ public class TargetingService {
             }
         }
 
-        // Browser check
         if (t.getBrowserList() != null && !t.getBrowserList().isEmpty()) {
             String browser = request.getDevice().getBrowser();
             if (browser != null && !containsIgnoreCase(t.getBrowserList(), browser)) {
@@ -120,7 +103,6 @@ public class TargetingService {
         String domain = resolveDomain(request);
         if (domain == null) return true;
 
-        // Blacklist: reject if domain is on blocklist
         if (t.getSiteBlacklist() != null && !t.getSiteBlacklist().isEmpty()) {
             if (containsIgnoreCase(t.getSiteBlacklist(), domain)) {
                 log.debug("[Targeting] Domain {} on blacklist", domain);
@@ -128,7 +110,6 @@ public class TargetingService {
             }
         }
 
-        // Whitelist: reject if whitelist is set and domain is NOT on it
         if (t.getSiteWhitelist() != null && !t.getSiteWhitelist().isEmpty()) {
             if (!containsIgnoreCase(t.getSiteWhitelist(), domain)) {
                 log.debug("[Targeting] Domain {} not on whitelist", domain);
@@ -139,7 +120,7 @@ public class TargetingService {
         return true;
     }
 
-    // ── Dayparting (hour-of-week schedule) ───────────────────────────────────
+    // ── Dayparting ────────────────────────────────────────────────────────────
 
     private boolean checkSchedule(TargetingDTO t) {
         if (t.getHourSchedule() == null || t.getHourSchedule().isEmpty()) return true;
@@ -168,7 +149,6 @@ public class TargetingService {
 
         return switch (format) {
             case "banner" -> matchesBanner(creative, imp);
-            // Field in Impression.java is `nativeObj` -> Lombok generates getNativeObj()
             case "native" -> imp.getNativeObj() != null;
             case "video"  -> imp.getVideo()     != null;
             default       -> false;
