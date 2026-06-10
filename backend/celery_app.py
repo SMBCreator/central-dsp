@@ -8,10 +8,10 @@ celery_app = Celery(
     broker=settings.redis_url,
     backend=settings.redis_url,
     include=[
-        "backend.tasks.rules",
-        "backend.tasks.sync",
-        "backend.tasks.reports",
-        "backend.tasks.cleanup",
+        "tasks.rules",
+        "tasks.sync",
+        "tasks.reports",
+        "tasks.cleanup",
     ],
 )
 
@@ -24,31 +24,30 @@ celery_app.conf.update(
     task_acks_late=True,
     worker_prefetch_multiplier=1,
     task_routes={
-        "backend.tasks.rules.*": {"queue": "default"},
-        "backend.tasks.sync.*": {"queue": "sync"},
-        "backend.tasks.reports.*": {"queue": "default"},
-        "backend.tasks.cleanup.*": {"queue": "default"},
+        "tasks.rules.*":   {"queue": "default"},
+        "tasks.sync.*":    {"queue": "sync"},
+        "tasks.reports.*": {"queue": "default"},
+        "tasks.cleanup.*": {"queue": "default"},
     },
     beat_schedule={
-        # AutoPilot rules: every 30 seconds
         "evaluate-rules": {
-            "task": "backend.tasks.rules.evaluate_all_rules",
+            "task": "tasks.rules.evaluate_all_rules",
             "schedule": 30.0,
         },
-        # Sync ad network costs: every 15 minutes
         "sync-ad-costs": {
-            "task": "backend.tasks.sync.sync_all_ad_accounts",
+            "task": "tasks.sync.sync_all_ad_accounts",
             "schedule": 900.0,
         },
-        # Daily report at 08:00 UTC
         "daily-report": {
-            "task": "backend.tasks.reports.send_daily_report",
+            "task": "tasks.reports.send_daily_report",
             "schedule": crontab(hour=8, minute=0),
         },
-        # Cleanup expired links: every hour
         "cleanup-expired": {
-            "task": "backend.tasks.cleanup.cleanup_expired_links",
+            "task": "tasks.cleanup.cleanup_expired_links",
             "schedule": crontab(minute=0),
         },
     },
 )
+
+# Alias so tasks can do: from celery_app import app
+app = celery_app
