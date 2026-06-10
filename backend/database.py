@@ -1,9 +1,7 @@
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-# Relative import: database.py lives inside the backend/ package (WORKDIR /app)
-# so config.py is a sibling module — import directly, not via 'backend.config'
-from config import settings
+from backend.config import settings
 
 engine = create_engine(
     settings.database_url,
