@@ -19,7 +19,7 @@ from geoip import get_country, get_device_info
 from utils import generate_short_code, generate_qr_png, GIF_1X1, apply_macros, add_utm_params
 from rtb_bridge.router import router as rtb_router
 
-logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO))
+logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────
@@ -52,8 +52,8 @@ def startup():
     try:
         if db.query(User).count() == 0:
             admin = User(
-                email=settings.FIRST_ADMIN_EMAIL,
-                password_hash=hash_password(settings.FIRST_ADMIN_PASSWORD),
+                email=settings.first_admin_email,
+                password_hash=hash_password(settings.first_admin_password),
                 full_name="Admin",
                 role="admin",
                 is_active=True,
@@ -61,8 +61,8 @@ def startup():
             db.add(admin)
             db.commit()
             logger.warning(
-                f"[STARTUP] First admin created: {settings.FIRST_ADMIN_EMAIL} "
-                f"/ {settings.FIRST_ADMIN_PASSWORD} — CHANGE PASSWORD!"
+                f"[STARTUP] First admin created: {settings.first_admin_email} "
+                f"/ {settings.first_admin_password} — CHANGE PASSWORD!"
             )
     finally:
         db.close()
@@ -396,7 +396,6 @@ def redirect_link(
     country = get_country(ip)
     device_type, os_name, browser_name = get_device_info(ua_str)
 
-    # Choose target URL from geo/device rules
     target_url = link.original_url
     geo_rules: dict = link.geo_rules or {}
     device_rules: dict = link.device_rules or {}
@@ -406,10 +405,8 @@ def redirect_link(
     if geo_rules and country:
         target_url = geo_rules.get(country) or geo_rules.get("default") or target_url
 
-    # Generate click_id
     click_uuid = uuid.uuid4()
 
-    # Macro substitution in URL
     target_url = apply_macros(target_url, {
         "sub_id": sub_id,
         "creative_id": creative_id,
@@ -420,7 +417,6 @@ def redirect_link(
         "timestamp": str(int(datetime.now(timezone.utc).timestamp())),
     })
 
-    # Record click
     click = Click(
         link_id=link.id,
         sub_id=sub_id,
@@ -433,7 +429,6 @@ def redirect_link(
     )
     db.add(click)
 
-    # Update legacy stats
     stat = db.query(Stat).filter(
         Stat.link_id == link.id,
         Stat.sub_id == sub_id,
@@ -453,7 +448,6 @@ def redirect_link(
         db.add(stat)
     db.commit()
 
-    # A/B rotation for campaign
     if link.campaign.is_ab:
         links = db.query(Link).filter(
             Link.campaign_id == link.campaign_id,
@@ -475,7 +469,6 @@ def redirect_ab(
     creative_id: str = "unknown",
     db: Session = Depends(get_db),
 ):
-    """A/B rotator — randomly selects a link from campaign."""
     import random
     camp = db.query(Campaign).filter(Campaign.camp_code == camp_code, Campaign.status == "active").first()
     if not camp:
@@ -495,7 +488,6 @@ def track_event(
     val: Optional[float] = None,
     db: Session = Depends(get_db),
 ):
-    """Legacy tracking pixel endpoint — backward compat with v2."""
     link = _resolve_link(code, db)
     if event == "conversion":
         stat = db.query(Stat).filter(Stat.link_id == link.id).first()
@@ -550,7 +542,6 @@ def delete_pixel(pixel_id: str, current_user: User = Depends(require_role("admin
 
 @app.get("/px/{pixel_id}.js", tags=["Tracking"])
 def serve_pixel_js(pixel_id: str, request: Request, db: Session = Depends(get_db)):
-    """Serve generated JS pixel for embedding on landing pages."""
     pixel = db.query(Pixel).filter(Pixel.pixel_id == pixel_id, Pixel.is_active == True).first()
     if not pixel:
         raise HTTPException(status_code=404, detail="Pixel not found")
@@ -601,7 +592,6 @@ def serve_pixel_js(pixel_id: str, request: Request, db: Session = Depends(get_db
 
 @app.post("/px/{pixel_id}/event", tags=["Tracking"])
 async def receive_pixel_event(pixel_id: str, request: Request, db: Session = Depends(get_db)):
-    """Accept JS pixel events (pageview, engage, lead, purchase, etc.)"""
     pixel = db.query(Pixel).filter(Pixel.pixel_id == pixel_id, Pixel.is_active == True).first()
     if not pixel:
         return Response(status_code=204)
@@ -642,7 +632,6 @@ async def receive_pixel_event(pixel_id: str, request: Request, db: Session = Dep
 @app.get("/px/{pixel_id}/1x1.gif", tags=["Tracking"])
 def impression_pixel(pixel_id: str, request: Request, db: Session = Depends(get_db),
                      sub_id: str = "unknown", creative_id: str = "unknown"):
-    """1x1 impression pixel for banners/push notifications."""
     pixel = db.query(Pixel).filter(Pixel.pixel_id == pixel_id, Pixel.is_active == True).first()
     if pixel:
         ip = _get_client_ip(request)
@@ -671,10 +660,6 @@ def impression_pixel(pixel_id: str, request: Request, db: Session = Depends(get_
 # ─────────────────────────────────────────
 @app.get("/postback", tags=["Tracking"])
 def receive_postback(request: Request, db: Session = Depends(get_db)):
-    """
-    S2S Postback from CPA networks.
-    Accepts: click_id (or cid/clickid/aff_click_id), payout (or revenue/sum), status
-    """
     p = dict(request.query_params)
     click_id_str = (
         p.get("click_id") or p.get("cid") or
@@ -685,7 +670,6 @@ def receive_postback(request: Request, db: Session = Depends(get_db)):
     currency = p.get("currency", "USD")
     ip = _get_client_ip(request)
 
-    # Audit log always
     pb = Postback(
         payout=payout,
         currency=currency,
@@ -701,7 +685,6 @@ def receive_postback(request: Request, db: Session = Depends(get_db)):
             click = db.query(Click).filter(Click.click_id == click_uuid).first()
             if click:
                 pb.processed = True
-                # Write conversion event
                 event = Event(
                     link_id=click.link_id,
                     click_id=click_id_str,
@@ -716,7 +699,6 @@ def receive_postback(request: Request, db: Session = Depends(get_db)):
                     metadata_={"status": status_val, "source": "s2s_postback"},
                 )
                 db.add(event)
-                # Update legacy stats: +1 conversion, +revenue
                 stat = db.query(Stat).filter(
                     Stat.link_id == click.link_id,
                     Stat.sub_id == click.sub_id,
@@ -767,7 +749,6 @@ def analytics_by_source(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Top sub_ids by ROI for a campaign."""
     rows = db.query(Stat).join(Stat.link).filter(
         Link.campaign_id == campaign_id
     ).all()
