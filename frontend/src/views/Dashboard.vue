@@ -61,9 +61,7 @@
     <!-- Active campaigns -->
     <div class="card">
       <div class="card-header">
-        <div>
-          <div class="card-title">Active Campaigns</div>
-        </div>
+        <div class="card-title">Active Campaigns</div>
         <RouterLink to="/campaigns" class="btn btn-ghost btn-sm">View all</RouterLink>
       </div>
 
@@ -103,7 +101,7 @@
           <tbody>
             <tr v-for="c in campaigns" :key="c.id">
               <td>
-                <div style="font-weight:500;color:#d0d0d0">{{ c.name }}</div>
+                <div class="val-text" style="font-weight:500">{{ c.name }}</div>
                 <div class="text-xs val-muted">{{ c.type || 'RTB' }}</div>
               </td>
               <td><span :class="`badge badge-${c.status}`">{{ c.status }}</span></td>
@@ -131,10 +129,10 @@
         <div style="display:flex;align-items:center;gap:12px">
           <span :class="['status-dot', bidderStatus.online ? 'online' : 'offline']" />
           <div>
-            <div style="font-size:13px;font-weight:600;color:#d0d0d0">
+            <div class="val-text" style="font-size:13px;font-weight:600">
               RTB Bidder — {{ bidderStatus.online ? 'Online' : 'Offline' }}
             </div>
-            <div style="font-size:11px;color:#444;margin-top:2px">
+            <div class="val-muted" style="font-size:11px;margin-top:2px">
               {{ bidderStatus.online
                 ? `${fmt(bidderStatus.requests)} bid requests processed`
                 : 'Bidder service unreachable' }}

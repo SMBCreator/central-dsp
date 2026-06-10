@@ -148,9 +148,68 @@ onUnmounted(() => clearInterval(healthTimer))
 </script>
 
 <style scoped>
-/* ── THEMES ── */
-.layout.dark  { --bg: #0a0a0a; --sidebar-bg: #0d0d0d; --sidebar-border: rgba(255,255,255,0.06); --topbar-bg: #0a0a0a; --text: #d0d0d0; --text-muted: #555; --text-faint: #333; --section-label: #2e2e2e; --hover-bg: rgba(255,255,255,0.05); --active-bg: rgba(255,255,255,0.08); --active-text: #e0e0e0; --period-bg: rgba(255,255,255,0.04); --period-border: rgba(255,255,255,0.06); --period-active: rgba(255,255,255,0.08); --avatar-bg: #1f1f1f; --avatar-border: rgba(255,255,255,0.1); --dot-online: #4ade80; --dot-offline: #555; }
-.layout.light { --bg: #f4f4f2; --sidebar-bg: #ffffff; --sidebar-border: rgba(0,0,0,0.08); --topbar-bg: #ffffff; --text: #1a1a1a; --text-muted: #888; --text-faint: #bbb; --section-label: #ccc; --hover-bg: rgba(0,0,0,0.04); --active-bg: rgba(0,0,0,0.07); --active-text: #111; --period-bg: rgba(0,0,0,0.04); --period-border: rgba(0,0,0,0.07); --period-active: rgba(0,0,0,0.08); --avatar-bg: #f0f0ee; --avatar-border: rgba(0,0,0,0.1); --dot-online: #16a34a; --dot-offline: #bbb; }
+/* ═══════════════════════════════════════════════════════════════
+   DARK THEME
+═══════════════════════════════════════════════════════════════ */
+.layout.dark {
+  --bg:              #0a0a0a;
+  --sidebar-bg:      #0d0d0d;
+  --sidebar-border:  rgba(255,255,255,0.06);
+  --topbar-bg:       #0a0a0a;
+  --text:            #d0d0d0;
+  --text-muted:      #555;
+  --text-faint:      #333;
+  --section-label:   #2e2e2e;
+  --hover-bg:        rgba(255,255,255,0.05);
+  --active-bg:       rgba(255,255,255,0.08);
+  --active-text:     #e0e0e0;
+  --period-bg:       rgba(255,255,255,0.04);
+  --period-border:   rgba(255,255,255,0.06);
+  --period-active:   rgba(255,255,255,0.08);
+  --avatar-bg:       #1f1f1f;
+  --avatar-border:   rgba(255,255,255,0.1);
+  --dot-online:      #4ade80;
+  --dot-offline:     #555;
+  --accent:          #7c7ff4;
+  --accent-muted:    rgba(124,127,244,0.15);
+  --accent-text:     #7c7ff4;
+  --card-shadow:     none;
+  --input-bg:        #111;
+  --table-row-hover: rgba(255,255,255,0.02);
+  --kpi-bg:          #111;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   LIGHT THEME — Syntermedia style
+   White surfaces · near-black text · indigo accent #5b5fc7
+═══════════════════════════════════════════════════════════════ */
+.layout.light {
+  --bg:              #f5f5f7;
+  --sidebar-bg:      #ffffff;
+  --sidebar-border:  rgba(0,0,0,0.08);
+  --topbar-bg:       #ffffff;
+  --text:            #111118;
+  --text-muted:      #6b6b7b;
+  --text-faint:      #a8a8b8;
+  --section-label:   #c8c8d8;
+  --hover-bg:        rgba(91,95,199,0.05);
+  --active-bg:       rgba(91,95,199,0.10);
+  --active-text:     #5b5fc7;
+  --period-bg:       #f0f0f5;
+  --period-border:   rgba(0,0,0,0.07);
+  --period-active:   #ffffff;
+  --avatar-bg:       #eeeef8;
+  --avatar-border:   rgba(91,95,199,0.2);
+  --dot-online:      #16a34a;
+  --dot-offline:     #bbb;
+  --accent:          #5b5fc7;
+  --accent-muted:    rgba(91,95,199,0.10);
+  --accent-text:     #5b5fc7;
+  --card-shadow:     0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+  --input-bg:        #ffffff;
+  --table-row-hover: rgba(91,95,199,0.04);
+  --kpi-bg:          #ffffff;
+}
 
 .layout {
   display: flex;
@@ -182,7 +241,7 @@ onUnmounted(() => clearInterval(healthTimer))
   padding: 0 18px;
   border-bottom: 1px solid var(--sidebar-border);
   flex-shrink: 0;
-  color: var(--text);
+  color: var(--accent);
 }
 .logo-text {
   font-size: 13px;
@@ -235,7 +294,7 @@ onUnmounted(() => clearInterval(healthTimer))
   cursor: pointer;
   transition: background 150ms, color 150ms;
 }
-.theme-toggle:hover { background: var(--active-bg); color: var(--text); }
+.theme-toggle:hover { background: var(--active-bg); color: var(--accent); }
 
 /* ── TOPBAR ── */
 .main-wrap {
@@ -293,6 +352,7 @@ onUnmounted(() => clearInterval(healthTimer))
 .period-btn.active {
   background: var(--period-active);
   color: var(--text);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
 }
 
 .avatar {
@@ -302,7 +362,7 @@ onUnmounted(() => clearInterval(healthTimer))
   border: 1px solid var(--avatar-border);
   display: flex; align-items: center; justify-content: center;
   font-size: 11px; font-weight: 600;
-  color: var(--text-muted);
+  color: var(--accent);
   letter-spacing: 0.02em;
   cursor: pointer;
   user-select: none;

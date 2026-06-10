@@ -33,7 +33,7 @@
         <svg v-if="k.spark.length" :viewBox="`0 0 ${k.spark.length*8} 32`" class="sparkline"
           :style="{width: k.spark.length*8+'px'}" preserveAspectRatio="none">
           <polyline :points="sparkPoints(k.spark)" fill="none"
-            :stroke="k.up ? '#34d399' : '#f87171'" stroke-width="1.5"
+            :stroke="k.up ? '#16a34a' : '#dc2626'" stroke-width="1.5"
             stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
       </div>
@@ -51,7 +51,7 @@
       <div style="display:flex;align-items:center;gap:8px">
         <div style="position:relative">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-            style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:#444;pointer-events:none">
+            style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--text-muted);pointer-events:none">
             <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
           </svg>
           <input v-model="search" class="input" style="padding-left:30px;width:200px" placeholder="Filter rows..." />
@@ -91,7 +91,7 @@
           </thead>
           <tbody>
             <tr v-for="row in visibleRows" :key="row.key">
-              <td style="font-weight:500;color:#d0d0d0;white-space:nowrap">{{ row.key }}</td>
+              <td class="val-text" style="font-weight:500;white-space:nowrap">{{ row.key }}</td>
               <td class="tabnum">{{ fmt(row.impressions) }}</td>
               <td class="tabnum">{{ fmt(row.clicks) }}</td>
               <td class="tabnum" :class="row.ctr > 1 ? 'val-positive' : ''">{{ row.ctr?.toFixed(2) }}%</td>
@@ -109,7 +109,7 @@
 
             <!-- Totals row -->
             <tr class="totals-row">
-              <td style="font-weight:700;color:#e0e0e0">Total</td>
+              <td style="font-weight:700" class="val-text">Total</td>
               <td class="tabnum">{{ fmt(totals.impressions) }}</td>
               <td class="tabnum">{{ fmt(totals.clicks) }}</td>
               <td class="tabnum">{{ totals.ctr?.toFixed(2) }}%</td>
@@ -197,7 +197,6 @@ const totals = computed(() => {
   }
 })
 
-/* KPI strip — top 5 metrics with mock spark data until real API */
 const kpis = computed(() => [
   {
     id: 'imp',   label: 'Impressions',
@@ -306,11 +305,10 @@ watch([() => props.period, groupBy], load)
   opacity:0.7;
 }
 .sortable { cursor:pointer; user-select:none; white-space:nowrap; }
-.sortable:hover { color:#a0a0a0; }
-.sort-icon { margin-left:3px; font-size:10px; color:#555; }
+.sortable:hover { color: var(--accent, #7c7ff4); }
+.sort-icon { margin-left:3px; font-size:10px; color: var(--text-faint); }
 .totals-row td {
-  border-top:1px solid rgba(255,255,255,0.1);
-  padding-top:10px;
-  color:#c0c0c0;
+  border-top: 1px solid var(--sidebar-border);
+  padding-top: 10px;
 }
 </style>
