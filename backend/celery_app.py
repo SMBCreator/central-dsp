@@ -1,7 +1,10 @@
 """Celery configuration for Central DSP."""
+import sys, os
+sys.path.insert(0, os.path.dirname(__file__))
+
 from celery import Celery
 from celery.schedules import crontab
-from backend.config import settings
+from config import settings
 
 celery_app = Celery(
     "centraldsp",
