@@ -22,6 +22,8 @@ CREATE TABLE IF NOT EXISTS users (
 
 -- ─────────────────────────────────────────
 -- CAMPAIGNS
+-- bid_price / bid_floor / bid_ceiling — RTB fields used by SQLAlchemy Campaign model
+-- click_url / tracking_pixel / freq_cap — convenience fields on campaign level
 -- ─────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS campaigns (
     id                 SERIAL PRIMARY KEY,
@@ -35,6 +37,14 @@ CREATE TABLE IF NOT EXISTS campaigns (
     attribution_model  VARCHAR(20)  NOT NULL DEFAULT 'last_click' CHECK (attribution_model IN ('last_click','first_click','linear')),
     daily_budget       NUMERIC(10,4),
     total_budget       NUMERIC(10,4),
+    -- RTB bidding fields (used by SQLAlchemy Campaign model and AutoPilot)
+    bid_price          NUMERIC(10,6) DEFAULT 0.10,
+    bid_floor          NUMERIC(10,6) DEFAULT 0.01,
+    bid_ceiling        NUMERIC(10,6) DEFAULT 5.00,
+    -- Campaign-level tracking
+    click_url          TEXT,
+    tracking_pixel     TEXT,
+    freq_cap           INT          DEFAULT 0,
     created_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
@@ -66,7 +76,7 @@ CREATE TABLE IF NOT EXISTS pixels (
     id           SERIAL PRIMARY KEY,
     campaign_id  INT          NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
     name         VARCHAR(255) NOT NULL,
-    pixel_id     UUID         NOT NULL DEFAULT uuid_generate_v4() UNIQUE,  -- UNIQUE required for FK from events
+    pixel_id     UUID         NOT NULL DEFAULT uuid_generate_v4() UNIQUE,
     is_active    BOOLEAN      NOT NULL DEFAULT TRUE,
     last_fire_at TIMESTAMPTZ,
     total_events BIGINT       NOT NULL DEFAULT 0,
