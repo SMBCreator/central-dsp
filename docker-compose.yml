@@ -16,7 +16,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./backend/db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
-      - "5433:5432"                           # exposed on 5433 to avoid conflicts
+      - "5433:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-centraldsp}"]
       interval: 10s
@@ -26,7 +26,7 @@ services:
       - centraldsp
 
   # ─────────────────────────────────────────
-  # REDIS (broker + cache + RTB counters)
+  # REDIS
   # ─────────────────────────────────────────
   redis:
     image: redis:7-alpine
@@ -41,7 +41,7 @@ services:
       - centraldsp
 
   # ─────────────────────────────────────────
-  # BACKEND (FastAPI — Campaign API + RTB Bridge)
+  # BACKEND (FastAPI)
   # ─────────────────────────────────────────
   backend:
     build: ./backend
@@ -57,15 +57,15 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - ./backend:/app                        # hot reload dev
-      - geoip_data:/data:ro                   # GeoLite2 DB (read-only)
+      - ./backend:/app/backend              # hot reload: mount source into /app/backend
+      - geoip_data:/data:ro
     ports:
-      - "8777:8000"                           # FastAPI → localhost:8777
+      - "8777:8000"
     networks:
       - centraldsp
 
   # ─────────────────────────────────────────
-  # CENTRALBIDDER (Java OpenRTB 2.5 Engine)
+  # CENTRALBIDDER (Java OpenRTB 2.5)
   # ─────────────────────────────────────────
   bidder:
     build: ./bidder
@@ -86,8 +86,8 @@ services:
     volumes:
       - geoip_data:/data:ro
     ports:
-      - "8778:8080"                           # OpenRTB endpoint → localhost:8778
-      - "9779:9090"                           # Prometheus metrics → localhost:9779
+      - "8778:8080"
+      - "9779:9090"
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
       interval: 15s
@@ -102,7 +102,7 @@ services:
   worker:
     build: ./backend
     restart: unless-stopped
-    command: celery -A celery_app worker --loglevel=info --concurrency=4 -Q default,rtb,sync
+    command: celery -A backend.celery_app worker --loglevel=info --concurrency=4 -Q default,rtb,sync
     env_file: .env
     environment:
       RTB_API_TOKEN: ${RTB_API_TOKEN:-changeme-rtb-token}
@@ -111,45 +111,51 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    volumes:
+      - ./backend:/app/backend
     networks:
       - centraldsp
 
   # ─────────────────────────────────────────
-  # CELERY BEAT (scheduler)
+  # CELERY BEAT
   # ─────────────────────────────────────────
   beat:
     build: ./backend
     restart: unless-stopped
-    command: celery -A celery_app beat --loglevel=info
+    command: celery -A backend.celery_app beat --loglevel=info
     env_file: .env
     depends_on:
       - worker
+    volumes:
+      - ./backend:/app/backend
     networks:
       - centraldsp
 
   # ─────────────────────────────────────────
-  # FLOWER (Celery monitoring)
+  # FLOWER
   # ─────────────────────────────────────────
   flower:
     build: ./backend
     restart: unless-stopped
-    command: celery -A celery_app flower --port=5555 --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-admin123}
+    command: celery -A backend.celery_app flower --port=5555 --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-admin123}
     env_file: .env
     ports:
-      - "8780:5555"                           # Flower UI → localhost:8780
+      - "8780:5555"
     depends_on:
       - worker
+    volumes:
+      - ./backend:/app/backend
     networks:
       - centraldsp
 
   # ─────────────────────────────────────────
-  # FRONTEND (Vue 3 + nginx)
+  # FRONTEND
   # ─────────────────────────────────────────
   frontend:
     build: ./frontend
     restart: unless-stopped
     ports:
-      - "8779:80"                             # UI → localhost:8779
+      - "8779:80"
     depends_on:
       - backend
     networks:
