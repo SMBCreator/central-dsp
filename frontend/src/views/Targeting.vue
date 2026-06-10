@@ -64,7 +64,7 @@
             <input
               v-model="geoInput"
               @keydown.enter.prevent="addGeo"
-              @keydown=",.prevent="addGeo""
+              @keydown.,="addGeo"
               class="tag-text-input"
               placeholder="US, DE, RU…  Enter to add"
               maxlength="2"
@@ -124,8 +124,7 @@
               v-model="whitelistText"
               class="textarea"
               rows="5"
-              placeholder="example.com
-news.site.org"
+              placeholder="example.com&#10;news.site.org"
             />
           </div>
           <div class="form-row">
