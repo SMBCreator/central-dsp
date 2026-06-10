@@ -101,14 +101,14 @@ public class BudgetService {
      * Alias kept for backwards compatibility with internal callers.
      *
      * @param campaignId Campaign ID
-     * @param winPrice   CPM price (will be recorded as-is; divide by 1000 before calling
-     *                   if you want per-impression cost)
+     * @param winPrice   CPM price
      */
     public void recordSpend(Long campaignId, double winPrice) {
         String key = dailyKey(campaignId);
         try (Jedis jedis = jedisPool.getResource()) {
             jedis.select(redisDb);
-            jedis.incrbyfloat(key, winPrice);
+            // Jedis 4.x: incrByFloat (camelCase) replaces incrbyfloat
+            jedis.incrByFloat(key, winPrice);
             if (jedis.ttl(key) < 0) {
                 jedis.expire(key, DAILY_TTL_SECONDS);
             }

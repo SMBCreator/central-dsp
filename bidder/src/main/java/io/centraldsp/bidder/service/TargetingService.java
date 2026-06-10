@@ -8,7 +8,6 @@ import io.centraldsp.bidder.model.ortb.Impression;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
-import java.time.DayOfWeek;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.List;
@@ -85,11 +84,10 @@ public class TargetingService {
         if (request.getDevice() == null) return true;
 
         // Device type check
+        // Field in Device.java is `deviceType` (camelCase) -> Lombok generates getDeviceType()
         if (t.getDeviceTypes() != null && !t.getDeviceTypes().isEmpty()) {
-            Integer deviceType = request.getDevice().getDevicetype();
+            Integer deviceType = request.getDevice().getDeviceType();
             if (deviceType != null) {
-                // OpenRTB device types: 1=mobile/tablet, 2=PC, 3=CTV, 4=phone,
-                // 5=tablet, 6=connected device, 7=set top box
                 String deviceLabel = mapDeviceType(deviceType);
                 if (deviceLabel != null && !containsIgnoreCase(t.getDeviceTypes(), deviceLabel)) {
                     return false;
@@ -120,7 +118,7 @@ public class TargetingService {
 
     private boolean checkDomain(TargetingDTO t, BidRequest request) {
         String domain = resolveDomain(request);
-        if (domain == null) return true; // No domain signal = fail-open
+        if (domain == null) return true;
 
         // Blacklist: reject if domain is on blocklist
         if (t.getSiteBlacklist() != null && !t.getSiteBlacklist().isEmpty()) {
@@ -147,23 +145,22 @@ public class TargetingService {
         if (t.getHourSchedule() == null || t.getHourSchedule().isEmpty()) return true;
 
         ZonedDateTime now = ZonedDateTime.now(ZoneOffset.UTC);
-        // Day of week: Mon=0 .. Sun=6 (matches Python's weekday())
-        int dayOfWeek = now.getDayOfWeek().getValue() - 1; // DayOfWeek.MONDAY = 1
+        int dayOfWeek = now.getDayOfWeek().getValue() - 1;
         int hour = now.getHour();
 
         String dayKey = String.valueOf(dayOfWeek);
         String hourKey = String.valueOf(hour);
 
         var daySchedule = t.getHourSchedule().get(dayKey);
-        if (daySchedule == null) return false; // Day not in schedule = no bid
+        if (daySchedule == null) return false;
 
         Double multiplier = daySchedule.get(hourKey);
-        if (multiplier == null) return false; // Hour not in schedule = no bid
+        if (multiplier == null) return false;
 
-        return multiplier > 0.0; // Multiplier 0 = paused for this hour
+        return multiplier > 0.0;
     }
 
-    // ── Creative ↔ Impression matching ───────────────────────────────────────
+    // ── Creative <-> Impression matching ─────────────────────────────────────
 
     private boolean matchesImpression(CreativeDTO creative, Impression imp) {
         String format = creative.getFormat();
@@ -171,8 +168,9 @@ public class TargetingService {
 
         return switch (format) {
             case "banner" -> matchesBanner(creative, imp);
-            case "native" -> imp.getNative() != null; // Any native imp
-            case "video"  -> imp.getVideo()  != null; // Any video imp
+            // Field in Impression.java is `nativeObj` -> Lombok generates getNativeObj()
+            case "native" -> imp.getNativeObj() != null;
+            case "video"  -> imp.getVideo()     != null;
             default       -> false;
         };
     }
@@ -180,7 +178,6 @@ public class TargetingService {
     private boolean matchesBanner(CreativeDTO creative, Impression imp) {
         if (imp.getBanner() == null) return false;
 
-        // If SSP specifies exact dimensions, match them.
         Integer w = imp.getBanner().getW();
         Integer h = imp.getBanner().getH();
 
@@ -189,7 +186,6 @@ public class TargetingService {
             return creative.getWidth().equals(w) && creative.getHeight().equals(h);
         }
 
-        // If SSP sends a format list, check it.
         if (imp.getBanner().getFormat() != null && !imp.getBanner().getFormat().isEmpty()
                 && creative.getWidth() != null && creative.getHeight() != null) {
             return imp.getBanner().getFormat().stream().anyMatch(
@@ -197,7 +193,6 @@ public class TargetingService {
                             && creative.getHeight().equals(f.getH()));
         }
 
-        // No dimension constraints = accept any banner creative.
         return true;
     }
 
@@ -207,7 +202,6 @@ public class TargetingService {
         if (request.getSite() != null) {
             if (request.getSite().getDomain() != null) return request.getSite().getDomain();
             if (request.getSite().getPage() != null) {
-                // Extract domain from page URL
                 try {
                     String page = request.getSite().getPage();
                     int slashSlash = page.indexOf("//");
@@ -227,13 +221,13 @@ public class TargetingService {
 
     private String mapDeviceType(int ortbType) {
         return switch (ortbType) {
-            case 1 -> "mobile";    // Mobile/tablet (legacy)
-            case 2 -> "desktop";   // Personal computer
-            case 3 -> "ctv";       // Connected TV
-            case 4 -> "mobile";    // Phone
-            case 5 -> "tablet";    // Tablet
-            case 6 -> "mobile";    // Connected device
-            case 7 -> "ctv";       // Set top box
+            case 1 -> "mobile";
+            case 2 -> "desktop";
+            case 3 -> "ctv";
+            case 4 -> "mobile";
+            case 5 -> "tablet";
+            case 6 -> "mobile";
+            case 7 -> "ctv";
             default -> null;
         };
     }
