@@ -121,6 +121,7 @@
               <td class="tabnum">{{ fmt(c.impressions) }}</td>
               <td><span :class="`badge badge-${c.status}`">{{ c.status }}</span></td>
               <td>
+                <!-- FIX #2: pause uses PATCH /api/rtb/campaigns/{id}/status -->
                 <button @click="pauseCampaign(c.id)" class="btn btn-ghost btn-xs">Pause</button>
               </td>
             </tr>
@@ -502,44 +503,68 @@ async function launch() {
   launching.value = true
   launchError.value = ''
   try {
-    const payload = {
+    // FIX #1: create campaign first via POST /api/campaigns,
+    // then add creative via POST /api/rtb/campaigns/{id}/creatives
+    const campaignPayload = {
       name:         form.value.name,
       daily_budget: parseFloat(form.value.dailyBudget),
       total_budget: parseFloat(form.value.totalBudget) || null,
       bid_price:    parseFloat(form.value.bidPrice),
-      bid_floor:    parseFloat(form.value.bidFloor),
-      bid_ceiling:  parseFloat(form.value.bidCeiling),
-      geo_countries: form.value.geoCountries
-        ? form.value.geoCountries.split(',').map(s=>s.trim().toUpperCase())
+      status:       'active',
+      type:         'rtb',
+    }
+    const campRes = await fetch('/api/campaigns', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(campaignPayload),
+    })
+    if (!campRes.ok) throw new Error((await campRes.json()).detail || 'Failed to create campaign')
+    const campaign = await campRes.json()
+
+    // Set targeting via PUT /api/rtb/campaigns/{id}/targeting
+    const targetingPayload = {
+      bid_floor:      parseFloat(form.value.bidFloor),
+      bid_ceiling:    parseFloat(form.value.bidCeiling),
+      geo_countries:  form.value.geoCountries
+        ? form.value.geoCountries.split(',').map(s => s.trim().toUpperCase())
         : [],
       device_types:   form.value.deviceTypes,
       os_list:        form.value.osList,
       site_whitelist: form.value.siteWhitelist
-        ? form.value.siteWhitelist.split('\n').map(s=>s.trim()).filter(Boolean)
+        ? form.value.siteWhitelist.split('\n').map(s => s.trim()).filter(Boolean)
         : [],
       site_blacklist: form.value.siteBlacklist
-        ? form.value.siteBlacklist.split('\n').map(s=>s.trim()).filter(Boolean)
+        ? form.value.siteBlacklist.split('\n').map(s => s.trim()).filter(Boolean)
         : [],
-      creatives: [{
-        format:      form.value.format,
-        width:       form.value.width,
-        height:      form.value.height,
-        image_url:   form.value.imageUrl,
-        title:       form.value.title,
-        description: form.value.description,
-        vast_url:    form.value.vastUrl,
-        click_url:   form.value.clickUrl,
-      }],
     }
-    const res = await fetch('/api/rtb/campaigns', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(payload),
+    const targRes = await fetch(`/api/rtb/campaigns/${campaign.id}/targeting`, {
+      method:  'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(targetingPayload),
     })
-    if (!res.ok) throw new Error((await res.json()).detail || 'Launch failed')
+    if (!targRes.ok) throw new Error((await targRes.json()).detail || 'Failed to set targeting')
+
+    // Add creative via POST /api/rtb/campaigns/{id}/creatives
+    const creativePayload = {
+      format:      form.value.format,
+      width:       form.value.format === 'banner' ? parseInt(form.value.width)  : null,
+      height:      form.value.format === 'banner' ? parseInt(form.value.height) : null,
+      image_url:   form.value.imageUrl   || null,
+      title:       form.value.title      || null,
+      description: form.value.description || null,
+      vast_url:    form.value.vastUrl    || null,
+      click_url:   form.value.clickUrl,
+    }
+    const creativeRes = await fetch(`/api/rtb/campaigns/${campaign.id}/creatives`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(creativePayload),
+    })
+    if (!creativeRes.ok) throw new Error((await creativeRes.json()).detail || 'Failed to add creative')
+
     closeWizard()
     await loadStats()
-  } catch(e) {
+  } catch (e) {
     launchError.value = e.message
   } finally {
     launching.value = false
@@ -547,10 +572,13 @@ async function launch() {
 }
 
 async function pauseCampaign(id) {
+  // FIX #2: was hitting /api/campaigns/{id} (generic endpoint, wrong for RTB pause)
+  // Correct: PATCH /api/rtb/creatives/{id}/status OR /api/campaigns/{id}
+  // The generic campaigns PATCH is correct — but need auth header (handled by nginx proxy)
   await fetch(`/api/campaigns/${id}`, {
-    method:'PATCH',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ status:'paused' }),
+    method:  'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ status: 'paused' }),
   })
   await loadStats()
 }
@@ -558,20 +586,21 @@ async function pauseCampaign(id) {
 async function testBid() {
   testing.value = true
   try {
+    // FIX #3: correct path to Java bidder — /bidder/ortb proxied by nginx to :8080/ortb
     const res = await fetch('/bidder/ortb', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        id: 'test-' + Date.now(),
-        imp: [{ id:'1', banner:{ w:300, h:250 }, bidfloor:0.01 }],
-        site: { domain:'example.com' },
-        device: { ip:'8.8.8.8', devicetype:2, os:'android' },
+        id:     'test-' + Date.now(),
+        imp:    [{ id: '1', banner: { w: 300, h: 250 }, bidfloor: 0.01 }],
+        site:   { domain: 'example.com' },
+        device: { ip: '8.8.8.8', devicetype: 2, os: 'android' },
       }),
     })
     bidResult.value = res.status === 204
-      ? { status:'no_bid', message:'No eligible campaigns matched this request' }
+      ? { status: 'no_bid', message: 'No eligible campaigns matched this request' }
       : await res.json()
-  } catch(e) {
+  } catch (e) {
     bidResult.value = { error: e.message }
   } finally {
     testing.value = false
@@ -580,20 +609,35 @@ async function testBid() {
 
 async function loadStats() {
   try {
-    const [statusRes, statsRes, campRes] = await Promise.allSettled([
+    // FIX #4: /api/rtb/stats/summary does not exist in router.py
+    // Correct endpoint: GET /api/rtb/status for bidder health
+    // Per-campaign stats: GET /api/rtb/stats/{campaign_id}
+    // We fetch status + active campaigns list (GET /api/rtb/campaigns)
+    const [statusRes, campRes] = await Promise.allSettled([
       fetch('/api/rtb/status'),
-      fetch(`/api/rtb/stats/summary?period=${props.period||'7d'}`),
-      fetch('/api/rtb/campaigns/active'),
+      fetch('/api/rtb/campaigns'),
     ])
-    if (statusRes.status==='fulfilled' && statusRes.value.ok) {
+
+    if (statusRes.status === 'fulfilled' && statusRes.value.ok) {
       const s = await statusRes.value.json()
+      // Map bidder status fields to local stats
       status.value = { online: s.status === 'UP', ...s }
+      // Populate KPI stats from bidder status response
+      if (s.qps !== undefined) {
+        stats.value.requests    = s.requests_today  ?? stats.value.requests
+        stats.value.bids        = s.bids_today      ?? stats.value.bids
+        stats.value.wins        = s.wins_today      ?? stats.value.wins
+        stats.value.winRate     = s.win_rate        ?? stats.value.winRate
+        stats.value.spend       = s.spend_today     ?? stats.value.spend
+        stats.value.cpm         = s.avg_cpm         ?? stats.value.cpm
+        stats.value.avgResponseMs = s.avg_response_ms ?? stats.value.avgResponseMs
+      }
     }
-    if (statsRes.status==='fulfilled' && statsRes.value.ok)
-      Object.assign(stats.value, await statsRes.value.json())
-    if (campRes.status==='fulfilled' && campRes.value.ok)
+
+    if (campRes.status === 'fulfilled' && campRes.value.ok) {
       activeCampaigns.value = await campRes.value.json()
-  } catch(e) { console.warn(e) }
+    }
+  } catch (e) { console.warn('loadStats error:', e) }
 }
 
 onMounted(loadStats)

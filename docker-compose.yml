@@ -57,7 +57,7 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - ./backend:/app/backend              # hot reload: mount source into /app/backend
+      - ./backend:/app
       - geoip_data:/data:ro
     ports:
       - "8777:8000"
@@ -98,11 +98,13 @@ services:
 
   # ─────────────────────────────────────────
   # CELERY WORKER
+  # FIX #5: was `celery -A backend.celery_app` but working dir is /app
+  # and code is mounted at /app (not /app/backend), so module is just `celery_app`
   # ─────────────────────────────────────────
   worker:
     build: ./backend
     restart: unless-stopped
-    command: celery -A backend.celery_app worker --loglevel=info --concurrency=4 -Q default,rtb,sync
+    command: celery -A celery_app worker --loglevel=info --concurrency=4 -Q default,rtb,sync
     env_file: .env
     environment:
       RTB_API_TOKEN: ${RTB_API_TOKEN:-changeme-rtb-token}
@@ -112,7 +114,7 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - ./backend:/app/backend
+      - ./backend:/app
     networks:
       - centraldsp
 
@@ -122,12 +124,12 @@ services:
   beat:
     build: ./backend
     restart: unless-stopped
-    command: celery -A backend.celery_app beat --loglevel=info
+    command: celery -A celery_app beat --loglevel=info
     env_file: .env
     depends_on:
       - worker
     volumes:
-      - ./backend:/app/backend
+      - ./backend:/app
     networks:
       - centraldsp
 
@@ -137,14 +139,14 @@ services:
   flower:
     build: ./backend
     restart: unless-stopped
-    command: celery -A backend.celery_app flower --port=5555 --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-admin123}
+    command: celery -A celery_app flower --port=5555 --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-admin123}
     env_file: .env
     ports:
       - "8780:5555"
     depends_on:
       - worker
     volumes:
-      - ./backend:/app/backend
+      - ./backend:/app
     networks:
       - centraldsp
 
