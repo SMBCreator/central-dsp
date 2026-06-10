@@ -15,6 +15,7 @@ import AutoPilot   from './views/AutoPilot.vue'
 import PixelCenter from './views/PixelCenter.vue'
 import Networks    from './views/Networks.vue'
 import Creatives   from './views/Creatives.vue'
+import Targeting   from './views/Targeting.vue'
 
 // ── Router ───────────────────────────────────────────────
 const router = createRouter({
@@ -22,15 +23,15 @@ const router = createRouter({
   routes: [
     { path: '/login',     component: Login,       meta: { public: true, title: 'Sign In' } },
     { path: '/',          component: Dashboard,   meta: { title: 'Dashboard' } },
-    { path: '/campaigns', component: Campaigns,   meta: { title: 'Campaigns' } },
+    { path: '/campaigns', component: Campaigns,   meta: { title: 'SmartLinks' } },
     { path: '/analytics', component: Analytics,   meta: { title: 'Analytics' } },
     { path: '/pixels',    component: PixelCenter, meta: { title: 'Pixel Center' } },
-    { path: '/rtb',       component: RtbBidder,   meta: { title: 'RTB Bidder' } },
+    { path: '/rtb',       component: RtbBidder,   meta: { title: 'RTB Campaigns' } },
     { path: '/creatives', component: Creatives,   meta: { title: 'Creatives' } },
+    { path: '/targeting', component: Targeting,   meta: { title: 'Targeting' } },
     { path: '/autopilot', component: AutoPilot,   meta: { title: 'AutoPilot' } },
     { path: '/networks',  component: Networks,    meta: { title: 'Ad Networks' } },
     { path: '/settings',  component: Settings,    meta: { title: 'Settings' } },
-    { path: '/targeting', component: { template: `<div class="empty-state"><div class="empty-title">Coming soon</div></div>` }, meta: { title: 'Targeting' } },
   ],
 })
 
