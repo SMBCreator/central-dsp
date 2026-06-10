@@ -60,12 +60,13 @@ CREATE TABLE IF NOT EXISTS links (
 
 -- ─────────────────────────────────────────
 -- PIXELS
+-- pixel_id is UUID and must be UNIQUE so events.pixel_id can FK reference it
 -- ─────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS pixels (
     id           SERIAL PRIMARY KEY,
     campaign_id  INT          NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
     name         VARCHAR(255) NOT NULL,
-    pixel_id     UUID         NOT NULL DEFAULT uuid_generate_v4(),
+    pixel_id     UUID         NOT NULL DEFAULT uuid_generate_v4() UNIQUE,  -- UNIQUE required for FK from events
     is_active    BOOLEAN      NOT NULL DEFAULT TRUE,
     last_fire_at TIMESTAMPTZ,
     total_events BIGINT       NOT NULL DEFAULT 0,
@@ -79,8 +80,8 @@ CREATE TABLE IF NOT EXISTS events (
     id           BIGSERIAL    PRIMARY KEY,
     pixel_id     UUID         REFERENCES pixels(pixel_id),
     link_id      INT          REFERENCES links(id),
-    auction_id   VARCHAR(128),  -- RTB auction ID from SSP
-    imp_id       VARCHAR(128),  -- RTB impression ID
+    auction_id   VARCHAR(128),
+    imp_id       VARCHAR(128),
     session_id   VARCHAR(64),
     event_name   VARCHAR(64)  NOT NULL,
     sub_id       VARCHAR(255),
@@ -106,7 +107,7 @@ CREATE INDEX idx_events_click_id    ON events(click_id);
 CREATE INDEX idx_events_sub_id      ON events(sub_id, created_at DESC);
 
 -- ─────────────────────────────────────────
--- CLICKS (TimeSeries — for date-range analytics)
+-- CLICKS (TimeSeries)
 -- ─────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS clicks (
     id           BIGSERIAL    PRIMARY KEY,
@@ -139,7 +140,7 @@ CREATE TABLE IF NOT EXISTS postbacks (
     ip         INET,
     created_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
-CREATE INDEX idx_postbacks_click_id  ON postbacks(click_id);
+CREATE INDEX idx_postbacks_click_id   ON postbacks(click_id);
 CREATE INDEX idx_postbacks_created_at ON postbacks(created_at DESC);
 
 -- ─────────────────────────────────────────
@@ -156,9 +157,9 @@ CREATE TABLE IF NOT EXISTS creatives (
     title        VARCHAR(255),
     description  TEXT,
     click_url    TEXT,
-    adm          TEXT,          -- raw ad markup (for banner/video)
+    adm          TEXT,
     status       VARCHAR(20)  NOT NULL DEFAULT 'active',
-    audit_status VARCHAR(20)  NOT NULL DEFAULT 'pending',  -- pending|approved|rejected
+    audit_status VARCHAR(20)  NOT NULL DEFAULT 'pending',
     created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
@@ -176,7 +177,7 @@ CREATE TABLE IF NOT EXISTS targeting_rules (
     browser_list    TEXT[]       DEFAULT '{}',
     site_whitelist  TEXT[]       DEFAULT '{}',
     site_blacklist  TEXT[]       DEFAULT '{}',
-    hour_schedule   JSONB        DEFAULT '{}',  -- {"0":[0,1,2,...23], "1":[9..18], ...} day->hours
+    hour_schedule   JSONB        DEFAULT '{}',
     updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
@@ -235,14 +236,14 @@ CREATE TABLE IF NOT EXISTS rule_logs (
 CREATE INDEX idx_rule_logs_campaign_id ON rule_logs(campaign_id, triggered_at DESC);
 
 -- ─────────────────────────────────────────
--- AD ACCOUNTS (ad networks credentials)
+-- AD ACCOUNTS
 -- ─────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS ad_accounts (
     id           SERIAL PRIMARY KEY,
     user_id      INT          NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    platform     VARCHAR(50)  NOT NULL,  -- push_house|yandex|kadam|propellerads|google
+    platform     VARCHAR(50)  NOT NULL,
     name         VARCHAR(255),
-    credentials  JSONB        DEFAULT '{}',  -- encrypted in application layer
+    credentials  JSONB        DEFAULT '{}',
     is_active    BOOLEAN      NOT NULL DEFAULT TRUE,
     balance      NUMERIC(12,4),
     currency     VARCHAR(8)   DEFAULT 'USD',
@@ -262,7 +263,7 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 
 -- ─────────────────────────────────────────
--- LEGACY stats table (backward compat with v2)
+-- STATS (legacy backward compat)
 -- ─────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS stats (
     id           SERIAL PRIMARY KEY,
