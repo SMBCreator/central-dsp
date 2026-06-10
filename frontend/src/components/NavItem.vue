@@ -1,25 +1,31 @@
 <template>
   <RouterLink :to="to" :class="['nav-item', { active: isActive }]" :title="label">
-    <i :data-lucide="icon" class="nav-icon" />
+    <component :is="iconComponent" class="nav-icon" />
     <span class="nav-label">{{ label }}</span>
   </RouterLink>
 </template>
 
 <script setup>
-import { computed, onMounted, watch } from 'vue'
+import { computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { createIcons, icons } from 'lucide'
+import * as LucideIcons from 'lucide-vue-next'
 
-const props   = defineProps({ to: String, icon: String, label: String })
-const route   = useRoute()
+const props    = defineProps({ to: String, icon: String, label: String })
+const route    = useRoute()
 const isActive = computed(() => {
   if (props.to === '/') return route.path === '/'
   return route.path.startsWith(props.to)
 })
 
-const refresh = () => createIcons({ icons })
-onMounted(refresh)
-watch(() => props.icon, refresh)
+// Convert kebab-case or lowercase icon name to PascalCase, e.g. "layout-dashboard" -> "LayoutDashboard"
+const iconComponent = computed(() => {
+  if (!props.icon) return null
+  const pascal = props.icon
+    .split('-')
+    .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+    .join('')
+  return LucideIcons[pascal] || LucideIcons['Circle']
+})
 </script>
 
 <style scoped>
