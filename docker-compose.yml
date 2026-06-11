@@ -98,8 +98,6 @@ services:
 
   # ─────────────────────────────────────────
   # CELERY WORKER
-  # FIX #5: was `celery -A backend.celery_app` but working dir is /app
-  # and code is mounted at /app (not /app/backend), so module is just `celery_app`
   # ─────────────────────────────────────────
   worker:
     build: ./backend
@@ -115,6 +113,13 @@ services:
         condition: service_healthy
     volumes:
       - ./backend:/app
+    # healthcheck via celery inspect ping — flower waits for this
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A celery_app inspect ping --destination celery@$$HOSTNAME -t 5 2>&1 | grep -q pong"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
     networks:
       - centraldsp
 
@@ -127,7 +132,8 @@ services:
     command: celery -A celery_app beat --loglevel=info
     env_file: .env
     depends_on:
-      - worker
+      worker:
+        condition: service_healthy
     volumes:
       - ./backend:/app
     networks:
@@ -135,16 +141,26 @@ services:
 
   # ─────────────────────────────────────────
   # FLOWER
+  # broker_api lets Flower read queue lengths directly from Redis API
+  # inspect_timeout gives workers time to respond to broadcast pings
   # ─────────────────────────────────────────
   flower:
     build: ./backend
     restart: unless-stopped
-    command: celery -A celery_app flower --port=5555 --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-admin123}
+    command: >
+      celery -A celery_app flower
+      --port=5555
+      --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-admin123}
+      --broker_api=redis://redis:6379/0
+      --inspect_timeout=10000
+      --persistent=True
+      --db=/tmp/flower.db
     env_file: .env
     ports:
       - "8780:5555"
     depends_on:
-      - worker
+      worker:
+        condition: service_healthy
     volumes:
       - ./backend:/app
     networks:
