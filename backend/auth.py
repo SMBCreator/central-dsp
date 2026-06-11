@@ -13,13 +13,25 @@ import models
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
 
+# bcrypt hard limit: 72 bytes. Truncate before hashing/verifying to avoid
+# ValueError from bcrypt>=4.x and silent truncation differences.
+_BCRYPT_MAX = 72
+
+
+def _truncate(password: str) -> str:
+    """Truncate password to 72 bytes (bcrypt hard limit)."""
+    encoded = password.encode("utf-8")
+    if len(encoded) > _BCRYPT_MAX:
+        encoded = encoded[:_BCRYPT_MAX]
+    return encoded.decode("utf-8", errors="ignore")
+
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    return pwd_context.hash(_truncate(password))
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+    return pwd_context.verify(_truncate(plain), hashed)
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
