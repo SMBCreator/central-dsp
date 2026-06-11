@@ -19,3 +19,6 @@ apprise==1.7.6
 requests==2.31.0
 geoip2==4.8.0
 cryptography==42.0.5
+# QR code generation (used in utils.py -> generate_qr_png)
+qrcode[pil]==7.4.2
+pillow==10.3.0
