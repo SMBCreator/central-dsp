@@ -61,6 +61,13 @@ services:
       - geoip_data:/data:ro
     ports:
       - "8777:8000"
+    # Healthcheck: /health returns {"status":"ok"} once FastAPI is fully up
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health | grep -q ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
     networks:
       - centraldsp
 
@@ -81,18 +88,20 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      # Wait for backend to be fully up — prevents null ConnectException on @PostConstruct
       backend:
-        condition: service_started
+        condition: service_healthy
     volumes:
       - geoip_data:/data:ro
     ports:
       - "8778:8080"
       - "9779:9090"
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health | grep -qE 'ok|starting'"]
       interval: 15s
       timeout: 5s
-      retries: 3
+      retries: 5
+      start_period: 30s
     networks:
       - centraldsp
 
@@ -113,7 +122,6 @@ services:
         condition: service_healthy
     volumes:
       - ./backend:/app
-    # healthcheck via celery inspect ping — flower waits for this
     healthcheck:
       test: ["CMD-SHELL", "celery -A celery_app inspect ping --destination celery@$$HOSTNAME -t 5 2>&1 | grep -q pong"]
       interval: 20s
@@ -141,8 +149,6 @@ services:
 
   # ─────────────────────────────────────────
   # FLOWER
-  # broker_api lets Flower read queue lengths directly from Redis API
-  # inspect_timeout gives workers time to respond to broadcast pings
   # ─────────────────────────────────────────
   flower:
     build: ./backend
@@ -174,8 +180,10 @@ services:
     restart: unless-stopped
     ports:
       - "8779:80"
+    # Wait for backend — prevents nginx 502 on first requests
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     networks:
       - centraldsp
 
