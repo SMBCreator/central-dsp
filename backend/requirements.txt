@@ -1,48 +1,20 @@
-# ─────────────────────────────────────────
-# Central DSP — Backend Requirements
-# Pinned versions for reproducibility
-# ─────────────────────────────────────────
-
-# Web framework
 fastapi==0.111.0
 uvicorn[standard]==0.29.0
-python-multipart==0.0.9
 websockets==12.0
-
-# Database
+httpx==0.27.0
 sqlalchemy==2.0.30
 alembic==1.13.1
 psycopg2-binary==2.9.9
-
-# Redis
-redis==5.0.4
-
-# Celery
-celery==5.4.0
-flower==2.0.1
-
-# Auth
-python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
-bcrypt==4.0.1
-
-# Notifications
-apprise==1.7.6
-
-# Utils
 pydantic==2.7.1
 pydantic-settings==2.2.1
-python-dotenv==1.0.1
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+python-multipart==0.0.9
+celery==5.3.6
+redis==5.0.4
+flower==2.0.1
+apprise==1.7.6
 httpx==0.27.0
-user-agents==2.2.0
-qrcode[pil]==7.4.2
-Pillow==10.3.0
-
-# GeoIP (production — requires MaxMind DB file)
+requests==2.31.0
 geoip2==4.8.0
-
-# Scheduling
-celery[redis]==5.4.0
-
-# Crypto (for credentials encryption)
-cryptography==42.0.7
+cryptography==42.0.5

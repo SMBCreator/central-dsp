@@ -12,7 +12,7 @@ const state = reactive({
 export function useAuth() {
   async function login(email, password) {
     const body = new URLSearchParams({ username: email, password })
-    const res = await fetch('/auth/login', {
+    const res = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body,
@@ -25,7 +25,7 @@ export function useAuth() {
     state.token = data.access_token
 
     // fetch current user
-    const me = await apiFetch('/auth/me')
+    const me = await apiFetch('/api/auth/me')
     state.user = await me.json()
   }
 
@@ -56,7 +56,6 @@ export async function apiFetch(path, options = {}) {
   }
   const res = await fetch(path, { ...options, headers })
   if (res.status === 401) {
-    // Token expired — reset auth state
     state.token = null
     state.user  = null
     window.location.href = '/login'
