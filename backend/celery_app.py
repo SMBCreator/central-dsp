@@ -25,6 +25,7 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     task_routes={
         "tasks.rules.*":   {"queue": "default"},
+        # sync_all_ad_networks is the actual task name in tasks/sync.py
         "tasks.sync.*":    {"queue": "sync"},
         "tasks.reports.*": {"queue": "default"},
         "tasks.cleanup.*": {"queue": "default"},
@@ -34,8 +35,9 @@ celery_app.conf.update(
             "task": "tasks.rules.evaluate_all_rules",
             "schedule": 30.0,
         },
+        # Fixed: was sync_all_ad_accounts (typo) — real name is sync_all_ad_networks
         "sync-ad-costs": {
-            "task": "tasks.sync.sync_all_ad_accounts",
+            "task": "tasks.sync.sync_all_ad_networks",
             "schedule": 900.0,
         },
         "daily-report": {
