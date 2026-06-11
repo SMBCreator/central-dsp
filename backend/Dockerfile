@@ -9,8 +9,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt /app/
 # --no-cache-dir ensures fresh install, no layer-cache skipping packages
 RUN pip install --no-cache-dir -r /app/requirements.txt
-# Explicitly install WS libs so uvicorn[standard] extras are always present
-RUN pip install --no-cache-dir websockets==12.0 wsproto==1.2.0 user-agents==2.2.0
 
 # Copy all backend source directly into /app
 # so `from config import settings`, `from database import ...` etc work
@@ -18,4 +16,9 @@ COPY . /app/
 
 ENV PYTHONPATH=/app
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+# No --reload in container:
+#   - --reload spawns WatchFiles subprocess that sends WS upgrade requests
+#     causing "No supported WebSocket library" spam
+#   - WatchFiles monitors /app volume endlessly, wasting CPU
+#   - 2 workers handle concurrent requests (bidder + frontend polls)
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
