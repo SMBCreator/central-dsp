@@ -196,18 +196,19 @@
 
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
+import { apiFetch } from '../auth'
 
 const props = defineProps({ period: String })
 
-const campaigns   = ref([])
-const loading     = ref(true)
-const search      = ref('')
+const campaigns    = ref([])
+const loading      = ref(true)
+const search       = ref('')
 const activeFilter = ref('all')
-const showCreate  = ref(false)
-const creating    = ref(false)
-const createError = ref('')
+const showCreate   = ref(false)
+const creating     = ref(false)
+const createError  = ref('')
 const deleteTarget = ref(null)
-const deleting    = ref(false)
+const deleting     = ref(false)
 
 const statusFilters = [
   { v: 'all',    l: 'All' },
@@ -221,8 +222,8 @@ const newCamp = ref({
   daily_budget: '', total_budget: '', start_date: '',
 })
 
-const fmt = n => Number(n).toLocaleString('en-US')
-const budgetPct = c => c.daily_budget ? (c.daily_spent / c.daily_budget) * 100 : 0
+const fmt        = n => Number(n).toLocaleString('en-US')
+const budgetPct  = c => c.daily_budget ? (c.daily_spent / c.daily_budget) * 100 : 0
 const countByStatus = s => campaigns.value.filter(c => c.status === s).length
 
 const filtered = computed(() => {
@@ -238,7 +239,7 @@ const filtered = computed(() => {
 async function load() {
   loading.value = true
   try {
-    const r = await fetch(`/api/campaigns?period=${props.period || '7d'}`)
+    const r = await apiFetch(`/api/campaigns?period=${props.period || '7d'}`)
     if (r.ok) campaigns.value = await r.json()
   } catch (e) { console.warn(e) }
   finally { loading.value = false }
@@ -248,20 +249,19 @@ async function createCampaign() {
   creating.value = true
   createError.value = ''
   try {
-    const r = await fetch('/api/campaigns', {
+    const r = await apiFetch('/api/campaigns', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+      body: {
         name:         newCamp.value.name,
         type:         newCamp.value.type,
         daily_budget: parseFloat(newCamp.value.daily_budget),
         total_budget: parseFloat(newCamp.value.total_budget) || null,
         start_date:   newCamp.value.start_date || null,
-      }),
+      },
     })
     if (!r.ok) throw new Error((await r.json()).detail || 'Create failed')
     showCreate.value = false
-    Object.assign(newCamp.value, { name:'', daily_budget:'', total_budget:'', start_date:'' })
+    Object.assign(newCamp.value, { name: '', daily_budget: '', total_budget: '', start_date: '' })
     await load()
   } catch (e) {
     createError.value = e.message
@@ -271,10 +271,9 @@ async function createCampaign() {
 }
 
 async function setStatus(id, status) {
-  await fetch(`/api/campaigns/${id}`, {
+  await apiFetch(`/api/campaigns/${id}`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ status }),
+    body: { status },
   })
   await load()
 }
@@ -283,7 +282,7 @@ const confirmDelete = c => { deleteTarget.value = c }
 async function deleteCampaign() {
   deleting.value = true
   try {
-    await fetch(`/api/campaigns/${deleteTarget.value.id}`, { method: 'DELETE' })
+    await apiFetch(`/api/campaigns/${deleteTarget.value.id}`, { method: 'DELETE' })
     deleteTarget.value = null
     await load()
   } catch (e) { console.warn(e) }
