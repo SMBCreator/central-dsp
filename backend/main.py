@@ -18,6 +18,7 @@ from auth import hash_password, verify_password, create_access_token, create_ref
 from geoip import get_country, get_device_info
 from utils import generate_short_code, generate_qr_png, GIF_1X1, apply_macros, add_utm_params
 from rtb_bridge.router import router as rtb_router
+from campaign_launch import router as launch_router
 
 logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
 logger = logging.getLogger(__name__)
@@ -40,6 +41,8 @@ app.add_middleware(
 )
 
 app.include_router(rtb_router)
+# Маршруты /campaigns/{id}/launch  и  /campaigns/{id}/status
+app.include_router(launch_router, prefix="/api")
 
 
 # ─────────────────────────────────────────
@@ -98,6 +101,12 @@ class CampaignCreate(BaseModel):
     daily_budget: Optional[float] = None
     total_budget: Optional[float] = None
     is_ab: bool = False
+    # RTB поля (добавлены)
+    bid_price: Optional[float] = 1.0        # базовая ставка CPM USD
+    bid_floor: Optional[float] = None
+    bid_ceiling: Optional[float] = None
+    click_url: Optional[str] = None
+    freq_cap: Optional[int] = None
 
 class CampaignOut(BaseModel):
     id: int
@@ -107,6 +116,9 @@ class CampaignOut(BaseModel):
     offer_value: float
     attribution_model: str
     is_ab: bool
+    bid_price: Optional[float] = None
+    daily_budget: Optional[float] = None
+    total_budget: Optional[float] = None
     created_at: datetime
     class Config:
         from_attributes = True
@@ -267,16 +279,28 @@ def list_campaigns(current_user: User = Depends(get_current_user), db: Session =
 
 
 @app.post("/api/campaigns", response_model=CampaignOut, status_code=201, tags=["Campaigns"])
-def create_campaign(body: CampaignCreate, current_user: User = Depends(require_role("admin", "manager")), db: Session = Depends(get_db)):
+def create_campaign(
+    body: CampaignCreate,
+    current_user: User = Depends(require_role("admin", "manager")),
+    db: Session = Depends(get_db),
+):
     camp = Campaign(
         user_id=current_user.id,
         name=body.name,
+        # Дефолт — draft. Переходит в active только
+        # через POST /api/campaigns/{id}/launch
+        status="draft",
         camp_code=generate_short_code(12),
         offer_value=body.offer_value,
         attribution_model=body.attribution_model,
         daily_budget=body.daily_budget,
         total_budget=body.total_budget,
         is_ab=body.is_ab,
+        bid_price=body.bid_price,
+        bid_floor=body.bid_floor,
+        bid_ceiling=body.bid_ceiling,
+        click_url=body.click_url,
+        freq_cap=body.freq_cap,
     )
     db.add(camp)
     db.commit()
@@ -294,12 +318,20 @@ def get_campaign(campaign_id: int, current_user: User = Depends(get_current_user
     return camp
 
 
+# Не удаляем, но оставляем для обратной совместимости (status_val без валидации переходов).
+# Новый валидированный endpoint — PATCH /api/campaigns/{id}/status  — в launch_router.
 @app.patch("/api/campaigns/{campaign_id}/status", tags=["Campaigns"])
-def update_campaign_status(campaign_id: int, status_val: str, current_user: User = Depends(require_role("admin", "manager")), db: Session = Depends(get_db)):
+def update_campaign_status_legacy(
+    campaign_id: int,
+    status_val: str,
+    current_user: User = Depends(require_role("admin", "manager")),
+    db: Session = Depends(get_db),
+):
+    """Legacy endpoint: без валидации переходов. Используй /api/campaigns/{id}/launch для запуска."""
     camp = db.query(Campaign).filter(Campaign.id == campaign_id).first()
     if not camp:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    if status_val not in ("active", "stopped", "paused", "archived"):
+    if status_val not in ("active", "stopped", "paused", "archived", "draft"):
         raise HTTPException(status_code=400, detail="Invalid status")
     camp.status = status_val
     db.commit()
