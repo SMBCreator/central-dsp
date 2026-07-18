@@ -28,6 +28,34 @@ class User(Base):
     campaigns = relationship("Campaign", back_populates="user")
     ad_accounts = relationship("AdAccount", back_populates="user")
     settings = relationship("Setting", back_populates="user")
+    advertisers = relationship("Advertiser", back_populates="user")
+
+
+# ─────────────────────────────────────────────────────────
+# ADVERTISERS  (DSP tenant/client entity)
+# ─────────────────────────────────────────────────────────
+class Advertiser(Base):
+    """
+    Represents an advertiser (client) in the DSP.
+    One User (manager/admin) can manage multiple Advertisers.
+    Hierarchy: Advertiser → Campaign → LineItem → Creative
+    """
+    __tablename__ = "advertisers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    domain = Column(String(255))                      # advertiser's primary domain
+    iab_categories = Column(ARRAY(String), default=list)  # IAB content categories
+    status = Column(String(20), nullable=False, default="active")  # active|paused|blocked
+    billing_currency = Column(String(8), nullable=False, default="USD")
+    total_budget_limit = Column(Numeric(14, 4))       # optional hard cap across all campaigns
+    notes = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    user = relationship("User", back_populates="advertisers")
+    campaigns = relationship("Campaign", back_populates="advertiser", cascade="all, delete-orphan")
 
 
 # ─────────────────────────────────────────────────────────
@@ -38,6 +66,8 @@ class Campaign(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    # NEW: advertiser_id — nullable for backward compat with existing rows
+    advertiser_id = Column(Integer, ForeignKey("advertisers.id", ondelete="SET NULL"), nullable=True, index=True)
     name = Column(String(255), nullable=False)
     status = Column(String(20), nullable=False, default="active")  # active|stopped|paused|archived
     camp_code = Column(String(32), unique=True, nullable=False, index=True)
@@ -47,15 +77,154 @@ class Campaign(Base):
     attribution_model = Column(String(20), nullable=False, default="last_click")  # last_click|first_click|linear
     daily_budget = Column(Numeric(10, 4))
     total_budget = Column(Numeric(10, 4))
+    # NEW: spent trackers (updated atomically via BudgetLog)
+    daily_spent = Column(Numeric(14, 6), nullable=False, default=0)
+    total_spent = Column(Numeric(14, 6), nullable=False, default=0)
+    start_date = Column(DateTime(timezone=True))
+    end_date = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     user = relationship("User", back_populates="campaigns")
+    advertiser = relationship("Advertiser", back_populates="campaigns")
     links = relationship("Link", back_populates="campaign", cascade="all, delete-orphan")
     pixels = relationship("Pixel", back_populates="campaign", cascade="all, delete-orphan")
     rules = relationship("Rule", back_populates="campaign", cascade="all, delete-orphan")
+    # NOTE: creatives now belong to LineItems, but kept here for backward compat
     creatives = relationship("Creative", back_populates="campaign", cascade="all, delete-orphan")
     targeting = relationship("TargetingRule", back_populates="campaign", uselist=False, cascade="all, delete-orphan")
+    line_items = relationship("LineItem", back_populates="campaign", cascade="all, delete-orphan")
+    budget_logs = relationship("BudgetLog", back_populates="campaign")
+
+
+# ─────────────────────────────────────────────────────────
+# LINE ITEMS  (flight / ad group level)
+# ─────────────────────────────────────────────────────────
+class LineItem(Base):
+    """
+    Line Item = the flight/ad-group layer between Campaign and Creative.
+    Controls bid price, pacing, targeting overrides, and creative rotation.
+    In RTB: one LineItem maps to one bid candidate evaluated per auction.
+    """
+    __tablename__ = "line_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    campaign_id = Column(Integer, ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    status = Column(String(20), nullable=False, default="active")  # active|paused|archived
+
+    # ── Bidding ──────────────────────────────────────────
+    bid_strategy = Column(String(20), nullable=False, default="fixed")  # fixed|cpm|cpc|target_cpa
+    bid_price = Column(Numeric(10, 6), nullable=False, default=1.00)    # CPM in USD
+    max_bid = Column(Numeric(10, 6))                                    # ceiling for dynamic strategies
+    min_bid = Column(Numeric(10, 6))                                    # floor override
+
+    # ── Budget / Pacing ──────────────────────────────────
+    daily_budget = Column(Numeric(10, 4))
+    total_budget = Column(Numeric(10, 4))
+    daily_spent = Column(Numeric(14, 6), nullable=False, default=0)
+    total_spent = Column(Numeric(14, 6), nullable=False, default=0)
+    pacing = Column(String(20), nullable=False, default="even")         # even|asap|frontload
+
+    # ── Schedule ─────────────────────────────────────────
+    start_date = Column(DateTime(timezone=True))
+    end_date = Column(DateTime(timezone=True))
+    hour_schedule = Column(JSONB, default=dict)   # {0: [0,1,...,23], 1: [...]} day→hours
+
+    # ── Targeting (overrides campaign-level) ─────────────
+    geo_countries = Column(ARRAY(String), default=list)
+    device_types = Column(ARRAY(String), default=list)   # mobile|desktop|tablet|ctv
+    os_list = Column(ARRAY(String), default=list)
+    browser_list = Column(ARRAY(String), default=list)
+    site_whitelist = Column(ARRAY(String), default=list)
+    site_blacklist = Column(ARRAY(String), default=list)
+    app_whitelist = Column(ARRAY(String), default=list)
+    app_blacklist = Column(ARRAY(String), default=list)
+    iab_categories = Column(ARRAY(String), default=list)  # IAB allow-list
+
+    # ── Frequency Cap ────────────────────────────────────
+    freq_cap_impressions = Column(Integer)               # max imps per user
+    freq_cap_window_hours = Column(Integer, default=24)  # rolling window
+
+    # ── Creative rotation ────────────────────────────────
+    creative_rotation = Column(String(20), nullable=False, default="even")  # even|weighted|sequential
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    campaign = relationship("Campaign", back_populates="line_items")
+    creatives = relationship("Creative", back_populates="line_item", cascade="all, delete-orphan")
+    auction_logs = relationship("AuctionLog", back_populates="line_item")
+
+    __table_args__ = (
+        Index("idx_lineitems_campaign_status", "campaign_id", "status"),
+    )
+
+
+# ─────────────────────────────────────────────────────────
+# SUPPLY PARTNERS  (SSP integrations)
+# ─────────────────────────────────────────────────────────
+class SupplyPartner(Base):
+    """
+    Represents an SSP (Supply-Side Platform) integration endpoint.
+    The RTB bridge sends bid requests received from SSPs to our bidder.
+    Each SSP has a unique token so we can route win notices correctly.
+    """
+    __tablename__ = "supply_partners"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), nullable=False, unique=True)   # e.g. "Xandr", "OpenX"
+    endpoint_url = Column(Text)                               # outgoing bid endpoint (for outbound DSP mode)
+    incoming_token = Column(String(64), unique=True, nullable=False, index=True,
+                            default=lambda: uuid.uuid4().hex)  # auth token SSP uses to POST bid requests to us
+    protocol = Column(String(20), nullable=False, default="openrtb_2_5")  # openrtb_2_5|openrtb_3_0|custom
+    qps_limit = Column(Integer, default=1000)                 # max bid requests/sec from this SSP
+    bid_timeout_ms = Column(Integer, default=150)             # we must respond within this window
+    status = Column(String(20), nullable=False, default="active")  # active|paused|testing
+    # Optional seat/publisher mapping
+    seat_id = Column(String(128))                             # our seat ID on this SSP
+    publisher_id = Column(String(128))
+    # Allowed formats from this SSP
+    allowed_formats = Column(ARRAY(String), default=list)    # banner|native|video|push
+    # Revenue share / margin
+    revenue_share = Column(Numeric(5, 4), default=0)          # 0.15 = 15% margin
+    notes = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    auction_logs = relationship("AuctionLog", back_populates="supply_partner")
+
+    __table_args__ = (
+        Index("idx_supply_partners_status", "status"),
+    )
+
+
+# ─────────────────────────────────────────────────────────
+# BUDGET LOGS  (atomic spend tracking)
+# ─────────────────────────────────────────────────────────
+class BudgetLog(Base):
+    """
+    Immutable append-only log of every spend event.
+    Used to reconstruct daily_spent / total_spent after a crash,
+    and to audit budget pacing. Never update rows — only insert.
+    """
+    __tablename__ = "budget_logs"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    campaign_id = Column(Integer, ForeignKey("campaigns.id"), nullable=False, index=True)
+    line_item_id = Column(Integer, ForeignKey("line_items.id"), nullable=True, index=True)
+    auction_log_id = Column(BigInteger, ForeignKey("auction_logs.id"), nullable=True)
+    event_type = Column(String(30), nullable=False)   # win|impression|refund|adjustment
+    amount = Column(Numeric(14, 6), nullable=False)   # positive = spend, negative = refund
+    currency = Column(String(8), nullable=False, default="USD")
+    recorded_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+
+    campaign = relationship("Campaign", back_populates="budget_logs")
+
+    __table_args__ = (
+        Index("idx_budgetlog_campaign_recorded", "campaign_id", "recorded_at"),
+        Index("idx_budgetlog_lineitm_recorded", "line_item_id", "recorded_at"),
+    )
 
 
 # ─────────────────────────────────────────────────────────
@@ -189,6 +358,8 @@ class Creative(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     campaign_id = Column(Integer, ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False)
+    # NEW: line_item_id — nullable for backward compat
+    line_item_id = Column(Integer, ForeignKey("line_items.id", ondelete="SET NULL"), nullable=True, index=True)
     name = Column(String(255))
     format = Column(String(20), nullable=False)  # banner|native|video|push
     width = Column(Integer)
@@ -197,16 +368,22 @@ class Creative(Base):
     title = Column(String(255))
     description = Column(Text)
     click_url = Column(Text)
-    adm = Column(Text)  # raw ad markup
+    adm = Column(Text)   # raw ad markup (VAST / NURL / HTML snippet)
+    # NEW: tracking URLs for impression and click
+    impression_tracker_url = Column(Text)
+    click_tracker_url = Column(Text)
     status = Column(String(20), nullable=False, default="active")
     audit_status = Column(String(20), nullable=False, default="pending")  # pending|approved|rejected
+    # NEW: weight for creative rotation within line item
+    weight = Column(Integer, nullable=False, default=1)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     campaign = relationship("Campaign", back_populates="creatives")
+    line_item = relationship("LineItem", back_populates="creatives")
 
 
 # ─────────────────────────────────────────────────────────
-# RTB — TARGETING RULES
+# RTB — TARGETING RULES  (campaign-level defaults)
 # ─────────────────────────────────────────────────────────
 class TargetingRule(Base):
     __tablename__ = "targeting_rules"
@@ -235,7 +412,9 @@ class AuctionLog(Base):
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     campaign_id = Column(Integer, ForeignKey("campaigns.id"), index=True)
+    line_item_id = Column(Integer, ForeignKey("line_items.id"), nullable=True, index=True)
     creative_id = Column(Integer, ForeignKey("creatives.id"))
+    supply_partner_id = Column(Integer, ForeignKey("supply_partners.id"), nullable=True, index=True)
     bid_request_id = Column(String(128))
     imp_id = Column(String(128))
     bid_price = Column(Numeric(10, 6))
@@ -249,9 +428,13 @@ class AuctionLog(Base):
     device_type = Column(String(20))
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
+    line_item = relationship("LineItem", back_populates="auction_logs")
+    supply_partner = relationship("SupplyPartner", back_populates="auction_logs")
+
     __table_args__ = (
         Index("idx_auction_campaign_created", "campaign_id", "created_at"),
         Index("idx_auction_won_created", "won", "created_at"),
+        Index("idx_auction_lineitem_created", "line_item_id", "created_at"),
     )
 
 
