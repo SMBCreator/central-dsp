@@ -1,378 +1,516 @@
-# Central DSP — MVP Roadmap (Аудит + План)
-
-> **Обновлено: 2026-07-18** | Полный аудит репо + пошаговый план до рабочего MVP.
-> Ведётся как живой документ — отмечаем выполненное чекбоксами по ходу работы.
+# 🗺️ ПЛАН РАЗРАБОТКИ DSP — CENTRAL BUYING PLATFORM
+## Статус: обновлён 18.07.2026 | Ветка: v0/centralbuying1-1682-a2618a11
 
 ---
 
-## 🔍 Результаты аудита репо (июль 2026)
+## 📊 АУДИТ ТЕКУЩЕГО СОСТОЯНИЯ
 
-### Структура проекта
+### ✅ Что уже есть (подтверждено по репо)
 
-```
-central-dsp/
-├── backend/
-│   ├── rtb_bridge/     ← RTB-биддер (18KB router + 15KB service) ⭐ главный блок
-│   ├── routers/        ← 12 API роутеров
-│   ├── tasks/          ← Celery задачи (9 штук)
-│   ├── adapters/       ← SSP/сети адаптеры (EvaDav, MGID, PropellerAds, Push.House)
-│   ├── main.py         ← 32KB монолит ⚠️
-│   ├── models.py       ← ORM модели (18KB)
-│   └── schemas.py      ← Pydantic схемы (9KB)
-├── bidder/             ← отдельный сервис
-├── frontend/           ← Vue/Vuetify фронт
-├── docs/
-└── docker-compose.yml  ← postgres + redis + celery + flower
-```
+| Компонент | Файл/Директория | Статус |
+|-----------|----------------|--------|
+| FastAPI приложение | `backend/main.py` | ✅ Есть |
+| SQLAlchemy модели | `backend/models.py` (28KB) | ✅ Есть, нужна проверка |
+| Pydantic схемы | `backend/schemas.py` (14KB) | ✅ Есть |
+| Auth роутер | `backend/routers/auth.py` | ✅ Есть |
+| Advertisers API | `backend/routers/advertisers.py` | ✅ Есть |
+| Campaigns API | `backend/routers/campaigns.py` | ✅ Есть |
+| Line Items API | `backend/routers/line_items.py` | ✅ Есть |
+| Creatives API | `backend/routers/creatives.py` | ✅ Есть |
+| Bidder роутер | `backend/routers/bidder.py` (11KB) | ✅ Есть |
+| Supply Partners | `backend/routers/supply_partners.py` | ✅ Есть |
+| Targeting API | `backend/routers/targeting.py` | ✅ Есть |
+| Tracking | `backend/routers/tracking.py` | ✅ Есть |
+| Stats | `backend/routers/stats.py` | ✅ Есть |
+| Budget tasks | `backend/tasks/budget.py` (9KB) | ✅ Есть |
+| Celery | `backend/celery_app.py` | ✅ Есть |
+| Central Bidder | `backend/central_bidder/` | ✅ Есть (dir) |
+| Alembic миграции | `backend/alembic/` | ✅ Есть |
+| Docker | `backend/Dockerfile` | ✅ Есть |
+| Dependencies/RBAC | `backend/dependencies.py` | ✅ Есть |
+| Services | `backend/services/` | ✅ Есть (dir) |
+| Users API | `backend/routers/users.py` | ✅ Есть |
 
----
-
-### 🔴 Критические баги (не запустится / падает)
-
-| # | Файл | Проблема | Последствие |
-|---|---|---|---|
-| 1 | `tasks/bidding.py` | `AuctionLogDB`, `CampaignDB`, `TargetingRuleDB` — классов нет | `ImportError` при старте Celery |
-| 2 | `routers/advertisers.py` | Роутер есть, таблицы `Advertiser` в DB нет | 500 на все запросы |
-| 3 | `backend/main.py` | `from rtb_bridge.router import router` — path может не резолвиться в docker | Startup fail |
-
-### 🟠 Функциональные баги (запускается, но работает неправильно)
-
-| # | Файл | Проблема |
-|---|---|---|
-| 4 | `routers/networks.py` + `models.py` | `AdAccount.platform` vs `AdAccount.network` — mismatch полей, INSERT сломан |
-| 5 | `models.py` | `targeting_rules.campaign_id: unique=True` — одно правило на кампанию максимум |
-| 6 | `rtb_bridge/service.py` | Нет second-price логики. Победитель платит свой bid, не second+0.01 |
-| 7 | `rtb_bridge/targeting.py` | Только geo+device. Нет: hour_of_day, domain lists, freq cap, IAB categories |
-| 8 | `auth.py` | Refresh token не инвалидируется в Redis — заблокированный юзер сохраняет доступ 30 дней |
-
-### 🟡 Технический долг (работает, но нельзя масштабировать)
-
-| # | Проблема |
-|---|---|
-| 9 | `main.py` — 32KB монолит, дублирует роутеры из `routers/` |
-| 10 | `tasks/rules.py` дублирует `tasks/autopilot.py` на 80% |
-| 11 | Нет иерархии `Advertiser → Campaign → LineItem` — Campaign выполняет роль LineItem |
-| 12 | Нет Alembic миграций — `create_all()` не для production |
-| 13 | Нет `/health` endpoint |
-| 14 | CORS `allow_origins=["*"]` — опасно для production |
-| 15 | `jwt_secret_key = "change-me..."` — дефолтное значение, нет валидации длины |
-
-### ✅ Что реально хорошо
-
-- OpenRTB 2.5 schemas в `rtb_bridge/schemas.py` — полные и правильные
-- Win/Loss notice endpoints — есть
-- Budget guard через Redis — концепция правильная
-- 4 SSP адаптера (EvaDav, MGID, PropellerAds, Push.House) — рабочая архитектура
-- Celery + autopilot с метриками (win_rate, CPA, ROI) — логика верная
-- Docker Compose с health checks — хорошая база
-- Индексы на `auction_logs` — правильно
+### ⚠️ Что требует аудита и доработки
+- `models.py` — нужно проверить полноту RTB-полей (floor price, bid floor, pacing)
+- `central_bidder/` — содержимое неизвестно, нужно ревью логики отбора
+- `bidder.py` — нужна проверка OpenRTB 2.5 совместимости
+- Нет интеграции с фронтом DSP (Vue.js)
+- Нет тестов (unit + integration)
+- Нет мониторинга и алертинга
 
 ---
 
-## 🗺️ MVP Definition
+## 🔴 ФАЗА 0 — АУДИТ И СТАБИЛИЗАЦИЯ ОСНОВЫ
+### Цель: понять что реально работает, зафиксировать baseline
+**Ориентир: 3–4 рабочих дня**
 
-**MVP готов когда выполнено:**
+### Шаг 0.1 — Прочитать и задокументировать models.py
+- [ ] Открыть `backend/models.py`, выписать все таблицы и поля
+- [ ] Проверить наличие: `Advertiser`, `Campaign`, `LineItem`, `Creative`, `SupplyPartner`
+- [ ] Проверить RTB-поля в LineItem: `max_bid`, `floor_price`, `daily_budget`, `total_budget`, `pacing`
+- [ ] Проверить targeting поля: `geo`, `device_type`, `os`, `browser`, `app_bundle`, `domain`
+- [ ] Проверить `BidRequest` / `BidResponse` Pydantic-модели в `schemas.py`
+- [ ] Зафиксировать список недостающих полей → issue в GitHub
 
-- [ ] Создать рекламодателя → кампанию → привязать креатив
-- [ ] SSP шлёт bid request → биддер отвечает корректно за < 100ms
-- [ ] Победа в аукционе → spend списывается из бюджета
-- [ ] Дневной бюджет исчерпан → кампания паузируется автоматически
-- [ ] Frequency cap работает → юзер не видит баннер больше N раз за окно
-- [ ] Статистика (impressions, clicks, spend, CTR) обновляется каждый час
-- [ ] Admin создаёт рекламодателя, рекламодатель управляет своими кампаниями
-- [ ] Базовый UI: login → dashboard → create campaign → upload creative → stats
+### Шаг 0.2 — Аудит central_bidder/
+- [ ] Прочитать все файлы в `backend/central_bidder/`
+- [ ] Понять: есть ли логика отбора кандидатов? (candidate selection)
+- [ ] Есть ли frequency capping через Redis?
+- [ ] Есть ли pacing (равномерная открутка)?
+- [ ] Есть ли логика auction (first price / second price)?
+- [ ] Составить список пробелов → файл `docs/bidder_gaps.md`
 
----
+### Шаг 0.3 — Аудит bidder.py роутера
+- [ ] Проверить endpoint `/bid` — принимает ли корректный OpenRTB 2.5 BidRequest?
+- [ ] Проверить структуру BidResponse (корректный `seatbid[].bid[]`)
+- [ ] Проверить `/win` endpoint для win notice
+- [ ] Проверить обработку No-Bid (204 или пустой ответ)
+- [ ] Замерить latency: curl тест, цель < 100ms
 
-## 📋 ФАЗА 0 — Стабилизация (2–3 дня)
+### Шаг 0.4 — Docker Compose проверка
+- [ ] `docker compose up` — поднимается ли всё без ошибок?
+- [ ] Alembic миграции применяются чисто?
+- [ ] Celery worker стартует?
+- [ ] Redis доступен?
+- [ ] Создать тестового суперадмина через `POST /auth/register`
 
-> Ничего не работает корректно пока это не сделано. Делаем первым.
-
-### 0.1 — Починить импорты в `tasks/bidding.py`
-- [ ] Заменить `AuctionLogDB` → `AuctionLog`
-- [ ] Заменить `CampaignDB` → `Campaign`
-- [ ] Заменить `TargetingRuleDB` → `TargetingRule`
-- [ ] Проверить: `celery -A celery_app inspect registered` — таск появился
-
-### 0.2 — Удалить дубль `tasks/rules.py`
-- [ ] Удалить `backend/tasks/rules.py`
-- [ ] В `celery_beat_schedule.py` убрать все ссылки на `tasks.rules`
-- [ ] Убедиться что `tasks.autopilot` покрывает всё
-
-### 0.3 — Починить mismatch `AdAccount` полей
-- [ ] В `models.py`: привести к единому названию (`network`/`label` или `platform`/`name` — смотреть что использует фронт)
-- [ ] В `routers/networks.py`: привести к тому же названию
-- [ ] Alembic migration или `ALTER TABLE`
-
-### 0.4 — Добавить таблицу `Advertiser` в `models.py`
-```python
-class Advertiser(Base):
-    __tablename__ = "advertisers"
-    id: UUID (PK)
-    name: str
-    email: str
-    balance: Decimal(15,4) default 0
-    daily_limit: Decimal(15,4) nullable
-    user_id: FK → users.id
-    is_active: bool default True
-    created_at: datetime
-```
-- [ ] Написать модель
-- [ ] `ALTER TABLE campaigns ADD COLUMN advertiser_id UUID REFERENCES advertisers(id)`
-- [ ] Обновить Campaign CRUD — добавить `advertiser_id` в create/update
-
-### 0.5 — Снять `unique=True` с `targeting_rules.campaign_id`
-- [ ] `models.py`: убрать `unique=True`
-- [ ] Migration: `DROP INDEX uq_targeting_rules_campaign_id`
-
-### 0.6 — Починить import path `rtb_bridge` в `main.py`
-- [ ] Проверить как запускается uvicorn в Dockerfile (рабочая директория)
-- [ ] Убедиться что `backend/rtb_bridge` находится на python path
-- [ ] Тест: `docker-compose up backend` → нет ImportError в логах
-
-### 0.7 — Добавить Alembic
-- [ ] `pip install alembic` → добавить в `requirements.txt`
-- [ ] `alembic init alembic`
-- [ ] Настроить `alembic.ini` + `env.py` на наши модели
-- [ ] Сгенерировать initial migration: `alembic revision --autogenerate -m "initial"`
-- [ ] `alembic upgrade head` — проверить на чистой БД
-
-**✅ Чекпоинт фазы 0:** `docker-compose up` → все сервисы healthy, нет ошибок в логах
+### Шаг 0.5 — Создать docs/ директорию в репо
+- [ ] `docs/architecture.md` — схема компонентов
+- [ ] `docs/api_status.md` — какие эндпоинты работают, какие нет
+- [ ] `docs/bidder_gaps.md` — пробелы в биддере
+- [ ] `docs/mvp_plan.md` — этот документ
 
 ---
 
-## 📋 ФАЗА 1 — RTB Core (4–5 дней)
+## 🟡 ФАЗА 1 — МОДЕЛИ И МИГРАЦИИ (если нужны правки)
+### Цель: убедиться что схема данных полная для RTB
+**Ориентир: 2–3 рабочих дня (пропустить если 0.1 показал что всё ок)**
 
-> Биддер должен делать реальные ставки правильно.
+### Шаг 1.1 — Дополнить модели недостающими RTB полями
+- [ ] `LineItem` добавить если нет:
+  - `pacing_type` (ENUM: asap, even, ahead)
+  - `bid_price_type` (ENUM: fixed, dynamic)
+  - `frequency_cap_impressions` / `frequency_cap_period`
+  - `start_date` / `end_date`
+  - `status` (draft, active, paused, completed, archived)
+- [ ] `SupplyPartner` добавить если нет:
+  - `endpoint_url`, `timeout_ms`, `qps_limit`, `protocol_version`
+  - `active` флаг, `test_mode` флаг
+- [ ] `Creative` проверить: `width`, `height`, `mime_type`, `ad_markup`, `click_url`, `tracking_pixels`
+- [ ] `BidLog` таблица для хранения результатов аукциона (win/loss/nobid)
 
-### 1.1 — Second-price аукцион в `rtb_bridge/service.py`
-- [ ] `win_price = min(second_highest_bid + 0.01, floor_price)` при втором участнике
-- [ ] `win_price = floor_price` если участник один
-- [ ] Логировать `clearing_price` в `auction_logs`
+### Шаг 1.2 — Alembic миграции
+- [ ] `alembic revision --autogenerate -m "rtb_fields_complete"`
+- [ ] Проверить сгенерированный файл миграции
+- [ ] `alembic upgrade head`
+- [ ] Убедиться что данные не потеряны (если есть тестовые)
 
-### 1.2 — Расширить `rtb_bridge/targeting.py`
-- [ ] `hour_of_day` — проверять schedule из `targeting_rules.schedule`
-- [ ] `domain_whitelist` / `domain_blacklist` — поле в `targeting_rules`
-- [ ] `iab_categories` — матчинг с `site.cat` / `app.cat` из bid request
-- [ ] `os_version` range — `device.osv` из bid request
-
-### 1.3 — Frequency Cap через Redis
-```python
-key = f"fc:{user_id}:{campaign_id}"
-count = await redis.incr(key)
-if count == 1:
-    await redis.expire(key, cap_window_seconds)
-if count > cap_impressions:
-    return None  # no bid
-```
-- [ ] Добавить поля в `targeting_rules`: `freq_cap_impressions`, `freq_cap_window_hours`
-- [ ] Реализовать проверку в `service.py` ДО формирования bid
-
-### 1.4 — Budget Guard real-time
-- [ ] Redis ключ: `f"budget:{campaign_id}:spent_today"` — INCRBYFLOAT при каждом win
-- [ ] Проверка ДО bid: `if spent + bid_price > daily_budget: no bid`
-- [ ] Сброс в полночь через Celery: `budget:*:spent_today → DEL`
-- [ ] Total budget check: `if total_spent > total_budget: pause campaign`
-
-### 1.5 — Win Notice корректная обработка
-- [ ] `POST /rtb/win/{auction_id}` → обновить `auction_logs.won = True, clearing_price`
-- [ ] INCRBYFLOAT spend counter в Redis
-- [ ] Если spend > 90% дневного бюджета → trigger autopilot check
-
-### 1.6 — Pacing (равномерная открутка)
-- [ ] `ideal_spend = daily_budget * (current_hour / 24.0)`
-- [ ] `actual_spend = redis.get(f"budget:{campaign_id}:spent_today")`
-- [ ] Если `actual < ideal * 0.8` → увеличить bid_price на 10%
-- [ ] Если `actual > ideal * 1.2` → throttle 50% запросов (случайный skip)
-
-**✅ Чекпоинт фазы 1:** Mock SSP тест — `python tests/mock_ssp.py` → биддер отвечает, бюджет уменьшается, при freq cap перестаёт отвечать
+### Шаг 1.3 — Обновить Pydantic schemas
+- [ ] Обновить `LineItemCreate` / `LineItemUpdate` / `LineItemRead`
+- [ ] Обновить `SupplyPartnerCreate` и `SupplyPartnerRead`
+- [ ] Добавить `BidLogRead` схему для API статистики
+- [ ] Проверить все `Optional` поля — не должно быть обязательных полей без дефолтов
 
 ---
 
-## 📋 ФАЗА 2 — API чистка (3 дня)
+## 🟡 ФАЗА 2 — БИДДЕР: CORE LOGIC
+### Цель: рабочий RTB цикл от BidRequest до Win Notice
+**Ориентир: 5–7 рабочих дней | КРИТИЧЕСКИЙ БЛОК**
 
-> `main.py` монолит → нормальная структура. Делаем параллельно с Фазой 1.
+### Шаг 2.1 — OpenRTB 2.5 парсинг BidRequest
+- [ ] Создать/проверить `backend/schemas.py` OpenRTB разделы:
+  - `BidRequest` с полями: `id`, `imp[]`, `site/app`, `device`, `user`, `at` (auction type)
+  - `Imp` с полями: `id`, `banner/video/native`, `bidfloor`, `bidfloorcur`
+  - `Banner` с `w`, `h`, `format[]`, `pos`
+  - `Device` с `ua`, `ip`, `geo`, `devicetype`, `os`
+  - `Site/App` с `id`, `domain/bundle`, `cat[]`, `publisher`
+- [ ] Тест: отправить реальный OpenRTB JSON, получить корректный ответ
 
-### 2.1 — Вынести auth из `main.py`
-- [ ] `routers/auth.py` — login, me, refresh, logout (с Redis blacklist)
-- [ ] Убрать auth endpoints из `main.py`
+### Шаг 2.2 — Candidate Selection (отбор кандидатов)
+- [ ] Логика в `central_bidder/` — функция `select_candidates(bid_request) -> List[LineItem]`
+- [ ] Фильтрация по статусу: только `active` line items
+- [ ] Фильтрация по бюджету: `spent < daily_budget` AND `spent < total_budget`
+- [ ] Фильтрация по расписанию: `start_date <= now <= end_date`
+- [ ] Фильтрация по таргетингу:
+  - geo (страна, регион, город)
+  - device_type (desktop/mobile/tablet)
+  - os (iOS/Android/Windows/etc)
+  - domain/app_bundle whitelist/blacklist
+  - IAB категории (site.cat vs line_item.categories)
+- [ ] Фильтрация по размеру: `banner.w x banner.h` совпадает с creative
 
-### 2.2 — Убрать дублированные endpoints из `main.py`
-- [ ] Campaigns → уже есть в `routers/campaigns.py`
-- [ ] Links, Pixels, Postback, Tracking → уже есть в роутерах
-- [ ] Analytics → `routers/stats.py`
-- [ ] `main.py` оставить только: FastAPI init + `include_router` + startup events
+### Шаг 2.3 — Bid Price Calculation
+- [ ] Функция `calculate_bid(line_item, bid_request) -> float`
+- [ ] Проверка: `bid_price > bid_request.imp[0].bidfloor`
+- [ ] Проверка: `bid_price <= line_item.max_bid`
+- [ ] Для fixed: возвращаем `line_item.max_bid`
+- [ ] Для dynamic: CPM на основе исторического CTR (заглушка на старте)
+- [ ] Логирование: записать попытку ставки в Redis (для дебага)
 
-### 2.3 — Redis blacklist для refresh tokens
-```python
-# При logout:
-await redis.setex(f"blacklist:token:{jti}", refresh_ttl, "1")
-# При валидации refresh:
-if await redis.get(f"blacklist:token:{jti}"): raise 401
-```
-- [ ] Добавить `jti` (uuid) в JWT payload
-- [ ] Реализовать blacklist check в `auth.py`
+### Шаг 2.4 — Auction Logic
+- [ ] Auction type из `bid_request.at`: 1=first price, 2=second price
+- [ ] Функция `run_auction(candidates: List[Bid]) -> Winner | None`
+- [ ] First price: winner платит свою ставку
+- [ ] Second price: winner платит max(second_bid, floor) + $0.01
+- [ ] При 0 кандидатов → No-Bid (HTTP 204)
 
-### 2.4 — `/health` endpoint
-```python
-@app.get("/health")
-async def health():
-    await db.execute("SELECT 1")
-    await redis.ping()
-    return {"status": "ok", "db": "ok", "redis": "ok", "version": "1.0.0"}
-```
+### Шаг 2.5 — BidResponse формирование
+- [ ] Структура по спецификации OpenRTB 2.5:
+  ```json
+  {
+    "id": "{bid_request.id}",
+    "seatbid": [{
+      "bid": [{
+        "id": "{uuid}",
+        "impid": "{imp.id}",
+        "price": "{bid_price}",
+        "adm": "{ad_markup}",
+        "adid": "{creative.id}",
+        "nurl": "https://dsp.domain/win/{bid_id}",
+        "lurl": "https://dsp.domain/loss/{bid_id}",
+        "w": "{width}",
+        "h": "{height}"
+      }],
+      "seat": "central_dsp"
+    }],
+    "cur": "USD"
+  }
+  ```
+- [ ] `nurl` (win notice URL) генерируется динамически с encrypted price
+- [ ] `adm` берётся из `creative.ad_markup` с подстановкой макросов
 
-### 2.5 — CORS на конкретные домены
-- [ ] `allow_origins` брать из `settings.allow_origins` (список из .env)
-- [ ] Дефолт: `["http://localhost:3000"]`
+### Шаг 2.6 — Макросы в ad markup
+- [ ] Замена стандартных макросов в `adm` перед отправкой:
+  - `${AUCTION_ID}` → bid_request.id
+  - `${AUCTION_PRICE}` → encrypted winning price (для nurl)
+  - `${AUCTION_IMP_ID}` → imp.id
+  - `${AUCTION_SEAT_ID}` → "central_dsp"
+- [ ] Функция `render_markup(creative, context) -> str`
 
-**✅ Чекпоинт фазы 2:** `main.py` < 100 строк. `GET /health` → 200. Все endpoints работают через роутеры.
+### Шаг 2.7 — Win Notice endpoint
+- [ ] `GET/POST /win/{bid_id}?price={clearing_price}`
+- [ ] Расшифровка цены (если SSP использует price encryption)
+- [ ] Запись в `BidLog`: статус=WIN, clearing_price
+- [ ] Увеличение `spent` у LineItem и Campaign (атомарно через Redis INCR)
+- [ ] Запись impression в stats таблицу
 
----
+### Шаг 2.8 — Loss Notice endpoint
+- [ ] `GET /loss/{bid_id}?reason={loss_reason}`
+- [ ] Запись в `BidLog`: статус=LOSS, loss_reason
+- [ ] Декремент "in-flight" счётчика если использовался
 
-## 📋 ФАЗА 3 — Статистика (2–3 дня)
-
-### 3.1 — Hourly stats aggregation (Celery, каждый час)
-```python
-# Агрегировать auction_logs за прошедший час → stats_hourly таблица
-# Поля: campaign_id, hour, impressions, wins, bids, spend, clicks, ctr, cpm, win_rate
-```
-- [ ] Таблица `stats_hourly` в models.py
-- [ ] Celery task `tasks/stats.py::aggregate_hourly`
-- [ ] Schedule: каждый час в :05
-
-### 3.2 — Campaign stats API
-```
-GET /api/v1/stats/campaign/{id}
-  ?from=2026-07-01&to=2026-07-18
-  &granularity=day|hour
-→ [{date, impressions, wins, spend, ctr, cpm, win_rate}, ...]
-```
-- [ ] Real-time данные из Redis counters (текущий час)
-- [ ] Исторические из `stats_hourly`
-- [ ] Merge в единый ответ
-
-### 3.3 — Creative performance
-- [ ] `GET /api/v1/stats/creative/{id}` — разбивка по креативам внутри кампании
-
-### 3.4 — SSP breakdown
-- [ ] `GET /api/v1/stats/ssp` — откуда идёт трафик, win rate по SSP
-
-**✅ Чекпоинт фазы 3:** API возвращает реальные цифры расхода и показов с разбивкой по дням
-
----
-
-## 📋 ФАЗА 4 — SSP подключение (3–4 дня)
-
-### 4.1 — Модель `SupplyPartner` в `models.py`
-```python
-class SupplyPartner(Base):
-    name: str
-    endpoint_url: str
-    inbound_token: str        # они шлют к нам с этим токеном
-    mode: str                 # "inbound" | "outbound"
-    qps_limit: int default 100
-    is_active: bool
-    total_requests: int
-    total_bids: int
-    total_wins: int
-```
-
-### 4.2 — Inbound SSP middleware
-- [ ] Проверка `X-SSP-Token` header → матчинг с `SupplyPartner.inbound_token`
-- [ ] Rate limiting: `redis.incr(f"qps:{ssp_id}:{second}")` + expire 2s
-- [ ] Логировать каждый запрос в `auction_logs.ssp_id`
-
-### 4.3 — Mock SSP тест
-- [ ] `tests/mock_ssp.py` — генерирует bid requests с реальными OpenRTB полями
-- [ ] Тест 1000 запросов → проверить win rate, latency, budget decrease
-
-### 4.4 — Первая реальная SSP
-- [ ] Подготовить endpoint документацию (swagger /docs уже есть)
-- [ ] Whitelisting нашего IP у SSP
-- [ ] Мониторинг: `requests/s`, `win_rate`, `avg_latency`
-
-**✅ Чекпоинт фазы 4:** Реальная SSP шлёт bid requests, мы отвечаем корректными bid responses, видим реальный трафик в stats
+### Шаг 2.9 — Latency тест биддера
+- [ ] Benchmark: 1000 запросов, p50/p95/p99
+- [ ] Цель: p99 < 80ms (SSP обычно даёт 100-150ms timeout)
+- [ ] Если медленно: добавить Redis кэш для active line items
+- [ ] Redis кэш: ключ `line_items:active`, TTL 30 сек, invalidate при изменении
 
 ---
 
-## 📋 ФАЗА 5 — UI (3–4 дня)
+## 🟡 ФАЗА 3 — BUDGET CONTROL И FREQUENCY CAPPING
+### Цель: финансовая безопасность системы
+**Ориентир: 3–4 рабочих дня**
 
-> Только после готовности API. Vue/Vuetify фронт уже есть.
+### Шаг 3.1 — Аудит budget.py
+- [ ] Прочитать `backend/tasks/budget.py` (9KB) — что уже реализовано
+- [ ] Проверить: есть ли daily budget reset в полночь?
+- [ ] Проверить: есть ли pacing (равномерная открутка)?
+- [ ] Дополнить если нужно
 
-### 5.1 — Login + Dashboard
-- [ ] Login форма → JWT → localStorage
-- [ ] Dashboard: spend today, impressions, win rate, активные кампании (карточки)
-- [ ] Проверить все API calls работают с backend
+### Шаг 3.2 — Real-time Budget Guard в Redis
+- [ ] Ключ: `budget:daily:{line_item_id}:{date}` → потраченная сумма
+- [ ] Ключ: `budget:total:{line_item_id}` → общий потраченный бюджет
+- [ ] Перед каждой ставкой: проверить `budget_spent < budget_limit`
+- [ ] После win notice: `INCRBYFLOAT budget:daily:{id}:{date} {price}`
+- [ ] Celery task: синхронизировать Redis → PostgreSQL каждые 60 сек
 
-### 5.2 — Campaign Create/Edit
-- [ ] Форма: название, бюджет дневной/общий, даты старт/конец
-- [ ] Таргетинг: geo (мультиселект), device type, OS
-- [ ] Schedule: дни недели + часы
-- [ ] Статус toggle: active/paused
-- [ ] Привязка к рекламодателю
+### Шаг 3.3 — Pacing алгоритм
+- [ ] Even pacing: `allowed_per_hour = daily_budget / hours_remaining`
+- [ ] Ключ: `pacing:{line_item_id}:{hour}` → потрачено в этот час
+- [ ] Если `spent_this_hour >= allowed_per_hour` → не делаем ставку (throttle)
+- [ ] ASAP pacing: тратим как можно быстрее (без throttle)
 
-### 5.3 — Creative Upload
-- [ ] Загрузка изображения (JPEG/PNG/GIF) → S3/MinIO
-- [ ] Поля: click URL, alt text, размер
+### Шаг 3.4 — Frequency Capping
+- [ ] Ключ: `fc:{user_id}:{line_item_id}` → счётчик показов
+- [ ] TTL ключа = period (например, 86400 сек для дневного капа)
+- [ ] Перед ставкой: `GET fc:{user_id}:{line_item_id}` < `cap_impressions`
+- [ ] После win: `INCR fc:{user_id}:{line_item_id}`
+- [ ] Если `user_id` нет в bid request → skip frequency check
+
+### Шаг 3.5 — Campaign status automation
+- [ ] Celery task каждые 5 мин: проверить бюджет всех active campaigns
+- [ ] Если `spent >= total_budget` → автоматически `status = completed`
+- [ ] Если `end_date < now` → `status = completed`
+- [ ] Если `start_date > now` → не включать в биддинг
+
+---
+
+## 🟡 ФАЗА 4 — SSP ИНТЕГРАЦИИ
+### Цель: первые реальные bid requests
+**Ориентир: 4–5 рабочих дней**
+
+### Шаг 4.1 — SupplyPartner management
+- [ ] Проверить `backend/routers/supply_partners.py` — CRUD полный?
+- [ ] Добавить поле `qps_limit` (запросов в секунду)
+- [ ] Добавить `timeout_ms` (таймаут биддера для этого SSP)
+- [ ] Добавить `test_mode` флаг (принимаем запросы, не делаем реальные ставки)
+- [ ] Добавить `auth_type` (none, bearer, api_key, ip_whitelist)
+- [ ] API: `GET /supply-partners/{id}/test` — тест соединения
+
+### Шаг 4.2 — Per-SSP endpoint routing
+- [ ] Каждый SSP получает уникальный endpoint:
+  - `POST /bid/{supply_partner_slug}` или
+  - `POST /bid` с идентификацией по API key в header
+- [ ] Логирование: какой SSP прислал request
+- [ ] Rate limiting по QPS: Redis sliding window counter
+
+### Шаг 4.3 — SSP аутентификация
+- [ ] Поддержка: IP whitelist (проверка `X-Forwarded-For`)
+- [ ] Поддержка: Bearer token в `Authorization` header
+- [ ] Поддержка: custom header (`X-OpenRTB-Version`, `X-Supply-Key`)
+- [ ] Middleware для валидации SSP credentials
+
+### Шаг 4.4 — Тест с первым SSP (тестовый трафик)
+- [ ] Подключить любой тестовый SSP или использовать rtb4free как SSP-симулятор
+- [ ] Запустить тест на 1000 bid requests
+- [ ] Проверить win rate, bid rate, latency
+- [ ] Проверить что бюджет корректно декрементируется
+- [ ] Проверить что impression засчитывается
+
+### Шаг 4.5 — QPS мониторинг и защита
+- [ ] Redis counter: `qps:{supply_partner_id}:{second}` → count, TTL=2
+- [ ] Если `count > qps_limit` → 429 Too Many Requests
+- [ ] Prometheus метрика: `bid_requests_total{ssp="xxx"}`
+
+---
+
+## 🟡 ФАЗА 5 — TRACKING И СТАТИСТИКА
+### Цель: видеть что происходит с рекламой
+**Ориентир: 3–4 рабочих дня**
+
+### Шаг 5.1 — Аудит tracking.py
+- [ ] Прочитать `backend/routers/tracking.py` (8KB)
+- [ ] Проверить: click tracking redirect работает?
+- [ ] Проверить: impression pixel (1x1 GIF) работает?
+- [ ] Проверить: записываются ли события в БД?
+
+### Шаг 5.2 — Impression tracking
+- [ ] `GET /t/imp/{creative_id}/{bid_id}` → 1x1 GIF ответ
+- [ ] Async запись в ClickHouse или PostgreSQL (не блокировать response)
+- [ ] Поля: `timestamp`, `creative_id`, `line_item_id`, `campaign_id`, `supply_partner_id`, `user_id`, `ip`, `ua`
+
+### Шаг 5.3 — Click tracking
+- [ ] `GET /t/click/{creative_id}/{bid_id}` → 302 redirect на `click_url`
+- [ ] Async запись: click event
+- [ ] Дедупликация: не считать повторный клик с того же IP за 1 час
+
+### Шаг 5.4 — Stats API
+- [ ] Проверить `backend/routers/stats.py` (9KB) — что уже есть
+- [ ] Добавить если нет:
+  - `GET /stats/campaigns/{id}?from=&to=` → impressions, clicks, spend, CTR, CPM
+  - `GET /stats/line_items/{id}?from=&to=`
+  - `GET /stats/dashboard` → агрегаты за сегодня
+- [ ] Группировка по: день, час, supply_partner, geo, device
+
+### Шаг 5.5 — ClickHouse (опционально для scale)
+- [ ] Если объём > 1M events/день → ClickHouse для аналитики
+- [ ] Dual write: PostgreSQL для operational, ClickHouse для analytics
+- [ ] На старте: PostgreSQL достаточно
+
+---
+
+## 🟡 ФАЗА 6 — ADMIN API И RBAC
+### Цель: многопользовательская система с ролями
+**Ориентир: 3–4 рабочих дня**
+
+### Шаг 6.1 — Аудит auth.py и dependencies.py
+- [ ] Прочитать `backend/routers/auth.py` и `backend/dependencies.py`
+- [ ] Какие роли уже есть? (superadmin, admin, advertiser, viewer?)
+- [ ] JWT claims содержат роль?
+- [ ] Есть ли permission middleware?
+
+### Шаг 6.2 — Роли и разрешения
+- [ ] Определить роли:
+  - `superadmin` — полный доступ, управление SSP, пользователями
+  - `admin` — управление advertisers, campaigns, reporting
+  - `advertiser` — только свои campaigns/creatives/stats
+  - `viewer` — read-only доступ к статистике
+- [ ] Реализовать декораторы: `@require_role("admin")`, `@require_permission("campaigns:write")`
+- [ ] Multi-tenancy: advertiser видит только свои данные
+
+### Шаг 6.3 — Advertiser management
+- [ ] `POST /advertisers` — создание (только admin/superadmin)
+- [ ] Привязка users к advertiser_id
+- [ ] Все запросы фильтруются по `advertiser_id` из JWT
+
+### Шаг 6.4 — Финансы (баланс и пополнение)
+- [ ] Таблица `AdvertiserBalance` или поле в `Advertiser`
+- [ ] `POST /finance/topup` — пополнение баланса (admin only)
+- [ ] Проверка при старте campaign: `balance >= daily_budget`
+- [ ] Списание при win notice → уменьшение баланса advertiser
+
+---
+
+## 🟡 ФАЗА 7 — ФРОНТЕНД (Vue.js интеграция)
+### Цель: рабочий UI для управления DSP
+**Ориентир: 7–10 рабочих дней**
+
+### Шаг 7.1 — Анализ существующего фронта
+- [ ] Изучить `src/store/modules/` — какие API вызовы уже есть
+- [ ] Изучить `src/router/` — какие страницы уже роутятся
+- [ ] Изучить `src/views/` — какие страницы существуют
+- [ ] Составить матрицу: экран → API endpoint → статус
+
+### Шаг 7.2 — Auth pages
+- [ ] Login (`POST /auth/login`) — получение JWT
+- [ ] Register (если нужен self-signup)
+- [ ] Logout — очистка токена
+- [ ] Refresh token логика
+
+### Шаг 7.3 — Dashboard
+- [ ] KPI карточки: Impressions, Clicks, Spend, CTR сегодня
+- [ ] График по часам (Chart.js)
+- [ ] Топ-5 campaigns по spend
+- [ ] Алерты: campaigns без бюджета, close to limit
+
+### Шаг 7.4 — Campaigns management
+- [ ] Список кампаний с фильтрами и пагинацией
+- [ ] Создание кампании (wizard: настройки → line items → креативы)
+- [ ] Детальная страница кампании со статистикой
+- [ ] Пауза/активация/архивирование
+
+### Шаг 7.5 — Line Items management
+- [ ] Список line items в контексте кампании
+- [ ] Форма создания: бюджет, даты, таргетинг, ставка, pacing
+- [ ] Targeting builder: geo picker, device checkboxes, OS multiselect
+- [ ] Domain/App whitelist/blacklist (textarea или upload CSV)
+
+### Шаг 7.6 — Creatives management
+- [ ] Upload баннера (FilePond уже есть в зависимостях!)
 - [ ] Preview баннера
-- [ ] Привязка к кампании
+- [ ] Привязка creative к line item
+- [ ] Статус модерации (pending/approved/rejected)
 
-### 5.4 — Stats Dashboard
-- [ ] Таблица кампаний: impressions, clicks, spend, CTR, CPM
-- [ ] Line chart spend по дням (Chart.js или уже есть в Vue)
-- [ ] Фильтр по датам
+### Шаг 7.7 — SSP Management (admin)
+- [ ] Список supply partners
+- [ ] Форма добавления SSP: endpoint URL, auth, QPS limit
+- [ ] Тест соединения кнопкой
+- [ ] Статус last bid request
 
-### 5.5 — Advertiser Management (для admin)
-- [ ] CRUD рекламодателей
-- [ ] Баланс + лимиты
-- [ ] Список кампаний рекламодателя
-
-### 5.6 — SSP Management (для superadmin)
-- [ ] CRUD SupplyPartner
-- [ ] Статус, QPS, win rate по SSP
-
-**✅ Чекпоинт фазы 5:** Полный пользовательский путь через UI: login → create campaign → upload creative → вижу stats
+### Шаг 7.8 — Stats & Reporting
+- [ ] Таблица с drill-down (campaign → line item → creative)
+- [ ] Date range picker (уже есть VDatePicker)
+- [ ] Export CSV
+- [ ] Charts: impression/click/spend timeline
 
 ---
 
-## 📋 ФАЗА 6 — Production Hardening (2 дня)
+## 🔵 ФАЗА 8 — QUALITY, ТЕСТЫ И БЕЗОПАСНОСТЬ
+### Цель: production-ready код
+**Ориентир: 4–5 рабочих дней**
 
-- [ ] Rate limiting на всех публичных endpoints (`slowapi`)
-- [ ] HTTPS через Caddy или Nginx + Let's Encrypt
-- [ ] Secrets только из `.env`, проверить `.gitignore` — нет ключей в коде
-- [ ] JWT secret: минимум 32 символа, валидация при старте
-- [ ] Structured JSON logging (`loguru` или `structlog`)
-- [ ] Sentry integration для ошибок
-- [ ] Pg_dump cron backup
-- [ ] Docker resource limits (memory: 512m для backend, 2g для redis)
-- [ ] `CORS allow_origins` — конкретные домены, не `["*"]`
+### Шаг 8.1 — Unit тесты биддера
+- [ ] pytest для `central_bidder/` функций
+- [ ] Тест candidate_selection: различные таргетинги
+- [ ] Тест bid_calculation: edge cases (ниже floor, выше max_bid)
+- [ ] Тест auction: first price, second price, no candidates
+- [ ] Тест frequency_cap: счётчик работает, TTL соблюдается
+
+### Шаг 8.2 — Integration тесты API
+- [ ] `TestClient` FastAPI для каждого роутера
+- [ ] Тест полного RTB цикла: BidRequest → BidResponse → WinNotice → Stats
+- [ ] Тест budget exhaustion: кампания останавливается при нулевом бюджете
+
+### Шаг 8.3 — Load тест
+- [ ] Locust или k6: 100 rps на `/bid` endpoint
+- [ ] Цель: p99 < 100ms при 100 rps
+- [ ] Профилирование узких мест
+
+### Шаг 8.4 — Безопасность
+- [ ] SQL injection: использовать только параметризованные запросы (SQLAlchemy)
+- [ ] Rate limiting на auth endpoints (5 попыток/мин)
+- [ ] CORS настройка: только разрешённые домены
+- [ ] Secrets: всё в `.env`, ничего в коде
+- [ ] JWT secret rotation стратегия
 
 ---
 
-## 📊 Сводная таблица
+## 🔵 ФАЗА 9 — ДЕПЛОЙ И МОНИТОРИНГ
+### Цель: работающая система в production
+**Ориентир: 3–4 рабочих дня**
 
-| Фаза | Что делаем | Дней | Статус |
-|---|---|---|---|
-| **0** | Стабилизация — фикс критических багов | 2–3 | ⏳ В работе |
-| **1** | RTB Core — second price, freq cap, pacing | 4–5 | 🔜 |
-| **2** | API чистка — убрать монолит | 3 | 🔜 |
-| **3** | Статистика + Reporting | 2–3 | 🔜 |
-| **4** | SSP подключение | 3–4 | 🔜 |
-| **5** | UI | 3–4 | 🔜 |
-| **6** | Production hardening | 2 | 🔜 |
-| **ИТОГО** | | **19–27 дней** | |
+### Шаг 9.1 — Production docker-compose
+- [ ] `docker-compose.prod.yml` с:
+  - `backend` (uvicorn workers = CPU * 2 + 1)
+  - `celery_worker` (2 replicas)
+  - `celery_beat` (1 replica)
+  - `postgres` с persistent volume
+  - `redis` с persistent volume
+  - `nginx` reverse proxy
+
+### Шаг 9.2 — Nginx конфигурация
+- [ ] SSL termination
+- [ ] `/bid/*` → backend с keepalive
+- [ ] `/api/*` → backend
+- [ ] `/` → frontend (Next.js static или Vue SPA)
+- [ ] Gzip compression
+
+### Шаг 9.3 — Мониторинг
+- [ ] Prometheus метрики из FastAPI (`prometheus-fastapi-instrumentator`)
+- [ ] Ключевые метрики:
+  - `bid_requests_total` by SSP
+  - `bid_responses_total` by type (bid/nobid)
+  - `win_notices_total`
+  - `bid_latency_seconds` histogram
+  - `budget_utilization` gauge
+- [ ] Grafana dashboard
+
+### Шаг 9.4 — Алерты
+- [ ] Alertmanager: latency p99 > 100ms
+- [ ] Alertmanager: win rate drop > 50%
+- [ ] Alertmanager: error rate > 1%
+- [ ] Alertmanager: Redis memory > 80%
+
+### Шаг 9.5 — Логирование
+- [ ] Structured JSON logs (loguru или structlog)
+- [ ] Каждый bid request логируется: request_id, ssp, duration, result
+- [ ] Loki + Grafana для log aggregation (опционально)
 
 ---
 
-## 🧱 Принципы работы
+## 📅 СУММАРНЫЙ ТАЙМЛАЙН
 
-1. **Фикс перед фичами** — пока Фаза 0 не сделана, новый код на сломанном фундаменте бесполезен
-2. **Чекпоинт в конце каждой фазы** — тест который можно запустить и показать
-3. **Redis для real-time** (бюджет, freq cap, QPS), Postgres для персистентного хранения
-4. **Budget Guard перед первой реальной SSP** — иначе слив бюджета за минуты
-5. **UI последним** — красивый дашборд без работающего биддера = нарисованная машина
-6. **Один источник правды** — `main.py` только для init, логика только в роутерах
+| Фаза | Задача | Дней | Приоритет |
+|------|--------|-----|-----------|
+| 0 | Аудит и стабилизация | 3-4 | 🔴 ПЕРВЫЙ |
+| 1 | Модели и миграции | 2-3 | 🔴 Если нужно |
+| 2 | Биддер core logic | 5-7 | 🔴 КРИТИЧНО |
+| 3 | Budget + FreqCap | 3-4 | 🔴 КРИТИЧНО |
+| 4 | SSP интеграции | 4-5 | 🟡 Важно |
+| 5 | Tracking + Stats | 3-4 | 🟡 Важно |
+| 6 | Admin API + RBAC | 3-4 | 🟡 Важно |
+| 7 | Frontend | 7-10 | 🟡 Параллельно с 4-6 |
+| 8 | Тесты + Security | 4-5 | 🔵 Перед деплоем |
+| 9 | Деплой + Мониторинг | 3-4 | 🔵 Финал |
+| **ИТОГО** | **MVP** | **37-50 р.дн.** | |
+
+---
+
+## 🎯 ОПРЕДЕЛЕНИЕ MVP (минимальная рабочая DSP)
+
+MVP считается достигнутым когда:
+
+1. ✅ Система принимает OpenRTB 2.5 bid requests от минимум 1 SSP
+2. ✅ Биддер отбирает кандидатов по таргетингу и бюджету
+3. ✅ Отправляет корректный BidResponse с ad markup
+4. ✅ Обрабатывает Win Notice и засчитывает impression
+5. ✅ Бюджет корректно контролируется (кампания останавливается при исчерпании)
+6. ✅ Frequency capping работает
+7. ✅ Статистика доступна через API
+8. ✅ Есть минимальный UI для создания campaign/line item/creative
+9. ✅ Система выдерживает 50 rps на bid endpoint
+10. ✅ Есть мониторинг и алерты
 
 ---
 
@@ -380,8 +518,8 @@ class SupplyPartner(Base):
 
 | Дата | Что сделано |
 |---|---|
-| 2026-07-18 | Полный аудит репо. Выявлено 15 проблем. Обновлён план. |
+| 2026-07-18 | Обновлён ROADMAP — загружен полный MVP план с микро-шагами по всем 10 фазам |
 
 ---
 
-*Документ обновляется по ходу выполнения. Отмечай выполненные шаги чекбоксами.*
+*Документ обновляется по мере выполнения шагов. Каждый выполненный шаг — коммит в репо с ссылкой на задачу.*
