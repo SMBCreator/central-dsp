@@ -16,10 +16,8 @@ import { TimeseriesChart } from "@/components/timeseries-chart"
 
 const DIMENSIONS = [
   { key: "campaign", label: "По кампаниям" },
-  { key: "supply_partner", label: "По SSP" },
-  { key: "geo", label: "По гео" },
-  { key: "device", label: "По устройствам" },
-  { key: "ad_type", label: "По форматам" },
+  { key: "partner", label: "По SSP" },
+  { key: "creative", label: "По креативам" },
 ] as const
 
 export default function AnalyticsPage() {
@@ -55,7 +53,7 @@ export default function AnalyticsPage() {
 
       {summary ? (
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-          <KpiCard label="Расход" value={fmtMoney(summary.spend)} hint={`eCPM ${fmtMoney(summary.cpm)}`} />
+          <KpiCard label="Расход" value={fmtMoney(summary.spend)} hint={`eCPM ${fmtMoney(summary.ecpm)}`} />
           <KpiCard label="Ставки → Выигрыши" value={`${fmtNum(summary.bids)} → ${fmtNum(summary.wins)}`} hint={`Win rate ${fmtPct(summary.win_rate)}`} />
           <KpiCard label="Показы" value={fmtNum(summary.impressions)} />
           <KpiCard label="Клики" value={fmtNum(summary.clicks)} hint={`CTR ${fmtPct(summary.ctr)}`} />
@@ -103,14 +101,14 @@ export default function AnalyticsPage() {
           breakdown.length > 0 ? (
             <Table headers={["Сегмент", "Ставки", "Выигрыши", "Показы", "Клики", "CTR", "Расход"]}>
               {breakdown.map((row) => (
-                <tr key={row.key} className="hover:bg-surface">
+                <tr key={row.id} className="hover:bg-surface">
                   <td className="px-4 py-3 font-medium text-foreground">{row.name}</td>
                   <td className="px-4 py-3 font-mono text-xs">{fmtNum(row.bids)}</td>
                   <td className="px-4 py-3 font-mono text-xs">{fmtNum(row.wins)}</td>
                   <td className="px-4 py-3 font-mono text-xs">{fmtNum(row.impressions)}</td>
                   <td className="px-4 py-3 font-mono text-xs">{fmtNum(row.clicks)}</td>
                   <td className="px-4 py-3 font-mono text-xs">
-                    {row.impressions > 0 ? fmtPct(row.clicks / row.impressions) : "—"}
+                    {row.impressions > 0 ? fmtPct(row.ctr) : "—"}
                   </td>
                   <td className="px-4 py-3 font-mono text-xs">{fmtMoney(row.spend)}</td>
                 </tr>

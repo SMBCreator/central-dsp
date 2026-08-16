@@ -58,7 +58,7 @@ export default function DashboardPage() {
 
       {summary ? (
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-          <KpiCard label="Расход" value={fmtMoney(summary.spend)} hint={`CPM ${fmtMoney(summary.cpm)}`} />
+          <KpiCard label="Расход" value={fmtMoney(summary.spend)} hint={`eCPM ${fmtMoney(summary.ecpm)}`} />
           <KpiCard label="Показы" value={fmtNum(summary.impressions)} hint={`${fmtNum(summary.wins)} выигрышей`} />
           <KpiCard label="Клики" value={fmtNum(summary.clicks)} hint={`CTR ${fmtPct(summary.ctr)}`} />
           <KpiCard label="Win Rate" value={fmtPct(summary.win_rate)} hint={`${fmtNum(summary.bids)} ставок`} />
