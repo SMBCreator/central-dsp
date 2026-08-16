@@ -1,0 +1,43 @@
+@import 'tailwindcss';
+
+@theme inline {
+  --font-sans: var(--font-inter), system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains), monospace;
+
+  --color-background: #0c1017;
+  --color-surface: #131926;
+  --color-surface-hover: #1a2233;
+  --color-border: #232d42;
+  --color-foreground: #e6ecf5;
+  --color-muted: #8494ad;
+  --color-primary: #5b7cfa;
+  --color-primary-hover: #4a68e8;
+  --color-primary-foreground: #ffffff;
+  --color-success: #34d399;
+  --color-danger: #f87171;
+  --color-warning: #fbbf24;
+  --radius: 0.625rem;
+}
+
+html {
+  background-color: var(--color-background);
+}
+
+body {
+  background-color: var(--color-background);
+  color: var(--color-foreground);
+}
+
+::selection {
+  background-color: var(--color-primary);
+  color: var(--color-primary-foreground);
+}
+
+/* Recharts dark theme adjustments */
+.recharts-cartesian-grid line {
+  stroke: var(--color-border);
+}
+.recharts-text {
+  fill: var(--color-muted);
+  font-size: 11px;
+}

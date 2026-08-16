@@ -1,76 +1,68 @@
-"""JWT auth helpers and password hashing."""
+"""Session-based auth: bcrypt password hashing + opaque session tokens."""
+import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Optional
-from jose import JWTError, jwt
-from passlib.context import CryptContext
-from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
-from sqlalchemy.orm import Session
-from backend.config import settings
-from backend.database import get_db
-from backend import models
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
+import bcrypt
+from fastapi import Cookie, Depends, HTTPException
+
+from db import get_pool
+
+SESSION_TTL_DAYS = 30
+COOKIE_NAME = "cdsp_session"
 
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 
-def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
-
-
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
-    to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + (
-        expires_delta or timedelta(minutes=settings.jwt_access_token_expire_minutes)
-    )
-    to_encode["exp"] = expire
-    return jwt.encode(to_encode, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
-
-
-def get_current_user(
-    token: Optional[str] = Depends(oauth2_scheme),
-    db: Session = Depends(get_db),
-) -> models.User:
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    if not token:
-        raise credentials_exception
+def verify_password(password: str, password_hash: str) -> bool:
     try:
-        payload = jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
-        user_id: int = payload.get("sub")
-        if user_id is None:
-            raise credentials_exception
-    except JWTError:
-        raise credentials_exception
+        return bcrypt.checkpw(password.encode(), password_hash.encode())
+    except ValueError:
+        return False
 
-    user = db.query(models.User).filter(models.User.id == int(user_id)).first()
-    if not user or not user.is_active:
-        raise credentials_exception
-    return user
+
+async def create_session(user_id: str) -> tuple[str, datetime]:
+    token = secrets.token_urlsafe(32)
+    expires_at = datetime.now(timezone.utc) + timedelta(days=SESSION_TTL_DAYS)
+    pool = await get_pool()
+    await pool.execute(
+        "INSERT INTO sessions (user_id, token, expires_at) VALUES ($1, $2, $3)",
+        user_id, token, expires_at,
+    )
+    return token, expires_at
+
+
+async def destroy_session(token: str) -> None:
+    pool = await get_pool()
+    await pool.execute("DELETE FROM sessions WHERE token = $1", token)
+
+
+async def current_user(cdsp_session: str | None = Cookie(default=None)) -> dict:
+    if not cdsp_session:
+        raise HTTPException(status_code=401, detail="Не авторизован")
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        """
+        SELECT u.id, u.email, u.name, u.role, u.status, s.token, s.expires_at
+        FROM sessions s JOIN users u ON u.id = s.user_id
+        WHERE s.token = $1
+        """,
+        cdsp_session,
+    )
+    if not row:
+        raise HTTPException(status_code=401, detail="Сессия недействительна")
+    if row["expires_at"] < datetime.now(timezone.utc):
+        await destroy_session(cdsp_session)
+        raise HTTPException(status_code=401, detail="Сессия истекла")
+    if row["status"] != "active":
+        raise HTTPException(status_code=403, detail="Аккаунт заблокирован")
+    return dict(row)
 
 
 def require_role(*roles: str):
-    """Dependency factory — checks user role."""
-    def checker(current_user: models.User = Depends(get_current_user)) -> models.User:
-        if current_user.role not in roles:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Role '{current_user.role}' not allowed. Required: {roles}",
-            )
-        return current_user
+    async def checker(user: dict = Depends(current_user)) -> dict:
+        if user["role"] not in roles:
+            raise HTTPException(status_code=403, detail="Недостаточно прав")
+        return user
     return checker
-
-
-def ensure_admin(current_user: models.User = Depends(get_current_user)) -> models.User:
-    return require_role("admin")(current_user)
-
-
-def ensure_manager_or_admin(current_user: models.User = Depends(get_current_user)) -> models.User:
-    return require_role("admin", "manager")(current_user)

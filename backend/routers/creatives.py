@@ -1,159 +1,99 @@
-from __future__ import annotations
-from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
-from sqlalchemy import select
-from sqlalchemy.orm import Session
-from database import SessionLocal
-from auth import get_current_user
-from models import Creative, Campaign, User
+from fastapi import APIRouter, Depends, HTTPException
 
-router = APIRouter(prefix="/api/creatives", tags=["Creatives"])
+from auth import current_user
+from db import get_pool
+from schemas import CreativeIn, CreativePatch
 
+router = APIRouter(prefix="/creatives", tags=["creatives"])
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+_REQUIRED_BY_TYPE = {
+    "banner": ["width", "height", "click_url"],
+    "native": ["native_title", "click_url"],
+    "video": ["click_url"],
+}
 
 
-# ── Pydantic schemas ──────────────────────────────────────────────────────────
-
-class CreativeCreate(BaseModel):
-    campaign_id: int
-    format: str          # banner | native | video
-    width: Optional[int] = None
-    height: Optional[int] = None
-    image_url: Optional[str] = None
-    title: Optional[str] = None
-    description: Optional[str] = None
-    click_url: str
+def _serialize(row) -> dict:
+    d = dict(row)
+    for k in ("id", "campaign_id", "user_id", "line_item_id"):
+        if d.get(k) is not None:
+            d[k] = str(d[k])
+    return d
 
 
-class CreativeUpdate(BaseModel):
-    format: Optional[str] = None
-    width: Optional[int] = None
-    height: Optional[int] = None
-    image_url: Optional[str] = None
-    title: Optional[str] = None
-    description: Optional[str] = None
-    click_url: Optional[str] = None
-    status: Optional[str] = None   # active | paused | archived
+def _validate_type_fields(body: CreativeIn) -> None:
+    missing = [f for f in _REQUIRED_BY_TYPE[body.type] if not getattr(body, f)]
+    if body.type == "banner" and not (body.asset_url or body.html_snippet):
+        missing.append("asset_url или html_snippet")
+    if body.type == "video" and not (body.video_url or body.vast_xml):
+        missing.append("video_url или vast_xml")
+    if missing:
+        raise HTTPException(status_code=422, detail=f"Для типа {body.type} обязательны поля: {', '.join(missing)}")
 
 
-class CreativeOut(BaseModel):
-    id: int
-    campaign_id: int
-    format: str
-    width: Optional[int]
-    height: Optional[int]
-    image_url: Optional[str]
-    title: Optional[str]
-    description: Optional[str]
-    click_url: str
-    status: str
-    audit_status: Optional[str]
-
-    class Config:
-        from_attributes = True
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _get_campaign_or_404(db: Session, campaign_id: int, user: User) -> Campaign:
-    c = db.execute(
-        select(Campaign).where(Campaign.id == campaign_id, Campaign.user_id == user.id)
-    ).scalar_one_or_none()
-    if not c:
-        raise HTTPException(status_code=404, detail="Campaign not found")
-    return c
-
-
-def _get_creative_or_404(db: Session, creative_id: int, user: User) -> Creative:
-    cr = db.execute(
-        select(Creative).where(Creative.id == creative_id)
-    ).scalar_one_or_none()
-    if not cr:
-        raise HTTPException(status_code=404, detail="Creative not found")
-    _get_campaign_or_404(db, cr.campaign_id, user)   # ownership check
-    return cr
-
-
-# ── Endpoints ─────────────────────────────────────────────────────────────────
-
-@router.post("", response_model=CreativeOut, status_code=status.HTTP_201_CREATED)
-def create_creative(
-    payload: CreativeCreate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    _get_campaign_or_404(db, payload.campaign_id, current_user)
-    cr = Creative(
-        campaign_id=payload.campaign_id,
-        format=payload.format,
-        width=payload.width,
-        height=payload.height,
-        image_url=payload.image_url,
-        title=payload.title,
-        description=payload.description,
-        click_url=payload.click_url,
-        status="active",
-        audit_status="pending",
-    )
-    db.add(cr)
-    db.commit()
-    db.refresh(cr)
-    return cr
-
-
-@router.get("", response_model=List[CreativeOut])
-def list_creatives(
-    campaign_id: Optional[int] = None,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    q = select(Creative).join(Campaign, Campaign.id == Creative.campaign_id).where(
-        Campaign.user_id == current_user.id
-    )
+@router.get("")
+async def list_creatives(campaign_id: str | None = None, user: dict = Depends(current_user)):
+    pool = await get_pool()
     if campaign_id:
-        q = q.where(Creative.campaign_id == campaign_id)
-    return db.execute(q).scalars().all()
+        rows = await pool.fetch(
+            "SELECT * FROM creatives WHERE user_id = $1 AND campaign_id = $2 ORDER BY created_at DESC",
+            user["id"], campaign_id,
+        )
+    else:
+        rows = await pool.fetch(
+            "SELECT * FROM creatives WHERE user_id = $1 ORDER BY created_at DESC", user["id"]
+        )
+    return [_serialize(r) for r in rows]
 
 
-@router.get("/{creative_id}", response_model=CreativeOut)
-def get_creative(
-    creative_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    return _get_creative_or_404(db, creative_id, current_user)
+@router.post("", status_code=201)
+async def create_creative(body: CreativeIn, user: dict = Depends(current_user)):
+    _validate_type_fields(body)
+    pool = await get_pool()
+    camp = await pool.fetchval(
+        "SELECT 1 FROM campaigns WHERE id = $1 AND user_id = $2", body.campaign_id, user["id"]
+    )
+    if not camp:
+        raise HTTPException(status_code=404, detail="Кампания не найдена")
+    row = await pool.fetchrow(
+        """
+        INSERT INTO creatives (campaign_id, line_item_id, user_id, name, type, width, height,
+                               asset_url, click_url, html_snippet, native_title, native_description,
+                               native_cta, native_icon_url, video_url, video_duration, vast_xml, status)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'approved') RETURNING *
+        """,
+        body.campaign_id, body.line_item_id, user["id"], body.name, body.type, body.width,
+        body.height, body.asset_url, body.click_url, body.html_snippet, body.native_title,
+        body.native_description, body.native_cta, body.native_icon_url, body.video_url,
+        body.video_duration, body.vast_xml,
+    )
+    return _serialize(row)
 
 
-@router.patch("/{creative_id}", response_model=CreativeOut)
-def update_creative(
-    creative_id: int,
-    payload: CreativeUpdate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    cr = _get_creative_or_404(db, creative_id, current_user)
-    for field, value in payload.model_dump(exclude_unset=True).items():
-        setattr(cr, field, value)
-    db.add(cr)
-    db.commit()
-    db.refresh(cr)
-    return cr
+@router.patch("/{creative_id}")
+async def update_creative(creative_id: str, body: CreativePatch, user: dict = Depends(current_user)):
+    updates = body.model_dump(exclude_none=True)
+    if not updates:
+        raise HTTPException(status_code=400, detail="Нет полей для обновления")
+    pool = await get_pool()
+    sets, values = [], []
+    for i, (k, v) in enumerate(updates.items(), start=3):
+        sets.append(f"{k} = ${i}")
+        values.append(v)
+    row = await pool.fetchrow(
+        f"UPDATE creatives SET {', '.join(sets)}, updated_at = now() WHERE id = $1 AND user_id = $2 RETURNING *",
+        creative_id, user["id"], *values,
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Креатив не найден")
+    return _serialize(row)
 
 
-@router.delete("/{creative_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_creative(
-    creative_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    cr = _get_creative_or_404(db, creative_id, current_user)
-    cr.status = "archived"
-    db.add(cr)
-    db.commit()
+@router.delete("/{creative_id}", status_code=204)
+async def delete_creative(creative_id: str, user: dict = Depends(current_user)):
+    pool = await get_pool()
+    result = await pool.execute(
+        "DELETE FROM creatives WHERE id = $1 AND user_id = $2", creative_id, user["id"]
+    )
+    if result == "DELETE 0":
+        raise HTTPException(status_code=404, detail="Креатив не найден")

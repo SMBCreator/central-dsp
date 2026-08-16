@@ -1,152 +1,77 @@
-"""
-Advertisers router — CRUD для рекламодателей.
-Рекламодатель — юридическое/финансовое лицо, которому принадлежат кампании.
-URL prefix: /api/advertisers
-"""
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
-from sqlalchemy import func
-from typing import List, Optional
-from pydantic import BaseModel, Field
-from decimal import Decimal
-from datetime import datetime
+from fastapi import APIRouter, Depends, HTTPException
 
-from database import get_db
-from auth import get_current_user
-from models import User
+from auth import current_user
+from db import get_pool
+from schemas import AdvertiserIn, AdvertiserPatch
 
-router = APIRouter(prefix="/api/advertisers", tags=["advertisers"])
+router = APIRouter(prefix="/advertisers", tags=["advertisers"])
 
 
-# ─── Pydantic schemas ────────────────────────────────────────────────────────
-
-class AdvertiserCreate(BaseModel):
-    name:         str             = Field(..., min_length=1, max_length=200)
-    daily_budget: Optional[Decimal] = Field(None, ge=0)
-    total_budget: Optional[Decimal] = Field(None, ge=0)
-    currency:     str             = Field("USD", min_length=3, max_length=3)
-
-
-class AdvertiserUpdate(BaseModel):
-    name:         Optional[str]     = Field(None, min_length=1, max_length=200)
-    daily_budget: Optional[Decimal] = Field(None, ge=0)
-    total_budget: Optional[Decimal] = Field(None, ge=0)
-    currency:     Optional[str]     = Field(None, min_length=3, max_length=3)
-    status:       Optional[str]     = Field(None, pattern="^(active|paused|archived)$")
+def _serialize(row) -> dict:
+    d = dict(row)
+    d["id"] = str(d["id"])
+    d["user_id"] = str(d["user_id"])
+    d["balance"] = float(d["balance"])
+    return d
 
 
-class AdvertiserOut(BaseModel):
-    id:           int
-    user_id:      int
-    name:         str
-    daily_budget: Optional[Decimal]
-    total_budget: Optional[Decimal]
-    currency:     str
-    status:       str
-    created_at:   datetime
-    campaign_count: Optional[int] = 0
-
-    class Config:
-        from_attributes = True
-
-
-# ─── Helpers ─────────────────────────────────────────────────────────────────
-
-def get_advertiser_or_404(advertiser_id: int, user: User, db: Session):
-    from models import Advertiser
-    adv = db.query(Advertiser).filter(
-        Advertiser.id == advertiser_id,
-        Advertiser.user_id == user.id,
-    ).first()
-    if not adv:
-        raise HTTPException(status_code=404, detail="Advertiser not found")
-    return adv
-
-
-# ─── Endpoints ───────────────────────────────────────────────────────────────
-
-@router.get("", response_model=List[AdvertiserOut])
-def list_advertisers(
-    db:      Session = Depends(get_db),
-    current: User    = Depends(get_current_user),
-):
-    """Список всех рекламодателей текущего пользователя."""
-    from models import Advertiser, Campaign
-    advertisers = db.query(Advertiser).filter(
-        Advertiser.user_id == current.id
-    ).order_by(Advertiser.created_at.desc()).all()
-
-    result = []
-    for adv in advertisers:
-        count = db.query(func.count(Campaign.id)).filter(
-            Campaign.advertiser_id == adv.id
-        ).scalar() or 0
-        out = AdvertiserOut.from_orm(adv)
-        out.campaign_count = count
-        result.append(out)
-    return result
-
-
-@router.post("", response_model=AdvertiserOut, status_code=status.HTTP_201_CREATED)
-def create_advertiser(
-    payload: AdvertiserCreate,
-    db:      Session = Depends(get_db),
-    current: User    = Depends(get_current_user),
-):
-    from models import Advertiser
-    adv = Advertiser(
-        user_id=current.id,
-        name=payload.name,
-        daily_budget=payload.daily_budget,
-        total_budget=payload.total_budget,
-        currency=payload.currency,
+@router.get("")
+async def list_advertisers(user: dict = Depends(current_user)):
+    pool = await get_pool()
+    rows = await pool.fetch(
+        "SELECT * FROM advertisers WHERE user_id = $1 ORDER BY created_at DESC", user["id"]
     )
-    db.add(adv)
-    db.commit()
-    db.refresh(adv)
-    out = AdvertiserOut.from_orm(adv)
-    out.campaign_count = 0
-    return out
+    return [_serialize(r) for r in rows]
 
 
-@router.get("/{advertiser_id}", response_model=AdvertiserOut)
-def get_advertiser(
-    advertiser_id: int,
-    db:      Session = Depends(get_db),
-    current: User    = Depends(get_current_user),
-):
-    from models import Campaign
-    adv = get_advertiser_or_404(advertiser_id, current, db)
-    count = db.query(func.count(Campaign.id)).filter(
-        Campaign.advertiser_id == adv.id
-    ).scalar() or 0
-    out = AdvertiserOut.from_orm(adv)
-    out.campaign_count = count
-    return out
+@router.post("", status_code=201)
+async def create_advertiser(body: AdvertiserIn, user: dict = Depends(current_user)):
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        """
+        INSERT INTO advertisers (user_id, name, domain, category, balance, currency)
+        VALUES ($1, $2, $3, $4, $5, $6) RETURNING *
+        """,
+        user["id"], body.name, body.domain, body.category, body.balance, body.currency,
+    )
+    return _serialize(row)
 
 
-@router.patch("/{advertiser_id}", response_model=AdvertiserOut)
-def update_advertiser(
-    advertiser_id: int,
-    payload: AdvertiserUpdate,
-    db:      Session = Depends(get_db),
-    current: User    = Depends(get_current_user),
-):
-    adv = get_advertiser_or_404(advertiser_id, current, db)
-    for field, value in payload.dict(exclude_unset=True).items():
-        setattr(adv, field, value)
-    db.commit()
-    db.refresh(adv)
-    out = AdvertiserOut.from_orm(adv)
-    return out
+@router.get("/{advertiser_id}")
+async def get_advertiser(advertiser_id: str, user: dict = Depends(current_user)):
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        "SELECT * FROM advertisers WHERE id = $1 AND user_id = $2", advertiser_id, user["id"]
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Рекламодатель не найден")
+    return _serialize(row)
 
 
-@router.delete("/{advertiser_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_advertiser(
-    advertiser_id: int,
-    db:      Session = Depends(get_db),
-    current: User    = Depends(get_current_user),
-):
-    adv = get_advertiser_or_404(advertiser_id, current, db)
-    db.delete(adv)
-    db.commit()
+@router.patch("/{advertiser_id}")
+async def update_advertiser(advertiser_id: str, body: AdvertiserPatch, user: dict = Depends(current_user)):
+    updates = body.model_dump(exclude_none=True)
+    if not updates:
+        raise HTTPException(status_code=400, detail="Нет полей для обновления")
+    pool = await get_pool()
+    sets, values = [], []
+    for i, (k, v) in enumerate(updates.items(), start=3):
+        sets.append(f"{k} = ${i}")
+        values.append(v)
+    row = await pool.fetchrow(
+        f"UPDATE advertisers SET {', '.join(sets)}, updated_at = now() WHERE id = $1 AND user_id = $2 RETURNING *",
+        advertiser_id, user["id"], *values,
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Рекламодатель не найден")
+    return _serialize(row)
+
+
+@router.delete("/{advertiser_id}", status_code=204)
+async def delete_advertiser(advertiser_id: str, user: dict = Depends(current_user)):
+    pool = await get_pool()
+    result = await pool.execute(
+        "DELETE FROM advertisers WHERE id = $1 AND user_id = $2", advertiser_id, user["id"]
+    )
+    if result == "DELETE 0":
+        raise HTTPException(status_code=404, detail="Рекламодатель не найден")
