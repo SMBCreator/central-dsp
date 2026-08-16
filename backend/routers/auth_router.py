@@ -40,7 +40,7 @@ async def register(body: RegisterIn, response: Response):
     )
     token, _ = await create_session(str(row["id"]))
     _set_cookie(response, token)
-    return dict(row)
+    return {"id": str(row["id"]), "email": row["email"], "name": row["name"], "role": row["role"], "token": token}
 
 
 @router.post("/login")
@@ -56,7 +56,7 @@ async def login(body: LoginIn, response: Response):
         raise HTTPException(status_code=403, detail="Аккаунт заблокирован")
     token, _ = await create_session(str(row["id"]))
     _set_cookie(response, token)
-    return {"id": str(row["id"]), "email": row["email"], "name": row["name"], "role": row["role"]}
+    return {"id": str(row["id"]), "email": row["email"], "name": row["name"], "role": row["role"], "token": token}
 
 
 @router.post("/logout")
