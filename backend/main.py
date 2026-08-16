@@ -9,6 +9,7 @@ from routers.advertisers import router as advertisers_router
 from routers.auth_router import router as auth_router
 from routers.campaigns import router as campaigns_router
 from routers.creatives import router as creatives_router
+from routers.cron import router as cron_router
 from routers.line_items import router as line_items_router
 from routers.rtb import router as rtb_router
 from routers.rules import router as rules_router
@@ -32,6 +33,7 @@ app.include_router(rules_router)
 app.include_router(stats_router)
 app.include_router(rtb_router)
 app.include_router(simulator_router)
+app.include_router(cron_router)
 
 
 @app.get("/health")
