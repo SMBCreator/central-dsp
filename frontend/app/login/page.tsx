@@ -1,0 +1,85 @@
+"use client"
+
+import { useState } from "react"
+import Link from "next/link"
+import { useRouter } from "next/navigation"
+import { api, setToken } from "@/lib/api"
+import { Button, Field, inputCls } from "@/components/ui"
+
+export default function LoginPage() {
+  const router = useRouter()
+  const [email, setEmail] = useState("")
+  const [password, setPassword] = useState("")
+  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setError(null)
+    setLoading(true)
+    try {
+      const res = await api<{ token: string }>("/auth/login", {
+        method: "POST",
+        body: { email, password },
+      })
+      setToken(res.token)
+      router.push("/")
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Ошибка входа")
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <main className="flex min-h-screen items-center justify-center bg-background px-4">
+      <div className="w-full max-w-sm">
+        <div className="mb-8 flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-md bg-primary">
+            <span className="font-mono text-lg font-bold text-primary-foreground">C</span>
+          </div>
+          <div>
+            <h1 className="text-lg font-semibold text-foreground">CentralDSP</h1>
+            <p className="text-xs text-muted">Платформа программатик-рекламы</p>
+          </div>
+        </div>
+
+        <form onSubmit={submit} className="space-y-4 rounded-lg border border-border bg-card p-6">
+          <h2 className="text-sm font-semibold text-foreground">Вход в систему</h2>
+          <Field label="Email">
+            <input
+              type="email"
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className={inputCls}
+              placeholder="you@company.com"
+              autoComplete="email"
+            />
+          </Field>
+          <Field label="Пароль">
+            <input
+              type="password"
+              required
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className={inputCls}
+              placeholder="••••••••"
+              autoComplete="current-password"
+            />
+          </Field>
+          {error ? <p className="text-xs text-danger">{error}</p> : null}
+          <Button type="submit" disabled={loading} className="w-full">
+            {loading ? "Вход…" : "Войти"}
+          </Button>
+          <p className="text-center text-xs text-muted">
+            Нет аккаунта?{" "}
+            <Link href="/register" className="text-accent hover:underline">
+              Зарегистрироваться
+            </Link>
+          </p>
+        </form>
+      </div>
+    </main>
+  )
+}

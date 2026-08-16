@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next'
 import { Inter, JetBrains_Mono } from 'next/font/google'
+import { AppShell } from '@/components/app-shell'
 import './globals.css'
 
 const inter = Inter({ subsets: ['latin', 'cyrillic'], variable: '--font-inter' })
@@ -18,7 +19,9 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="ru" className={`bg-background ${inter.variable} ${jetbrains.variable}`}>
-      <body className="font-sans antialiased">{children}</body>
+      <body className="font-sans antialiased">
+        <AppShell>{children}</AppShell>
+      </body>
     </html>
   )
 }
