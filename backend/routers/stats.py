@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from auth import current_user
 from db import get_pool
@@ -6,12 +6,35 @@ from db import get_pool
 router = APIRouter(prefix="/stats", tags=["stats"])
 
 
+async def _resolve_scope(user: dict) -> tuple[str, str | None]:
+    """Return (effective_user_id, advertiser_filter).
+
+    Viewer (guest) accounts see their owner's data, optionally scoped to one advertiser.
+    """
+    if user.get("role") != "viewer":
+        return user["id"], None
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        "SELECT owner_id, advertiser_id FROM guest_access WHERE user_id = $1", user["id"]
+    )
+    if not row:
+        raise HTTPException(status_code=403, detail="Гостевой доступ не настроен")
+    return str(row["owner_id"]), str(row["advertiser_id"]) if row["advertiser_id"] else None
+
+
 @router.get("/summary")
 async def summary(hours: int = 24, campaign_id: str | None = None, user: dict = Depends(current_user)):
     """Totals + deltas for the dashboard. Optionally scoped to one campaign."""
+    uid, adv_scope = await _resolve_scope(user)
     pool = await get_pool()
-    camp_filter = "AND s.campaign_id = $3" if campaign_id else ""
-    args = [user["id"], str(hours)] + ([campaign_id] if campaign_id else [])
+    extra = []
+    filters = ""
+    if campaign_id:
+        extra.append(campaign_id)
+        filters += f" AND s.campaign_id = ${2 + len(extra)}"
+    if adv_scope:
+        extra.append(adv_scope)
+        filters += f" AND c.advertiser_id = ${2 + len(extra)}"
     row = await pool.fetchrow(
         f"""
         SELECT
@@ -22,9 +45,9 @@ async def summary(hours: int = 24, campaign_id: str | None = None, user: dict = 
           COALESCE(SUM(s.spend), 0)       AS spend
         FROM stats_hourly s
         JOIN campaigns c ON c.id = s.campaign_id
-        WHERE c.user_id = $1 AND s.ts_hour >= now() - ($2 || ' hours')::interval {camp_filter}
+        WHERE c.user_id = $1 AND s.ts_hour >= now() - ($2 || ' hours')::interval {filters}
         """,
-        *args,
+        uid, str(hours), *extra,
     )
     counts = await pool.fetchrow(
         """
@@ -34,7 +57,7 @@ async def summary(hours: int = 24, campaign_id: str | None = None, user: dict = 
           (SELECT count(*) FROM creatives WHERE user_id = $1)                             AS total_creatives,
           (SELECT count(*) FROM supply_partners WHERE user_id = $1 AND status = 'active') AS active_partners
         """,
-        user["id"],
+        uid,
     )
     bids, wins = int(row["bids"]), int(row["wins"])
     imps, clicks = int(row["impressions"]), int(row["clicks"])
@@ -54,9 +77,16 @@ async def summary(hours: int = 24, campaign_id: str | None = None, user: dict = 
 
 @router.get("/timeseries")
 async def timeseries(hours: int = 24, campaign_id: str | None = None, user: dict = Depends(current_user)):
+    uid, adv_scope = await _resolve_scope(user)
     pool = await get_pool()
-    filters = "AND s.campaign_id = $3" if campaign_id else ""
-    args = [user["id"], str(hours)] + ([campaign_id] if campaign_id else [])
+    extra = []
+    filters = ""
+    if campaign_id:
+        extra.append(campaign_id)
+        filters += f" AND s.campaign_id = ${2 + len(extra)}"
+    if adv_scope:
+        extra.append(adv_scope)
+        filters += f" AND c.advertiser_id = ${2 + len(extra)}"
     rows = await pool.fetch(
         f"""
         SELECT s.ts_hour,
@@ -67,7 +97,7 @@ async def timeseries(hours: int = 24, campaign_id: str | None = None, user: dict
         WHERE c.user_id = $1 AND s.ts_hour >= now() - ($2 || ' hours')::interval {filters}
         GROUP BY s.ts_hour ORDER BY s.ts_hour
         """,
-        *args,
+        uid, str(hours), *extra,
     )
     return [
         {
@@ -128,9 +158,16 @@ _DIMENSIONS = {
 @router.get("/breakdown")
 async def breakdown(hours: int = 168, dimension: str = "campaign", user: dict = Depends(current_user)):
     """Aggregated stats grouped by campaign, partner, or creative."""
+    uid, adv_scope = await _resolve_scope(user)
+    if adv_scope and dimension != "campaign":
+        # Guests scoped to one advertiser only get the campaign breakdown
+        dimension = "campaign"
     sql = _DIMENSIONS.get(dimension, _DIMENSIONS["campaign"])
+    if adv_scope:
+        sql = sql.replace("WHERE c.user_id = $1", "WHERE c.user_id = $1 AND c.advertiser_id = $3")
     pool = await get_pool()
-    rows = await pool.fetch(sql, user["id"], str(hours))
+    args = [uid, str(hours)] + ([adv_scope] if adv_scope else [])
+    rows = await pool.fetch(sql, *args)
     out = []
     for r in rows:
         bids, wins = int(r["bids"]), int(r["wins"])

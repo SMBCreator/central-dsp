@@ -20,7 +20,7 @@ interface PublicReport {
     ctr: number
     ecpm: number
   }
-  series: { ts: string; impressions: number; clicks: number; spend: number }[]
+  series: { ts: string; bids: number; wins: number; impressions: number; clicks: number; spend: number }[]
   campaigns: {
     id: string
     name: string

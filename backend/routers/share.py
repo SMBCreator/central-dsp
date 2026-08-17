@@ -123,7 +123,8 @@ async def public_stats(token: str, hours: int = 168):
     )
     series = await pool.fetch(
         f"""
-        SELECT s.ts_hour, SUM(s.impressions) AS impressions, SUM(s.clicks) AS clicks, SUM(s.spend) AS spend
+        SELECT s.ts_hour, SUM(s.bids) AS bids, SUM(s.wins) AS wins,
+               SUM(s.impressions) AS impressions, SUM(s.clicks) AS clicks, SUM(s.spend) AS spend
         FROM stats_hourly s JOIN campaigns c ON c.id = s.campaign_id
         WHERE c.user_id = $1 AND s.ts_hour >= now() - ($2 || ' hours')::interval {adv_filter}
         GROUP BY s.ts_hour ORDER BY s.ts_hour
@@ -163,6 +164,7 @@ async def public_stats(token: str, hours: int = 168):
         "series": [
             {
                 "ts": r["ts_hour"].isoformat(),
+                "bids": int(r["bids"]), "wins": int(r["wins"]),
                 "impressions": int(r["impressions"]), "clicks": int(r["clicks"]),
                 "spend": round(float(r["spend"]), 4),
             }
