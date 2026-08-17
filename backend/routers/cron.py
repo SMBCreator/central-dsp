@@ -7,6 +7,7 @@ import os
 
 from fastapi import APIRouter, HTTPException, Request
 
+from cache import clear_daily_spend
 from db import get_pool
 from rules_engine import evaluate_rules_for_user
 
@@ -37,10 +38,10 @@ async def run_all_rules(request: Request):
 
 @router.get("/reset-daily")
 async def reset_daily_budgets(request: Request):
-    """Reset daily spend counters (run at 00:00 UTC)."""
+    """Reset daily spend counters in Postgres AND Redis (run at 00:00 UTC)."""
     _check_secret(request)
     pool = await get_pool()
     campaigns = await pool.execute("UPDATE campaigns SET spent_today = 0 WHERE spent_today > 0")
     line_items = await pool.execute("UPDATE line_items SET spent_today = 0 WHERE spent_today > 0")
-    # Reactivate campaigns paused by daily-budget exhaustion (not manually paused ones)
-    return {"campaigns": campaigns, "line_items": line_items}
+    redis_keys = await clear_daily_spend()
+    return {"campaigns": campaigns, "line_items": line_items, "redis_keys_cleared": redis_keys}

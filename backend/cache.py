@@ -1,5 +1,6 @@
 """Redis client (Upstash) for budget guard, frequency capping, pacing."""
 import os
+from datetime import datetime, timedelta, timezone
 
 import redis.asyncio as redis
 
@@ -36,14 +37,32 @@ return 1
 """
 
 
-async def reserve_budget(scope: str, entity_id: str, amount: float, budget: float, ttl: int = 90000) -> bool:
+def _seconds_until_utc_midnight() -> int:
+    """Daily spend keys must expire exactly at 00:00 UTC, matching the cron reset."""
+    now = datetime.now(timezone.utc)
+    tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return max(int((tomorrow - now).total_seconds()), 60)
+
+
+async def reserve_budget(scope: str, entity_id: str, amount: float, budget: float) -> bool:
     """scope: 'camp' or 'li'; amount/budget in account currency."""
     if budget <= 0:
         return False
     r = get_redis()
     key = f"spend:{scope}:{entity_id}"
+    ttl = _seconds_until_utc_midnight()
     ok = await r.eval(_BUDGET_LUA, 1, key, str(amount), str(budget), str(ttl))
     return bool(ok)
+
+
+async def clear_daily_spend() -> int:
+    """Delete all daily spend reservations (called by the midnight cron)."""
+    r = get_redis()
+    deleted = 0
+    async for key in r.scan_iter(match="spend:*", count=200):
+        await r.delete(key)
+        deleted += 1
+    return deleted
 
 
 async def release_budget(scope: str, entity_id: str, amount: float) -> None:
