@@ -105,3 +105,42 @@ async def delete_campaign(campaign_id: str, user: dict = Depends(current_user)):
     )
     if result == "DELETE 0":
         raise HTTPException(status_code=404, detail="Кампания не найдена")
+
+
+@router.get("/{campaign_id}/blocks")
+async def list_optimizer_blocks(campaign_id: str, user: dict = Depends(current_user)):
+    """Traffic sources blocked by the buying optimizer for this campaign."""
+    pool = await get_pool()
+    owned = await pool.fetchval(
+        "SELECT 1 FROM campaigns WHERE id = $1 AND user_id = $2", campaign_id, user["id"]
+    )
+    if not owned:
+        raise HTTPException(status_code=404, detail="Кампания не найдена")
+    rows = await pool.fetch(
+        """SELECT b.*, sp.name AS partner_name
+           FROM optimizer_blocks b
+           LEFT JOIN supply_partners sp ON sp.id::text = b.block_value AND b.block_type = 'supply_partner'
+           WHERE b.campaign_id = $1 ORDER BY b.created_at DESC""",
+        campaign_id,
+    )
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["id"], d["campaign_id"] = str(d["id"]), str(d["campaign_id"])
+        d["created_at"] = d["created_at"].isoformat()
+        out.append(d)
+    return out
+
+
+@router.delete("/{campaign_id}/blocks/{block_id}", status_code=204)
+async def remove_optimizer_block(campaign_id: str, block_id: str, user: dict = Depends(current_user)):
+    """Manually unblock a source (the optimizer will not re-add it unless metrics degrade again)."""
+    pool = await get_pool()
+    deleted = await pool.fetchval(
+        """DELETE FROM optimizer_blocks b USING campaigns c
+           WHERE b.id = $1 AND b.campaign_id = $2 AND c.id = b.campaign_id AND c.user_id = $3
+           RETURNING b.id""",
+        block_id, campaign_id, user["id"],
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Блок не найден")

@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from cache import clear_daily_spend
 from db import get_pool
+from optimizer import run_optimizer
 from rules_engine import evaluate_rules_for_user
 
 router = APIRouter(prefix="/cron", tags=["cron"])
@@ -45,3 +46,10 @@ async def reset_daily_budgets(request: Request):
     line_items = await pool.execute("UPDATE line_items SET spent_today = 0 WHERE spent_today > 0")
     redis_keys = await clear_daily_spend()
     return {"campaigns": campaigns, "line_items": line_items, "redis_keys_cleared": redis_keys}
+
+
+@router.get("/optimize")
+async def run_buy_optimizer(request: Request):
+    """Analyze traffic quality and block weak sources for auto_optimize campaigns."""
+    _check_secret(request)
+    return await run_optimizer()

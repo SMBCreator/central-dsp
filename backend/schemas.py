@@ -56,6 +56,12 @@ class CampaignPatch(BaseModel):
     pacing: str | None = Field(default=None, pattern="^(even|asap)$")
     frequency_cap_impressions: int | None = Field(default=None, ge=1, le=100)
     frequency_cap_period_hours: int | None = Field(default=None, ge=1, le=168)
+    # Optimization: pixel-driven buying
+    pixel_id: str | None = None
+    goal_id: str | None = None
+    target_cpa: float | None = Field(default=None, ge=0)
+    target_cpc: float | None = Field(default=None, ge=0)
+    auto_optimize: bool | None = None
 
 
 # --- Line items ---------------------------------------------------------------

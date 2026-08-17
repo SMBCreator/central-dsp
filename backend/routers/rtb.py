@@ -424,6 +424,20 @@ async def process_bid_request(endpoint_key: str, req: dict):
     if not candidates:
         return None
 
+    # Optimizer block lists (domain / supply_partner / device_type per campaign)
+    camp_ids = list({c["campaign_id"] for c in candidates})
+    block_rows = await pool.fetch(
+        "SELECT campaign_id, block_type, block_value FROM optimizer_blocks WHERE campaign_id = ANY($1)",
+        camp_ids,
+    )
+    blocks: dict = {}
+    for b in block_rows:
+        blocks.setdefault(str(b["campaign_id"]), set()).add((b["block_type"], b["block_value"].lower()))
+
+    req_domain = ((req.get("site") or req.get("app") or {}).get("domain")
+                  or (req.get("app") or {}).get("bundle") or "").lower()
+    req_device = DEVICE_TYPES.get((req.get("device") or {}).get("devicetype", 0), "unknown")
+
     seatbids = []
     base = _base_url()
 
@@ -444,6 +458,15 @@ async def process_bid_request(endpoint_key: str, req: dict):
             ssp_allow = targeting.get("ssp_allowlist") or []
             if ssp_allow and str(partner["id"]) not in [str(s) for s in ssp_allow]:
                 continue
+            # Optimizer block lists
+            camp_blocks = blocks.get(str(c["campaign_id"]))
+            if camp_blocks:
+                if req_domain and ("domain", req_domain) in camp_blocks:
+                    continue
+                if ("supply_partner", str(partner["id"]).lower()) in camp_blocks:
+                    continue
+                if ("device_type", req_device) in camp_blocks:
+                    continue
             if not _match_targeting(targeting, req):
                 continue
             if not _match_imp_targeting(targeting, imp):
@@ -637,5 +660,7 @@ async def click(bid: str, r: str = ""):
             )
             await _bump_stats(pool, "clicks", 0, row["campaign_id"], row["line_item_id"], row["creative_id"], row["supply_partner_id"])
     if r and r.startswith(("http://", "https://")):
-        return Response(status_code=302, headers={"Location": r})
+        # Pass our click id to the landing page so the Central Pixel can attribute conversions
+        sep = "&" if "?" in r else "?"
+        return Response(status_code=302, headers={"Location": f"{r}{sep}cdsp_clid={bid}"})
     return {"ok": True}
