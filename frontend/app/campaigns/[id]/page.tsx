@@ -17,6 +17,142 @@ import {
 import { Button, Card, CardHeader, EmptyState, Field, inputCls, KpiCard, Modal, Spinner, StatusBadge, Table } from "@/components/ui"
 import { DEVICES, TargetingEditor } from "@/components/targeting-editor"
 
+type PixelRow = { id: string; name: string; domain: string }
+type GoalRow = { id: string; name: string; goal_type: string; match_value: string }
+type BlockRow = {
+  id: string
+  block_type: string
+  block_value: string
+  reason: string
+  partner_name?: string | null
+  created_at: string
+}
+
+function OptimizationCard({ campaign }: { campaign: Campaign }) {
+  const { data: pixels } = useSWR<PixelRow[]>("/pixels", fetcher)
+  const { data: blocks } = useSWR<BlockRow[]>(`/campaigns/${campaign.id}/blocks`, fetcher)
+  const c = campaign as Campaign & {
+    pixel_id?: string | null
+    goal_id?: string | null
+    target_cpa?: number | null
+    target_cpc?: number | null
+    auto_optimize?: boolean
+  }
+  const [pixelId, setPixelId] = useState(c.pixel_id || "")
+  const { data: goals } = useSWR<GoalRow[]>(pixelId ? `/pixels/${pixelId}/goals` : null, fetcher)
+  const [goalId, setGoalId] = useState(c.goal_id || "")
+  const [cpa, setCpa] = useState(c.target_cpa ? String(c.target_cpa) : "")
+  const [cpc, setCpc] = useState(c.target_cpc ? String(c.target_cpc) : "")
+  const [auto, setAuto] = useState(!!c.auto_optimize)
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+
+  const saveOpt = async () => {
+    setSaving(true)
+    setSaved(false)
+    try {
+      await api(`/campaigns/${campaign.id}`, {
+        method: "PATCH",
+        body: {
+          pixel_id: pixelId || null,
+          goal_id: goalId || null,
+          target_cpa: cpa ? Number(cpa) : null,
+          target_cpc: cpc ? Number(cpc) : null,
+          auto_optimize: auto,
+        },
+      })
+      await mutate(`/campaigns/${campaign.id}`)
+      setSaved(true)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const unblock = async (blockId: string) => {
+    await api(`/campaigns/${campaign.id}/blocks/${blockId}`, { method: "DELETE" })
+    await mutate(`/campaigns/${campaign.id}/blocks`)
+  }
+
+  const BLOCK_TYPE_LABELS: Record<string, string> = {
+    domain: "Домен",
+    supply_partner: "SSP",
+    device_type: "Устройство",
+  }
+
+  return (
+    <Card>
+      <CardHeader
+        title="Оптимизация закупки"
+        subtitle="Пиксель, цель и автоматическая отсечка слабых источников"
+      />
+      <div className="space-y-4 p-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Field label="Пиксель" hint={pixels && pixels.length === 0 ? "Создайте пиксель на странице «Пиксель и цели»" : "Куда придут конверсии"}>
+            <select value={pixelId} onChange={(e) => { setPixelId(e.target.value); setGoalId("") }} className={inputCls}>
+              <option value="">Без пикселя</option>
+              {(pixels || []).map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} ({p.domain})
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Цель" hint="Конверсия для оптимизации">
+            <select value={goalId} onChange={(e) => setGoalId(e.target.value)} className={inputCls} disabled={!pixelId}>
+              <option value="">Все конверсии пикселя</option>
+              {(goals || []).map((g) => (
+                <option key={g.id} value={g.id}>
+                  {g.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Целевой CPA, USD" hint="Максимальная цена конверсии">
+            <input type="number" min="0" step="0.01" value={cpa} onChange={(e) => setCpa(e.target.value)} className={inputCls} placeholder="Не задан" />
+          </Field>
+          <Field label="Целевой CPC, USD" hint="Максимальная цена клика">
+            <input type="number" min="0" step="0.001" value={cpc} onChange={(e) => setCpc(e.target.value)} className={inputCls} placeholder="Не задан" />
+          </Field>
+        </div>
+        <label className="flex cursor-pointer items-center gap-2.5">
+          <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} className="h-4 w-4 rounded border-border accent-current" />
+          <span className="text-sm text-foreground">Автооптимизация</span>
+          <span className="text-xs text-muted">— ежечасно блокировать площадки со скликиванием, нулевой вовлечённостью и дорогими кликами/конверсиями</span>
+        </label>
+        <div className="flex items-center gap-3">
+          <Button onClick={saveOpt} disabled={saving}>
+            {saving ? "Сохранение…" : "Сохранить настройки"}
+          </Button>
+          {saved ? <span className="font-mono text-[11px] text-success">Сохранено</span> : null}
+        </div>
+
+        {blocks && blocks.length > 0 ? (
+          <div className="border-t border-border pt-4">
+            <p className="mb-2 font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">
+              Заблокировано оптимизатором ({blocks.length})
+            </p>
+            <div className="space-y-2">
+              {blocks.map((b) => (
+                <div key={b.id} className="flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-panel px-4 py-2.5">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-foreground">
+                      {BLOCK_TYPE_LABELS[b.block_type] || b.block_type}: {b.partner_name || b.block_value}
+                    </p>
+                    <p className="mt-0.5 text-xs text-muted">{b.reason}</p>
+                  </div>
+                  <Button variant="ghost" onClick={() => unblock(b.id)}>
+                    Разблокировать
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </Card>
+  )
+}
+
 function targetingSummary(t: Targeting): string {
   const parts = [
     t.geo_countries?.join(", "),
@@ -113,6 +249,8 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
           <KpiCard label="Win Rate" value={fmtPct(stats.win_rate)} />
         </div>
       ) : null}
+
+      <OptimizationCard campaign={campaign} />
 
       <Card>
         <CardHeader
