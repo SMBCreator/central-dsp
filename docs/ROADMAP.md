@@ -1,236 +1,123 @@
-# Central DSP — Development Roadmap
+# Central DSP — план развития (к раунду инвестирования)
 
-> **Цель:** Построить лучший self-hosted DSP на базе RTB4FREE + FastAPI + Vue 3.  
-> **Кейс:** Как AI помог создать полноценный AdTech продукт с нуля.
-
----
-
-## Структура плана
-
-| Фаза | Название | Статус |
-|------|----------|--------|
-| 0 | Форк RTB4FREE и базовая инфраструктура | ✅ Сделано |
-| 1 | RTB Bridge — связующий слой Python↔Java | 🔄 В работе |
-| 2 | Модели данных для RTB (creatives, targeting, auctions) | ⏳ Следующий |
-| 3 | Vue 3 UI — RTB вкладки | ⏳ |
-| 4 | Pixel Center + S2S + RTB Attribution | ⏳ |
-| 5 | Подключение SSP/Exchange | ⏳ |
-| 6 | Bidding Algorithms + AutoPilot RTB | ⏳ |
-| 7 | Production: SSL, Monitoring, Scaling | ⏳ |
+> Актуальный стек: FastAPI (Python) + Next.js + Neon Postgres + Upstash Redis.
+> Собственный биддер OpenRTB 2.5/2.6, Central Pixel, оптимизатор закупки,
+> биллинг, white-label доступ клиентов. Прежний план на RTB4FREE/Java/Vue
+> устарел и заменён этим документом.
 
 ---
 
-## Фаза 0 — Инфраструктура ✅
+## 1. Антифрод-система
 
-### 0.1 Приватное репо `central-dsp`
-- [x] Создан приватный репозиторий `SMBCreator/central-dsp`
-- [x] Структура: `backend/`, `bidder/`, `frontend/`, `docs/`
-- [x] `docker-compose.yml` — единый файл запуска всех сервисов
-- [x] `.env.example` с переменными окружения
-- [x] `.gitignore` настроен
+### Фаза 1 — правила (частично реализовано, 2–4 недели до полноты)
 
-### 0.2 Backend FastAPI (v3.0.0)
-- [x] FastAPI приложение с JWT авторизацией
-- [x] PostgreSQL + SQLAlchemy ORM
-- [x] Redis (Celery очереди)
-- [x] Модели: User, Campaign, Link, Pixel, Event, Click, Postback, Stat, Rule, RuleLog, Setting, AdAccount
-- [x] Трекинг: SmartLink `/s/{code}`, A/B ротатор `/c/{camp_code}`
-- [x] Pixel Center: JS пиксель, 1x1 GIF, события
-- [x] S2S Postback: `/postback` с click_id attribution
-- [x] AutoPilot Rules: CRUD правил + Celery задачи
-- [x] RTB Bridge router подключён: `from rtb_bridge.router import router as rtb_router`
+Уже работает в оптимизаторе: блокировка доменов с аномальным CTR
+(скликивание), нулевой вовлечённостью, превышением целевого CPC/CPA,
+отсечка слабых SSP. Дополнить:
 
-### 0.3 Bidder (RTB4FREE Java)
-- [x] Папка `bidder/` создана
-- [ ] Dockerfile для Java 11 + Maven сборки
-- [ ] Конфигурация: endpoint URL, Redis, campaign API
+- **IP-фильтры**: датацентровые подсети (AWS/GCP/Hetzner ASN), TOR,
+  публичные прокси — открытые списки (IP2Location LITE, FireHOL).
+- **UA-анализ**: headless-браузеры (HeadlessChrome, PhantomJS), устаревшие
+  UA, несоответствие UA и devicetype в bid request.
+- **Поведенческие сигналы пикселя**: время до клика < 1 сек, 100% отказов
+  с источника, отсутствие скролла (доработка Central Pixel).
+- **Частотные аномалии**: > N кликов с одного IP/устройства в час,
+  клики без наших показов (валидация по bid_id).
+- **SIVT-классификация**: помечать блокировки категориями GIVT/SIVT
+  по стандарту MRC — это спрашивают рекламодатели уровня брендов.
 
-### 0.4 Frontend Vue 3
-- [x] Папка `frontend/` создана
-- [ ] Vite + Vue 3 + Pinia + Vue Router
-- [ ] Страницы: Dashboard, Campaigns, Links, Pixels, Analytics, RTB
+### Фаза 2 — ML-скоринг (3–6 месяцев)
+
+Градиентный бустинг (CatBoost) на фичах: домен, SSP, гео, девайс, час,
+исторический CTR/CR источника, энтропия IP-подсетей. Обучение на разметке
+фазы 1 и постбэках рекламодателей. Скоринг перед бидом < 5 мс (модель
+в памяти биддера). Альтернатива на старте — готовые сервисы
+(Botfaqtor, Fraudscore — от $500/мес) как временная мера.
 
 ---
 
-## Фаза 1 — RTB Bridge 🔄
+## 2. AI DSP
 
-> RTB Bridge — Python FastAPI модуль, который связывает Java биддер (RTB4FREE) с CentralDSP базой данных.
+### 2.1. Генерация креативов (быстрая победа, 2–4 недели)
+- Тексты объявлений из URL лендинга (LLM через AI SDK; страница
+  «AI-инструменты» уже есть — расширить).
+- Баннеры: генерация изображений (Flux/SDXL) в стандартных размерах
+  240x400, 300x250, 728x90, 320x50.
+- Авто-ресайз одного мастер-креатива во все размеры.
 
-### 1.1 `backend/rtb_bridge/` — структура модуля
-- [ ] `__init__.py`
-- [ ] `router.py` — FastAPI router, подключён в main.py
-- [ ] `schemas.py` — Pydantic модели OpenRTB 2.5 (BidRequest, BidResponse)
-- [ ] `service.py` — бизнес-логика: выбор кампаний, расчёт ставки
-- [ ] `models.py` — новые SQLAlchemy модели: Creative, TargetingRule, AuctionLog
+### 2.2. AI-настройка кампаний (1–2 месяца)
+- «Опиши продукт и цель» -> AI собирает кампанию целиком: таргетинги,
+  ставки, бюджеты, частота — с объяснением каждого решения.
+- Рекомендации по ходу открутки: «CTR на mobile в 3 раза выше — перенести
+  70% бюджета», «домен X даёт CPA в 5 раз ниже цели — поднять ставку».
 
-### 1.2 Endpoints RTB Bridge
-- [ ] `GET /api/rtb/campaigns` → список кампаний в формате RTB4FREE
-- [ ] `GET /api/rtb/creatives/{id}` → отдаёт креативы (banner/native/video)
-- [ ] `POST /api/rtb/win-notice` → Win Notice от биддера → Event('impression')
-- [ ] `POST /api/rtb/loss-notice` → Loss Notice → AuctionLog
-- [ ] `GET /api/rtb/status` → статус биддера (QPS, win rate, latency)
-
-### 1.3 OpenRTB 2.5 Schemas (Pydantic)
-- [ ] `BidRequest` (imp[], site, app, device, user)
-- [ ] `BidResponse` (id, seatbid[], cur)
-- [ ] `Impression` (id, banner, video, native, bidfloor)
-- [ ] `Banner` (w, h, format[])
-- [ ] `WinNotice` (auction_id, imp_id, price)
+### 2.3. AI-оптимизация ставок (3–6 месяцев)
+- Предсказание pCTR/pCVR на каждый bid request -> ставка = target_cpa x pCVR.
+- Автоматический A/B креативов с перераспределением (Thompson sampling).
+- Прогноз охвата и расхода до запуска кампании.
 
 ---
 
-## Фаза 2 — Модели данных RTB ⏳
+## 3. Производительность: Python-биддер сегодня и переход на Go
 
-### 2.1 Новые таблицы PostgreSQL
+### 3.1. На что хватит текущего стека (FastAPI + asyncpg + Redis)
 
-```sql
--- Рекламодатели
-advertisers (id, user_id, name, daily_budget, total_budget, currency, status)
+Профиль обработки bid request: таргет-матчинг в памяти 5–15 мс,
+Redis (бюджет/частота) 1–3 мс, Postgres при холодном кэше 5–20 мс.
 
--- Креативы
-creatives (
-  id, campaign_id, format,        -- banner|native|video
-  width, height,
-  image_url, title, description, click_url,
-  status,                          -- active|paused|rejected
-  audit_status,                    -- pending|approved|rejected
-  created_at
-)
+| Конфигурация | Устойчивый QPS | Хватит для |
+|---|---|---|
+| 1 воркер (Vercel serverless) | 100–300 | Демо, первые тесты SSP |
+| 4–8 воркеров, 1 VPS (8 vCPU) | 1 000–2 500 | Арбитражные сети, старт |
+| 3 VPS за LB + кэш кандидатов | 5 000–8 000 | Средние SSP, RTB.Sape |
+| Потолок Python (GIL) | ~10 000 | — |
 
--- Targeting правила
-targeting_rules (
-  id, campaign_id,
-  bid_floor, bid_ceiling,
-  geo_countries[],
-  device_types[],                  -- mobile|desktop|tablet
-  os_list[],
-  browser_list[],
-  site_whitelist[],
-  site_blacklist[],
-  hour_schedule jsonb               -- {"0":{"0":1.0,"1":0.5,...},...} (день→час→множитель)
-)
+Обязательные оптимизации до миграции (дешёво, х3–5 к QPS):
+- Кэш кандидатов (кампании + таргетинги) в памяти процесса
+  с инвалидацией по Redis pub/sub — убирает Postgres из hot path.
+- orjson вместо стандартного json (х5 на сериализации).
+- Батч-запись bid_events через очередь (сейчас точечные INSERT).
+- uvloop + gunicorn с воркерами по числу ядер.
 
--- Логи аукционов (TimeSeries)
-auction_logs (
-  id, campaign_id, creative_id,
-  bid_request_id, bid_price, win_price, clearing_price,
-  won bool,
-  site_domain, app_bundle,
-  geo_country, device_type,
-  created_at   -- индекс по этому полю!
-)
+### 3.2. Когда и как переходить на Go (рекомендуем Go, не Java)
 
--- Bid adjustments по срезам
-bid_adjustments (
-  id, campaign_id,
-  dimension,                       -- country|device|os|hour|site
-  value,                           -- значение среза (например, "US" или "mobile")
-  multiplier float,                -- 0.5 = -50%, 1.5 = +50%
-  created_at
-)
-```
+**Триггер**: стабильно > 5–8К QPS или требование SSP p99 < 50 мс.
 
-### 2.2 Миграции Alembic
-- [ ] `alembic revision --autogenerate -m "add_rtb_tables"`
-- [ ] Применить: `alembic upgrade head`
+**Почему Go, а не Java**: один статический бинарник (простой деплой),
+меньше памяти (нет JVM), GC-паузы < 1 мс из коробки, моментальный старт,
+найм под ad-tech дешевле. Java (Netty/Vert.x) тоже рабочий вариант,
+но дороже в эксплуатации.
+
+**Стратегия: переписывается ТОЛЬКО hot path (~15% кода):**
+1. Go-биддер: `/rtb/bid`, `/rtb/win`, `/rtb/imp`, `/rtb/click` —
+   30–50К QPS на одном 8-ядерном сервере (fasthttp, sync.Map-кэш).
+2. Всё остальное (CRUD, аналитика, биллинг, пиксель, оптимизатор, cron)
+   остаётся на Python — там latency не критична.
+3. Общие Postgres и Redis; Go читает конфиг кампаний из Redis-кэша,
+   который наполняет Python при изменениях.
+4. Объём: 4–8 недель одного senior Go-разработчика — протокол и логика
+   уже спроектированы и проверены на Python-версии.
+
+| Стек | QPS/сервер | p99 latency | RAM |
+|---|---|---|---|
+| Python (текущий, оптимизированный) | ~2 500 | 40–80 мс | 1–2 GB |
+| Go (fasthttp) | 30–50К | 5–15 мс | 200–500 MB |
+| Go, кластер 3 нод | 100К+ | 5–15 мс | — |
+
+Ориентиры рынка: арбитражные сети дают DSP 1–5К QPS, VK SSP на старте
+5–20К. Python-версии хватает на первые 6–12 месяцев работы; Go-миграция —
+задача после первой выручки, а не до неё.
 
 ---
 
-## Фаза 3 — Vue 3 UI ⏳
+## 4. Прочий бэклог (по приоритету)
 
-### 3.1 Новые вкладки
-- [ ] `🎨 Креативы` — загрузка баннеров, VAST, native
-- [ ] `🎯 Таргетинг` — geo, device, OS, whitelist/blacklist, расписание
-- [ ] `⚡ RTB Биддер` — статус, метрики, тест bid request
-- [ ] `📊 Аукционы` — логи, win rate, CPM по срезам
-
-### 3.2 RTB Dashboard виджеты
-- [ ] Win Rate (%) — реальное время
-- [ ] QPS биддера — gauge
-- [ ] Средняя цена победы — trend
-- [ ] Top сайты по расходу — таблица
-- [ ] Latency p99 — gauge (цель < 100ms)
-
----
-
-## Фаза 4 — Pixel + Attribution ⏳
-
-### 4.1 RTB Attribution Chain
-```
-Win Notice (RTB) → impression event (auction_id)
-     ↓
-Click (/s/{code}?auction_id=...)
-     ↓  
-Postback (/postback?click_id=...)
-     ↓
-Conversion event → атрибутирован к impression
-```
-- [ ] Добавить `auction_id` и `imp_id` в модели Event и Click
-- [ ] Win Notice создаёт Event(event_name='impression', auction_id=...)
-- [ ] Postback матчится по click_id → находит impression → полная цепочка
-
-### 4.2 S2S Postback расширение
-- [ ] Принимать `auction_id` в postback параметрах
-- [ ] ViewThrough attribution (показ без клика)
-
----
-
-## Фаза 5 — Подключение SSP/Exchange ⏳
-
-| SSP | Протокол | Приоритет | Статус |
-|-----|----------|-----------|--------|
-| Beeswax (тест) | OpenRTB 2.5 | 🔴 Первый | ⏳ |
-| Epom | OpenRTB 2.x | 🟠 | ⏳ |
-| Mintegral | OpenRTB 2.5 | 🟠 | ⏳ |
-| Smaato | OpenRTB 2.5 | 🟡 | ⏳ |
-
----
-
-## Фаза 6 — Bidding Algorithms ⏳
-
-### 6.1 Base Bidder
-```python
-bid = CPA_target × historical_CVR(context) × safety_margin
-```
-- [ ] `BidOptimizer` класс в `backend/tasks/bidding.py`
-- [ ] Celery задача: пересчёт bid_adjustments каждые 5 минут
-
-### 6.2 AutoPilot RTB правила
-| Триггер | Действие |
-|---------|----------|
-| Win Rate < 1% за 1ч | Поднять bid ceiling +20% |
-| CPA > target × 1.5 | Снизить ставку -15% |
-| Сайт > 30% бюджета | Добавить в site_blacklist |
-| Budget < 50% к 18:00 | Burst bidding mode |
-| Час с ROI < -20% | Снизить ставку в этот час |
-
----
-
-## Фаза 7 — Production ⏳
-
-- [ ] Caddy reverse proxy + SSL (Let's Encrypt)
-- [ ] Grafana дашборды: QPS, win rate, latency p99
-- [ ] Prometheus метрики из биддера
-- [ ] MaxMind GeoLite2 офлайн геолокация
-- [ ] Горизонтальное масштабирование биддера (несколько инстансов)
-- [ ] pg_cron для архивации auction_logs
-- [ ] Бэкапы: pg_dump в S3 каждые 6 часов
-
----
-
-## Технический стек
-
-| Компонент | Технология | Версия |
-|-----------|-----------|--------|
-| RTB Bidder | Java + RTB4FREE | 11 |
-| Backend API | FastAPI + Python | 3.11 |
-| ORM | SQLAlchemy | 2.x |
-| Task Queue | Celery + Redis | — |
-| Database | PostgreSQL | 15 |
-| Cache/Broker | Redis | 7 |
-| Frontend | Vue 3 + Vite | — |
-| State | Pinia | — |
-| Charts | Chart.js | 4 |
-| Infra | Docker Compose | — |
-| Proxy | Caddy | 2 |
-| Monitoring | Grafana + Prometheus | — |
+1. **Модуль ОРД/erid (ФЗ-347)** — блокер для топовых РФ SSP (4–6 недель).
+2. **Cookie matching endpoint** для user sync с SSP.
+3. Полноценный VAST 4.x (сейчас упрощённый) + видео-креативы.
+4. Native-форматы (OpenRTB Native 1.2).
+5. CDN для креативов (сейчас asset_url напрямую).
+6. Тестовое покрытие: pytest для биддера/биллинга, Playwright для UI.
+7. Мульти-валютность и НДС в биллинге.
+8. SKAdNetwork / мобильные трекеры (AppsFlyer, Adjust) для in-app.
+9. Мониторинг: Grafana + Prometheus (QPS, bid rate, timeout rate, p99).
