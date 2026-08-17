@@ -11,6 +11,9 @@ Rules (each requires minimum volume to avoid noise):
   3. CPA overrun:  target_cpa set AND spend > 3x target_cpa AND conversions = 0
   4. CPC overrun:  target_cpc set AND effective CPC > 2x target
   5. Junk traffic (pixel): >= 20 ad sessions AND avg time on site < 3 sec
+  6. CPM overrun:  target_cpm set AND effective eCPM > 2x target
+  7. CPV overrun (video): target_cpv set AND spend / completed views > 2x target
+  8. Low VTR (video): >= 100 video starts AND completion rate < 15%
 
 Spend per dimension comes from win events (clear_price), conversions from the
 Central Pixel joined back through cdsp_clid -> bid_id, so every rule works on
@@ -28,6 +31,10 @@ LOW_CTR_THRESHOLD = 0.0002   # 0.02%
 FRAUD_CTR_FACTOR = 10.0
 MIN_AD_SESSIONS = 20
 MIN_AVG_TIME_SEC = 3.0
+CPM_OVERRUN_FACTOR = 2.0
+CPV_OVERRUN_FACTOR = 2.0
+MIN_VIDEO_STARTS = 100
+MIN_VTR = 0.15               # 15% completion rate floor
 WINDOW = "72 hours"
 
 # block_type -> (SQL expression over bid_events alias "be", volume multiplier)
@@ -64,6 +71,8 @@ async def optimize_campaign(campaign: dict) -> list[dict]:
 
     target_cpa = float(campaign.get("target_cpa") or 0)
     target_cpc = float(campaign.get("target_cpc") or 0)
+    target_cpm = float(campaign.get("target_cpm") or 0)
+    target_cpv = float(campaign.get("target_cpv") or 0)
     objective = campaign.get("objective") or "clicks"
 
     async def _block(block_type: str, value: str, reason: str, metrics: dict) -> None:
@@ -90,6 +99,8 @@ async def optimize_campaign(campaign: dict) -> list[dict]:
             f"""SELECT {dim_expr} AS val,
                        count(*) FILTER (WHERE be.event_type = 'impression') AS imps,
                        count(*) FILTER (WHERE be.event_type = 'click') AS clicks,
+                       count(*) FILTER (WHERE be.event_type = 'video_start') AS vstarts,
+                       count(*) FILTER (WHERE be.event_type = 'video_complete') AS vcompletes,
                        COALESCE(SUM(be.clear_price) FILTER (WHERE be.event_type = 'win'), 0) / 1000.0 AS spend
                 FROM bid_events be
                 WHERE be.campaign_id = $1 AND {dim_expr} IS NOT NULL
@@ -145,6 +156,32 @@ async def optimize_campaign(campaign: dict) -> list[dict]:
                     await _block(block_type, val,
                                  f"Фактический CPC ${ecpc:.3f} превышает целевой ${target_cpc:.3f} более чем в {CPC_OVERRUN_FACTOR:.0f} раза ({label})",
                                  {"ecpc": round(ecpc, 4), "target_cpc": target_cpc, "clicks": clicks})
+                    continue
+            # Rule 6: CPM overrun — paying too much for this dimension's impressions
+            if target_cpm > 0 and imps >= min_imps:
+                ecpm = spend / imps * 1000 if imps else 0
+                if ecpm > target_cpm * CPM_OVERRUN_FACTOR:
+                    await _block(block_type, val,
+                                 f"Фактический eCPM ${ecpm:.2f} превышает целевой ${target_cpm:.2f} более чем в {CPM_OVERRUN_FACTOR:.0f} раза ({label})",
+                                 {"ecpm": round(ecpm, 3), "target_cpm": target_cpm, "imps": imps})
+                    continue
+            # Video rules — only where this dimension actually serves video
+            vstarts, vcompletes = int(r["vstarts"]), int(r["vcompletes"])
+            if vstarts >= MIN_VIDEO_STARTS:
+                vtr = vcompletes / vstarts
+                # Rule 7: CPV overrun — cost per completed view too high
+                if target_cpv > 0 and vcompletes > 0:
+                    ecpv = spend / vcompletes
+                    if ecpv > target_cpv * CPV_OVERRUN_FACTOR:
+                        await _block(block_type, val,
+                                     f"Фактический CPV ${ecpv:.3f} (за досмотр) превышает целевой ${target_cpv:.3f} более чем в {CPV_OVERRUN_FACTOR:.0f} раза ({label})",
+                                     {"ecpv": round(ecpv, 4), "target_cpv": target_cpv, "vcompletes": vcompletes})
+                        continue
+                # Rule 8: low VTR — video started but almost never watched
+                if vtr < MIN_VTR:
+                    await _block(block_type, val,
+                                 f"Низкая досматриваемость видео: {vstarts} стартов, VTR {vtr*100:.1f}% (порог {MIN_VTR*100:.0f}%) ({label})",
+                                 {"vstarts": vstarts, "vcompletes": vcompletes, "vtr": round(vtr, 3)})
 
     # ---- Rule 5: pixel engagement (time on site) — per any dimension ----
     if campaign.get("pixel_id"):

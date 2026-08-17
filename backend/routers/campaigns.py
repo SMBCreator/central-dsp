@@ -16,6 +16,9 @@ def _serialize(row) -> dict:
     d = dict(row)
     for k in ("id", "advertiser_id", "user_id"):
         d[k] = str(d[k])
+    for k in ("group_id", "pixel_id", "goal_id"):
+        if d.get(k) is not None:
+            d[k] = str(d[k])
     for k in _NUMERIC:
         if k in d and d[k] is not None:
             d[k] = float(d[k])
@@ -54,12 +57,12 @@ async def create_campaign(body: CampaignIn, user: dict = Depends(current_user)):
     row = await pool.fetchrow(
         """
         INSERT INTO campaigns (advertiser_id, user_id, name, objective, daily_budget, total_budget,
-                               start_date, end_date, pacing, frequency_cap_impressions, frequency_cap_period_hours)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *
+                               start_date, end_date, pacing, frequency_cap_impressions, frequency_cap_period_hours, group_id)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *
         """,
         body.advertiser_id, user["id"], body.name, body.objective, body.daily_budget,
         body.total_budget, _parse_date(body.start_date), _parse_date(body.end_date),
-        body.pacing, body.frequency_cap_impressions, body.frequency_cap_period_hours,
+        body.pacing, body.frequency_cap_impressions, body.frequency_cap_period_hours, body.group_id,
     )
     return _serialize(row)
 

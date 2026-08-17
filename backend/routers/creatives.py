@@ -1,3 +1,5 @@
+import json
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from auth import current_user
@@ -10,6 +12,7 @@ _REQUIRED_BY_TYPE = {
     "banner": ["width", "height", "click_url"],
     "native": ["native_title", "click_url"],
     "video": ["click_url"],
+    "push": ["native_title", "asset_url", "click_url"],
 }
 
 
@@ -25,8 +28,12 @@ def _validate_type_fields(body: CreativeIn) -> None:
     missing = [f for f in _REQUIRED_BY_TYPE[body.type] if not getattr(body, f)]
     if body.type == "banner" and not (body.asset_url or body.html_snippet):
         missing.append("asset_url или html_snippet")
+    if body.type == "banner" and body.subtype == "html5" and not body.html_snippet:
+        missing.append("html_snippet (для HTML5-баннера)")
     if body.type == "video" and not (body.video_url or body.vast_xml):
         missing.append("video_url или vast_xml")
+    if body.type == "video" and not body.video_duration and not body.vast_xml:
+        missing.append("video_duration")
     if missing:
         raise HTTPException(status_code=422, detail=f"Для типа {body.type} обязательны поля: {', '.join(missing)}")
 
@@ -57,15 +64,15 @@ async def create_creative(body: CreativeIn, user: dict = Depends(current_user)):
         raise HTTPException(status_code=404, detail="Кампания не найдена")
     row = await pool.fetchrow(
         """
-        INSERT INTO creatives (campaign_id, line_item_id, user_id, name, type, width, height,
+        INSERT INTO creatives (campaign_id, line_item_id, user_id, name, type, subtype, width, height,
                                asset_url, click_url, html_snippet, native_title, native_description,
-                               native_cta, native_icon_url, video_url, video_duration, vast_xml, status)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'approved') RETURNING *
+                               native_cta, native_icon_url, video_url, video_duration, vast_xml, crop, status)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,'approved') RETURNING *
         """,
-        body.campaign_id, body.line_item_id, user["id"], body.name, body.type, body.width,
+        body.campaign_id, body.line_item_id, user["id"], body.name, body.type, body.subtype, body.width,
         body.height, body.asset_url, body.click_url, body.html_snippet, body.native_title,
         body.native_description, body.native_cta, body.native_icon_url, body.video_url,
-        body.video_duration, body.vast_xml,
+        body.video_duration, body.vast_xml, json.dumps(body.crop) if body.crop else None,
     )
     return _serialize(row)
 

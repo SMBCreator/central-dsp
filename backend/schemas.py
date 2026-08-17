@@ -36,6 +36,7 @@ class CampaignIn(BaseModel):
     advertiser_id: str
     name: str = Field(min_length=1, max_length=200)
     objective: str = Field(default="awareness", pattern="^(awareness|traffic|conversions)$")
+    group_id: str | None = None
     daily_budget: float = Field(default=0, ge=0)
     total_budget: float = Field(default=0, ge=0)
     start_date: str | None = None
@@ -61,7 +62,10 @@ class CampaignPatch(BaseModel):
     goal_id: str | None = None
     target_cpa: float | None = Field(default=None, ge=0)
     target_cpc: float | None = Field(default=None, ge=0)
+    target_cpm: float | None = Field(default=None, ge=0)
+    target_cpv: float | None = Field(default=None, ge=0)
     auto_optimize: bool | None = None
+    group_id: str | None = None
 
 
 # --- Line items ---------------------------------------------------------------
@@ -90,7 +94,9 @@ class CreativeIn(BaseModel):
     campaign_id: str
     line_item_id: str | None = None
     name: str = Field(min_length=1, max_length=200)
-    type: str = Field(default="banner", pattern="^(banner|native|video)$")
+    type: str = Field(default="banner", pattern="^(banner|native|video|push)$")
+    # banner: static|gif|html5 ; video: instream|outstream ; push/native: null
+    subtype: str | None = Field(default=None, pattern="^(static|gif|html5|instream|outstream)$")
     width: int | None = Field(default=None, ge=1, le=4096)
     height: int | None = Field(default=None, ge=1, le=4096)
     asset_url: str | None = None
@@ -103,6 +109,7 @@ class CreativeIn(BaseModel):
     video_url: str | None = None
     video_duration: int | None = Field(default=None, ge=1, le=600)
     vast_xml: str | None = None
+    crop: dict | None = None
 
 
 class CreativePatch(BaseModel):

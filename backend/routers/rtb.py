@@ -57,6 +57,11 @@ def _base_url() -> str:
 
 
 def _imp_ad_type(imp: dict) -> str | None:
+    # Push traffic (arbitrage/push SSPs) is signalled via ext; it rides on the
+    # native object in OpenRTB, so detect it before the generic native branch.
+    ext = imp.get("ext") or {}
+    if ext.get("push") or ext.get("ad_format") == "push":
+        return "push"
     if imp.get("banner"):
         return "banner"
     if imp.get("native"):
@@ -308,7 +313,12 @@ def _matched_deal(targeting: dict, imp: dict) -> str | None:
 
 
 def _creative_fits_imp(creative: dict, imp: dict, ad_type: str) -> bool:
-    if creative["type"] != ad_type:
+    # push creatives can also fill plain native inventory (push IS native in RTB terms);
+    # a dedicated push imp (ext.push) accepts only push creatives.
+    if ad_type == "native":
+        if creative["type"] not in ("native", "push"):
+            return False
+    elif creative["type"] != ad_type:
         return False
     if ad_type == "banner":
         banner = imp.get("banner") or {}
@@ -337,7 +347,8 @@ def _build_adm(creative: dict, base: str, bid_id: str) -> str:
             f'<img src="{creative.get("asset_url") or ""}" width="{creative.get("width")}" height="{creative.get("height")}" alt=""/></a>'
             f'<img src="{imp_pixel}" width="1" height="1" style="display:none"/>'
         )
-    if creative["type"] == "native":
+    if creative["type"] in ("native", "push"):
+        # push over RTB is native markup: title + body + icon + main image.
         native = {
             "native": {
                 "link": {"url": click_url},
@@ -351,15 +362,26 @@ def _build_adm(creative: dict, base: str, bid_id: str) -> str:
                 ],
             }
         }
+        if creative["type"] == "push":
+            native["native"]["ext"] = {"ad_format": "push"}
         return json.dumps(native, ensure_ascii=False)
-    # video: VAST
+    # video: VAST with quartile tracking
     if creative.get("vast_xml"):
         return creative["vast_xml"]
     duration = creative.get("video_duration") or 15
+    vevent = f"{base}/api/rtb/vevent?bid={bid_id}"
     return f"""<VAST version="3.0"><Ad id="{creative['id']}"><InLine>
 <AdSystem>CentralDSP</AdSystem><AdTitle>{creative['name']}</AdTitle>
 <Impression><![CDATA[{imp_pixel}]]></Impression>
 <Creatives><Creative><Linear><Duration>00:00:{duration:02d}</Duration>
+<TrackingEvents>
+<Tracking event="start"><![CDATA[{vevent}&e=start]]></Tracking>
+<Tracking event="firstQuartile"><![CDATA[{vevent}&e=firstQuartile]]></Tracking>
+<Tracking event="midpoint"><![CDATA[{vevent}&e=midpoint]]></Tracking>
+<Tracking event="thirdQuartile"><![CDATA[{vevent}&e=thirdQuartile]]></Tracking>
+<Tracking event="complete"><![CDATA[{vevent}&e=complete]]></Tracking>
+<Tracking event="skip"><![CDATA[{vevent}&e=skip]]></Tracking>
+</TrackingEvents>
 <VideoClicks><ClickThrough><![CDATA[{creative.get('click_url') or ''}]]></ClickThrough>
 <ClickTracking><![CDATA[{click_url}]]></ClickTracking></VideoClicks>
 <MediaFiles><MediaFile delivery="progressive" type="video/mp4" width="640" height="360"><![CDATA[{creative.get('video_url') or ''}]]></MediaFile></MediaFiles>
@@ -694,6 +716,32 @@ async def impression(bid: str):
 
 
 _PIXEL = bytes.fromhex("47494638396101000100800000ffffff00000021f90401000000002c00000000010001000002024401003b")
+
+_VIDEO_EVENTS = {"start", "firstQuartile", "midpoint", "thirdQuartile", "complete", "skip"}
+
+
+@router.get("/vevent")
+async def video_event(bid: str, e: str):
+    """VAST tracking-event callback: start / quartiles / complete / skip."""
+    if e not in _VIDEO_EVENTS:
+        return Response(content=_PIXEL, media_type="image/gif")
+    pool = await get_pool()
+    if not await mark_once(f"vev:{e}", bid):
+        return Response(content=_PIXEL, media_type="image/gif")
+    row = await _find_bid(pool, bid)
+    if row:
+        await _log_event(
+            pool, f"video_{e}", bid_id=bid, imp_id=row["imp_id"], campaign_id=row["campaign_id"],
+            line_item_id=row["line_item_id"], creative_id=row["creative_id"],
+            supply_partner_id=row["supply_partner_id"], device_type=row["device_type"],
+            geo_country=row["geo_country"], ad_type=row["ad_type"], domain=row["domain"],
+            os=row["os"], browser=row["browser"],
+        )
+        if e == "start":
+            await _bump_stats(pool, "video_starts", 0, row["campaign_id"], row["line_item_id"], row["creative_id"], row["supply_partner_id"])
+        elif e == "complete":
+            await _bump_stats(pool, "video_completes", 0, row["campaign_id"], row["line_item_id"], row["creative_id"], row["supply_partner_id"])
+    return Response(content=_PIXEL, media_type="image/gif")
 
 
 @router.get("/click")

@@ -12,6 +12,7 @@ from routers.billing import router as billing_router
 from routers.campaigns import router as campaigns_router
 from routers.creatives import router as creatives_router
 from routers.cron import router as cron_router
+from routers.groups import router as groups_router
 from routers.line_items import router as line_items_router
 from routers.pixel import router as pixel_router
 from routers.rtb import router as rtb_router
@@ -41,6 +42,7 @@ app.include_router(cron_router)
 app.include_router(billing_router)
 app.include_router(share_router)
 app.include_router(pixel_router)
+app.include_router(groups_router)
 
 
 _VIEWER_WRITE_ALLOWED = {"/auth/logout", "/auth/login"}
