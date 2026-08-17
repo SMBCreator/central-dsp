@@ -20,6 +20,33 @@ router = APIRouter(prefix="/rtb", tags=["rtb"])
 
 DEVICE_TYPES = {1: "mobile", 2: "desktop", 3: "ctv", 4: "phone", 5: "tablet", 6: "connected", 7: "settopbox"}
 
+_BROWSER_MARKERS = [
+    ("yabrowser", "yandex"), ("edg", "edge"), ("opr", "opera"), ("opera", "opera"),
+    ("samsungbrowser", "samsung"), ("firefox", "firefox"), ("chrome", "chrome"), ("safari", "safari"),
+]
+
+
+def _device_os(device: dict) -> str:
+    """OS from the bid request: explicit device.os, else UA sniff."""
+    os_val = (device.get("os") or "").strip().lower()
+    if os_val:
+        return os_val
+    ua = (device.get("ua") or "").lower()
+    for marker, name in (("android", "android"), ("iphone", "ios"), ("ipad", "ios"),
+                         ("windows", "windows"), ("mac os", "macos"), ("linux", "linux")):
+        if marker in ua:
+            return name
+    return "unknown"
+
+
+def _device_browser(device: dict) -> str:
+    """Browser family from the UA string."""
+    ua = (device.get("ua") or "").lower()
+    for marker, name in _BROWSER_MARKERS:
+        if marker in ua:
+            return name
+    return "unknown"
+
 
 def _base_url() -> str:
     for var in ("BETTER_AUTH_URL", "VERCEL_PROJECT_PRODUCTION_URL", "VERCEL_URL", "V0_RUNTIME_URL"):
@@ -343,13 +370,14 @@ async def _log_event(pool, event_type: str, **kw: Any) -> None:
     await pool.execute(
         """
         INSERT INTO bid_events (event_type, bid_id, imp_id, campaign_id, line_item_id, creative_id,
-                                supply_partner_id, price, clear_price, device_type, geo_country, ad_type, domain)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+                                supply_partner_id, price, clear_price, device_type, geo_country, ad_type, domain, os, browser)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
         """,
         event_type, kw.get("bid_id", ""), kw.get("imp_id"), kw.get("campaign_id"),
         kw.get("line_item_id"), kw.get("creative_id"), kw.get("supply_partner_id"),
         kw.get("price"), kw.get("clear_price"), kw.get("device_type"),
         kw.get("geo_country"), kw.get("ad_type"), kw.get("domain"),
+        kw.get("os"), kw.get("browser"),
     )
 
 
@@ -424,7 +452,7 @@ async def process_bid_request(endpoint_key: str, req: dict):
     if not candidates:
         return None
 
-    # Optimizer block lists (domain / supply_partner / device_type per campaign)
+    # Optimizer block lists — any dimension the platform observes can be blocked
     camp_ids = list({c["campaign_id"] for c in candidates})
     block_rows = await pool.fetch(
         "SELECT campaign_id, block_type, block_value FROM optimizer_blocks WHERE campaign_id = ANY($1)",
@@ -434,9 +462,14 @@ async def process_bid_request(endpoint_key: str, req: dict):
     for b in block_rows:
         blocks.setdefault(str(b["campaign_id"]), set()).add((b["block_type"], b["block_value"].lower()))
 
+    from datetime import datetime, timezone as _tz
     req_domain = ((req.get("site") or req.get("app") or {}).get("domain")
                   or (req.get("app") or {}).get("bundle") or "").lower()
     req_device = DEVICE_TYPES.get((req.get("device") or {}).get("devicetype", 0), "unknown")
+    req_geo = (geo.get("country") or "").lower()
+    req_os = _device_os(device)
+    req_browser = _device_browser(device)
+    req_hour = str(datetime.now(_tz.utc).hour)
 
     seatbids = []
     base = _base_url()
@@ -458,7 +491,7 @@ async def process_bid_request(endpoint_key: str, req: dict):
             ssp_allow = targeting.get("ssp_allowlist") or []
             if ssp_allow and str(partner["id"]) not in [str(s) for s in ssp_allow]:
                 continue
-            # Optimizer block lists
+            # Optimizer block lists — every observable dimension is enforceable
             camp_blocks = blocks.get(str(c["campaign_id"]))
             if camp_blocks:
                 if req_domain and ("domain", req_domain) in camp_blocks:
@@ -466,6 +499,20 @@ async def process_bid_request(endpoint_key: str, req: dict):
                 if ("supply_partner", str(partner["id"]).lower()) in camp_blocks:
                     continue
                 if ("device_type", req_device) in camp_blocks:
+                    continue
+                if req_geo and ("geo_country", req_geo) in camp_blocks:
+                    continue
+                if ("os", req_os) in camp_blocks:
+                    continue
+                if ("browser", req_browser) in camp_blocks:
+                    continue
+                if ("ad_type", ad_type) in camp_blocks:
+                    continue
+                if ("creative", str(c["creative_id"]).lower()) in camp_blocks:
+                    continue
+                if ("line_item", str(c["li_id"]).lower()) in camp_blocks:
+                    continue
+                if ("hour", req_hour) in camp_blocks:
                     continue
             if not _match_targeting(targeting, req):
                 continue
@@ -530,6 +577,7 @@ async def process_bid_request(endpoint_key: str, req: dict):
             supply_partner_id=partner["id"], price=price,
             device_type=DEVICE_TYPES.get(device.get("devicetype", 0), "unknown"),
             geo_country=geo.get("country"), ad_type=ad_type, domain=site.get("domain"),
+            os=req_os, browser=req_browser,
         )
         await _bump_stats(pool, "bids", 0, c["campaign_id"], c["li_id"], c["creative_id"], partner["id"])
 
@@ -582,6 +630,7 @@ async def win_notice(bid: str, price: float | None = None):
         supply_partner_id=row["supply_partner_id"], price=float(row["price"] or 0),
         clear_price=clear_price, device_type=row["device_type"],
         geo_country=row["geo_country"], ad_type=row["ad_type"], domain=row["domain"],
+                os=row["os"], browser=row["browser"],
     )
     await _bump_stats(pool, "wins", cost, row["campaign_id"], row["line_item_id"], row["creative_id"], row["supply_partner_id"])
     await pool.execute(
@@ -632,6 +681,7 @@ async def impression(bid: str):
             line_item_id=row["line_item_id"], creative_id=row["creative_id"],
             supply_partner_id=row["supply_partner_id"], device_type=row["device_type"],
             geo_country=row["geo_country"], ad_type=row["ad_type"], domain=row["domain"],
+                os=row["os"], browser=row["browser"],
         )
         await _bump_stats(pool, "impressions", 0, row["campaign_id"], row["line_item_id"], row["creative_id"], row["supply_partner_id"])
         # Count the impression against the frequency cap
@@ -658,6 +708,7 @@ async def click(bid: str, r: str = ""):
                 line_item_id=row["line_item_id"], creative_id=row["creative_id"],
                 supply_partner_id=row["supply_partner_id"], device_type=row["device_type"],
                 geo_country=row["geo_country"], ad_type=row["ad_type"], domain=row["domain"],
+                os=row["os"], browser=row["browser"],
             )
             await _bump_stats(pool, "clicks", 0, row["campaign_id"], row["line_item_id"], row["creative_id"], row["supply_partner_id"])
     # Redirect target: explicit r param, else fall back to the creative's click_url

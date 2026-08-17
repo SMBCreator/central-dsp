@@ -77,6 +77,13 @@ function OptimizationCard({ campaign }: { campaign: Campaign }) {
     domain: "Домен",
     supply_partner: "SSP",
     device_type: "Устройство",
+    geo_country: "Гео",
+    os: "ОС",
+    browser: "Браузер",
+    ad_type: "Формат",
+    creative: "Креатив",
+    line_item: "Строка закупки",
+    hour: "Час (UTC)",
   }
 
   return (
