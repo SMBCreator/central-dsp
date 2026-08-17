@@ -36,6 +36,8 @@ function OptimizationCard({ campaign }: { campaign: Campaign }) {
     goal_id?: string | null
     target_cpa?: number | null
     target_cpc?: number | null
+    target_cpm?: number | null
+    target_cpv?: number | null
     auto_optimize?: boolean
   }
   const [pixelId, setPixelId] = useState(c.pixel_id || "")
@@ -43,6 +45,8 @@ function OptimizationCard({ campaign }: { campaign: Campaign }) {
   const [goalId, setGoalId] = useState(c.goal_id || "")
   const [cpa, setCpa] = useState(c.target_cpa ? String(c.target_cpa) : "")
   const [cpc, setCpc] = useState(c.target_cpc ? String(c.target_cpc) : "")
+  const [cpm, setCpm] = useState(c.target_cpm ? String(c.target_cpm) : "")
+  const [cpv, setCpv] = useState(c.target_cpv ? String(c.target_cpv) : "")
   const [auto, setAuto] = useState(!!c.auto_optimize)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -58,6 +62,8 @@ function OptimizationCard({ campaign }: { campaign: Campaign }) {
           goal_id: goalId || null,
           target_cpa: cpa ? Number(cpa) : null,
           target_cpc: cpc ? Number(cpc) : null,
+          target_cpm: cpm ? Number(cpm) : null,
+          target_cpv: cpv ? Number(cpv) : null,
           auto_optimize: auto,
         },
       })
@@ -119,6 +125,12 @@ function OptimizationCard({ campaign }: { campaign: Campaign }) {
           </Field>
           <Field label="Целевой CPC, USD" hint="Максимальная цена клика">
             <input type="number" min="0" step="0.001" value={cpc} onChange={(e) => setCpc(e.target.value)} className={inputCls} placeholder="Не задан" />
+          </Field>
+          <Field label="Целевой CPM, USD" hint="Максимальная цена 1000 показов">
+            <input type="number" min="0" step="0.01" value={cpm} onChange={(e) => setCpm(e.target.value)} className={inputCls} placeholder="Не задан" />
+          </Field>
+          <Field label="Целевой CPV, USD" hint="Максимальная цена досмотра видео">
+            <input type="number" min="0" step="0.001" value={cpv} onChange={(e) => setCpv(e.target.value)} className={inputCls} placeholder="Не задан" />
           </Field>
         </div>
         <label className="flex cursor-pointer items-center gap-2.5">

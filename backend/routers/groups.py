@@ -20,9 +20,9 @@ async def list_groups(user: dict = Depends(current_user)):
                   COALESCE(SUM(c.spent_total), 0) AS spent_total
            FROM campaign_groups g
            LEFT JOIN campaigns c ON c.group_id = g.id
-           WHERE g.user_id = $1
+           WHERE g.user_id = $1::uuid
            GROUP BY g.id ORDER BY g.created_at DESC""",
-        user["id"],
+        str(user["id"]),
     )
     return [
         {
@@ -37,8 +37,8 @@ async def list_groups(user: dict = Depends(current_user)):
 async def create_group(body: GroupIn, user: dict = Depends(current_user)):
     pool = await get_pool()
     row = await pool.fetchrow(
-        "INSERT INTO campaign_groups (user_id, name) VALUES ($1, $2) RETURNING id, name, created_at",
-        user["id"], body.name,
+        "INSERT INTO campaign_groups (user_id, name) VALUES ($1::uuid, $2) RETURNING id, name, created_at",
+        str(user["id"]), body.name,
     )
     return {"id": str(row["id"]), "name": row["name"], "created_at": row["created_at"].isoformat()}
 
@@ -47,8 +47,8 @@ async def create_group(body: GroupIn, user: dict = Depends(current_user)):
 async def rename_group(group_id: str, body: GroupIn, user: dict = Depends(current_user)):
     pool = await get_pool()
     row = await pool.fetchrow(
-        "UPDATE campaign_groups SET name = $3 WHERE id = $1 AND user_id = $2 RETURNING id, name",
-        group_id, user["id"], body.name,
+        "UPDATE campaign_groups SET name = $3 WHERE id = $1::uuid AND user_id = $2::uuid RETURNING id, name",
+        group_id, str(user["id"]), body.name,
     )
     if not row:
         raise HTTPException(status_code=404, detail="Группа не найдена")
@@ -60,7 +60,7 @@ async def delete_group(group_id: str, user: dict = Depends(current_user)):
     """Delete the group; campaigns keep running (group_id becomes NULL)."""
     pool = await get_pool()
     result = await pool.execute(
-        "DELETE FROM campaign_groups WHERE id = $1 AND user_id = $2", group_id, user["id"]
+        "DELETE FROM campaign_groups WHERE id = $1::uuid AND user_id = $2::uuid", group_id, str(user["id"])
     )
     if result == "DELETE 0":
         raise HTTPException(status_code=404, detail="Группа не найдена")

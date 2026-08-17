@@ -48,6 +48,10 @@ export const FORMAT_META: Record<AdFormat, { label: string; description: string;
   },
 }
 
+export const FORMAT_LABELS: Record<string, string> = Object.fromEntries(
+  Object.entries(FORMAT_META).map(([k, v]) => [k, v.label]),
+)
+
 const BANNER_SIZES = ["300x250", "728x90", "320x50", "320x100", "300x600", "336x280", "970x250", "160x600", "240x400"]
 
 export function emptyDraft(type: AdFormat): CreativeDraft {
@@ -281,6 +285,62 @@ export function CreativeForm({ format, onAdd }: { format: AdFormat; onAdd: (d: C
         </Panel>
         <p className="mt-2 text-[11px] leading-relaxed text-muted">{FORMAT_META[format].specs}</p>
       </div>
+    </div>
+  )
+}
+
+/** Multi-creative step: add as many creatives as needed, review, remove. */
+export function CreativeBuilder({
+  format,
+  creatives,
+  onChange,
+}: {
+  format: string
+  creatives: CreativeDraft[]
+  onChange: (list: CreativeDraft[]) => void
+}) {
+  const f = format as AdFormat
+  return (
+    <div className="space-y-4">
+      <Panel className="p-4">
+        <p className="text-sm font-semibold text-foreground">Креативы: {FORMAT_META[f].label}</p>
+        <p className="mt-1 text-xs leading-relaxed text-muted">{FORMAT_META[f].description} Добавьте несколько креативов — оптимизатор сам определит лучшие.</p>
+      </Panel>
+
+      <Panel className="p-4">
+        <CreativeForm format={f} onAdd={(d) => onChange([...creatives, d])} />
+      </Panel>
+
+      {creatives.length > 0 ? (
+        <Panel className="p-4">
+          <p className="mb-3 text-xs font-medium text-muted">Добавлено креативов: {creatives.length}</p>
+          <ul className="space-y-2">
+            {creatives.map((c, i) => (
+              <li key={i} className="flex items-center justify-between gap-3 rounded-xl border border-border px-3 py-2">
+                <div className="flex min-w-0 items-center gap-3">
+                  {c.asset_url && c.type !== "video" ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={c.asset_url || "/placeholder.svg"} alt="" className="h-9 w-9 shrink-0 rounded-lg object-cover" />
+                  ) : (
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-panel font-mono text-[10px] text-muted">
+                      {c.type === "video" ? "VID" : c.subtype === "html5" ? "H5" : "AD"}
+                    </div>
+                  )}
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium text-foreground">{c.name}</p>
+                    <p className="truncate text-[11px] text-muted">
+                      {c.type === "banner" ? `${c.subtype} · ${c.width}x${c.height}` : c.type === "video" ? `${c.subtype} · ${c.video_duration}с` : c.native_title}
+                    </p>
+                  </div>
+                </div>
+                <Button variant="ghost" onClick={() => onChange(creatives.filter((_, j) => j !== i))}>
+                  Убрать
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </Panel>
+      ) : null}
     </div>
   )
 }

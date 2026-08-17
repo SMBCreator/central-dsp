@@ -8,7 +8,7 @@ ALTER TABLE creatives ADD COLUMN IF NOT EXISTS crop JSONB;
 -- Campaign groups (ad groups): several campaigns share one group
 CREATE TABLE IF NOT EXISTS campaign_groups (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id TEXT NOT NULL,
+  user_id UUID NOT NULL,
   name TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

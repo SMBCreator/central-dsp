@@ -93,9 +93,14 @@ export default function CampaignsPage() {
           <h1 className="text-xl font-semibold text-foreground">Кампании</h1>
           <p className="mt-0.5 text-sm text-muted">Управление рекламными кампаниями и бюджетами</p>
         </div>
-        <Button onClick={openCreate} disabled={!advertisers || advertisers.length === 0}>
-          Создать кампанию
-        </Button>
+        <div className="flex items-center gap-2">
+          <Link href="/campaigns/new">
+            <Button disabled={!advertisers || advertisers.length === 0}>Мастер кампании</Button>
+          </Link>
+          <Button variant="ghost" onClick={openCreate} disabled={!advertisers || advertisers.length === 0}>
+            Быстрое создание
+          </Button>
+        </div>
       </div>
 
       {advertisers && advertisers.length === 0 ? (
