@@ -133,7 +133,7 @@ class SupplyPartnerIn(BaseModel):
     auction_type: int = Field(default=2, ge=1, le=2)
     bid_floor: float = Field(default=0, ge=0)
     qps_limit: int = Field(default=100, ge=1, le=100000)
-    allowed_ad_types: list[str] = Field(default_factory=lambda: ["banner", "native", "video"])
+    allowed_ad_types: list[str] = Field(default_factory=lambda: ["banner", "native", "video", "push"])
     notes: str | None = None
 
 

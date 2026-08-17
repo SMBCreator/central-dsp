@@ -370,7 +370,8 @@ def _build_adm(creative: dict, base: str, bid_id: str) -> str:
         return creative["vast_xml"]
     duration = creative.get("video_duration") or 15
     vevent = f"{base}/api/rtb/vevent?bid={bid_id}"
-    return f"""<VAST version="3.0"><Ad id="{creative['id']}"><InLine>
+    creative_id = creative.get("creative_id") or creative.get("id") or ""
+    return f"""<VAST version="3.0"><Ad id="{creative_id}"><InLine>
 <AdSystem>CentralDSP</AdSystem><AdTitle>{creative['name']}</AdTitle>
 <Impression><![CDATA[{imp_pixel}]]></Impression>
 <Creatives><Creative><Linear><Duration>00:00:{duration:02d}</Duration>
