@@ -3,13 +3,26 @@
 import type { ReactNode } from "react"
 import { STATUS_LABELS } from "@/lib/types"
 
+/* amicro-style: rounded-3xl white cards with soft shadow, pill buttons, nested inner panels */
+
 export function Card({ children, className = "" }: { children: ReactNode; className?: string }) {
-  return <div className={`rounded-lg border border-border bg-card ${className}`}>{children}</div>
+  return (
+    <div
+      className={`rounded-3xl border border-border bg-card shadow-[0_1px_2px_rgba(0,0,0,0.04),0_8px_24px_-12px_rgba(0,0,0,0.08)] ${className}`}
+    >
+      {children}
+    </div>
+  )
+}
+
+/** Inner nested panel (amicro card-in-card pattern) */
+export function Panel({ children, className = "" }: { children: ReactNode; className?: string }) {
+  return <div className={`rounded-2xl bg-panel ${className}`}>{children}</div>
 }
 
 export function CardHeader({ title, subtitle, action }: { title: string; subtitle?: string; action?: ReactNode }) {
   return (
-    <div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
+    <div className="flex items-start justify-between gap-4 px-6 pb-2 pt-5">
       <div>
         <h2 className="text-sm font-semibold text-foreground">{title}</h2>
         {subtitle ? <p className="mt-0.5 text-xs text-muted">{subtitle}</p> : null}
@@ -21,7 +34,7 @@ export function CardHeader({ title, subtitle, action }: { title: string; subtitl
 
 export function KpiCard({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
-    <Card className="px-5 py-4">
+    <Card className="px-6 py-5">
       <p className="text-xs font-medium text-muted">{label}</p>
       <p className="mt-1.5 font-mono text-2xl font-semibold tracking-tight text-foreground">{value}</p>
       {hint ? <p className="mt-1 text-xs text-muted">{hint}</p> : null}
@@ -42,7 +55,7 @@ export function StatusBadge({ status }: { status: string }) {
   }
   return (
     <span
-      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${styles[status] || "bg-muted/10 text-muted"}`}
+      className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${styles[status] || "bg-muted/10 text-muted"}`}
     >
       {STATUS_LABELS[status] || status}
     </span>
@@ -65,20 +78,48 @@ export function Button({
   className?: string
 }) {
   const styles = {
-    primary: "bg-primary text-primary-foreground hover:opacity-90",
-    secondary: "border border-border bg-card text-foreground hover:bg-surface",
-    danger: "bg-danger text-primary-foreground hover:opacity-90",
-    ghost: "text-muted hover:bg-surface hover:text-foreground",
+    primary: "bg-primary text-primary-foreground hover:bg-primary-hover active:scale-[0.98]",
+    secondary: "bg-panel text-foreground hover:bg-surface-hover active:scale-[0.98]",
+    danger: "bg-danger text-white hover:opacity-90 active:scale-[0.98]",
+    ghost: "text-muted hover:bg-panel hover:text-foreground",
   }
   return (
     <button
       type={type}
       onClick={onClick}
       disabled={disabled}
-      className={`inline-flex items-center justify-center gap-1.5 rounded-md px-3.5 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${styles[variant]} ${className}`}
+      className={`inline-flex items-center justify-center gap-1.5 rounded-full px-4 py-2 text-sm font-medium transition-all disabled:cursor-not-allowed disabled:opacity-50 ${styles[variant]} ${className}`}
     >
       {children}
     </button>
+  )
+}
+
+/** amicro pill tab group */
+export function PillTabs<T extends string>({
+  value,
+  onChange,
+  options,
+}: {
+  value: T
+  onChange: (v: T) => void
+  options: readonly { key: T; label: string }[]
+}) {
+  return (
+    <div className="inline-flex items-center gap-1 rounded-full bg-panel p-1">
+      {options.map((o) => (
+        <button
+          key={o.key}
+          type="button"
+          onClick={() => onChange(o.key)}
+          className={`rounded-full px-3.5 py-1.5 text-xs font-medium transition-colors ${
+            value === o.key ? "bg-card text-foreground shadow-sm" : "text-muted hover:text-foreground"
+          }`}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
   )
 }
 
@@ -101,7 +142,7 @@ export function Field({
 }
 
 export const inputCls =
-  "w-full rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground placeholder:text-muted focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
+  "w-full rounded-xl border border-border bg-panel px-3.5 py-2 text-sm text-foreground placeholder:text-muted transition-colors focus:border-foreground/30 focus:bg-card focus:outline-none"
 
 export function EmptyState({ title, description, action }: { title: string; description?: string; action?: ReactNode }) {
   return (
@@ -116,7 +157,7 @@ export function EmptyState({ title, description, action }: { title: string; desc
 export function Spinner() {
   return (
     <div className="flex items-center justify-center py-16" role="status" aria-label="Загрузка">
-      <div className="h-6 w-6 animate-spin rounded-full border-2 border-border border-t-accent" />
+      <div className="h-6 w-6 animate-spin rounded-full border-2 border-border border-t-foreground" />
     </div>
   )
 }
@@ -136,23 +177,31 @@ export function Modal({
 }) {
   if (!open) return null
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-4 pt-12" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 pt-12 backdrop-blur-sm"
+      onClick={onClose}
+    >
       <div
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className={`w-full ${wide ? "max-w-2xl" : "max-w-md"} rounded-lg border border-border bg-card shadow-xl`}
+        className={`w-full ${wide ? "max-w-2xl" : "max-w-md"} rounded-3xl border border-border bg-card shadow-2xl`}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between border-b border-border px-5 py-4">
+        <div className="flex items-center justify-between px-6 pb-2 pt-5">
           <h2 className="text-sm font-semibold text-foreground">{title}</h2>
-          <button type="button" onClick={onClose} className="text-muted hover:text-foreground" aria-label="Закрыть">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex h-8 w-8 items-center justify-center rounded-full bg-panel text-muted transition-colors hover:text-foreground"
+            aria-label="Закрыть"
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
               <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
             </svg>
           </button>
         </div>
-        <div className="px-5 py-4">{children}</div>
+        <div className="px-6 pb-6 pt-2">{children}</div>
       </div>
     </div>
   )
@@ -160,10 +209,10 @@ export function Modal({
 
 export function Table({ headers, children }: { headers: string[]; children: ReactNode }) {
   return (
-    <div className="overflow-x-auto">
+    <div className="overflow-x-auto px-2 pb-2">
       <table className="w-full text-sm">
         <thead>
-          <tr className="border-b border-border">
+          <tr>
             {headers.map((h) => (
               <th key={h} className="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium text-muted">
                 {h}

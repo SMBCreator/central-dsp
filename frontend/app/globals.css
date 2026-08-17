@@ -1,45 +1,87 @@
 @import 'tailwindcss';
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme inline {
-  --font-sans: var(--font-inter), system-ui, sans-serif;
+  --font-sans: var(--font-outfit), var(--font-manrope), system-ui, sans-serif;
   --font-mono: var(--font-jetbrains), monospace;
 
-  --color-background: #0c1017;
-  --color-surface: #131926;
-  --color-card: #101623;
-  --color-accent: #6ea8fe;
-  --color-surface-hover: #1a2233;
-  --color-border: #232d42;
-  --color-foreground: #e6ecf5;
-  --color-muted: #8494ad;
-  --color-primary: #5b7cfa;
-  --color-primary-hover: #4a68e8;
-  --color-primary-foreground: #ffffff;
-  --color-success: #34d399;
-  --color-danger: #f87171;
-  --color-warning: #fbbf24;
-  --radius: 0.625rem;
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-card: var(--card);
+  --color-panel: var(--panel);
+  --color-accent: var(--accent);
+  --color-surface-hover: var(--surface-hover);
+  --color-border: var(--border);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-success: var(--success);
+  --color-danger: var(--danger);
+  --color-warning: var(--warning);
+  --radius: 1rem;
+}
+
+:root {
+  /* amicro light */
+  --background: #f8f9fa;
+  --surface: #f1f2f4;
+  --card: #ffffff;
+  --panel: #f4f4f6;
+  --surface-hover: #ebecee;
+  --border: #e7e8ea;
+  --foreground: #111113;
+  --muted: #6b6f76;
+  --primary: #1a1a1c;
+  --primary-hover: #2e2e32;
+  --primary-foreground: #ffffff;
+  --accent: #4f6df5;
+  --success: #16a34a;
+  --danger: #dc2626;
+  --warning: #d97706;
+}
+
+.dark {
+  /* amicro dark */
+  --background: #0a0a0b;
+  --surface: #131315;
+  --card: #141416;
+  --panel: #1b1b1e;
+  --surface-hover: #202023;
+  --border: #232326;
+  --foreground: #f4f4f5;
+  --muted: #8f9299;
+  --primary: #f4f4f5;
+  --primary-hover: #dcdce0;
+  --primary-foreground: #111113;
+  --accent: #7c93f7;
+  --success: #34d399;
+  --danger: #f87171;
+  --warning: #fbbf24;
 }
 
 html {
-  background-color: var(--color-background);
+  background-color: var(--background);
 }
 
 body {
-  background-color: var(--color-background);
-  color: var(--color-foreground);
+  background-color: var(--background);
+  color: var(--foreground);
+  transition: background-color 0.25s ease, color 0.25s ease;
 }
 
 ::selection {
-  background-color: var(--color-primary);
-  color: var(--color-primary-foreground);
+  background-color: var(--foreground);
+  color: var(--background);
 }
 
-/* Recharts dark theme adjustments */
+/* Recharts theme adjustments */
 .recharts-cartesian-grid line {
-  stroke: var(--color-border);
+  stroke: var(--border);
 }
 .recharts-text {
-  fill: var(--color-muted);
+  fill: var(--muted);
   font-size: 11px;
 }

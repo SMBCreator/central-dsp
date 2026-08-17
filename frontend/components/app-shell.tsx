@@ -8,7 +8,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
   const [ready, setReady] = useState(false)
-  const isAuthPage = pathname === "/login" || pathname === "/register"
+  const isAuthPage = pathname === "/login" || pathname === "/register" || pathname.startsWith("/share")
 
   useEffect(() => {
     if (isAuthPage) {

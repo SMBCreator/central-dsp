@@ -39,20 +39,47 @@ def _imp_ad_type(imp: dict) -> str | None:
     return None
 
 
+CONNECTION_TYPES = {0: "unknown", 1: "ethernet", 2: "wifi", 3: "cellular", 4: "cellular", 5: "cellular", 6: "cellular"}
+
+
 def _match_targeting(targeting: dict, req: dict) -> bool:
-    """Match line item targeting JSON against BidRequest device/geo/site."""
+    """Match line item targeting JSON against an OpenRTB 2.5 BidRequest.
+
+    Supported keys (all optional; empty = no restriction):
+      geo_countries, geo_regions, geo_cities        - ISO country / region / city lists
+      device_types                                  - mobile / desktop / ctv / tablet
+      os, browsers, languages                       - device.os, device.ua match, device.language
+      connection_types                              - wifi / cellular / ethernet
+      iab_categories                                - site.cat / app.cat IAB-1..26 allow list
+      iab_block                                     - IAB category block list
+      domain_allowlist, domain_blocklist            - site.domain / app.bundle
+      age_min, age_max, genders                     - user.yob, user.gender (M/F/O)
+      hours (0-23 UTC list), days (0=Mon..6=Sun)    - dayparting
+      ssp_allowlist                                 - list of supply partner IDs (checked by caller)
+    """
+    from datetime import datetime, timezone
+
     device = req.get("device") or {}
     geo = device.get("geo") or {}
-    site = req.get("site") or {}
+    site = req.get("site") or req.get("app") or {}
+    user = req.get("user") or {}
 
+    # --- Geo ---
     countries = targeting.get("geo_countries") or []
     if countries and (geo.get("country") or "").upper() not in [c.upper() for c in countries]:
         return False
+    regions = targeting.get("geo_regions") or []
+    if regions and (geo.get("region") or "").lower() not in [r.lower() for r in regions]:
+        return False
+    cities = targeting.get("geo_cities") or []
+    if cities and (geo.get("city") or "").lower() not in [c.lower() for c in cities]:
+        return False
 
+    # --- Device ---
     device_types = targeting.get("device_types") or []
     if device_types:
         dt = DEVICE_TYPES.get(device.get("devicetype", 0), "unknown")
-        normalized = {"phone": "mobile", "tablet": "mobile"}.get(dt, dt)
+        normalized = {"phone": "mobile"}.get(dt, dt)
         if normalized not in device_types and dt not in device_types:
             return False
 
@@ -60,12 +87,59 @@ def _match_targeting(targeting: dict, req: dict) -> bool:
     if os_list and (device.get("os") or "").lower() not in [o.lower() for o in os_list]:
         return False
 
-    domain_blocklist = targeting.get("domain_blocklist") or []
-    if site.get("domain") and site["domain"].lower() in [d.lower() for d in domain_blocklist]:
+    browsers = targeting.get("browsers") or []
+    if browsers:
+        ua = (device.get("ua") or "").lower()
+        if not any(b.lower() in ua for b in browsers):
+            return False
+
+    languages = targeting.get("languages") or []
+    if languages and (device.get("language") or "").lower() not in [l.lower() for l in languages]:
         return False
 
+    conn_types = targeting.get("connection_types") or []
+    if conn_types:
+        ct = CONNECTION_TYPES.get(device.get("connectiontype", 0), "unknown")
+        if ct not in conn_types:
+            return False
+
+    # --- Inventory ---
+    site_cats = [c.upper() for c in (site.get("cat") or [])]
+    iab_allow = targeting.get("iab_categories") or []
+    if iab_allow and not any(c.upper() in site_cats for c in iab_allow):
+        return False
+    iab_block = targeting.get("iab_block") or []
+    if iab_block and any(c.upper() in site_cats for c in iab_block):
+        return False
+
+    domain = (site.get("domain") or site.get("bundle") or "").lower()
+    domain_blocklist = targeting.get("domain_blocklist") or []
+    if domain and domain in [d.lower() for d in domain_blocklist]:
+        return False
     domain_allowlist = targeting.get("domain_allowlist") or []
-    if domain_allowlist and (site.get("domain") or "").lower() not in [d.lower() for d in domain_allowlist]:
+    if domain_allowlist and domain not in [d.lower() for d in domain_allowlist]:
+        return False
+
+    # --- Audience ---
+    genders = targeting.get("genders") or []
+    if genders and (user.get("gender") or "").upper() not in [g.upper() for g in genders]:
+        return False
+    yob = user.get("yob")
+    age_min, age_max = targeting.get("age_min"), targeting.get("age_max")
+    if (age_min or age_max) and yob:
+        age = datetime.now(timezone.utc).year - int(yob)
+        if age_min and age < int(age_min):
+            return False
+        if age_max and age > int(age_max):
+            return False
+
+    # --- Dayparting (UTC) ---
+    now = datetime.now(timezone.utc)
+    hours = targeting.get("hours") or []
+    if hours and now.hour not in [int(h) for h in hours]:
+        return False
+    days = targeting.get("days") or []
+    if days and now.weekday() not in [int(d) for d in days]:
         return False
 
     return True
@@ -228,6 +302,9 @@ async def process_bid_request(endpoint_key: str, req: dict):
             if isinstance(targeting, str):
                 targeting = json.loads(targeting)
             if not _creative_fits_imp(c, imp, ad_type):
+                continue
+            ssp_allow = targeting.get("ssp_allowlist") or []
+            if ssp_allow and str(partner["id"]) not in [str(s) for s in ssp_allow]:
                 continue
             if not _match_targeting(targeting, req):
                 continue

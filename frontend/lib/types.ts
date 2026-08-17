@@ -50,11 +50,53 @@ export interface LineItem {
 
 export interface Targeting {
   geo_countries?: string[]
+  geo_regions?: string[]
+  geo_cities?: string[]
   device_types?: string[]
-  ad_types?: string[]
-  domains_allow?: string[]
-  domains_block?: string[]
+  os?: string[]
+  browsers?: string[]
+  languages?: string[]
+  connection_types?: string[]
+  iab_categories?: string[]
+  iab_block?: string[]
+  domain_allowlist?: string[]
+  domain_blocklist?: string[]
+  age_min?: number
+  age_max?: number
+  genders?: string[]
   hours?: number[]
+  days?: number[]
+  ssp_allowlist?: string[]
+  ad_types?: string[]
+}
+
+export const IAB_CATEGORIES: Record<string, string> = {
+  "IAB1": "Искусство и развлечения",
+  "IAB2": "Автомобили",
+  "IAB3": "Бизнес",
+  "IAB4": "Карьера",
+  "IAB5": "Образование",
+  "IAB6": "Семья и родители",
+  "IAB7": "Здоровье и фитнес",
+  "IAB8": "Еда и напитки",
+  "IAB9": "Хобби и интересы",
+  "IAB10": "Дом и сад",
+  "IAB11": "Право и политика",
+  "IAB12": "Новости",
+  "IAB13": "Личные финансы",
+  "IAB14": "Общество",
+  "IAB15": "Наука",
+  "IAB16": "Домашние животные",
+  "IAB17": "Спорт",
+  "IAB18": "Стиль и мода",
+  "IAB19": "Технологии",
+  "IAB20": "Путешествия",
+  "IAB21": "Недвижимость",
+  "IAB22": "Шопинг",
+  "IAB23": "Религия",
+  "IAB24": "Без категории",
+  "IAB25": "Небезопасный контент",
+  "IAB26": "Нелегальный контент",
 }
 
 export interface Creative {
