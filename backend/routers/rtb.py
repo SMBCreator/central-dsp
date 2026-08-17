@@ -649,6 +649,7 @@ _PIXEL = bytes.fromhex("47494638396101000100800000ffffff00000021f90401000000002c
 @router.get("/click")
 async def click(bid: str, r: str = ""):
     pool = await get_pool()
+    row = None
     if await mark_once("click", bid):
         row = await _find_bid(pool, bid)
         if row:
@@ -659,6 +660,12 @@ async def click(bid: str, r: str = ""):
                 geo_country=row["geo_country"], ad_type=row["ad_type"], domain=row["domain"],
             )
             await _bump_stats(pool, "clicks", 0, row["campaign_id"], row["line_item_id"], row["creative_id"], row["supply_partner_id"])
+    # Redirect target: explicit r param, else fall back to the creative's click_url
+    if not (r and r.startswith(("http://", "https://"))):
+        if row is None:
+            row = await _find_bid(pool, bid)
+        if row and row["creative_id"]:
+            r = await pool.fetchval("SELECT click_url FROM creatives WHERE id = $1", row["creative_id"]) or ""
     if r and r.startswith(("http://", "https://")):
         # Pass our click id to the landing page so the Central Pixel can attribute conversions
         sep = "&" if "?" in r else "?"
