@@ -3,7 +3,8 @@
 Routes are defined WITHOUT the /api prefix; Vercel strips it before
 forwarding (see vercel.json experimentalServices).
 """
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from routers.advertisers import router as advertisers_router
 from routers.auth_router import router as auth_router
@@ -38,6 +39,29 @@ app.include_router(simulator_router)
 app.include_router(cron_router)
 app.include_router(billing_router)
 app.include_router(share_router)
+
+
+_VIEWER_WRITE_ALLOWED = {"/auth/logout", "/auth/login"}
+
+
+@app.middleware("http")
+async def viewer_readonly_guard(request: Request, call_next):
+    """Guest (viewer) accounts are read-only: block all mutating requests."""
+    if request.method in ("POST", "PUT", "PATCH", "DELETE") and request.url.path not in _VIEWER_WRITE_ALLOWED:
+        token = request.cookies.get("cdsp_session")
+        if token:
+            from db import get_pool
+            pool = await get_pool()
+            role = await pool.fetchval(
+                "SELECT u.role FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = $1",
+                token,
+            )
+            if role == "viewer":
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Гостевой доступ доступен только для просмотра"},
+                )
+    return await call_next(request)
 
 
 @app.get("/health")

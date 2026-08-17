@@ -61,17 +61,27 @@ async def get_spend(scope: str, entity_id: str) -> float:
 
 # --- Frequency capping ------------------------------------------------------
 async def check_frequency_cap(campaign_id: str, device_id: str, cap: int, period_hours: int) -> bool:
-    """Returns True when the impression is allowed."""
+    """Read-only check at bid time: True when another impression is allowed.
+
+    The counter is incremented only on a real impression (bump_frequency),
+    so lost auctions never consume the cap.
+    """
     if not device_id or cap <= 0:
         return True
+    r = get_redis()
+    count = await r.get(f"freq:{campaign_id}:{device_id}")
+    return int(count or 0) < cap
+
+
+async def bump_frequency(campaign_id: str, device_id: str, period_hours: int) -> None:
+    """Increment the frequency counter after a confirmed impression."""
+    if not device_id:
+        return
     r = get_redis()
     key = f"freq:{campaign_id}:{device_id}"
     count = await r.incr(key)
     if count == 1:
         await r.expire(key, period_hours * 3600)
-    if count > cap:
-        return False
-    return True
 
 
 # --- Idempotency ------------------------------------------------------------

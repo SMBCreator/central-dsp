@@ -13,7 +13,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response
 
-from cache import check_frequency_cap, mark_once, reserve_budget
+from cache import bump_frequency, check_frequency_cap, get_redis, mark_once, reserve_budget
 from db import get_pool
 
 router = APIRouter(prefix="/rtb", tags=["rtb"])
@@ -271,7 +271,7 @@ async def process_bid_request(endpoint_key: str, req: dict):
         SELECT li.id AS li_id, li.bid_price, li.bid_type, li.max_bid, li.daily_budget AS li_budget,
                li.targeting, li.campaign_id,
                c.daily_budget AS camp_budget, c.frequency_cap_impressions, c.frequency_cap_period_hours,
-               c.advertiser_id,
+               c.pacing, c.advertiser_id, adv.domain AS adv_domain,
                cr.id AS creative_id, cr.type, cr.width, cr.height, cr.asset_url, cr.click_url,
                cr.html_snippet, cr.native_title, cr.native_description, cr.native_cta,
                cr.native_icon_url, cr.video_url, cr.video_duration, cr.vast_xml, cr.name
@@ -334,8 +334,17 @@ async def process_bid_request(endpoint_key: str, req: dict):
             if not ok:
                 continue
 
+        # Even pacing: cap the effective daily budget by the share of day elapsed
+        effective_budget = float(c["camp_budget"])
+        if (c.get("pacing") or "asap") == "even" and effective_budget > 0:
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            day_fraction = (now_utc.hour * 3600 + now_utc.minute * 60 + now_utc.second) / 86400
+            # Allow a small burst ahead of schedule (10%) so delivery never stalls at 00:00
+            effective_budget = effective_budget * min(1.0, day_fraction + 0.1)
+
         # Atomic budget reservation: campaign level, then line item level
-        if not await reserve_budget("camp", str(c["campaign_id"]), cost, float(c["camp_budget"])):
+        if not await reserve_budget("camp", str(c["campaign_id"]), cost, effective_budget):
             continue
         if float(c["li_budget"]) > 0:
             if not await reserve_budget("li", str(c["li_id"]), cost, float(c["li_budget"])):
@@ -344,6 +353,15 @@ async def process_bid_request(endpoint_key: str, req: dict):
         bid_id = str(uuid.uuid4())
         nurl = f"{base}/api/rtb/win?bid={bid_id}&price=${{AUCTION_PRICE}}"
         adm = _build_adm(c, base, bid_id)
+
+        # Remember device for frequency counting at impression time
+        if device_id and c["frequency_cap_impressions"]:
+            r = get_redis()
+            await r.set(
+                f"bidfreq:{bid_id}",
+                f"{device_id}|{c['frequency_cap_period_hours'] or 24}",
+                ex=3600,
+            )
 
         await _log_event(
             pool, "bid", bid_id=bid_id, imp_id=imp.get("id"),
@@ -363,7 +381,7 @@ async def process_bid_request(endpoint_key: str, req: dict):
                 "adm": adm,
                 "crid": str(c["creative_id"]),
                 "cid": str(c["campaign_id"]),
-                "adomain": [],
+                "adomain": [c["adv_domain"]] if c.get("adv_domain") else [],
                 "w": c.get("width"),
                 "h": c.get("height"),
             }],
@@ -455,6 +473,12 @@ async def impression(bid: str):
             geo_country=row["geo_country"], ad_type=row["ad_type"], domain=row["domain"],
         )
         await _bump_stats(pool, "impressions", 0, row["campaign_id"], row["line_item_id"], row["creative_id"], row["supply_partner_id"])
+        # Count the impression against the frequency cap
+        r = get_redis()
+        meta = await r.get(f"bidfreq:{bid}")
+        if meta:
+            device_id, _, period = meta.partition("|")
+            await bump_frequency(str(row["campaign_id"]), device_id, int(period or 24))
     return Response(content=_PIXEL, media_type="image/gif")
 
 
