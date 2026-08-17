@@ -231,6 +231,185 @@ export function TargetingEditor({
           ))}
         </div>
       </Field>
+
+      {/* --- Inventory environment --- */}
+      <div className="border-t border-border pt-4">
+        <p className="mb-3 font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">
+          Инвентарь и качество трафика
+        </p>
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label="Тип инвентаря" hint="Пусто — web и приложения">
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  { value: "site", label: "Web-сайты" },
+                  { value: "app", label: "Приложения" },
+                ].map((t) => (
+                  <Chip key={t.value} active={(value.traffic_types || []).includes(t.value)} onClick={() => set({ traffic_types: toggle(value.traffic_types, t.value) })}>
+                    {t.label}
+                  </Chip>
+                ))}
+              </div>
+            </Field>
+            <Field label="Мин. версия ОС" hint="Напр.: 14 или 12.5">
+              <input
+                className={inputCls}
+                defaultValue={value.os_version_min ?? ""}
+                onBlur={(e) => set({ os_version_min: e.target.value.trim() || undefined })}
+                placeholder="Любая"
+              />
+            </Field>
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label="Операторы связи" hint="Через запятую: MTS, Beeline, Megafon">
+              <input
+                className={inputCls}
+                defaultValue={(value.carriers || []).join(", ")}
+                onBlur={(e) => set({ carriers: csv(e.target.value) })}
+                placeholder="Все операторы"
+              />
+            </Field>
+            <Field label="IP-префиксы" hint="Напр.: 95.24., 178.176.">
+              <input
+                className={inputCls}
+                defaultValue={(value.ip_ranges || []).join(", ")}
+                onBlur={(e) => set({ ip_ranges: csv(e.target.value) })}
+                placeholder="Все IP"
+              />
+            </Field>
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label="App-бандлы (белый список)" hint="com.app.one, id123456">
+              <input
+                className={inputCls}
+                defaultValue={(value.app_bundles_allow || []).join(", ")}
+                onBlur={(e) => set({ app_bundles_allow: csv(e.target.value) })}
+                placeholder="Все приложения"
+              />
+            </Field>
+            <Field label="App-бандлы (чёрный список)">
+              <input
+                className={inputCls}
+                defaultValue={(value.app_bundles_block || []).join(", ")}
+                onBlur={(e) => set({ app_bundles_block: csv(e.target.value) })}
+                placeholder="—"
+              />
+            </Field>
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label="Паблишеры (белый список)" hint="ID паблишеров из bid request">
+              <input
+                className={inputCls}
+                defaultValue={(value.publisher_allow || []).join(", ")}
+                onBlur={(e) => set({ publisher_allow: csv(e.target.value) })}
+                placeholder="Все паблишеры"
+              />
+            </Field>
+            <Field label="Паблишеры (чёрный список)">
+              <input
+                className={inputCls}
+                defaultValue={(value.publisher_block || []).join(", ")}
+                onBlur={(e) => set({ publisher_block: csv(e.target.value) })}
+                placeholder="—"
+              />
+            </Field>
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label="Ключевые слова (контекст)" hint="Показывать на страницах с этими словами">
+              <input
+                className={inputCls}
+                defaultValue={(value.keywords_allow || []).join(", ")}
+                onBlur={(e) => set({ keywords_allow: csv(e.target.value) })}
+                placeholder="Любой контекст"
+              />
+            </Field>
+            <Field label="Стоп-слова" hint="Не показывать при наличии этих слов">
+              <input
+                className={inputCls}
+                defaultValue={(value.keywords_block || []).join(", ")}
+                onBlur={(e) => set({ keywords_block: csv(e.target.value) })}
+                placeholder="—"
+              />
+            </Field>
+          </div>
+        </div>
+      </div>
+
+      {/* --- Slot-level --- */}
+      <div className="border-t border-border pt-4">
+        <p className="mb-3 font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">
+          Рекламный слот
+        </p>
+        <div className="space-y-4">
+          <Field label="Позиция на странице" hint="Пусто — любая позиция">
+            <div className="flex flex-wrap gap-1.5">
+              {[
+                { value: 1, label: "Первый экран (above the fold)" },
+                { value: 3, label: "Ниже первого экрана" },
+              ].map((p) => (
+                <Chip key={p.value} active={(value.banner_positions || []).includes(p.value)} onClick={() => set({ banner_positions: toggle(value.banner_positions, p.value) })}>
+                  {p.label}
+                </Chip>
+              ))}
+            </div>
+          </Field>
+          <div className="flex flex-wrap gap-1.5">
+            <Chip active={!!value.interstitial_only} onClick={() => set({ interstitial_only: !value.interstitial_only || undefined, exclude_interstitial: undefined })}>
+              Только Interstitial
+            </Chip>
+            <Chip active={!!value.exclude_interstitial} onClick={() => set({ exclude_interstitial: !value.exclude_interstitial || undefined, interstitial_only: undefined })}>
+              Исключить Interstitial
+            </Chip>
+            <Chip active={!!value.rewarded_only} onClick={() => set({ rewarded_only: !value.rewarded_only || undefined })}>
+              Только Rewarded
+            </Chip>
+            <Chip active={!!value.secure_only} onClick={() => set({ secure_only: !value.secure_only || undefined })}>
+              Только HTTPS
+            </Chip>
+            <Chip active={!!value.video_skippable_only} onClick={() => set({ video_skippable_only: !value.video_skippable_only || undefined })}>
+              Видео: только skippable
+            </Chip>
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label="Мин. длительность видео-слота, сек" hint="Для видео-кампаний">
+              <input
+                type="number"
+                min={0}
+                className={inputCls}
+                defaultValue={value.video_min_duration ?? ""}
+                onBlur={(e) => set({ video_min_duration: e.target.value ? Number(e.target.value) : undefined })}
+                placeholder="Любая"
+              />
+            </Field>
+            <Field label="PMP-сделки (Deal ID)" hint="Ставки только по этим приватным сделкам">
+              <input
+                className={inputCls}
+                defaultValue={(value.deal_ids || []).join(", ")}
+                onBlur={(e) => set({ deal_ids: csv(e.target.value) })}
+                placeholder="Открытый аукцион"
+              />
+            </Field>
+          </div>
+        </div>
+      </div>
+
+      {/* --- Regulatory --- */}
+      <div className="border-t border-border pt-4">
+        <p className="mb-3 font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">
+          Регуляторика и приватность
+        </p>
+        <div className="flex flex-wrap gap-1.5">
+          <Chip active={!!value.block_coppa} onClick={() => set({ block_coppa: !value.block_coppa || undefined })}>
+            Пропускать COPPA (детский трафик)
+          </Chip>
+          <Chip active={!!value.block_gdpr} onClick={() => set({ block_gdpr: !value.block_gdpr || undefined })}>
+            Пропускать GDPR-трафик
+          </Chip>
+          <Chip active={!!value.skip_dnt} onClick={() => set({ skip_dnt: !value.skip_dnt || undefined })}>
+            Пропускать DNT / LMT устройства
+          </Chip>
+        </div>
+      </div>
     </div>
   )
 }

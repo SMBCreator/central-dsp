@@ -142,7 +142,142 @@ def _match_targeting(targeting: dict, req: dict) -> bool:
     if days and now.weekday() not in [int(d) for d in days]:
         return False
 
+    # --- Inventory environment: site (web) vs app ---
+    traffic_types = targeting.get("traffic_types") or []
+    if traffic_types:
+        env = "app" if req.get("app") else "site"
+        if env not in traffic_types:
+            return False
+
+    # --- Carrier / ISP ---
+    carriers = targeting.get("carriers") or []
+    if carriers:
+        carrier = (device.get("carrier") or "").lower()
+        if not any(c.lower() in carrier or carrier in c.lower() for c in carriers if carrier):
+            return False
+        if not carrier:
+            return False
+
+    # --- Minimum OS version (major.minor numeric compare) ---
+    osv_min = targeting.get("os_version_min")
+    if osv_min:
+        osv = device.get("osv") or ""
+        try:
+            def _ver(v: str) -> tuple:
+                return tuple(int(p) for p in str(v).split(".")[:2])
+            if not osv or _ver(osv) < _ver(osv_min):
+                return False
+        except (ValueError, TypeError):
+            return False
+
+    # --- App bundle allow/block (separate from web domains) ---
+    app = req.get("app") or {}
+    bundle = (app.get("bundle") or "").lower()
+    bundles_block = [b.lower() for b in (targeting.get("app_bundles_block") or [])]
+    if bundle and bundle in bundles_block:
+        return False
+    bundles_allow = [b.lower() for b in (targeting.get("app_bundles_allow") or [])]
+    if bundles_allow and bundle not in bundles_allow:
+        return False
+
+    # --- Publisher allow/block (site.publisher.id / app.publisher.id) ---
+    pub_id = str(((req.get("site") or req.get("app") or {}).get("publisher") or {}).get("id") or "")
+    pubs_block = [str(p) for p in (targeting.get("publisher_block") or [])]
+    if pub_id and pub_id in pubs_block:
+        return False
+    pubs_allow = [str(p) for p in (targeting.get("publisher_allow") or [])]
+    if pubs_allow and pub_id not in pubs_allow:
+        return False
+
+    # --- Contextual keywords (site/app/content keywords + page URL) ---
+    kw_haystack = " ".join([
+        (site.get("keywords") or ""),
+        ((site.get("content") or {}).get("keywords") or ""),
+        (site.get("page") or ""),
+        ((site.get("content") or {}).get("title") or ""),
+    ]).lower()
+    kw_block = targeting.get("keywords_block") or []
+    if kw_block and any(k.lower() in kw_haystack for k in kw_block):
+        return False
+    kw_allow = targeting.get("keywords_allow") or []
+    if kw_allow and not any(k.lower() in kw_haystack for k in kw_allow):
+        return False
+
+    # --- IP prefix ranges (e.g. "192.168." or "2a00:") ---
+    ip_ranges = targeting.get("ip_ranges") or []
+    if ip_ranges:
+        ip = device.get("ip") or device.get("ipv6") or ""
+        if not any(ip.startswith(p) for p in ip_ranges):
+            return False
+
+    # --- Regulatory: skip COPPA / GDPR traffic when the campaign opts out ---
+    regs = req.get("regs") or {}
+    if targeting.get("block_coppa") and regs.get("coppa") == 1:
+        return False
+    if targeting.get("block_gdpr") and ((regs.get("ext") or {}).get("gdpr") == 1 or regs.get("gdpr") == 1):
+        return False
+    # Respect Do-Not-Track / LMT when the line item requires personal targeting
+    if targeting.get("skip_dnt") and (device.get("dnt") == 1 or device.get("lmt") == 1):
+        return False
+
     return True
+
+
+def _match_imp_targeting(targeting: dict, imp: dict) -> bool:
+    """Impression-slot level targeting: position, interstitial, rewarded,
+    secure inventory, video parameters, PMP deal restrictions."""
+    # Banner fold position: 1 = above the fold, 3 = below the fold
+    positions = targeting.get("banner_positions") or []
+    if positions:
+        pos = (imp.get("banner") or imp.get("video") or {}).get("pos")
+        if pos is None or int(pos) not in [int(p) for p in positions]:
+            return False
+
+    # Interstitial (imp.instl = 1)
+    instl = int(imp.get("instl") or 0)
+    if targeting.get("interstitial_only") and instl != 1:
+        return False
+    if targeting.get("exclude_interstitial") and instl == 1:
+        return False
+
+    # Rewarded inventory (OpenRTB 2.6 imp.rwdd, or ext.rewarded fallback)
+    if targeting.get("rewarded_only"):
+        rwdd = imp.get("rwdd") or (imp.get("ext") or {}).get("rewarded") or 0
+        if int(rwdd) != 1:
+            return False
+
+    # HTTPS-only inventory
+    if targeting.get("secure_only") and int(imp.get("secure") or 0) != 1:
+        return False
+
+    # Video slot constraints
+    video = imp.get("video") or {}
+    if video:
+        v_min = targeting.get("video_min_duration")
+        if v_min and video.get("maxduration") and int(video["maxduration"]) < int(v_min):
+            return False
+        if targeting.get("video_skippable_only") and int(video.get("skip") or 0) != 1:
+            return False
+
+    # PMP: when deal IDs are configured, bid only on matching private deals
+    deal_ids = [str(d) for d in (targeting.get("deal_ids") or [])]
+    if deal_ids:
+        deals = ((imp.get("pmp") or {}).get("deals") or [])
+        if not any(str(d.get("id")) in deal_ids for d in deals):
+            return False
+
+    return True
+
+
+def _matched_deal(targeting: dict, imp: dict) -> str | None:
+    """Return the first configured deal ID present on the impression, if any."""
+    deal_ids = [str(d) for d in (targeting.get("deal_ids") or [])]
+    if not deal_ids:
+        return None
+    for d in (imp.get("pmp") or {}).get("deals") or []:
+        if str(d.get("id")) in deal_ids:
+            return str(d.get("id"))
+    return None
 
 
 def _creative_fits_imp(creative: dict, imp: dict, ad_type: str) -> bool:
@@ -311,12 +446,15 @@ async def process_bid_request(endpoint_key: str, req: dict):
                 continue
             if not _match_targeting(targeting, req):
                 continue
+            if not _match_imp_targeting(targeting, imp):
+                continue
             price = float(c["bid_price"])
             if c["max_bid"]:
                 price = min(price, float(c["max_bid"]))
             if price < floor:
                 continue
             if best is None or price > best[0]:
+                c["_deal_id"] = _matched_deal(targeting, imp)
                 best = (price, c)
 
         if not best:
@@ -372,21 +510,21 @@ async def process_bid_request(endpoint_key: str, req: dict):
         )
         await _bump_stats(pool, "bids", 0, c["campaign_id"], c["li_id"], c["creative_id"], partner["id"])
 
-        seatbids.append({
-            "bid": [{
-                "id": bid_id,
-                "impid": imp.get("id"),
-                "price": round(price, 4),
-                "nurl": nurl,
-                "adm": adm,
-                "crid": str(c["creative_id"]),
-                "cid": str(c["campaign_id"]),
-                "adomain": [c["adv_domain"]] if c.get("adv_domain") else [],
-                "w": c.get("width"),
-                "h": c.get("height"),
-            }],
-            "seat": "centraldsp",
-        })
+        bid_obj = {
+            "id": bid_id,
+            "impid": imp.get("id"),
+            "price": round(price, 4),
+            "nurl": nurl,
+            "adm": adm,
+            "crid": str(c["creative_id"]),
+            "cid": str(c["campaign_id"]),
+            "adomain": [c["adv_domain"]] if c.get("adv_domain") else [],
+            "w": c.get("width"),
+            "h": c.get("height"),
+        }
+        if c.get("_deal_id"):
+            bid_obj["dealid"] = c["_deal_id"]
+        seatbids.append({"bid": [bid_obj], "seat": "centraldsp"})
 
     if not seatbids:
         return None

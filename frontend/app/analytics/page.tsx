@@ -11,13 +11,19 @@ import {
   type StatsSummary,
   type TimeseriesPoint,
 } from "@/lib/types"
-import { Card, CardHeader, EmptyState, KpiCard, Spinner, Table } from "@/components/ui"
+import { Card, CardHeader, ChartCard, EmptyState, KpiCard, PillTabs, Spinner, Table } from "@/components/ui"
 import { TimeseriesChart } from "@/components/timeseries-chart"
 
 const DIMENSIONS = [
   { key: "campaign", label: "По кампаниям" },
   { key: "partner", label: "По SSP" },
   { key: "creative", label: "По креативам" },
+] as const
+
+const PERIODS = [
+  { key: "24", label: "Сутки" },
+  { key: "168", label: "Неделя" },
+  { key: "720", label: "Месяц" },
 ] as const
 
 export default function AnalyticsPage() {
@@ -35,20 +41,11 @@ export default function AnalyticsPage() {
           <h1 className="text-xl font-semibold text-foreground">Аналитика</h1>
           <p className="mt-0.5 text-sm text-muted">Детальные отчёты по закупке трафика</p>
         </div>
-        <div className="flex gap-1 rounded-md border border-border bg-card p-0.5">
-          {[24, 168, 720].map((h) => (
-            <button
-              key={h}
-              type="button"
-              onClick={() => setHours(h)}
-              className={`rounded px-3 py-1.5 text-xs font-medium transition-colors ${
-                hours === h ? "bg-primary text-primary-foreground" : "text-muted hover:text-foreground"
-              }`}
-            >
-              {h === 24 ? "Сутки" : h === 168 ? "Неделя" : "Месяц"}
-            </button>
-          ))}
-        </div>
+        <PillTabs
+          value={String(hours) as (typeof PERIODS)[number]["key"]}
+          onChange={(v) => setHours(Number(v))}
+          options={PERIODS}
+        />
       </div>
 
       {summary ? (
@@ -62,40 +59,29 @@ export default function AnalyticsPage() {
         <Spinner />
       )}
 
-      <Card>
-        <CardHeader title="Расход по времени" />
-        <div className="p-4">
-          {series ? (
-            series.length > 0 ? (
-              <TimeseriesChart data={series} metric="spend" color="var(--color-warning)" label="Расход" />
-            ) : (
-              <EmptyState title="Нет данных за выбранный период" />
-            )
+      <ChartCard
+        label="Расход по времени"
+        badge="Spend"
+        metric={summary ? fmtMoney(summary.spend) : undefined}
+        metricUnit="суммарно за период"
+        footerLeft={`${series?.length || 0} точек данных`}
+        footerRight={summary ? `eCPM ${fmtMoney(summary.ecpm)}` : ""}
+      >
+        {series ? (
+          series.length > 0 ? (
+            <TimeseriesChart data={series} metric="spend" label="Расход" />
           ) : (
-            <Spinner />
-          )}
-        </div>
-      </Card>
+            <EmptyState title="Нет данных за выбранный период" />
+          )
+        ) : (
+          <Spinner />
+        )}
+      </ChartCard>
 
       <Card>
         <CardHeader
           title="Разбивка"
-          action={
-            <div className="flex flex-wrap gap-1">
-              {DIMENSIONS.map((d) => (
-                <button
-                  key={d.key}
-                  type="button"
-                  onClick={() => setDim(d.key)}
-                  className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
-                    dim === d.key ? "bg-primary/10 text-primary" : "text-muted hover:text-foreground"
-                  }`}
-                >
-                  {d.label}
-                </button>
-              ))}
-            </div>
-          }
+          action={<PillTabs value={dim} onChange={setDim} options={DIMENSIONS} />}
         />
         {breakdown ? (
           breakdown.length > 0 ? (

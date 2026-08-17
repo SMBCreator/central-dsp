@@ -12,14 +12,20 @@ import {
   type StatsSummary,
   type TimeseriesPoint,
 } from "@/lib/types"
-import { Card, CardHeader, KpiCard, Spinner, StatusBadge, Table, EmptyState, Button } from "@/components/ui"
+import { Card, CardHeader, ChartCard, KpiCard, PillTabs, Spinner, StatusBadge, Table, EmptyState, Button } from "@/components/ui"
 import { TimeseriesChart } from "@/components/timeseries-chart"
 
 const METRICS = [
-  { key: "impressions", label: "Показы", color: "var(--color-accent)" },
-  { key: "clicks", label: "Клики", color: "var(--color-success)" },
-  { key: "spend", label: "Расход", color: "var(--color-warning)" },
-  { key: "bids", label: "Ставки", color: "var(--color-primary)" },
+  { key: "impressions", label: "Показы" },
+  { key: "clicks", label: "Клики" },
+  { key: "spend", label: "Расход" },
+  { key: "bids", label: "Ставки" },
+] as const
+
+const PERIODS = [
+  { key: "24", label: "24 часа" },
+  { key: "72", label: "3 дня" },
+  { key: "168", label: "7 дней" },
 ] as const
 
 export default function DashboardPage() {
@@ -40,20 +46,11 @@ export default function DashboardPage() {
           <h1 className="text-xl font-semibold text-foreground">Дашборд</h1>
           <p className="mt-0.5 text-sm text-muted">Обзор эффективности закупки в реальном времени</p>
         </div>
-        <div className="flex gap-1 rounded-md border border-border bg-card p-0.5">
-          {[24, 72, 168].map((h) => (
-            <button
-              key={h}
-              type="button"
-              onClick={() => setHours(h)}
-              className={`rounded px-3 py-1.5 text-xs font-medium transition-colors ${
-                hours === h ? "bg-primary text-primary-foreground" : "text-muted hover:text-foreground"
-              }`}
-            >
-              {h === 24 ? "24 часа" : h === 72 ? "3 дня" : "7 дней"}
-            </button>
-          ))}
-        </div>
+        <PillTabs
+          value={String(hours) as (typeof PERIODS)[number]["key"]}
+          onChange={(v) => setHours(Number(v))}
+          options={PERIODS}
+        />
       </div>
 
       {summary ? (
@@ -67,46 +64,41 @@ export default function DashboardPage() {
         <Spinner />
       )}
 
-      <Card>
-        <CardHeader
-          title="Динамика"
-          action={
-            <div className="flex gap-1">
-              {METRICS.map((m) => (
-                <button
-                  key={m.key}
-                  type="button"
-                  onClick={() => setMetric(m.key)}
-                  className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
-                    metric === m.key ? "bg-primary/10 text-primary" : "text-muted hover:text-foreground"
-                  }`}
-                >
-                  {m.label}
-                </button>
-              ))}
-            </div>
-          }
-        />
-        <div className="p-4">
-          {series ? (
-            series.length > 0 ? (
-              <TimeseriesChart data={series} metric={metric} color={activeMetric.color} label={activeMetric.label} />
-            ) : (
-              <EmptyState
-                title="Пока нет данных"
-                description="Запустите кампанию или отправьте тестовый трафик через RTB-тестер."
-                action={
-                  <Link href="/rtb-test">
-                    <Button variant="secondary">Открыть RTB-тестер</Button>
-                  </Link>
-                }
-              />
-            )
-          ) : (
-            <Spinner />
-          )}
+      <ChartCard
+        label="Динамика"
+        badge={activeMetric.label}
+        metric={
+          summary
+            ? metric === "spend"
+              ? fmtMoney(summary.spend)
+              : fmtNum(summary[metric as keyof StatsSummary] as number)
+            : undefined
+        }
+        metricUnit={`за ${hours === 24 ? "сутки" : hours === 72 ? "3 дня" : "неделю"}`}
+        footerLeft={`${series?.length || 0} точек данных`}
+        footerRight="Central DSP"
+      >
+        <div className="mb-3 flex justify-end px-2 pt-2">
+          <PillTabs value={metric} onChange={setMetric} options={METRICS} />
         </div>
-      </Card>
+        {series ? (
+          series.length > 0 ? (
+            <TimeseriesChart data={series} metric={metric} label={activeMetric.label} />
+          ) : (
+            <EmptyState
+              title="Пока нет данных"
+              description="Запустите кампанию или отправьте тестовый трафик через RTB-тестер."
+              action={
+                <Link href="/rtb-test">
+                  <Button variant="secondary">Открыть RTB-тестер</Button>
+                </Link>
+              }
+            />
+          )
+        ) : (
+          <Spinner />
+        )}
+      </ChartCard>
 
       <Card>
         <CardHeader

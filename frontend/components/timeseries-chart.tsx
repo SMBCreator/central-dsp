@@ -3,10 +3,14 @@
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
 import type { TimeseriesPoint } from "@/lib/types"
 
+/**
+ * Monochrome area chart: foreground-colored spline with a soft
+ * fade fill, dashed grid, monospace axis ticks.
+ */
 export function TimeseriesChart({
   data,
   metric,
-  color = "var(--color-accent)",
+  color = "var(--chart-1)",
   label,
 }: {
   data: TimeseriesPoint[]
@@ -21,27 +25,46 @@ export function TimeseriesChart({
 
   return (
     <ResponsiveContainer width="100%" height={240}>
-      <AreaChart data={chartData} margin={{ top: 8, right: 8, bottom: 0, left: -12 }}>
+      <AreaChart data={chartData} margin={{ top: 8, right: 8, bottom: 0, left: -8 }}>
         <defs>
           <linearGradient id={`grad-${metric}`} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={color} stopOpacity={0.25} />
+            <stop offset="0%" stopColor={color} stopOpacity={0.18} />
             <stop offset="100%" stopColor={color} stopOpacity={0} />
           </linearGradient>
         </defs>
-        <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" vertical={false} />
-        <XAxis dataKey="time" tick={{ fontSize: 11, fill: "var(--color-muted)" }} tickLine={false} axisLine={false} />
-        <YAxis tick={{ fontSize: 11, fill: "var(--color-muted)" }} tickLine={false} axisLine={false} />
+        <CartesianGrid strokeDasharray="2 4" stroke="var(--color-border)" vertical={false} />
+        <XAxis
+          dataKey="time"
+          tick={{ fontSize: 10, fill: "var(--color-muted)", fontFamily: "var(--font-mono)" }}
+          tickLine={false}
+          axisLine={false}
+        />
+        <YAxis
+          tick={{ fontSize: 10, fill: "var(--color-muted)", fontFamily: "var(--font-mono)" }}
+          tickLine={false}
+          axisLine={false}
+        />
         <Tooltip
           contentStyle={{
-            background: "var(--color-card)",
+            background: "var(--color-panel)",
             border: "1px solid var(--color-border)",
-            borderRadius: 8,
+            borderRadius: 12,
             fontSize: 12,
+            fontFamily: "var(--font-mono)",
             color: "var(--color-foreground)",
           }}
           formatter={(value: number) => [value, label]}
         />
-        <Area type="monotone" dataKey={metric} stroke={color} strokeWidth={2} fill={`url(#grad-${metric})`} />
+        <Area
+          type="monotone"
+          dataKey={metric}
+          stroke={color}
+          strokeWidth={2}
+          strokeLinecap="round"
+          fill={`url(#grad-${metric})`}
+          dot={false}
+          activeDot={{ r: 3.5, fill: color, stroke: "var(--color-card)", strokeWidth: 2 }}
+        />
       </AreaChart>
     </ResponsiveContainer>
   )

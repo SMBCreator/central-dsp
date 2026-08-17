@@ -68,6 +68,31 @@ export interface Targeting {
   days?: number[]
   ssp_allowlist?: string[]
   ad_types?: string[]
+  /* Inventory environment & supply quality */
+  traffic_types?: string[] // "site" | "app"
+  carriers?: string[]
+  os_version_min?: string
+  app_bundles_allow?: string[]
+  app_bundles_block?: string[]
+  publisher_allow?: string[]
+  publisher_block?: string[]
+  keywords_allow?: string[]
+  keywords_block?: string[]
+  ip_ranges?: string[]
+  /* Slot-level */
+  banner_positions?: number[] // 1 = above fold, 3 = below fold
+  interstitial_only?: boolean
+  exclude_interstitial?: boolean
+  rewarded_only?: boolean
+  secure_only?: boolean
+  video_min_duration?: number
+  video_skippable_only?: boolean
+  /* PMP */
+  deal_ids?: string[]
+  /* Regulatory & privacy */
+  block_coppa?: boolean
+  block_gdpr?: boolean
+  skip_dnt?: boolean
 }
 
 export const IAB_CATEGORIES: Record<string, string> = {

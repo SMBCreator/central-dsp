@@ -35,9 +35,60 @@ export function CardHeader({ title, subtitle, action }: { title: string; subtitl
 export function KpiCard({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
     <Card className="px-6 py-5">
-      <p className="text-xs font-medium text-muted">{label}</p>
-      <p className="mt-1.5 font-mono text-2xl font-semibold tracking-tight text-foreground">{value}</p>
-      {hint ? <p className="mt-1 text-xs text-muted">{hint}</p> : null}
+      <p className="font-mono text-[10px] font-medium uppercase tracking-[0.14em] text-muted">{label}</p>
+      <p className="mt-2 text-2xl font-bold tracking-tight text-foreground">{value}</p>
+      {hint ? <p className="mt-1 font-mono text-[11px] text-muted">{hint}</p> : null}
+    </Card>
+  )
+}
+
+/**
+ * amicro chart-card anatomy: UPPERCASE mono label + pill badge,
+ * big metric with small unit, chart body in a nested panel,
+ * monospace caption row at the bottom.
+ */
+export function ChartCard({
+  label,
+  badge,
+  metric,
+  metricUnit,
+  footerLeft,
+  footerRight,
+  children,
+  className = "",
+}: {
+  label: string
+  badge?: string
+  metric?: string
+  metricUnit?: string
+  footerLeft?: string
+  footerRight?: string
+  children: ReactNode
+  className?: string
+}) {
+  return (
+    <Card className={`flex flex-col px-6 py-5 ${className}`}>
+      <div className="flex items-center gap-2.5">
+        <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">{label}</p>
+        {badge ? (
+          <span className="rounded-full border border-border bg-panel px-2.5 py-0.5 font-mono text-[10px] text-foreground">
+            {badge}
+          </span>
+        ) : null}
+      </div>
+      {metric ? (
+        <p className="mt-1.5 text-2xl font-bold tracking-tight text-foreground">
+          {metric}
+          {metricUnit ? <span className="ml-1.5 text-xs font-normal text-muted">{metricUnit}</span> : null}
+        </p>
+      ) : null}
+      <div className="mt-3 flex-1 rounded-2xl bg-panel/60 p-2">{children}</div>
+      {footerLeft || footerRight ? (
+        <div className="mt-3 flex items-center justify-between border-t border-border pt-3">
+          <span className="font-mono text-[11px] text-muted">{footerLeft}</span>
+          <span className="font-mono text-[11px] font-medium text-foreground">{footerRight}</span>
+        </div>
+      ) : null}
     </Card>
   )
 }
