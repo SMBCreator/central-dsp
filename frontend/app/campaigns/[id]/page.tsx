@@ -12,16 +12,22 @@ import {
   type Campaign,
   type LineItem,
   type StatsSummary,
+  type Targeting,
 } from "@/lib/types"
 import { Button, Card, CardHeader, EmptyState, Field, inputCls, KpiCard, Modal, Spinner, StatusBadge, Table } from "@/components/ui"
+import { DEVICES, TargetingEditor } from "@/components/targeting-editor"
 
-const COUNTRIES = ["RU", "KZ", "BY", "UZ", "KG", "AM", "AZ", "GE", "MD", "TJ"]
-const DEVICES = [
-  { value: "mobile", label: "Мобильные" },
-  { value: "desktop", label: "Десктоп" },
-  { value: "tablet", label: "Планшеты" },
-  { value: "ctv", label: "Smart TV" },
-]
+function targetingSummary(t: Targeting): string {
+  const parts = [
+    t.geo_countries?.join(", "),
+    t.device_types?.map((d) => DEVICES.find((x) => x.value === d)?.label || d).join(", "),
+    t.ad_types?.map((x) => AD_TYPE_LABELS[x] || x).join(", "),
+    t.iab_categories?.length ? `IAB: ${t.iab_categories.length}` : undefined,
+    t.age_min || t.age_max ? `Возраст ${t.age_min ?? "?"}–${t.age_max ?? "?"}` : undefined,
+    t.hours?.length ? `Часы: ${t.hours.length}` : undefined,
+  ]
+  return parts.filter(Boolean).join(" · ") || "Без ограничений"
+}
 
 export default function CampaignDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
@@ -32,24 +38,21 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
   const [open, setOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [targeting, setTargeting] = useState<Targeting>({})
   const [form, setForm] = useState({
     name: "",
     bid_type: "cpm",
     bid_price: "1.5",
     max_bid: "",
     daily_budget: "20",
-    geo: [] as string[],
-    devices: [] as string[],
-    adTypes: [] as string[],
   })
 
   const openCreate = () => {
     setError(null)
-    setForm({ name: "", bid_type: "cpm", bid_price: "1.5", max_bid: "", daily_budget: "20", geo: [], devices: [], adTypes: [] })
+    setForm({ name: "", bid_type: "cpm", bid_price: "1.5", max_bid: "", daily_budget: "20" })
+    setTargeting({})
     setOpen(true)
   }
-
-  const toggleArr = (arr: string[], v: string) => (arr.includes(v) ? arr.filter((x) => x !== v) : [...arr, v])
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -64,11 +67,7 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
           bid_price: Number(form.bid_price),
           max_bid: form.max_bid ? Number(form.max_bid) : null,
           daily_budget: Number(form.daily_budget),
-          targeting: {
-            geo_countries: form.geo.length ? form.geo : undefined,
-            device_types: form.devices.length ? form.devices : undefined,
-            ad_types: form.adTypes.length ? form.adTypes : undefined,
-          },
+          targeting,
         },
       })
       await mutate(`/campaigns/${id}/line-items`)
@@ -135,15 +134,7 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
                   </td>
                   <td className="px-4 py-3 font-mono text-xs">{fmtMoney(li.daily_budget)}</td>
                   <td className="px-4 py-3 font-mono text-xs">{fmtMoney(li.spent_today)}</td>
-                  <td className="px-4 py-3 text-xs text-muted">
-                    {[
-                      li.targeting.geo_countries?.join(", "),
-                      li.targeting.device_types?.map((d) => DEVICES.find((x) => x.value === d)?.label || d).join(", "),
-                      li.targeting.ad_types?.map((t) => AD_TYPE_LABELS[t] || t).join(", "),
-                    ]
-                      .filter(Boolean)
-                      .join(" · ") || "Без ограничений"}
-                  </td>
+                  <td className="max-w-[280px] px-4 py-3 text-xs text-muted">{targetingSummary(li.targeting)}</td>
                   <td className="px-4 py-3">
                     <div className="flex justify-end">
                       <Button variant="ghost" onClick={() => toggleLi(li)}>
@@ -189,62 +180,7 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
             </Field>
           </div>
 
-          <Field label="Гео (страны СНГ)" hint="Пусто — все страны">
-            <div className="flex flex-wrap gap-1.5">
-              {COUNTRIES.map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  onClick={() => setForm({ ...form, geo: toggleArr(form.geo, c) })}
-                  className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
-                    form.geo.includes(c)
-                      ? "border-accent bg-accent/10 text-accent"
-                      : "border-border text-muted hover:text-foreground"
-                  }`}
-                >
-                  {c}
-                </button>
-              ))}
-            </div>
-          </Field>
-
-          <Field label="Устройства" hint="Пусто — все устройства">
-            <div className="flex flex-wrap gap-1.5">
-              {DEVICES.map((d) => (
-                <button
-                  key={d.value}
-                  type="button"
-                  onClick={() => setForm({ ...form, devices: toggleArr(form.devices, d.value) })}
-                  className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
-                    form.devices.includes(d.value)
-                      ? "border-accent bg-accent/10 text-accent"
-                      : "border-border text-muted hover:text-foreground"
-                  }`}
-                >
-                  {d.label}
-                </button>
-              ))}
-            </div>
-          </Field>
-
-          <Field label="Форматы" hint="Пусто — все форматы">
-            <div className="flex flex-wrap gap-1.5">
-              {Object.entries(AD_TYPE_LABELS).map(([value, label]) => (
-                <button
-                  key={value}
-                  type="button"
-                  onClick={() => setForm({ ...form, adTypes: toggleArr(form.adTypes, value) })}
-                  className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
-                    form.adTypes.includes(value)
-                      ? "border-accent bg-accent/10 text-accent"
-                      : "border-border text-muted hover:text-foreground"
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </Field>
+          <TargetingEditor value={targeting} onChange={setTargeting} />
 
           {error ? <p className="text-xs text-danger">{error}</p> : null}
           <div className="flex justify-end gap-2">

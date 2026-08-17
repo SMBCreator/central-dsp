@@ -271,6 +271,7 @@ async def process_bid_request(endpoint_key: str, req: dict):
         SELECT li.id AS li_id, li.bid_price, li.bid_type, li.max_bid, li.daily_budget AS li_budget,
                li.targeting, li.campaign_id,
                c.daily_budget AS camp_budget, c.frequency_cap_impressions, c.frequency_cap_period_hours,
+               c.advertiser_id,
                cr.id AS creative_id, cr.type, cr.width, cr.height, cr.asset_url, cr.click_url,
                cr.html_snippet, cr.native_title, cr.native_description, cr.native_cta,
                cr.native_icon_url, cr.video_url, cr.video_duration, cr.vast_xml, cr.name
@@ -278,6 +279,8 @@ async def process_bid_request(endpoint_key: str, req: dict):
         JOIN campaigns c ON c.id = li.campaign_id AND c.status = 'active'
              AND (c.start_date IS NULL OR c.start_date <= CURRENT_DATE)
              AND (c.end_date IS NULL OR c.end_date >= CURRENT_DATE)
+             AND (c.total_budget <= 0 OR c.spent_total < c.total_budget)
+        JOIN advertisers adv ON adv.id = c.advertiser_id AND adv.status = 'active' AND adv.balance > 0
         JOIN creatives cr ON cr.campaign_id = c.id AND cr.status = 'approved'
              AND (cr.line_item_id IS NULL OR cr.line_item_id = li.id)
         WHERE li.status = 'active' AND li.bid_price > 0
@@ -410,6 +413,31 @@ async def win_notice(bid: str, price: float | None = None):
         "UPDATE line_items SET spent_today = spent_today + $2 WHERE id = $1",
         row["line_item_id"], cost,
     )
+    # Billing: deduct advertiser balance and write to the ledger
+    adv = await pool.fetchrow(
+        """
+        UPDATE advertisers a SET balance = a.balance - $2, updated_at = now()
+        FROM campaigns c
+        WHERE c.id = $1 AND a.id = c.advertiser_id
+        RETURNING a.id AS advertiser_id, a.user_id, a.balance
+        """,
+        row["campaign_id"], cost,
+    )
+    if adv:
+        await pool.execute(
+            """
+            INSERT INTO transactions (user_id, advertiser_id, type, amount, balance_after, description)
+            VALUES ($1, $2, 'spend', $3, $4, $5)
+            """,
+            adv["user_id"], adv["advertiser_id"], -cost, float(adv["balance"]),
+            f"Win notice bid={bid}",
+        )
+        # Auto-pause campaigns when the advertiser runs out of money
+        if float(adv["balance"]) <= 0:
+            await pool.execute(
+                "UPDATE campaigns SET status = 'paused', updated_at = now() WHERE advertiser_id = $1 AND status = 'active'",
+                adv["advertiser_id"],
+            )
     return {"ok": True}
 
 
