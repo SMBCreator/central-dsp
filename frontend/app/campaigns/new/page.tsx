@@ -6,6 +6,8 @@ import useSWR from "swr"
 import { api, fetcher } from "@/lib/api"
 import { Button, Card, CardHeader, Field, inputCls } from "@/components/ui"
 import { CreativeBuilder, type CreativeDraft, FORMAT_LABELS } from "@/components/creative-builder"
+import { TargetingEditor, targetingSummary } from "@/components/targeting-editor"
+import type { Targeting } from "@/lib/types"
 
 type Advertiser = { id: string; name: string }
 type Group = { id: string; name: string }
@@ -23,7 +25,7 @@ const OBJECTIVES = [
   { key: "conversions", label: "Конверсии (CPA)" },
 ]
 
-const STEPS = ["Формат", "Основное", "Бюджет", "Креативы"]
+const STEPS = ["Формат", "Основное", "Бюджет и ставка", "Таргетинг", "Креативы"]
 
 export default function NewCampaignPage() {
   const router = useRouter()
@@ -31,14 +33,33 @@ export default function NewCampaignPage() {
   const { data: groups } = useSWR<Group[]>("/groups", fetcher)
 
   const [step, setStep] = useState(0)
+  // Step 0: format
   const [format, setFormat] = useState("")
+  // Step 1: basics
   const [name, setName] = useState("")
   const [advertiserId, setAdvertiserId] = useState("")
   const [objective, setObjective] = useState("awareness")
   const [groupId, setGroupId] = useState("")
   const [newGroupName, setNewGroupName] = useState("")
+  const [startDate, setStartDate] = useState("")
+  const [endDate, setEndDate] = useState("")
+  const [pacing, setPacing] = useState("even")
+  const [freqCapImps, setFreqCapImps] = useState("")
+  const [freqCapHours, setFreqCapHours] = useState("24")
+  // Step 2: budget + bid + optimizer targets
   const [dailyBudget, setDailyBudget] = useState("")
   const [totalBudget, setTotalBudget] = useState("")
+  const [bidType, setBidType] = useState<"cpm" | "cpc">("cpm")
+  const [bidPrice, setBidPrice] = useState("")
+  const [maxBid, setMaxBid] = useState("")
+  const [targetCpa, setTargetCpa] = useState("")
+  const [targetCpc, setTargetCpc] = useState("")
+  const [targetCpm, setTargetCpm] = useState("")
+  const [targetCpv, setTargetCpv] = useState("")
+  const [autoOptimize, setAutoOptimize] = useState(true)
+  // Step 3: full targeting
+  const [targeting, setTargeting] = useState<Targeting>({})
+  // Step 4: creatives
   const [creatives, setCreatives] = useState<CreativeDraft[]>([])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState("")
@@ -46,9 +67,10 @@ export default function NewCampaignPage() {
   const canNext = useMemo(() => {
     if (step === 0) return !!format
     if (step === 1) return !!name.trim() && !!advertiserId
-    if (step === 2) return Number(dailyBudget) > 0
+    if (step === 2) return Number(dailyBudget) > 0 && Number(bidPrice) > 0
+    if (step === 3) return true // targeting is optional (empty = no restrictions)
     return creatives.length > 0
-  }, [step, format, name, advertiserId, dailyBudget, creatives])
+  }, [step, format, name, advertiserId, dailyBudget, bidPrice, creatives])
 
   const launch = async () => {
     setSaving(true)
@@ -68,11 +90,44 @@ export default function NewCampaignPage() {
           daily_budget: Number(dailyBudget),
           total_budget: totalBudget ? Number(totalBudget) : Number(dailyBudget) * 30,
           group_id: gid,
+          start_date: startDate || null,
+          end_date: endDate || null,
+          pacing,
+          frequency_cap_impressions: freqCapImps ? Number(freqCapImps) : null,
+          frequency_cap_period_hours: freqCapImps ? Number(freqCapHours) || 24 : null,
         },
       })
-      for (const cr of creatives) {
-        await api("/creatives", { method: "POST", body: { ...cr, campaign_id: camp.id } })
+      // Optimizer targets + auto-optimize
+      if (targetCpa || targetCpc || targetCpm || targetCpv || autoOptimize) {
+        await api(`/campaigns/${camp.id}`, {
+          method: "PATCH",
+          body: {
+            target_cpa: targetCpa ? Number(targetCpa) : null,
+            target_cpc: targetCpc ? Number(targetCpc) : null,
+            target_cpm: targetCpm ? Number(targetCpm) : null,
+            target_cpv: targetCpv ? Number(targetCpv) : null,
+            auto_optimize: autoOptimize,
+          },
+        })
       }
+      // Line item: bid + full targeting (this is what the bidder matches on)
+      const li = await api<{ id: string }>("/line-items", {
+        method: "POST",
+        body: {
+          campaign_id: camp.id,
+          name: `${name.trim()} — закупка`,
+          bid_type: bidType,
+          bid_price: Number(bidPrice),
+          max_bid: maxBid ? Number(maxBid) : null,
+          daily_budget: Number(dailyBudget),
+          targeting,
+        },
+      })
+      await api(`/line-items/${li.id}`, { method: "PATCH", body: { status: "active" } })
+      for (const cr of creatives) {
+        await api("/creatives", { method: "POST", body: { ...cr, campaign_id: camp.id, line_item_id: li.id } })
+      }
+      await api(`/campaigns/${camp.id}`, { method: "PATCH", body: { status: "active" } })
       router.push(`/campaigns/${camp.id}`)
     } catch (e) {
       setError(e instanceof Error ? e.message : "Ошибка запуска")
@@ -84,7 +139,7 @@ export default function NewCampaignPage() {
     <main className="mx-auto max-w-3xl space-y-6 p-4 md:p-8">
       <header>
         <h1 className="text-xl font-semibold text-foreground">Новая кампания</h1>
-        <nav aria-label="Шаги мастера" className="mt-4 flex items-center gap-2">
+        <nav aria-label="Шаги мастера" className="mt-4 flex flex-wrap items-center gap-2">
           {STEPS.map((s, i) => (
             <div key={s} className="flex items-center gap-2">
               <span
@@ -99,7 +154,7 @@ export default function NewCampaignPage() {
                 {i + 1}
               </span>
               <span className={`text-xs ${i === step ? "text-foreground" : "text-muted"}`}>{s}</span>
-              {i < STEPS.length - 1 ? <span className="mx-1 h-px w-6 bg-border" aria-hidden /> : null}
+              {i < STEPS.length - 1 ? <span className="mx-1 h-px w-4 bg-border" aria-hidden /> : null}
             </div>
           ))}
         </nav>
@@ -168,25 +223,105 @@ export default function NewCampaignPage() {
                 <input value={newGroupName} onChange={(e) => setNewGroupName(e.target.value)} className={inputCls} placeholder="Название группы" />
               </Field>
             ) : null}
+            <Field label="Дата старта" hint="Пусто — сразу после запуска">
+              <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className={inputCls} />
+            </Field>
+            <Field label="Дата окончания" hint="Пусто — без ограничения">
+              <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className={inputCls} />
+            </Field>
+            <Field label="Темп расходования (pacing)">
+              <select value={pacing} onChange={(e) => setPacing(e.target.value)} className={inputCls}>
+                <option value="even">Равномерно в течение дня</option>
+                <option value="asap">Как можно быстрее (ASAP)</option>
+              </select>
+            </Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Frequency cap" hint="Показов на пользователя">
+                <input type="number" min="1" max="100" value={freqCapImps} onChange={(e) => setFreqCapImps(e.target.value)} className={inputCls} placeholder="Без лимита" />
+              </Field>
+              <Field label="Период, часов">
+                <input type="number" min="1" max="168" value={freqCapHours} onChange={(e) => setFreqCapHours(e.target.value)} className={inputCls} placeholder="24" disabled={!freqCapImps} />
+              </Field>
+            </div>
           </div>
         </Card>
       ) : null}
 
       {step === 2 ? (
+        <div className="space-y-4">
+          <Card>
+            <CardHeader title="Бюджет и ставка" subtitle="Ставка используется биддером в RTB-аукционе" />
+            <div className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2">
+              <Field label="Дневной бюджет, USD">
+                <input type="number" min="1" step="1" value={dailyBudget} onChange={(e) => setDailyBudget(e.target.value)} className={inputCls} placeholder="100" />
+              </Field>
+              <Field label="Общий бюджет, USD" hint="Пусто = дневной × 30">
+                <input type="number" min="0" step="1" value={totalBudget} onChange={(e) => setTotalBudget(e.target.value)} className={inputCls} placeholder="3000" />
+              </Field>
+              <Field label="Тип ставки">
+                <select value={bidType} onChange={(e) => setBidType(e.target.value as "cpm" | "cpc")} className={inputCls}>
+                  <option value="cpm">CPM — за 1000 показов</option>
+                  <option value="cpc">CPC — за клик</option>
+                </select>
+              </Field>
+              <Field label={bidType === "cpm" ? "Ставка CPM, USD" : "Ставка CPC, USD"}>
+                <input type="number" min="0.01" step="0.01" value={bidPrice} onChange={(e) => setBidPrice(e.target.value)} className={inputCls} placeholder={bidType === "cpm" ? "2.50" : "0.15"} />
+              </Field>
+              <Field label="Макс. ставка, USD" hint="Потолок для аукциона; пусто — без потолка">
+                <input type="number" min="0.01" step="0.01" value={maxBid} onChange={(e) => setMaxBid(e.target.value)} className={inputCls} placeholder="Не задан" />
+              </Field>
+            </div>
+          </Card>
+          <Card>
+            <CardHeader title="Автооптимизация" subtitle="Оптимизатор блокирует источники, не укладывающиеся в целевые метрики" />
+            <div className="space-y-4 p-4">
+              <label className="flex items-center gap-2 text-sm text-foreground">
+                <input type="checkbox" checked={autoOptimize} onChange={(e) => setAutoOptimize(e.target.checked)} className="h-4 w-4 rounded border-border" />
+                Включить автооптимизацию закупки
+              </label>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <Field label="Целевой CPA, USD">
+                  <input type="number" min="0" step="0.01" value={targetCpa} onChange={(e) => setTargetCpa(e.target.value)} className={inputCls} placeholder="—" />
+                </Field>
+                <Field label="Целевой CPC, USD">
+                  <input type="number" min="0" step="0.001" value={targetCpc} onChange={(e) => setTargetCpc(e.target.value)} className={inputCls} placeholder="—" />
+                </Field>
+                <Field label="Целевой CPM, USD">
+                  <input type="number" min="0" step="0.01" value={targetCpm} onChange={(e) => setTargetCpm(e.target.value)} className={inputCls} placeholder="—" />
+                </Field>
+                <Field label="Целевой CPV, USD">
+                  <input type="number" min="0" step="0.001" value={targetCpv} onChange={(e) => setTargetCpv(e.target.value)} className={inputCls} placeholder="—" />
+                </Field>
+              </div>
+            </div>
+          </Card>
+        </div>
+      ) : null}
+
+      {step === 3 ? (
         <Card>
-          <CardHeader title="Бюджет" subtitle="Дневной лимит обязателен, общий — опционален" />
-          <div className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2">
-            <Field label="Дневной бюджет, USD">
-              <input type="number" min="1" step="1" value={dailyBudget} onChange={(e) => setDailyBudget(e.target.value)} className={inputCls} placeholder="100" />
-            </Field>
-            <Field label="Общий бюджет, USD" hint="Пусто = дневной × 30">
-              <input type="number" min="0" step="1" value={totalBudget} onChange={(e) => setTotalBudget(e.target.value)} className={inputCls} placeholder="3000" />
-            </Field>
+          <CardHeader title="Таргетинг" subtitle="Пустые поля — без ограничений. Всё применяется биддером к каждому bid request" />
+          <div className="p-4">
+            <TargetingEditor value={targeting} onChange={setTargeting} />
           </div>
         </Card>
       ) : null}
 
-      {step === 3 ? <CreativeBuilder format={format} creatives={creatives} onChange={setCreatives} /> : null}
+      {step === 4 ? (
+        <div className="space-y-4">
+          <Card>
+            <CardHeader title="Сводка" subtitle="Проверьте настройки перед запуском" />
+            <dl className="grid grid-cols-1 gap-x-6 gap-y-2 p-4 text-sm sm:grid-cols-2">
+              <div className="flex justify-between gap-3"><dt className="text-muted">Формат</dt><dd className="text-foreground">{FORMAT_LABELS[format] || format}</dd></div>
+              <div className="flex justify-between gap-3"><dt className="text-muted">Цель</dt><dd className="text-foreground">{OBJECTIVES.find((o) => o.key === objective)?.label}</dd></div>
+              <div className="flex justify-between gap-3"><dt className="text-muted">Бюджет/день</dt><dd className="text-foreground">${dailyBudget}</dd></div>
+              <div className="flex justify-between gap-3"><dt className="text-muted">Ставка</dt><dd className="text-foreground">{bidType.toUpperCase()} ${bidPrice}</dd></div>
+              <div className="flex justify-between gap-3 sm:col-span-2"><dt className="text-muted">Таргетинг</dt><dd className="text-right text-foreground">{targetingSummary(targeting)}</dd></div>
+            </dl>
+          </Card>
+          <CreativeBuilder format={format} creatives={creatives} onChange={setCreatives} />
+        </div>
+      ) : null}
 
       {error ? (
         <p role="alert" className="rounded-2xl bg-panel px-4 py-3 text-sm text-danger">
@@ -198,7 +333,7 @@ export default function NewCampaignPage() {
         <Button variant="ghost" onClick={() => (step === 0 ? router.push("/campaigns") : setStep(step - 1))}>
           {step === 0 ? "Отмена" : "Назад"}
         </Button>
-        {step < 3 ? (
+        {step < 4 ? (
           <Button onClick={() => setStep(step + 1)} disabled={!canNext}>
             Далее
           </Button>
