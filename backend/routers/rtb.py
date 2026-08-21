@@ -8,6 +8,7 @@ Flow:
 """
 import json
 import os
+import time
 import uuid
 from typing import Any
 
@@ -16,7 +17,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 import hmac as _hmac
 
 from billing_core import bill_win
-from cache import bump_frequency, check_frequency_cap, check_qps, get_redis, mark_once, reserve_budget
+from cache import bump_frequency, check_frequency_cap, check_qps, gate_and_reserve, get_redis, mark_once, reserve_budget
 from db import get_pool
 from money import CURRENCY, clamp_clearing_price, cpm_to_cost
 from tokens import sign_event_token, verify_event_token
@@ -394,6 +395,26 @@ def _build_adm(creative: dict, base: str, bid_id: str) -> str:
 </Linear></Creative></Creatives></InLine></Ad></VAST>"""
 
 
+def _fire_and_forget(coro) -> None:
+    """Run bid-path bookkeeping (event log, stats) off the critical path.
+
+    Bid responses must not wait on analytics writes: SSPs enforce tmax and
+    drop slow bids. Win/imp/click handlers still await their writes because
+    those are billing-relevant. Errors are logged, never propagated.
+    """
+    import asyncio
+
+    task = asyncio.get_running_loop().create_task(coro)
+
+    def _swallow(t: asyncio.Task) -> None:
+        exc = t.exception()
+        if exc is not None:
+            import logging
+            logging.getLogger("rtb").warning("background bookkeeping failed: %s", exc)
+
+    task.add_done_callback(_swallow)
+
+
 async def _log_event(pool, event_type: str, **kw: Any) -> None:
     await pool.execute(
         """
@@ -434,14 +455,72 @@ async def bid(endpoint_key: str, request: Request):
     return result
 
 
+# ---------------------------------------------------------------------------
+# In-process TTL cache for the bid hot path (always-on bidder only).
+#
+# Candidate line items, partner rows and optimizer blocks change on human
+# timescales (seconds+), while the bidder answers 50-200 QPS. Caching them
+# in-process for RTB_CACHE_TTL seconds collapses 3 sequential DB roundtrips
+# per request into ~0. Budgets/QPS/freq-caps stay in Redis (cross-replica).
+# RTB_CACHE_TTL=0 disables caching (tests, simulator, serverless deploys).
+# ---------------------------------------------------------------------------
+RTB_CACHE_TTL = float(os.environ.get("RTB_CACHE_TTL", "0"))
+# Serve stale values for up to 5x TTL while ONE coroutine refreshes in the
+# background (single-flight). Prevents the thundering herd at TTL expiry:
+# without it, every in-flight request cache-misses simultaneously and fires
+# 3 sequential DB queries each, spiking p99 by 10-20x.
+RTB_CACHE_STALE_FACTOR = 5.0
+
+_hot_cache: dict = {}
+_refreshing: set = set()
+
+
+def _cache_get(key: str):
+    """Returns (value, fresh) - value may be stale; None means hard miss."""
+    if RTB_CACHE_TTL <= 0:
+        return None, False
+    hit = _hot_cache.get(key)
+    if hit is None:
+        return None, False
+    value, expires = hit
+    now = time.monotonic()
+    if now < expires:
+        return value, True
+    if now < expires + RTB_CACHE_TTL * (RTB_CACHE_STALE_FACTOR - 1):
+        return value, False  # stale but usable
+    _hot_cache.pop(key, None)
+    return None, False
+
+
+def _cache_put(key: str, value) -> None:
+    if RTB_CACHE_TTL > 0:
+        _hot_cache[key] = (value, time.monotonic() + RTB_CACHE_TTL)
+    _refreshing.discard(key)
+
+
+def _claim_refresh(key: str) -> bool:
+    """True for exactly one caller per expiry window (single-flight)."""
+    if key in _refreshing:
+        return False
+    _refreshing.add(key)
+    return True
+
+
 async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | None = None):
     """Core bid logic. Returns a BidResponse dict or None (no-bid).
     Raises 404 for unknown endpoint keys, 403 for a bad SSP token,
     429 when the partner exceeds its QPS limit."""
     pool = await get_pool()
-    partner = await pool.fetchrow(
-        "SELECT * FROM supply_partners WHERE endpoint_key = $1 AND status = 'active'", endpoint_key
-    )
+    _pkey = f"partner:{endpoint_key}"
+    partner, _fresh = _cache_get(_pkey)
+    if partner is None or (not _fresh and _claim_refresh(_pkey)):
+        partner = await pool.fetchrow(
+            "SELECT * FROM supply_partners WHERE endpoint_key = $1 AND status = 'active'", endpoint_key
+        )
+        if partner is not None:
+            _cache_put(_pkey, partner)
+        else:
+            _refreshing.discard(_pkey)
     if not partner:
         raise HTTPException(status_code=404, detail="Unknown endpoint")
 
@@ -469,7 +548,9 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
         allowed_types = json.loads(allowed_types)
 
     # Candidate line items: active campaign within budget & dates, active LI, approved creative
-    candidates = await pool.fetch(
+    candidates, _fresh = _cache_get("candidates")
+    if candidates is None or (not _fresh and _claim_refresh("candidates")):
+        candidates = await pool.fetch(
         """
         SELECT li.id AS li_id, li.bid_price, li.bid_type, li.max_bid, li.daily_budget AS li_budget,
                li.targeting, li.campaign_id,
@@ -488,16 +569,21 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
              AND (cr.line_item_id IS NULL OR cr.line_item_id = li.id)
         WHERE li.status = 'active' AND li.bid_price > 0
         """
-    )
+        )
+        _cache_put("candidates", candidates)
     if not candidates:
         return None
 
     # Optimizer block lists — any dimension the platform observes can be blocked
     camp_ids = list({c["campaign_id"] for c in candidates})
-    block_rows = await pool.fetch(
-        "SELECT campaign_id, block_type, block_value FROM optimizer_blocks WHERE campaign_id = ANY($1)",
-        camp_ids,
-    )
+    blocks_key = "blocks:" + ",".join(sorted(str(i) for i in camp_ids))
+    block_rows, _fresh = _cache_get(blocks_key)
+    if block_rows is None or (not _fresh and _claim_refresh(blocks_key)):
+        block_rows = await pool.fetch(
+            "SELECT campaign_id, block_type, block_value FROM optimizer_blocks WHERE campaign_id = ANY($1)",
+            camp_ids,
+        )
+        _cache_put(blocks_key, block_rows)
     blocks: dict = {}
     for b in block_rows:
         blocks.setdefault(str(b["campaign_id"]), set()).add((b["block_type"], b["block_value"].lower()))
@@ -573,15 +659,6 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
         price, c = best
         cost = price / 1000.0  # CPM -> cost per impression
 
-        # Frequency cap
-        if c["frequency_cap_impressions"]:
-            ok = await check_frequency_cap(
-                str(c["campaign_id"]), device_id,
-                c["frequency_cap_impressions"], c["frequency_cap_period_hours"] or 24,
-            )
-            if not ok:
-                continue
-
         # Even pacing: cap the effective daily budget by the share of day elapsed
         effective_budget = float(c["camp_budget"])
         if (c.get("pacing") or "asap") == "even" and effective_budget > 0:
@@ -591,12 +668,16 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
             # Allow a small burst ahead of schedule (10%) so delivery never stalls at 00:00
             effective_budget = effective_budget * min(1.0, day_fraction + 0.1)
 
-        # Atomic budget reservation: campaign level, then line item level
-        if not await reserve_budget("camp", str(c["campaign_id"]), cost, effective_budget):
+        # Single Redis roundtrip: frequency-cap check + atomic budget
+        # reservation on campaign AND line-item keys (all-or-nothing).
+        ok = await gate_and_reserve(
+            str(c["campaign_id"]), str(c["li_id"]), cost,
+            effective_budget, float(c["li_budget"] or 0),
+            device_id=device_id or "",
+            freq_cap=int(c["frequency_cap_impressions"] or 0),
+        )
+        if not ok:
             continue
-        if float(c["li_budget"]) > 0:
-            if not await reserve_budget("li", str(c["li_id"]), cost, float(c["li_budget"])):
-                continue
 
         bid_id = str(uuid.uuid4())
         event_token = sign_event_token(bid_id)
@@ -606,21 +687,21 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
         # Remember device for frequency counting at impression time
         if device_id and c["frequency_cap_impressions"]:
             r = get_redis()
-            await r.set(
+            _fire_and_forget(r.set(
                 f"bidfreq:{bid_id}",
                 f"{device_id}|{c['frequency_cap_period_hours'] or 24}",
                 ex=3600,
-            )
+            ))
 
-        await _log_event(
+        _fire_and_forget(_log_event(
             pool, "bid", bid_id=bid_id, imp_id=imp.get("id"),
             campaign_id=c["campaign_id"], line_item_id=c["li_id"], creative_id=c["creative_id"],
             supply_partner_id=partner["id"], price=price,
             device_type=DEVICE_TYPES.get(device.get("devicetype", 0), "unknown"),
             geo_country=geo.get("country"), ad_type=ad_type, domain=site.get("domain"),
             os=req_os, browser=req_browser,
-        )
-        await _bump_stats(pool, "bids", 0, c["campaign_id"], c["li_id"], c["creative_id"], partner["id"])
+        ))
+        _fire_and_forget(_bump_stats(pool, "bids", 0, c["campaign_id"], c["li_id"], c["creative_id"], partner["id"]))
 
         bid_obj = {
             "id": bid_id,

@@ -55,6 +55,69 @@ async def reserve_budget(scope: str, entity_id: str, amount: float, budget: floa
     return bool(ok)
 
 
+# One roundtrip for the whole bid-time gate: frequency cap check plus
+# atomic budget reservation on campaign AND line-item keys. Rolls back the
+# campaign reservation when the line-item budget is exhausted.
+_GATE_LUA = """
+local freq_key, camp_key, li_key = KEYS[1], KEYS[2], KEYS[3]
+local cap        = tonumber(ARGV[1])
+local cost       = tonumber(ARGV[2])
+local camp_budget= tonumber(ARGV[3])
+local li_budget  = tonumber(ARGV[4])
+local ttl        = tonumber(ARGV[5])
+if cap > 0 then
+  local seen = tonumber(redis.call('GET', freq_key) or '0')
+  if seen >= cap then return 0 end
+end
+local camp = redis.call('INCRBYFLOAT', camp_key, cost)
+if redis.call('TTL', camp_key) < 0 then redis.call('EXPIRE', camp_key, ttl) end
+if tonumber(camp) > camp_budget then
+  redis.call('INCRBYFLOAT', camp_key, -cost)
+  return 0
+end
+if li_budget > 0 then
+  local li = redis.call('INCRBYFLOAT', li_key, cost)
+  if redis.call('TTL', li_key) < 0 then redis.call('EXPIRE', li_key, ttl) end
+  if tonumber(li) > li_budget then
+    redis.call('INCRBYFLOAT', li_key, -cost)
+    redis.call('INCRBYFLOAT', camp_key, -cost)
+    return 0
+  end
+end
+return 1
+"""
+
+
+async def gate_and_reserve(
+    campaign_id: str,
+    li_id: str,
+    cost: float,
+    camp_budget: float,
+    li_budget: float,
+    device_id: str = "",
+    freq_cap: int = 0,
+) -> bool:
+    """Bid-time gate in a single Redis roundtrip.
+
+    Checks the frequency cap (read-only) and atomically reserves budget on
+    both the campaign and line-item daily-spend keys. Either both
+    reservations succeed or neither does.
+    """
+    if camp_budget <= 0:
+        return False
+    r = get_redis()
+    ttl = _seconds_until_utc_midnight()
+    ok = await r.eval(
+        _GATE_LUA, 3,
+        f"freq:{campaign_id}:{device_id or '-'}",
+        f"spend:camp:{campaign_id}",
+        f"spend:li:{li_id}",
+        str(int(freq_cap or 0)), str(cost), str(camp_budget),
+        str(li_budget), str(ttl),
+    )
+    return bool(ok)
+
+
 async def clear_daily_spend() -> int:
     """Delete all daily spend reservations (called by the midnight cron)."""
     r = get_redis()
@@ -116,9 +179,12 @@ async def check_qps(partner_id: str, limit: int) -> bool:
     import time as _time
 
     key = f"qps:{partner_id}:{int(_time.time())}"
-    count = await r.incr(key)
-    if count == 1:
-        await r.expire(key, 2)
+    # Single roundtrip: INCR + EXPIRE pipelined (unconditional EXPIRE on a
+    # 2s key is harmless and saves the extra conditional roundtrip).
+    pipe = r.pipeline(transaction=False)
+    pipe.incr(key)
+    pipe.expire(key, 2)
+    count, _ = await pipe.execute()
     return count <= limit
 
 
