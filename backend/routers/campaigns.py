@@ -91,6 +91,21 @@ async def update_campaign(campaign_id: str, body: CampaignPatch, user: dict = De
     for i, (k, v) in enumerate(updates.items(), start=3):
         sets.append(f"{k} = ${i}")
         values.append(v)
+    # Launch guard (ФЗ-347): кампания не активируется, пока у всех её
+    # креативов нет erid (маркировка через ОРД). ORD_LAUNCH_GUARD=off — только dev.
+    import os as _os
+    if updates.get("status") == "active" and _os.getenv("ORD_LAUNCH_GUARD", "on") != "off":
+        unmarked = await pool.fetchval(
+            """SELECT count(*) FROM creatives
+               WHERE campaign_id = $1 AND (erid IS NULL OR erid = '')""",
+            campaign_id,
+        )
+        if unmarked:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Нельзя активировать: {unmarked} креатив(ов) без erid. "
+                       "Зарегистрируйте креативы в ОРД (раздел Маркировка).",
+            )
     row = await pool.fetchrow(
         f"UPDATE campaigns SET {', '.join(sets)}, updated_at = now() WHERE id = $1 AND user_id = $2 RETURNING *",
         campaign_id, user["id"], *values,

@@ -343,15 +343,21 @@ def _creative_fits_imp(creative: dict, imp: dict, ad_type: str) -> bool:
 
 
 def _build_adm(creative: dict, base: str, bid_id: str) -> str:
+    erid = creative.get("erid") or ""
+    erid_label = (
+        f'<span style="position:absolute;top:2px;left:2px;background:rgba(0,0,0,.55);'
+        f'color:#fff;font:10px/1.4 sans-serif;padding:1px 4px;border-radius:2px;z-index:9">'
+        f'Реклама erid: {erid}</span>'
+    ) if erid else ""
     click_url = f"{base}/api/rtb/click?bid={bid_id}&r={creative.get('click_url') or ''}"
     imp_pixel = f"{base}/api/rtb/imp?bid={bid_id}"
     if creative["type"] == "banner":
         if creative.get("html_snippet"):
-            return creative["html_snippet"] + f'<img src="{imp_pixel}" width="1" height="1" style="display:none"/>'
+            return creative["html_snippet"] + erid_label + f'<img src="{imp_pixel}" width="1" height="1" style="display:none"/>'
         return (
             f'<a href="{click_url}" target="_blank">'
             f'<img src="{creative.get("asset_url") or ""}" width="{creative.get("width")}" height="{creative.get("height")}" alt=""/></a>'
-            f'<img src="{imp_pixel}" width="1" height="1" style="display:none"/>'
+            f'{erid_label}<img src="{imp_pixel}" width="1" height="1" style="display:none"/>'
         )
     if creative["type"] in ("native", "push"):
         # push over RTB is native markup: title + body + icon + main image.
@@ -368,8 +374,10 @@ def _build_adm(creative: dict, base: str, bid_id: str) -> str:
                 ],
             }
         }
+        if erid:
+            native["native"].setdefault("ext", {})["erid"] = erid
         if creative["type"] == "push":
-            native["native"]["ext"] = {"ad_format": "push"}
+            native["native"].setdefault("ext", {})["ad_format"] = "push"
         return json.dumps(native, ensure_ascii=False)
     # video: VAST with quartile tracking
     if creative.get("vast_xml"):
@@ -378,7 +386,7 @@ def _build_adm(creative: dict, base: str, bid_id: str) -> str:
     vevent = f"{base}/api/rtb/vevent?bid={bid_id}"
     creative_id = creative.get("creative_id") or creative.get("id") or ""
     return f"""<VAST version="3.0"><Ad id="{creative_id}"><InLine>
-<AdSystem>CentralDSP</AdSystem><AdTitle>{creative['name']}</AdTitle>
+<AdSystem>CentralDSP</AdSystem>{f'<Extensions><Extension type="erid"><Erid>{erid}</Erid></Extension></Extensions>' if erid else ''}<AdTitle>{creative['name']}</AdTitle>
 <Impression><![CDATA[{imp_pixel}]]></Impression>
 <Creatives><Creative><Linear><Duration>00:00:{duration:02d}</Duration>
 <TrackingEvents>
