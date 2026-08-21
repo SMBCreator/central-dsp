@@ -13,8 +13,10 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response
 
+from billing_core import bill_win
 from cache import bump_frequency, check_frequency_cap, get_redis, mark_once, reserve_budget
 from db import get_pool
+from money import CURRENCY, clamp_clearing_price, cpm_to_cost
 
 router = APIRouter(prefix="/rtb", tags=["rtb"])
 
@@ -626,7 +628,7 @@ async def process_bid_request(endpoint_key: str, req: dict):
     return {
         "id": req_id,
         "bidid": str(uuid.uuid4()),
-        "cur": "USD",
+        "cur": CURRENCY,
         "seatbid": seatbids,
     }
 
@@ -638,57 +640,37 @@ async def _find_bid(pool, bid_id: str):
 
 
 @router.get("/win")
-async def win_notice(bid: str, price: float | None = None):
+async def win_notice(bid: str, price: str | None = None):
+    """Win notice (nurl). `price` is the SSP-substituted ${AUCTION_PRICE};
+    it is untrusted input: clamped to [0, our bid price] before billing.
+    Billing is transactional and idempotent (see billing_core.bill_win)."""
     pool = await get_pool()
-    if not await mark_once("win", bid):
-        return {"ok": True, "duplicate": True}
     row = await _find_bid(pool, bid)
     if not row:
         raise HTTPException(status_code=404, detail="Unknown bid")
-    clear_price = price if price is not None else float(row["price"] or 0)
-    cost = clear_price / 1000.0
+    clear_price = clamp_clearing_price(price, row["price"] or 0)
+    cost = cpm_to_cost(clear_price)
+
+    async with pool.acquire() as conn:
+        result = await bill_win(
+            conn,
+            bid_id=bid,
+            campaign_id=row["campaign_id"],
+            line_item_id=row["line_item_id"],
+            cost=cost,
+        )
+    if not result.billed:
+        return {"ok": True, "duplicate": True}
+
     await _log_event(
         pool, "win", bid_id=bid, imp_id=row["imp_id"], campaign_id=row["campaign_id"],
         line_item_id=row["line_item_id"], creative_id=row["creative_id"],
-        supply_partner_id=row["supply_partner_id"], price=float(row["price"] or 0),
+        supply_partner_id=row["supply_partner_id"], price=row["price"],
         clear_price=clear_price, device_type=row["device_type"],
         geo_country=row["geo_country"], ad_type=row["ad_type"], domain=row["domain"],
-                os=row["os"], browser=row["browser"],
+        os=row["os"], browser=row["browser"],
     )
     await _bump_stats(pool, "wins", cost, row["campaign_id"], row["line_item_id"], row["creative_id"], row["supply_partner_id"])
-    await pool.execute(
-        "UPDATE campaigns SET spent_today = spent_today + $2, spent_total = spent_total + $2 WHERE id = $1",
-        row["campaign_id"], cost,
-    )
-    await pool.execute(
-        "UPDATE line_items SET spent_today = spent_today + $2 WHERE id = $1",
-        row["line_item_id"], cost,
-    )
-    # Billing: deduct advertiser balance and write to the ledger
-    adv = await pool.fetchrow(
-        """
-        UPDATE advertisers a SET balance = a.balance - $2, updated_at = now()
-        FROM campaigns c
-        WHERE c.id = $1 AND a.id = c.advertiser_id
-        RETURNING a.id AS advertiser_id, a.user_id, a.balance
-        """,
-        row["campaign_id"], cost,
-    )
-    if adv:
-        await pool.execute(
-            """
-            INSERT INTO transactions (user_id, advertiser_id, type, amount, balance_after, description)
-            VALUES ($1, $2, 'spend', $3, $4, $5)
-            """,
-            adv["user_id"], adv["advertiser_id"], -cost, float(adv["balance"]),
-            f"Win notice bid={bid}",
-        )
-        # Auto-pause campaigns when the advertiser runs out of money
-        if float(adv["balance"]) <= 0:
-            await pool.execute(
-                "UPDATE campaigns SET status = 'paused', updated_at = now() WHERE advertiser_id = $1 AND status = 'active'",
-                adv["advertiser_id"],
-            )
     return {"ok": True}
 
 
