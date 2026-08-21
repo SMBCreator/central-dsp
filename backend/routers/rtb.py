@@ -13,10 +13,13 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response
 
+import hmac as _hmac
+
 from billing_core import bill_win
-from cache import bump_frequency, check_frequency_cap, get_redis, mark_once, reserve_budget
+from cache import bump_frequency, check_frequency_cap, check_qps, get_redis, mark_once, reserve_budget
 from db import get_pool
 from money import CURRENCY, clamp_clearing_price, cpm_to_cost
+from tokens import sign_event_token, verify_event_token
 
 router = APIRouter(prefix="/rtb", tags=["rtb"])
 
@@ -424,21 +427,33 @@ async def bid(endpoint_key: str, request: Request):
         req = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid BidRequest JSON")
-    result = await process_bid_request(endpoint_key, req)
+    ssp_token = request.headers.get("x-centraldsp-token")
+    result = await process_bid_request(endpoint_key, req, ssp_token=ssp_token)
     if result is None:
         return Response(status_code=204)
     return result
 
 
-async def process_bid_request(endpoint_key: str, req: dict):
+async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | None = None):
     """Core bid logic. Returns a BidResponse dict or None (no-bid).
-    Raises HTTPException(404) for unknown endpoint keys."""
+    Raises 404 for unknown endpoint keys, 403 for a bad SSP token,
+    429 when the partner exceeds its QPS limit."""
     pool = await get_pool()
     partner = await pool.fetchrow(
         "SELECT * FROM supply_partners WHERE endpoint_key = $1 AND status = 'active'", endpoint_key
     )
     if not partner:
         raise HTTPException(status_code=404, detail="Unknown endpoint")
+
+    # Optional per-partner shared secret (migration 011). NULL = legacy
+    # key-in-URL only; set = header must match, compared in constant time.
+    expected_token = partner["auth_token"] if "auth_token" in partner.keys() else None
+    if expected_token and not _hmac.compare_digest(ssp_token or "", expected_token):
+        raise HTTPException(status_code=403, detail="Invalid SSP token")
+
+    # Per-partner QPS limit, enforced across all replicas via Redis.
+    if not await check_qps(str(partner["id"]), partner["qps_limit"] or 0):
+        raise HTTPException(status_code=429, detail="QPS limit exceeded")
 
     req_id = req.get("id") or str(uuid.uuid4())
     imps = req.get("imp") or []
@@ -584,8 +599,9 @@ async def process_bid_request(endpoint_key: str, req: dict):
                 continue
 
         bid_id = str(uuid.uuid4())
-        nurl = f"{base}/api/rtb/win?bid={bid_id}&price=${{AUCTION_PRICE}}"
-        adm = _build_adm(c, base, bid_id)
+        event_token = sign_event_token(bid_id)
+        nurl = f"{base}/api/rtb/win?bid={event_token}&price=${{AUCTION_PRICE}}"
+        adm = _build_adm(c, base, event_token)
 
         # Remember device for frequency counting at impression time
         if device_id and c["frequency_cap_impressions"]:
@@ -643,7 +659,11 @@ async def _find_bid(pool, bid_id: str):
 async def win_notice(bid: str, price: str | None = None):
     """Win notice (nurl). `price` is the SSP-substituted ${AUCTION_PRICE};
     it is untrusted input: clamped to [0, our bid price] before billing.
-    Billing is transactional and idempotent (see billing_core.bill_win)."""
+    Billing is transactional and idempotent (see billing_core.bill_win).
+    `bid` is an HMAC-signed event token (see tokens.py)."""
+    bid = verify_event_token(bid)
+    if not bid:
+        raise HTTPException(status_code=403, detail="Invalid event token")
     pool = await get_pool()
     row = await _find_bid(pool, bid)
     if not row:
@@ -676,6 +696,9 @@ async def win_notice(bid: str, price: str | None = None):
 
 @router.get("/imp")
 async def impression(bid: str):
+    bid = verify_event_token(bid)
+    if not bid:
+        return Response(content=_PIXEL, media_type="image/gif")
     pool = await get_pool()
     if not await mark_once("imp", bid):
         return Response(content=_PIXEL, media_type="image/gif")
@@ -708,6 +731,9 @@ async def video_event(bid: str, e: str):
     """VAST tracking-event callback: start / quartiles / complete / skip."""
     if e not in _VIDEO_EVENTS:
         return Response(content=_PIXEL, media_type="image/gif")
+    bid = verify_event_token(bid)
+    if not bid:
+        return Response(content=_PIXEL, media_type="image/gif")
     pool = await get_pool()
     if not await mark_once(f"vev:{e}", bid):
         return Response(content=_PIXEL, media_type="image/gif")
@@ -729,6 +755,9 @@ async def video_event(bid: str, e: str):
 
 @router.get("/click")
 async def click(bid: str, r: str = ""):
+    bid = verify_event_token(bid)
+    if not bid:
+        raise HTTPException(status_code=403, detail="Invalid event token")
     pool = await get_pool()
     row = None
     if await mark_once("click", bid):

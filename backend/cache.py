@@ -103,6 +103,25 @@ async def bump_frequency(campaign_id: str, device_id: str, period_hours: int) ->
         await r.expire(key, period_hours * 3600)
 
 
+# --- Per-partner QPS limiting ------------------------------------------------
+async def check_qps(partner_id: str, limit: int) -> bool:
+    """Fixed 1-second window counter shared by all bidder replicas.
+
+    Returns True while the partner is under its QPS limit. limit <= 0 means
+    unlimited. The key expires after 2s so idle partners cost nothing.
+    """
+    if not limit or limit <= 0:
+        return True
+    r = get_redis()
+    import time as _time
+
+    key = f"qps:{partner_id}:{int(_time.time())}"
+    count = await r.incr(key)
+    if count == 1:
+        await r.expire(key, 2)
+    return count <= limit
+
+
 # --- Idempotency ------------------------------------------------------------
 async def mark_once(kind: str, token: str, ttl: int = 86400) -> bool:
     """Returns True the first time a (kind, token) pair is seen."""

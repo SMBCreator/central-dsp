@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from auth import current_user
 from db import get_pool
 from routers.rtb import click, impression, process_bid_request, win_notice
+from tokens import sign_event_token
 
 router = APIRouter(prefix="/simulator", tags=["simulator"])
 
@@ -91,13 +92,16 @@ async def run_simulation(body: SimulateIn, user: dict = Depends(current_user)):
         the_bid = data["seatbid"][0]["bid"][0]
         if random.random() < body.win_probability:
             clear = round(float(the_bid["price"]) * random.uniform(0.7, 1.0), 4)
+            # Event handlers now require HMAC-signed tokens (tokens.py),
+            # so the simulator signs bid ids exactly like the live bid path.
+            event_token = sign_event_token(the_bid["id"])
             try:
-                await win_notice(bid=the_bid["id"], price=clear)
+                await win_notice(bid=event_token, price=clear)
                 results["wins"] += 1
-                await impression(bid=the_bid["id"])
+                await impression(bid=event_token)
                 results["impressions"] += 1
                 if random.random() < body.ctr:
-                    await click(bid=the_bid["id"])
+                    await click(bid=event_token)
                     results["clicks"] += 1
             except Exception:
                 results["errors"] += 1
