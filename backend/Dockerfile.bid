@@ -1,0 +1,16 @@
+# CentralDSP bid service: always-on OpenRTB hot path (Fly.io / VPS).
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Install dependencies first for layer caching.
+COPY pyproject.toml ./
+RUN pip install --no-cache-dir . uvicorn
+
+COPY . .
+
+ENV PORT=8080
+EXPOSE 8080
+
+# Single worker per container; scale with replicas, not threads.
+CMD ["sh", "-c", "uvicorn bid_service:app --host 0.0.0.0 --port ${PORT}"]
