@@ -16,7 +16,7 @@ from rbac import require_platform_write
 from db import get_pool
 from ord import OrdError, get_ord_adapter
 
-router = APIRouter(prefix="/api/ord", tags=["ord"])
+router = APIRouter(prefix="/ord", tags=["ord"])
 
 
 # ---------------------------------------------------------------- schemas --

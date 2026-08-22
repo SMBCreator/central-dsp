@@ -22,6 +22,20 @@ def fake_redis(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def frozen_clock(monkeypatch):
+    """Pin the limiter's 1-second bucket.
+
+    check_qps keys its counter by int(time.time()); if a test's calls
+    straddle a real second boundary the window splits in two and more
+    requests pass than the limit (flaked in CI: 17 == 10). Freezing the
+    clock makes every test deterministic regardless of scheduling.
+    """
+    import time as _time_mod
+
+    monkeypatch.setattr(_time_mod, "time", lambda: 1_700_000_000.0)
+
+
 def test_under_limit_allows():
     async def run():
         return [await cache.check_qps("p1", 10) for _ in range(5)]
