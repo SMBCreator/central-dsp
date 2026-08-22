@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 from auth import current_user
+from rbac import can_see_all, require_campaign_write
 from db import get_pool
 from schemas import AdvertiserIn, AdvertiserPatch
 
@@ -18,14 +19,17 @@ def _serialize(row) -> dict:
 @router.get("")
 async def list_advertisers(user: dict = Depends(current_user)):
     pool = await get_pool()
-    rows = await pool.fetch(
-        "SELECT * FROM advertisers WHERE user_id = $1 ORDER BY created_at DESC", user["id"]
-    )
+    if can_see_all(user):
+        rows = await pool.fetch("SELECT * FROM advertisers ORDER BY created_at DESC")
+    else:
+        rows = await pool.fetch(
+            "SELECT * FROM advertisers WHERE user_id = $1 ORDER BY created_at DESC", user["id"]
+        )
     return [_serialize(r) for r in rows]
 
 
 @router.post("", status_code=201)
-async def create_advertiser(body: AdvertiserIn, user: dict = Depends(current_user)):
+async def create_advertiser(body: AdvertiserIn, user: dict = Depends(require_campaign_write)):
     pool = await get_pool()
     row = await pool.fetchrow(
         """
@@ -49,7 +53,7 @@ async def get_advertiser(advertiser_id: str, user: dict = Depends(current_user))
 
 
 @router.patch("/{advertiser_id}")
-async def update_advertiser(advertiser_id: str, body: AdvertiserPatch, user: dict = Depends(current_user)):
+async def update_advertiser(advertiser_id: str, body: AdvertiserPatch, user: dict = Depends(require_campaign_write)):
     updates = body.model_dump(exclude_none=True)
     if not updates:
         raise HTTPException(status_code=400, detail="Нет полей для обновления")
@@ -68,7 +72,7 @@ async def update_advertiser(advertiser_id: str, body: AdvertiserPatch, user: dic
 
 
 @router.delete("/{advertiser_id}", status_code=204)
-async def delete_advertiser(advertiser_id: str, user: dict = Depends(current_user)):
+async def delete_advertiser(advertiser_id: str, user: dict = Depends(require_campaign_write)):
     pool = await get_pool()
     result = await pool.execute(
         "DELETE FROM advertisers WHERE id = $1 AND user_id = $2", advertiser_id, user["id"]

@@ -1,3 +1,5 @@
+import os
+
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
 
 from auth import (
@@ -33,7 +35,15 @@ async def register(body: RegisterIn, response: Response):
     if existing:
         raise HTTPException(status_code=409, detail="Пользователь с таким email уже существует")
     count = await pool.fetchval("SELECT count(*) FROM users")
-    role = "admin" if count == 0 else "manager"
+    # Первый пользователь = superadmin (bootstrap). Дальше:
+    # REGISTRATION_MODE=open  -> новые пользователи получают роль manager (dev)
+    # REGISTRATION_MODE=closed -> самостоятельная регистрация запрещена (прод, invite-only)
+    if count == 0:
+        role = "superadmin"
+    elif os.environ.get("REGISTRATION_MODE", "open") == "closed":
+        raise HTTPException(status_code=403, detail="Регистрация закрыта. Запросите приглашение у администратора.")
+    else:
+        role = "manager"
     row = await pool.fetchrow(
         "INSERT INTO users (email, password_hash, name, role) VALUES ($1, $2, $3, $4) RETURNING id, email, name, role",
         body.email.lower(), hash_password(body.password), body.name, role,

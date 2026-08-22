@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 from auth import current_user
+from rbac import require_platform_write
 from db import get_pool
 from rules_engine import evaluate_rules_for_user
 from schemas import RuleIn, RulePatch
@@ -29,7 +30,7 @@ async def list_rules(user: dict = Depends(current_user)):
 
 
 @router.post("", status_code=201)
-async def create_rule(body: RuleIn, user: dict = Depends(current_user)):
+async def create_rule(body: RuleIn, user: dict = Depends(require_platform_write)):
     pool = await get_pool()
     if body.campaign_id:
         camp = await pool.fetchval(
@@ -49,7 +50,7 @@ async def create_rule(body: RuleIn, user: dict = Depends(current_user)):
 
 
 @router.patch("/{rule_id}")
-async def update_rule(rule_id: str, body: RulePatch, user: dict = Depends(current_user)):
+async def update_rule(rule_id: str, body: RulePatch, user: dict = Depends(require_platform_write)):
     updates = body.model_dump(exclude_none=True)
     if not updates:
         raise HTTPException(status_code=400, detail="Нет полей для обновления")
@@ -68,7 +69,7 @@ async def update_rule(rule_id: str, body: RulePatch, user: dict = Depends(curren
 
 
 @router.delete("/{rule_id}", status_code=204)
-async def delete_rule(rule_id: str, user: dict = Depends(current_user)):
+async def delete_rule(rule_id: str, user: dict = Depends(require_platform_write)):
     pool = await get_pool()
     result = await pool.execute(
         "DELETE FROM rules WHERE id = $1 AND user_id = $2", rule_id, user["id"]
@@ -78,7 +79,7 @@ async def delete_rule(rule_id: str, user: dict = Depends(current_user)):
 
 
 @router.post("/evaluate")
-async def evaluate_now(user: dict = Depends(current_user)):
+async def evaluate_now(user: dict = Depends(require_platform_write)):
     """Run all active rules for the current user immediately."""
     triggered = await evaluate_rules_for_user(str(user["id"]))
     return {"triggered": triggered}

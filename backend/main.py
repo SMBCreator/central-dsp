@@ -23,11 +23,15 @@ from routers.simulator import router as simulator_router
 from routers.stats import router as stats_router
 from routers.supply_partners import router as supply_partners_router
 
+from audit import AuditMiddleware
+
 app = FastAPI(
     title="CentralDSP API",
     version="1.0.0",
     description="Demand-Side Platform: management API + OpenRTB 2.5 bidder",
 )
+
+app.add_middleware(AuditMiddleware)
 
 app.include_router(auth_router)
 app.include_router(advertisers_router)

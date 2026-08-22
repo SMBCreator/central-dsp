@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from auth import current_user
+from rbac import require_campaign_write
 from db import get_pool
 
 router = APIRouter(prefix="/groups", tags=["groups"])
@@ -34,7 +35,7 @@ async def list_groups(user: dict = Depends(current_user)):
 
 
 @router.post("", status_code=201)
-async def create_group(body: GroupIn, user: dict = Depends(current_user)):
+async def create_group(body: GroupIn, user: dict = Depends(require_campaign_write)):
     pool = await get_pool()
     row = await pool.fetchrow(
         "INSERT INTO campaign_groups (user_id, name) VALUES ($1::uuid, $2) RETURNING id, name, created_at",
@@ -44,7 +45,7 @@ async def create_group(body: GroupIn, user: dict = Depends(current_user)):
 
 
 @router.patch("/{group_id}")
-async def rename_group(group_id: str, body: GroupIn, user: dict = Depends(current_user)):
+async def rename_group(group_id: str, body: GroupIn, user: dict = Depends(require_campaign_write)):
     pool = await get_pool()
     row = await pool.fetchrow(
         "UPDATE campaign_groups SET name = $3 WHERE id = $1::uuid AND user_id = $2::uuid RETURNING id, name",
@@ -56,7 +57,7 @@ async def rename_group(group_id: str, body: GroupIn, user: dict = Depends(curren
 
 
 @router.delete("/{group_id}", status_code=204)
-async def delete_group(group_id: str, user: dict = Depends(current_user)):
+async def delete_group(group_id: str, user: dict = Depends(require_campaign_write)):
     """Delete the group; campaigns keep running (group_id becomes NULL)."""
     pool = await get_pool()
     result = await pool.execute(

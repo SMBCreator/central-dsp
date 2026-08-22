@@ -4,6 +4,7 @@ import secrets
 from fastapi import APIRouter, Depends, HTTPException
 
 from auth import current_user
+from rbac import require_platform_write
 from db import get_pool
 from schemas import SupplyPartnerIn, SupplyPartnerPatch
 
@@ -30,7 +31,7 @@ async def list_partners(user: dict = Depends(current_user)):
 
 
 @router.post("", status_code=201)
-async def create_partner(body: SupplyPartnerIn, user: dict = Depends(current_user)):
+async def create_partner(body: SupplyPartnerIn, user: dict = Depends(require_platform_write)):
     pool = await get_pool()
     endpoint_key = secrets.token_urlsafe(16)
     row = await pool.fetchrow(
@@ -45,7 +46,7 @@ async def create_partner(body: SupplyPartnerIn, user: dict = Depends(current_use
 
 
 @router.patch("/{partner_id}")
-async def update_partner(partner_id: str, body: SupplyPartnerPatch, user: dict = Depends(current_user)):
+async def update_partner(partner_id: str, body: SupplyPartnerPatch, user: dict = Depends(require_platform_write)):
     updates = body.model_dump(exclude_none=True)
     if not updates:
         raise HTTPException(status_code=400, detail="Нет полей для обновления")
@@ -68,7 +69,7 @@ async def update_partner(partner_id: str, body: SupplyPartnerPatch, user: dict =
 
 
 @router.delete("/{partner_id}", status_code=204)
-async def delete_partner(partner_id: str, user: dict = Depends(current_user)):
+async def delete_partner(partner_id: str, user: dict = Depends(require_platform_write)):
     pool = await get_pool()
     result = await pool.execute(
         "DELETE FROM supply_partners WHERE id = $1 AND user_id = $2", partner_id, user["id"]

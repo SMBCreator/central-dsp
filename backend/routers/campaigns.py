@@ -3,6 +3,7 @@ from datetime import date
 from fastapi import APIRouter, Depends, HTTPException
 
 from auth import current_user
+from rbac import can_see_all, require_campaign_write
 from db import get_pool
 from schemas import CampaignIn, CampaignPatch
 
@@ -35,19 +36,28 @@ def _parse_date(val: str | None) -> date | None:
 @router.get("")
 async def list_campaigns(user: dict = Depends(current_user)):
     pool = await get_pool()
-    rows = await pool.fetch(
-        """
-        SELECT c.*, a.name AS advertiser_name
-        FROM campaigns c JOIN advertisers a ON a.id = c.advertiser_id
-        WHERE c.user_id = $1 ORDER BY c.created_at DESC
-        """,
-        user["id"],
-    )
+    if can_see_all(user):
+        rows = await pool.fetch(
+            """
+            SELECT c.*, a.name AS advertiser_name
+            FROM campaigns c JOIN advertisers a ON a.id = c.advertiser_id
+            ORDER BY c.created_at DESC
+            """
+        )
+    else:
+        rows = await pool.fetch(
+            """
+            SELECT c.*, a.name AS advertiser_name
+            FROM campaigns c JOIN advertisers a ON a.id = c.advertiser_id
+            WHERE c.user_id = $1 ORDER BY c.created_at DESC
+            """,
+            user["id"],
+        )
     return [_serialize(r) for r in rows]
 
 
 @router.post("", status_code=201)
-async def create_campaign(body: CampaignIn, user: dict = Depends(current_user)):
+async def create_campaign(body: CampaignIn, user: dict = Depends(require_campaign_write)):
     pool = await get_pool()
     adv = await pool.fetchval(
         "SELECT 1 FROM advertisers WHERE id = $1 AND user_id = $2", body.advertiser_id, user["id"]
@@ -79,7 +89,7 @@ async def get_campaign(campaign_id: str, user: dict = Depends(current_user)):
 
 
 @router.patch("/{campaign_id}")
-async def update_campaign(campaign_id: str, body: CampaignPatch, user: dict = Depends(current_user)):
+async def update_campaign(campaign_id: str, body: CampaignPatch, user: dict = Depends(require_campaign_write)):
     updates = body.model_dump(exclude_none=True)
     if not updates:
         raise HTTPException(status_code=400, detail="Нет полей для обновления")
@@ -116,7 +126,7 @@ async def update_campaign(campaign_id: str, body: CampaignPatch, user: dict = De
 
 
 @router.delete("/{campaign_id}", status_code=204)
-async def delete_campaign(campaign_id: str, user: dict = Depends(current_user)):
+async def delete_campaign(campaign_id: str, user: dict = Depends(require_campaign_write)):
     pool = await get_pool()
     result = await pool.execute(
         "DELETE FROM campaigns WHERE id = $1 AND user_id = $2", campaign_id, user["id"]
@@ -151,7 +161,7 @@ async def list_optimizer_blocks(campaign_id: str, user: dict = Depends(current_u
 
 
 @router.delete("/{campaign_id}/blocks/{block_id}", status_code=204)
-async def remove_optimizer_block(campaign_id: str, block_id: str, user: dict = Depends(current_user)):
+async def remove_optimizer_block(campaign_id: str, block_id: str, user: dict = Depends(require_campaign_write)):
     """Manually unblock a source (the optimizer will not re-add it unless metrics degrade again)."""
     pool = await get_pool()
     deleted = await pool.fetchval(

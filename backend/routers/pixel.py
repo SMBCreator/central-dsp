@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from auth import current_user
+from rbac import require_campaign_write
 from db import get_pool
 
 router = APIRouter(prefix="/pixel", tags=["pixel"])
@@ -222,7 +223,7 @@ async def list_pixels(user: dict = Depends(current_user)):
 
 
 @router.post("s")
-async def create_pixel(data: PixelIn, user: dict = Depends(current_user)):
+async def create_pixel(data: PixelIn, user: dict = Depends(require_campaign_write)):
     pool = await get_pool()
     row = await pool.fetchrow(
         "INSERT INTO pixels (user_id, name, domain) VALUES ($1,$2,$3) RETURNING *",
@@ -232,7 +233,7 @@ async def create_pixel(data: PixelIn, user: dict = Depends(current_user)):
 
 
 @router.delete("s/{pixel_id}")
-async def delete_pixel(pixel_id: str, user: dict = Depends(current_user)):
+async def delete_pixel(pixel_id: str, user: dict = Depends(require_campaign_write)):
     pool = await get_pool()
     deleted = await pool.fetchval(
         "DELETE FROM pixels WHERE id = $1 AND user_id = $2 RETURNING id", pixel_id, user["id"]
@@ -255,7 +256,7 @@ async def list_goals(pixel_id: str, user: dict = Depends(current_user)):
 
 
 @router.post("s/{pixel_id}/goals")
-async def create_goal(pixel_id: str, data: GoalIn, user: dict = Depends(current_user)):
+async def create_goal(pixel_id: str, data: GoalIn, user: dict = Depends(require_campaign_write)):
     pool = await get_pool()
     owned = await pool.fetchval("SELECT 1 FROM pixels WHERE id = $1 AND user_id = $2", pixel_id, user["id"])
     if not owned:
@@ -268,7 +269,7 @@ async def create_goal(pixel_id: str, data: GoalIn, user: dict = Depends(current_
 
 
 @router.delete("s/{pixel_id}/goals/{goal_id}")
-async def delete_goal(pixel_id: str, goal_id: str, user: dict = Depends(current_user)):
+async def delete_goal(pixel_id: str, goal_id: str, user: dict = Depends(require_campaign_write)):
     pool = await get_pool()
     deleted = await pool.fetchval(
         """DELETE FROM goals g USING pixels p

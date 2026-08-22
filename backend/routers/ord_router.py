@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from auth import current_user
+from rbac import require_platform_write
 from db import get_pool
 from ord import OrdError, get_ord_adapter
 
@@ -58,7 +59,7 @@ async def list_counterparties(user: dict = Depends(current_user)):
 
 
 @router.post("/counterparties", status_code=201)
-async def create_counterparty(body: CounterpartyIn, user: dict = Depends(current_user)):
+async def create_counterparty(body: CounterpartyIn, user: dict = Depends(require_platform_write)):
     if body.legal_type not in ("ul", "ip", "fl", "foreign"):
         raise HTTPException(400, "legal_type: ul | ip | fl | foreign")
     if body.legal_type in ("ul",) and len(body.inn) != 10 or body.legal_type in ("ip", "fl") and len(body.inn) != 12:
@@ -76,7 +77,7 @@ async def create_counterparty(body: CounterpartyIn, user: dict = Depends(current
 
 
 @router.post("/counterparties/{cp_id}/register")
-async def register_counterparty(cp_id: str, user: dict = Depends(current_user)):
+async def register_counterparty(cp_id: str, user: dict = Depends(require_platform_write)):
     pool = await get_pool()
     cp = await pool.fetchrow(
         "SELECT * FROM counterparties WHERE id = $1 AND user_id = $2", cp_id, user["id"]
@@ -120,7 +121,7 @@ async def list_contracts(user: dict = Depends(current_user)):
 
 
 @router.post("/contracts", status_code=201)
-async def create_contract(body: ContractIn, user: dict = Depends(current_user)):
+async def create_contract(body: ContractIn, user: dict = Depends(require_platform_write)):
     from datetime import date
 
     pool = await get_pool()
@@ -142,7 +143,7 @@ async def create_contract(body: ContractIn, user: dict = Depends(current_user)):
 
 
 @router.post("/contracts/{contract_id}/register")
-async def register_contract(contract_id: str, user: dict = Depends(current_user)):
+async def register_contract(contract_id: str, user: dict = Depends(require_platform_write)):
     pool = await get_pool()
     c = await pool.fetchrow(
         "SELECT * FROM ord_contracts WHERE id = $1 AND user_id = $2", contract_id, user["id"]
@@ -181,7 +182,7 @@ async def register_contract(contract_id: str, user: dict = Depends(current_user)
 
 # ---------------------------------------------------------------- creatives --
 @router.post("/creatives/{creative_id}/register")
-async def register_creative(creative_id: str, body: CreativeRegisterIn, user: dict = Depends(current_user)):
+async def register_creative(creative_id: str, body: CreativeRegisterIn, user: dict = Depends(require_platform_write)):
     """Регистрирует креатив в ОРД, получает erid, денормализует его в creatives.erid."""
     import json as _json
 
