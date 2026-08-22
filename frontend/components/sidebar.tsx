@@ -31,55 +31,53 @@ export function Sidebar() {
   }
 
   return (
-    <aside className="flex h-screen w-60 shrink-0 flex-col p-3">
-      <div className="flex h-full flex-col rounded-3xl border border-border bg-card shadow-[0_1px_2px_rgba(0,0,0,0.04),0_8px_24px_-12px_rgba(0,0,0,0.08)]">
-        <div className="flex items-center justify-between px-5 py-5">
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary">
-              <span className="font-mono text-sm font-bold text-primary-foreground">C</span>
-            </div>
-            <div>
-              <p className="text-sm font-semibold leading-tight text-foreground">CentralDSP</p>
-              <p className="text-[10px] leading-tight text-muted">Programmatic-платформа</p>
-            </div>
+    <aside className="flex h-screen w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar">
+      <div className="flex items-center justify-between px-4 py-4">
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-sidebar-primary">
+            <span className="font-mono text-sm font-bold text-sidebar-primary-foreground">C</span>
           </div>
-          <ThemeToggle />
+          <div>
+            <p className="text-sm font-semibold leading-tight text-sidebar-foreground">CentralDSP</p>
+            <p className="text-[10px] leading-tight text-muted">Programmatic-платформа</p>
+          </div>
         </div>
+        <ThemeToggle />
+      </div>
 
-        <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-1" aria-label="Основная навигация">
-          {NAV.map((item) => {
-            const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href)
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={`flex items-center gap-2.5 rounded-full px-3.5 py-2 text-sm transition-colors ${
-                  active
-                    ? "bg-primary font-medium text-primary-foreground"
-                    : "text-muted hover:bg-panel hover:text-foreground"
-                }`}
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                  <path d={item.icon} stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" strokeLinecap="round" />
-                </svg>
-                {item.label}
-              </Link>
-            )
-          })}
-        </nav>
+      <nav className="flex-1 space-y-0.5 overflow-y-auto px-3 py-2" aria-label="Основная навигация">
+        {NAV.map((item) => {
+          const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href)
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              className={`flex items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors ${
+                active
+                  ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
+                  : "text-muted hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
+              }`}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d={item.icon} stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" strokeLinecap="round" />
+              </svg>
+              {item.label}
+            </Link>
+          )
+        })}
+      </nav>
 
-        <div className="px-3 py-3">
-          <button
-            type="button"
-            onClick={logout}
-            className="flex w-full items-center gap-2.5 rounded-full px-3.5 py-2 text-sm text-muted transition-colors hover:bg-panel hover:text-foreground"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4m7 14l5-5-5-5m5 5H9" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-            Выйти
-          </button>
-        </div>
+      <div className="border-t border-sidebar-border px-3 py-3">
+        <button
+          type="button"
+          onClick={logout}
+          className="flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm text-muted transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4m7 14l5-5-5-5m5 5H9" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          Выйти
+        </button>
       </div>
     </aside>
   )
