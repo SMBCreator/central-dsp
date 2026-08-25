@@ -3,21 +3,24 @@
 import type { ReactNode } from "react"
 import { STATUS_LABELS } from "@/lib/types"
 
-/* amicro-style: rounded-3xl white cards with soft shadow, pill buttons, nested inner panels */
+/*
+ * UI kit restyled after next-shadcn-admin-dashboard (arhamkhnz):
+ * flat bordered cards (rounded-xl + shadow-xs), compact h-8 buttons with
+ * active:translate-y-px, focus rings. Component APIs are unchanged.
+ * Amicro flavor retained: pill tabs, soft transitions.
+ */
 
 export function Card({ children, className = "" }: { children: ReactNode; className?: string }) {
   return (
-    <div
-      className={`rounded-3xl border border-border bg-card shadow-[0_1px_2px_rgba(0,0,0,0.04),0_8px_24px_-12px_rgba(0,0,0,0.08)] ${className}`}
-    >
+    <div className={`rounded-xl border border-border bg-card text-foreground shadow-xs ${className}`}>
       {children}
     </div>
   )
 }
 
-/** Inner nested panel (amicro card-in-card pattern) */
+/** Inner nested panel (card-in-card pattern) */
 export function Panel({ children, className = "" }: { children: ReactNode; className?: string }) {
-  return <div className={`rounded-2xl bg-panel ${className}`}>{children}</div>
+  return <div className={`rounded-lg bg-panel ${className}`}>{children}</div>
 }
 
 export function CardHeader({ title, subtitle, action }: { title: string; subtitle?: string; action?: ReactNode }) {
@@ -36,16 +39,15 @@ export function KpiCard({ label, value, hint }: { label: string; value: string; 
   return (
     <Card className="px-6 py-5">
       <p className="font-mono text-[10px] font-medium uppercase tracking-[0.14em] text-muted">{label}</p>
-      <p className="mt-2 text-2xl font-bold tracking-tight text-foreground">{value}</p>
+      <p className="mt-2 text-2xl font-semibold tracking-tight text-foreground">{value}</p>
       {hint ? <p className="mt-1 font-mono text-[11px] text-muted">{hint}</p> : null}
     </Card>
   )
 }
 
 /**
- * amicro chart-card anatomy: UPPERCASE mono label + pill badge,
- * big metric with small unit, chart body in a nested panel,
- * monospace caption row at the bottom.
+ * Chart-card anatomy: UPPERCASE mono label + badge, big metric with small
+ * unit, chart body in a nested panel, monospace caption row at the bottom.
  */
 export function ChartCard({
   label,
@@ -71,18 +73,18 @@ export function ChartCard({
       <div className="flex items-center gap-2.5">
         <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">{label}</p>
         {badge ? (
-          <span className="rounded-full border border-border bg-panel px-2.5 py-0.5 font-mono text-[10px] text-foreground">
+          <span className="rounded-md border border-border bg-panel px-2 py-0.5 font-mono text-[10px] text-foreground">
             {badge}
           </span>
         ) : null}
       </div>
       {metric ? (
-        <p className="mt-1.5 text-2xl font-bold tracking-tight text-foreground">
+        <p className="mt-1.5 text-2xl font-semibold tracking-tight text-foreground">
           {metric}
           {metricUnit ? <span className="ml-1.5 text-xs font-normal text-muted">{metricUnit}</span> : null}
         </p>
       ) : null}
-      <div className="mt-3 flex-1 rounded-2xl bg-panel/60 p-2">{children}</div>
+      <div className="mt-3 flex-1 rounded-lg bg-panel/60 p-2">{children}</div>
       {footerLeft || footerRight ? (
         <div className="mt-3 flex items-center justify-between border-t border-border pt-3">
           <span className="font-mono text-[11px] text-muted">{footerLeft}</span>
@@ -106,7 +108,7 @@ export function StatusBadge({ status }: { status: string }) {
   }
   return (
     <span
-      className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${styles[status] || "bg-muted/10 text-muted"}`}
+      className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ${styles[status] || "bg-muted/10 text-muted"}`}
     >
       {STATUS_LABELS[status] || status}
     </span>
@@ -129,9 +131,9 @@ export function Button({
   className?: string
 }) {
   const styles = {
-    primary: "bg-primary text-primary-foreground hover:bg-primary-hover active:scale-[0.98]",
-    secondary: "bg-panel text-foreground hover:bg-surface-hover active:scale-[0.98]",
-    danger: "bg-danger text-white hover:opacity-90 active:scale-[0.98]",
+    primary: "bg-primary text-primary-foreground hover:bg-primary/85",
+    secondary: "border-border bg-card text-foreground hover:bg-panel",
+    danger: "bg-danger/10 text-danger hover:bg-danger/20",
     ghost: "text-muted hover:bg-panel hover:text-foreground",
   }
   return (
@@ -139,14 +141,14 @@ export function Button({
       type={type}
       onClick={onClick}
       disabled={disabled}
-      className={`inline-flex items-center justify-center gap-1.5 rounded-full px-4 py-2 text-sm font-medium transition-all disabled:cursor-not-allowed disabled:opacity-50 ${styles[variant]} ${className}`}
+      className={`inline-flex h-8 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg border border-transparent px-3 text-sm font-medium outline-none transition-all select-none focus-visible:ring-2 focus-visible:ring-ring/50 active:translate-y-px disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 ${styles[variant]} ${className}`}
     >
       {children}
     </button>
   )
 }
 
-/** amicro pill tab group */
+/** Pill tab group (Amicro flavor) */
 export function PillTabs<T extends string>({
   value,
   onChange,
@@ -157,14 +159,14 @@ export function PillTabs<T extends string>({
   options: readonly { key: T; label: string }[]
 }) {
   return (
-    <div className="inline-flex items-center gap-1 rounded-full bg-panel p-1">
+    <div className="inline-flex items-center gap-1 rounded-lg bg-panel p-1">
       {options.map((o) => (
         <button
           key={o.key}
           type="button"
           onClick={() => onChange(o.key)}
-          className={`rounded-full px-3.5 py-1.5 text-xs font-medium transition-colors ${
-            value === o.key ? "bg-card text-foreground shadow-sm" : "text-muted hover:text-foreground"
+          className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+            value === o.key ? "bg-card text-foreground shadow-xs" : "text-muted hover:text-foreground"
           }`}
         >
           {o.label}
@@ -185,7 +187,7 @@ export function Field({
 }) {
   return (
     <label className="block">
-      <span className="mb-1.5 block text-xs font-medium text-muted">{label}</span>
+      <span className="mb-1.5 block text-xs font-medium text-foreground">{label}</span>
       {children}
       {hint ? <span className="mt-1 block text-xs text-muted">{hint}</span> : null}
     </label>
@@ -193,7 +195,7 @@ export function Field({
 }
 
 export const inputCls =
-  "w-full rounded-xl border border-border bg-panel px-3.5 py-2 text-sm text-foreground placeholder:text-muted transition-colors focus:border-foreground/30 focus:bg-card focus:outline-none"
+  "w-full rounded-lg border border-input bg-card px-3 py-1.5 text-sm text-foreground placeholder:text-muted transition-[border-color,box-shadow] focus:border-ring focus:ring-2 focus:ring-ring/40 focus:outline-none"
 
 export function EmptyState({ title, description, action }: { title: string; description?: string; action?: ReactNode }) {
   return (
@@ -229,14 +231,14 @@ export function Modal({
   if (!open) return null
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 pt-12 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-4 pt-12"
       onClick={onClose}
     >
       <div
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className={`w-full ${wide ? "max-w-2xl" : "max-w-md"} rounded-3xl border border-border bg-card shadow-2xl`}
+        className={`w-full ${wide ? "max-w-2xl" : "max-w-md"} rounded-xl border border-border bg-card shadow-lg`}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-6 pb-2 pt-5">
@@ -244,7 +246,7 @@ export function Modal({
           <button
             type="button"
             onClick={onClose}
-            className="flex h-8 w-8 items-center justify-center rounded-full bg-panel text-muted transition-colors hover:text-foreground"
+            className="flex h-7 w-7 items-center justify-center rounded-md text-muted transition-colors hover:bg-panel hover:text-foreground"
             aria-label="Закрыть"
           >
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -263,7 +265,7 @@ export function Table({ headers, children }: { headers: string[]; children: Reac
     <div className="overflow-x-auto px-2 pb-2">
       <table className="w-full text-sm">
         <thead>
-          <tr>
+          <tr className="border-b border-border">
             {headers.map((h) => (
               <th key={h} className="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium text-muted">
                 {h}

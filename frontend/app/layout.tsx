@@ -1,11 +1,11 @@
 import type { Metadata, Viewport } from 'next'
-import { Outfit, Manrope, JetBrains_Mono } from 'next/font/google'
+import { Inter, JetBrains_Mono } from 'next/font/google'
 import { AppShell } from '@/components/app-shell'
 import './globals.css'
 
-const outfit = Outfit({ subsets: ['latin'], variable: '--font-outfit' })
-// Outfit has no Cyrillic glyphs — Manrope is the closest geometric sans with Cyrillic support
-const manrope = Manrope({ subsets: ['latin', 'cyrillic'], variable: '--font-manrope' })
+// Reference design uses Geist; Geist has no Cyrillic glyphs, Inter is the
+// closest metric-compatible sans with full Cyrillic support.
+const inter = Inter({ subsets: ['latin', 'cyrillic'], variable: '--font-inter' })
 const jetbrains = JetBrains_Mono({ subsets: ['latin', 'cyrillic'], variable: '--font-jetbrains' })
 
 export const metadata: Metadata = {
@@ -16,8 +16,8 @@ export const metadata: Metadata = {
 
 export const viewport: Viewport = {
   themeColor: [
-    { media: '(prefers-color-scheme: light)', color: '#f8f9fa' },
-    { media: '(prefers-color-scheme: dark)', color: '#0a0a0b' },
+    { media: '(prefers-color-scheme: light)', color: '#ffffff' },
+    { media: '(prefers-color-scheme: dark)', color: '#0f0f0f' },
   ],
 }
 
@@ -25,7 +25,7 @@ const themeInit = `(function(){try{var t=localStorage.getItem('theme');if(t==='d
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="ru" className={`bg-background ${outfit.variable} ${manrope.variable} ${jetbrains.variable}`} suppressHydrationWarning>
+    <html lang="ru" className={`bg-background ${inter.variable} ${jetbrains.variable}`} suppressHydrationWarning>
       <head>
         {/* Applies saved theme before hydration to avoid a flash */}
         <script dangerouslySetInnerHTML={{ __html: themeInit }} />

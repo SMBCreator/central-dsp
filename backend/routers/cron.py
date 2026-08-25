@@ -53,3 +53,98 @@ async def run_buy_optimizer(request: Request):
     """Analyze traffic quality and block weak sources for auto_optimize campaigns."""
     _check_secret(request)
     return await run_optimizer()
+
+
+@router.get("/fx-refresh")
+async def fx_refresh(request: Request):
+    """Ежедневное обновление курса ЦБ (дергается Vercel Cron)."""
+    _check_secret(request)
+    import fx
+    rates = await fx.refresh_rates()
+    return {"ok": True, "rates": rates}
+
+
+@router.get("/shading")
+async def shading_recompute(request: Request):
+    """Ежечасный пересчёт факторов bid-шейдинга по (кампания, SSP)."""
+    _check_secret(request)
+    import shading
+    result = await shading.recompute_factors()
+    return {"ok": True, **result}
+
+
+@router.get("/ord-export")
+async def ord_monthly_export(request: Request, period: str | None = None):
+    """Месячная выгрузка статистики показов в ОРД (ФЗ-347).
+
+    period 'YYYY-MM'; по умолчанию — предыдущий месяц. Идемпотентно:
+    повторный запуск за период, у которого уже есть статус ok, — no-op.
+    """
+    _check_secret(request)
+    import json as _json
+    from datetime import datetime, timezone
+
+    from ord import OrdError, get_ord_adapter
+
+    now = datetime.now(timezone.utc)
+    if period is None:
+        year, month = (now.year, now.month - 1) if now.month > 1 else (now.year - 1, 12)
+        period = f"{year:04d}-{month:02d}"
+
+    pool = await get_pool()
+    already = await pool.fetchval(
+        "SELECT 1 FROM ord_export_log WHERE period = $1 AND kind = 'stats' AND status = 'ok'",
+        period,
+    )
+    if already:
+        return {"period": period, "status": "ok", "skipped": "already exported"}
+
+    rows = await pool.fetch(
+        """SELECT c.erid, oc.ord_external_id,
+                  sum(s.impressions) AS impressions,
+                  sum(s.clicks)      AS clicks,
+                  sum(s.spend)       AS spend
+           FROM stats_hourly s
+           JOIN creatives c      ON c.id = s.creative_id
+           JOIN ord_creatives oc ON oc.creative_id = c.id AND oc.status = 'registered'
+           WHERE c.erid IS NOT NULL AND c.erid <> ''
+             AND to_char(s.ts_hour, 'YYYY-MM') = $1
+           GROUP BY c.erid, oc.ord_external_id
+           HAVING sum(s.impressions) > 0""",
+        period,
+    )
+    stats = [
+        {
+            "erid": r["erid"],
+            "creative_external_id": r["ord_external_id"],
+            "impressions": int(r["impressions"]),
+            "clicks": int(r["clicks"]),
+            "amount": str(r["spend"]),
+        }
+        for r in rows
+    ]
+    log_id = await pool.fetchval(
+        """INSERT INTO ord_export_log (period, kind, rows_sent, request)
+           VALUES ($1, 'stats', $2, $3) RETURNING id""",
+        period, len(stats), _json.dumps(stats, ensure_ascii=False),
+    )
+    if not stats:
+        await pool.execute(
+            "UPDATE ord_export_log SET status='ok', finished_at=now() WHERE id=$1", log_id
+        )
+        return {"period": period, "status": "ok", "rows": 0}
+
+    adapter = get_ord_adapter()
+    try:
+        out = await adapter.submit_stats(period, stats)
+        await pool.execute(
+            "UPDATE ord_export_log SET status='ok', response=$2, finished_at=now() WHERE id=$1",
+            log_id, _json.dumps(out, ensure_ascii=False),
+        )
+        return {"period": period, "status": "ok", "rows": len(stats), "provider": adapter.provider}
+    except OrdError as e:
+        await pool.execute(
+            "UPDATE ord_export_log SET status='failed', error=$2, finished_at=now() WHERE id=$1",
+            log_id, str(e),
+        )
+        raise HTTPException(status_code=502, detail=f"ОРД выгрузка не удалась: {e}")

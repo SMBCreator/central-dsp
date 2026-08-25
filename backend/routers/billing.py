@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from auth import current_user
+from rbac import require_finance_write
 from db import get_pool
 
 router = APIRouter(prefix="/billing", tags=["billing"])
@@ -21,7 +22,7 @@ class AdjustmentIn(BaseModel):
 
 
 @router.post("/deposit", status_code=201)
-async def deposit(body: DepositIn, user: dict = Depends(current_user)):
+async def deposit(body: DepositIn, user: dict = Depends(require_finance_write)):
     """Top up an advertiser balance (manual / offline payment flow)."""
     pool = await get_pool()
     row = await pool.fetchrow(
@@ -46,7 +47,7 @@ async def deposit(body: DepositIn, user: dict = Depends(current_user)):
 
 
 @router.post("/adjust", status_code=201)
-async def adjust(body: AdjustmentIn, user: dict = Depends(current_user)):
+async def adjust(body: AdjustmentIn, user: dict = Depends(require_finance_write)):
     """Manual balance adjustment (credit or debit) with a mandatory reason."""
     pool = await get_pool()
     row = await pool.fetchrow(

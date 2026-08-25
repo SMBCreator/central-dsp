@@ -8,13 +8,21 @@ Flow:
 """
 import json
 import os
+import time
 import uuid
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response
 
-from cache import bump_frequency, check_frequency_cap, get_redis, mark_once, reserve_budget
+import hmac as _hmac
+
+from billing_core import bill_win
+from audiences import check_audiences, store_clid_bridge
+from shading import get_factor as shading_get_factor
+from cache import bump_frequency, bump_frequency_multi, check_frequency_cap, check_qps, gate_and_reserve, get_redis, mark_once, reserve_budget
 from db import get_pool
+from money import CURRENCY, clamp_clearing_price, cpm_to_cost
+from tokens import sign_event_token, verify_event_token
 
 router = APIRouter(prefix="/rtb", tags=["rtb"])
 
@@ -337,22 +345,41 @@ def _creative_fits_imp(creative: dict, imp: dict, ad_type: str) -> bool:
 
 
 def _build_adm(creative: dict, base: str, bid_id: str) -> str:
+    # Сторонние трекеры (аудит): пиксель на показ добавляется в разметку,
+    # клик-трекер дёргается из клиентского onclick / clicktrackers / VAST.
+    third_imp = creative.get("imp_tracker_url") or ""
+    third_imp_px = (
+        f'<img src="{third_imp}" width="1" height="1" style="display:none" alt=""/>'
+        if third_imp else ""
+    )
+    third_click = creative.get("click_tracker_url") or ""
+    erid = creative.get("erid") or ""
+    erid_label = (
+        f'<span style="position:absolute;top:2px;left:2px;background:rgba(0,0,0,.55);'
+        f'color:#fff;font:10px/1.4 sans-serif;padding:1px 4px;border-radius:2px;z-index:9">'
+        f'Реклама erid: {erid}</span>'
+    ) if erid else ""
     click_url = f"{base}/api/rtb/click?bid={bid_id}&r={creative.get('click_url') or ''}"
     imp_pixel = f"{base}/api/rtb/imp?bid={bid_id}"
     if creative["type"] == "banner":
+        click_js = (
+            f' onclick="(new Image()).src=\'{third_click}\'"' if third_click else ""
+        )
         if creative.get("html_snippet"):
-            return creative["html_snippet"] + f'<img src="{imp_pixel}" width="1" height="1" style="display:none"/>'
+            return (creative["html_snippet"] + erid_label
+                    + f'<img src="{imp_pixel}" width="1" height="1" style="display:none"/>' + third_imp_px)
         return (
-            f'<a href="{click_url}" target="_blank">'
+            f'<a href="{click_url}" target="_blank"{click_js}>'
             f'<img src="{creative.get("asset_url") or ""}" width="{creative.get("width")}" height="{creative.get("height")}" alt=""/></a>'
-            f'<img src="{imp_pixel}" width="1" height="1" style="display:none"/>'
+            f'{erid_label}<img src="{imp_pixel}" width="1" height="1" style="display:none"/>' + third_imp_px
         )
     if creative["type"] in ("native", "push"):
         # push over RTB is native markup: title + body + icon + main image.
         native = {
             "native": {
-                "link": {"url": click_url},
-                "imptrackers": [imp_pixel],
+                "link": {"url": click_url,
+                         **({"clicktrackers": [third_click]} if third_click else {})},
+                "imptrackers": [imp_pixel] + ([third_imp] if third_imp else []),
                 "assets": [
                     {"id": 1, "title": {"text": creative.get("native_title") or ""}},
                     {"id": 2, "data": {"type": 2, "value": creative.get("native_description") or ""}},
@@ -362,8 +389,10 @@ def _build_adm(creative: dict, base: str, bid_id: str) -> str:
                 ],
             }
         }
+        if erid:
+            native["native"].setdefault("ext", {})["erid"] = erid
         if creative["type"] == "push":
-            native["native"]["ext"] = {"ad_format": "push"}
+            native["native"].setdefault("ext", {})["ad_format"] = "push"
         return json.dumps(native, ensure_ascii=False)
     # video: VAST with quartile tracking
     if creative.get("vast_xml"):
@@ -372,8 +401,8 @@ def _build_adm(creative: dict, base: str, bid_id: str) -> str:
     vevent = f"{base}/api/rtb/vevent?bid={bid_id}"
     creative_id = creative.get("creative_id") or creative.get("id") or ""
     return f"""<VAST version="3.0"><Ad id="{creative_id}"><InLine>
-<AdSystem>CentralDSP</AdSystem><AdTitle>{creative['name']}</AdTitle>
-<Impression><![CDATA[{imp_pixel}]]></Impression>
+<AdSystem>CentralDSP</AdSystem>{f'<Extensions><Extension type="erid"><Erid>{erid}</Erid></Extension></Extensions>' if erid else ''}<AdTitle>{creative['name']}</AdTitle>
+<Impression><![CDATA[{imp_pixel}]]></Impression>{f'<Impression><![CDATA[{third_imp}]]></Impression>' if third_imp else ''}
 <Creatives><Creative><Linear><Duration>00:00:{duration:02d}</Duration>
 <TrackingEvents>
 <Tracking event="start"><![CDATA[{vevent}&e=start]]></Tracking>
@@ -384,9 +413,29 @@ def _build_adm(creative: dict, base: str, bid_id: str) -> str:
 <Tracking event="skip"><![CDATA[{vevent}&e=skip]]></Tracking>
 </TrackingEvents>
 <VideoClicks><ClickThrough><![CDATA[{creative.get('click_url') or ''}]]></ClickThrough>
-<ClickTracking><![CDATA[{click_url}]]></ClickTracking></VideoClicks>
+<ClickTracking><![CDATA[{click_url}]]></ClickTracking>{f'<ClickTracking><![CDATA[{third_click}]]></ClickTracking>' if third_click else ''}</VideoClicks>
 <MediaFiles><MediaFile delivery="progressive" type="video/mp4" width="640" height="360"><![CDATA[{creative.get('video_url') or ''}]]></MediaFile></MediaFiles>
 </Linear></Creative></Creatives></InLine></Ad></VAST>"""
+
+
+def _fire_and_forget(coro) -> None:
+    """Run bid-path bookkeeping (event log, stats) off the critical path.
+
+    Bid responses must not wait on analytics writes: SSPs enforce tmax and
+    drop slow bids. Win/imp/click handlers still await their writes because
+    those are billing-relevant. Errors are logged, never propagated.
+    """
+    import asyncio
+
+    task = asyncio.get_running_loop().create_task(coro)
+
+    def _swallow(t: asyncio.Task) -> None:
+        exc = t.exception()
+        if exc is not None:
+            import logging
+            logging.getLogger("rtb").warning("background bookkeeping failed: %s", exc)
+
+    task.add_done_callback(_swallow)
 
 
 async def _log_event(pool, event_type: str, **kw: Any) -> None:
@@ -416,27 +465,135 @@ async def _bump_stats(pool, col: str, spend: float, campaign_id, line_item_id, c
     )
 
 
+
+def _parse_freq_caps(c) -> list[tuple[int, int]]:
+    """Multi-window caps from campaigns.frequency_caps (JSONB), legacy pair as fallback."""
+    raw = None
+    try:
+        raw = c["frequency_caps"]
+    except (KeyError, IndexError):
+        raw = None
+    windows: list[tuple[int, int]] = []
+    if raw:
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                raw = None
+        if isinstance(raw, list):
+            for w in raw[:3]:
+                try:
+                    imp = int(w.get("impressions", 0))
+                    hrs = int(w.get("period_hours", 24))
+                except (AttributeError, TypeError, ValueError):
+                    continue
+                if imp > 0 and hrs > 0:
+                    windows.append((imp, hrs))
+    if not windows:
+        try:
+            legacy = int(c["frequency_cap_impressions"] or 0)
+        except (KeyError, IndexError, TypeError):
+            legacy = 0
+        if legacy > 0:
+            try:
+                hrs = int(c["frequency_cap_period_hours"] or 24)
+            except (KeyError, IndexError, TypeError):
+                hrs = 24
+            windows.append((legacy, hrs))
+    return windows
+
+
 @router.post("/bid/{endpoint_key}")
 async def bid(endpoint_key: str, request: Request):
     try:
         req = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid BidRequest JSON")
-    result = await process_bid_request(endpoint_key, req)
+    ssp_token = request.headers.get("x-centraldsp-token")
+    result = await process_bid_request(endpoint_key, req, ssp_token=ssp_token)
     if result is None:
         return Response(status_code=204)
     return result
 
 
-async def process_bid_request(endpoint_key: str, req: dict):
+# ---------------------------------------------------------------------------
+# In-process TTL cache for the bid hot path (always-on bidder only).
+#
+# Candidate line items, partner rows and optimizer blocks change on human
+# timescales (seconds+), while the bidder answers 50-200 QPS. Caching them
+# in-process for RTB_CACHE_TTL seconds collapses 3 sequential DB roundtrips
+# per request into ~0. Budgets/QPS/freq-caps stay in Redis (cross-replica).
+# RTB_CACHE_TTL=0 disables caching (tests, simulator, serverless deploys).
+# ---------------------------------------------------------------------------
+RTB_CACHE_TTL = float(os.environ.get("RTB_CACHE_TTL", "0"))
+# Serve stale values for up to 5x TTL while ONE coroutine refreshes in the
+# background (single-flight). Prevents the thundering herd at TTL expiry:
+# without it, every in-flight request cache-misses simultaneously and fires
+# 3 sequential DB queries each, spiking p99 by 10-20x.
+RTB_CACHE_STALE_FACTOR = 5.0
+
+_hot_cache: dict = {}
+_refreshing: set = set()
+
+
+def _cache_get(key: str):
+    """Returns (value, fresh) - value may be stale; None means hard miss."""
+    if RTB_CACHE_TTL <= 0:
+        return None, False
+    hit = _hot_cache.get(key)
+    if hit is None:
+        return None, False
+    value, expires = hit
+    now = time.monotonic()
+    if now < expires:
+        return value, True
+    if now < expires + RTB_CACHE_TTL * (RTB_CACHE_STALE_FACTOR - 1):
+        return value, False  # stale but usable
+    _hot_cache.pop(key, None)
+    return None, False
+
+
+def _cache_put(key: str, value) -> None:
+    if RTB_CACHE_TTL > 0:
+        _hot_cache[key] = (value, time.monotonic() + RTB_CACHE_TTL)
+    _refreshing.discard(key)
+
+
+def _claim_refresh(key: str) -> bool:
+    """True for exactly one caller per expiry window (single-flight)."""
+    if key in _refreshing:
+        return False
+    _refreshing.add(key)
+    return True
+
+
+async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | None = None):
     """Core bid logic. Returns a BidResponse dict or None (no-bid).
-    Raises HTTPException(404) for unknown endpoint keys."""
+    Raises 404 for unknown endpoint keys, 403 for a bad SSP token,
+    429 when the partner exceeds its QPS limit."""
     pool = await get_pool()
-    partner = await pool.fetchrow(
-        "SELECT * FROM supply_partners WHERE endpoint_key = $1 AND status = 'active'", endpoint_key
-    )
+    _pkey = f"partner:{endpoint_key}"
+    partner, _fresh = _cache_get(_pkey)
+    if partner is None or (not _fresh and _claim_refresh(_pkey)):
+        partner = await pool.fetchrow(
+            "SELECT * FROM supply_partners WHERE endpoint_key = $1 AND status = 'active'", endpoint_key
+        )
+        if partner is not None:
+            _cache_put(_pkey, partner)
+        else:
+            _refreshing.discard(_pkey)
     if not partner:
         raise HTTPException(status_code=404, detail="Unknown endpoint")
+
+    # Optional per-partner shared secret (migration 011). NULL = legacy
+    # key-in-URL only; set = header must match, compared in constant time.
+    expected_token = partner["auth_token"] if "auth_token" in partner.keys() else None
+    if expected_token and not _hmac.compare_digest(ssp_token or "", expected_token):
+        raise HTTPException(status_code=403, detail="Invalid SSP token")
+
+    # Per-partner QPS limit, enforced across all replicas via Redis.
+    if not await check_qps(str(partner["id"]), partner["qps_limit"] or 0):
+        raise HTTPException(status_code=429, detail="QPS limit exceeded")
 
     req_id = req.get("id") or str(uuid.uuid4())
     imps = req.get("imp") or []
@@ -452,15 +609,18 @@ async def process_bid_request(endpoint_key: str, req: dict):
         allowed_types = json.loads(allowed_types)
 
     # Candidate line items: active campaign within budget & dates, active LI, approved creative
-    candidates = await pool.fetch(
+    candidates, _fresh = _cache_get("candidates")
+    if candidates is None or (not _fresh and _claim_refresh("candidates")):
+        candidates = await pool.fetch(
         """
         SELECT li.id AS li_id, li.bid_price, li.bid_type, li.max_bid, li.daily_budget AS li_budget,
-               li.targeting, li.campaign_id,
-               c.daily_budget AS camp_budget, c.frequency_cap_impressions, c.frequency_cap_period_hours,
-               c.pacing, c.advertiser_id, adv.domain AS adv_domain,
+               li.targeting, li.campaign_id, li.user_id AS owner_id,
+               c.daily_budget AS camp_budget, c.frequency_cap_impressions, c.frequency_cap_period_hours, c.frequency_caps,
+               c.pacing, c.advertiser_id, c.bid_shading, adv.domain AS adv_domain,
                cr.id AS creative_id, cr.type, cr.width, cr.height, cr.asset_url, cr.click_url,
                cr.html_snippet, cr.native_title, cr.native_description, cr.native_cta,
-               cr.native_icon_url, cr.video_url, cr.video_duration, cr.vast_xml, cr.name
+               cr.native_icon_url, cr.video_url, cr.video_duration, cr.vast_xml, cr.name,
+               cr.imp_tracker_url, cr.click_tracker_url
         FROM line_items li
         JOIN campaigns c ON c.id = li.campaign_id AND c.status = 'active'
              AND (c.start_date IS NULL OR c.start_date <= CURRENT_DATE)
@@ -471,19 +631,41 @@ async def process_bid_request(endpoint_key: str, req: dict):
              AND (cr.line_item_id IS NULL OR cr.line_item_id = li.id)
         WHERE li.status = 'active' AND li.bid_price > 0
         """
-    )
+        )
+        _cache_put("candidates", candidates)
     if not candidates:
         return None
 
     # Optimizer block lists — any dimension the platform observes can be blocked
     camp_ids = list({c["campaign_id"] for c in candidates})
-    block_rows = await pool.fetch(
-        "SELECT campaign_id, block_type, block_value FROM optimizer_blocks WHERE campaign_id = ANY($1)",
-        camp_ids,
-    )
+    blocks_key = "blocks:" + ",".join(sorted(str(i) for i in camp_ids))
+    block_rows, _fresh = _cache_get(blocks_key)
+    if block_rows is None or (not _fresh and _claim_refresh(blocks_key)):
+        block_rows = await pool.fetch(
+            "SELECT campaign_id, block_type, block_value FROM optimizer_blocks WHERE campaign_id = ANY($1)",
+            camp_ids,
+        )
+        _cache_put(blocks_key, block_rows)
     blocks: dict = {}
     for b in block_rows:
         blocks.setdefault(str(b["campaign_id"]), set()).add((b["block_type"], b["block_value"].lower()))
+
+    # Глобальные white/blacklist площадок (уровень аккаунта, раздел Настройки).
+    # Кэшируются так же, как блоки оптимизатора: TTL короткий, меняются людьми.
+    owner_ids = list({c["owner_id"] for c in candidates})
+    dl_key = "domain_lists:" + ",".join(sorted(str(i) for i in owner_ids))
+    dl_rows, _fresh = _cache_get(dl_key)
+    if dl_rows is None or (not _fresh and _claim_refresh(dl_key)):
+        dl_rows = await pool.fetch(
+            "SELECT user_id, domain, list_type FROM domain_lists WHERE user_id = ANY($1)",
+            owner_ids,
+        )
+        _cache_put(dl_key, dl_rows)
+    g_black: dict = {}
+    g_white: dict = {}
+    for r in dl_rows:
+        target = g_black if r["list_type"] == "black" else g_white
+        target.setdefault(str(r["user_id"]), set()).add(r["domain"].lower())
 
     from datetime import datetime, timezone as _tz
     req_domain = ((req.get("site") or req.get("app") or {}).get("domain")
@@ -537,15 +719,37 @@ async def process_bid_request(endpoint_key: str, req: dict):
                     continue
                 if ("hour", req_hour) in camp_blocks:
                     continue
+            # Глобальные листы аккаунта: блэклист всегда исключает домен;
+            # непустой вайтлист пропускает ТОЛЬКО перечисленные домены.
+            owner = str(c["owner_id"])
+            if req_domain:
+                if owner in g_black and req_domain in g_black[owner]:
+                    continue
+                owner_white = g_white.get(owner)
+                if owner_white and req_domain not in owner_white:
+                    continue
             if not _match_targeting(targeting, req):
                 continue
             if not _match_imp_targeting(targeting, imp):
+                continue
+            # Retargeting: audience include/exclude via Redis sets (fail-open)
+            _aud_inc = targeting.get("audience_include") or []
+            _aud_exc = targeting.get("audience_exclude") or []
+            if (_aud_inc or _aud_exc) and not await check_audiences(
+                    device_id or "", [str(x) for x in _aud_inc], [str(x) for x in _aud_exc]):
                 continue
             price = float(c["bid_price"])
             if c["max_bid"]:
                 price = min(price, float(c["max_bid"]))
             if price < floor:
                 continue
+            # Bid shading (opt-in): pay closer to clearing price, never below floor
+            if c["bid_shading"]:
+                _sf = await shading_get_factor(str(c["campaign_id"]), str(partner["id"]))
+                if _sf < 1.0:
+                    price = max(floor * 1.01, price * _sf)
+                    if c["max_bid"]:
+                        price = min(price, float(c["max_bid"]))
             if best is None or price > best[0]:
                 c["_deal_id"] = _matched_deal(targeting, imp)
                 best = (price, c)
@@ -556,15 +760,6 @@ async def process_bid_request(endpoint_key: str, req: dict):
         price, c = best
         cost = price / 1000.0  # CPM -> cost per impression
 
-        # Frequency cap
-        if c["frequency_cap_impressions"]:
-            ok = await check_frequency_cap(
-                str(c["campaign_id"]), device_id,
-                c["frequency_cap_impressions"], c["frequency_cap_period_hours"] or 24,
-            )
-            if not ok:
-                continue
-
         # Even pacing: cap the effective daily budget by the share of day elapsed
         effective_budget = float(c["camp_budget"])
         if (c.get("pacing") or "asap") == "even" and effective_budget > 0:
@@ -574,35 +769,45 @@ async def process_bid_request(endpoint_key: str, req: dict):
             # Allow a small burst ahead of schedule (10%) so delivery never stalls at 00:00
             effective_budget = effective_budget * min(1.0, day_fraction + 0.1)
 
-        # Atomic budget reservation: campaign level, then line item level
-        if not await reserve_budget("camp", str(c["campaign_id"]), cost, effective_budget):
+        # Multi-window frequency caps (up to 3); legacy pair is the fallback
+        caps_list = _parse_freq_caps(c)
+        # Single Redis roundtrip: frequency-cap check + atomic budget
+        # reservation on campaign AND line-item keys (all-or-nothing).
+        ok = await gate_and_reserve(
+            str(c["campaign_id"]), str(c["li_id"]), cost,
+            effective_budget, float(c["li_budget"] or 0),
+            device_id=device_id or "",
+            caps=caps_list,
+        )
+        if not ok:
             continue
-        if float(c["li_budget"]) > 0:
-            if not await reserve_budget("li", str(c["li_id"]), cost, float(c["li_budget"])):
-                continue
 
         bid_id = str(uuid.uuid4())
-        nurl = f"{base}/api/rtb/win?bid={bid_id}&price=${{AUCTION_PRICE}}"
-        adm = _build_adm(c, base, bid_id)
+        event_token = sign_event_token(bid_id)
+        # Retargeting bridge: pixel reports clid == bid_id after the click
+        if device_id:
+            _fire_and_forget(store_clid_bridge(bid_id, device_id))
+        nurl = f"{base}/api/rtb/win?bid={event_token}&price=${{AUCTION_PRICE}}"
+        adm = _build_adm(c, base, event_token)
 
         # Remember device for frequency counting at impression time
-        if device_id and c["frequency_cap_impressions"]:
+        if device_id and caps_list:
             r = get_redis()
-            await r.set(
+            _fire_and_forget(r.set(
                 f"bidfreq:{bid_id}",
-                f"{device_id}|{c['frequency_cap_period_hours'] or 24}",
+                f"{device_id}|{json.dumps(caps_list)}",
                 ex=3600,
-            )
+            ))
 
-        await _log_event(
+        _fire_and_forget(_log_event(
             pool, "bid", bid_id=bid_id, imp_id=imp.get("id"),
             campaign_id=c["campaign_id"], line_item_id=c["li_id"], creative_id=c["creative_id"],
             supply_partner_id=partner["id"], price=price,
             device_type=DEVICE_TYPES.get(device.get("devicetype", 0), "unknown"),
             geo_country=geo.get("country"), ad_type=ad_type, domain=site.get("domain"),
             os=req_os, browser=req_browser,
-        )
-        await _bump_stats(pool, "bids", 0, c["campaign_id"], c["li_id"], c["creative_id"], partner["id"])
+        ))
+        _fire_and_forget(_bump_stats(pool, "bids", 0, c["campaign_id"], c["li_id"], c["creative_id"], partner["id"]))
 
         bid_obj = {
             "id": bid_id,
@@ -626,9 +831,29 @@ async def process_bid_request(endpoint_key: str, req: dict):
     return {
         "id": req_id,
         "bidid": str(uuid.uuid4()),
-        "cur": "USD",
+        "cur": CURRENCY,
         "seatbid": seatbids,
     }
+
+
+async def _bump_domain_stats(pool, row, col: str, spend=0):
+    """Upsert domain_stats_hourly from a found bid_events row. Best-effort."""
+    domain = (row.get("domain") or "").strip().lower() if hasattr(row, "get") else (row["domain"] or "").strip().lower()
+    if not domain:
+        return
+    try:
+        await pool.execute(
+            f"""
+            INSERT INTO domain_stats_hourly (ts_hour, campaign_id, supply_partner_id, domain, {col}, spend)
+            VALUES (date_trunc('hour', now()), $1, $2, $3, 1, $4)
+            ON CONFLICT (ts_hour, campaign_id, supply_partner_id, domain)
+            DO UPDATE SET {col} = domain_stats_hourly.{col} + 1,
+                          spend = domain_stats_hourly.spend + $4
+            """,
+            row["campaign_id"], row["supply_partner_id"], domain, spend or 0,
+        )
+    except Exception:
+        logger.exception("domain stats bump failed (non-fatal)")
 
 
 async def _find_bid(pool, bid_id: str):
@@ -638,62 +863,50 @@ async def _find_bid(pool, bid_id: str):
 
 
 @router.get("/win")
-async def win_notice(bid: str, price: float | None = None):
+async def win_notice(bid: str, price: str | None = None):
+    """Win notice (nurl). `price` is the SSP-substituted ${AUCTION_PRICE};
+    it is untrusted input: clamped to [0, our bid price] before billing.
+    Billing is transactional and idempotent (see billing_core.bill_win).
+    `bid` is an HMAC-signed event token (see tokens.py)."""
+    bid = verify_event_token(bid)
+    if not bid:
+        raise HTTPException(status_code=403, detail="Invalid event token")
     pool = await get_pool()
-    if not await mark_once("win", bid):
-        return {"ok": True, "duplicate": True}
     row = await _find_bid(pool, bid)
     if not row:
         raise HTTPException(status_code=404, detail="Unknown bid")
-    clear_price = price if price is not None else float(row["price"] or 0)
-    cost = clear_price / 1000.0
+    clear_price = clamp_clearing_price(price, row["price"] or 0)
+    cost = cpm_to_cost(clear_price)
+
+    async with pool.acquire() as conn:
+        result = await bill_win(
+            conn,
+            bid_id=bid,
+            campaign_id=row["campaign_id"],
+            line_item_id=row["line_item_id"],
+            cost=cost,
+        )
+    if not result.billed:
+        return {"ok": True, "duplicate": True}
+
     await _log_event(
         pool, "win", bid_id=bid, imp_id=row["imp_id"], campaign_id=row["campaign_id"],
         line_item_id=row["line_item_id"], creative_id=row["creative_id"],
-        supply_partner_id=row["supply_partner_id"], price=float(row["price"] or 0),
+        supply_partner_id=row["supply_partner_id"], price=row["price"],
         clear_price=clear_price, device_type=row["device_type"],
         geo_country=row["geo_country"], ad_type=row["ad_type"], domain=row["domain"],
-                os=row["os"], browser=row["browser"],
+        os=row["os"], browser=row["browser"],
     )
+    await _bump_domain_stats(pool, row, "wins", result.cost if result else 0)
     await _bump_stats(pool, "wins", cost, row["campaign_id"], row["line_item_id"], row["creative_id"], row["supply_partner_id"])
-    await pool.execute(
-        "UPDATE campaigns SET spent_today = spent_today + $2, spent_total = spent_total + $2 WHERE id = $1",
-        row["campaign_id"], cost,
-    )
-    await pool.execute(
-        "UPDATE line_items SET spent_today = spent_today + $2 WHERE id = $1",
-        row["line_item_id"], cost,
-    )
-    # Billing: deduct advertiser balance and write to the ledger
-    adv = await pool.fetchrow(
-        """
-        UPDATE advertisers a SET balance = a.balance - $2, updated_at = now()
-        FROM campaigns c
-        WHERE c.id = $1 AND a.id = c.advertiser_id
-        RETURNING a.id AS advertiser_id, a.user_id, a.balance
-        """,
-        row["campaign_id"], cost,
-    )
-    if adv:
-        await pool.execute(
-            """
-            INSERT INTO transactions (user_id, advertiser_id, type, amount, balance_after, description)
-            VALUES ($1, $2, 'spend', $3, $4, $5)
-            """,
-            adv["user_id"], adv["advertiser_id"], -cost, float(adv["balance"]),
-            f"Win notice bid={bid}",
-        )
-        # Auto-pause campaigns when the advertiser runs out of money
-        if float(adv["balance"]) <= 0:
-            await pool.execute(
-                "UPDATE campaigns SET status = 'paused', updated_at = now() WHERE advertiser_id = $1 AND status = 'active'",
-                adv["advertiser_id"],
-            )
     return {"ok": True}
 
 
 @router.get("/imp")
 async def impression(bid: str):
+    bid = verify_event_token(bid)
+    if not bid:
+        return Response(content=_PIXEL, media_type="image/gif")
     pool = await get_pool()
     if not await mark_once("imp", bid):
         return Response(content=_PIXEL, media_type="image/gif")
@@ -706,13 +919,19 @@ async def impression(bid: str):
             geo_country=row["geo_country"], ad_type=row["ad_type"], domain=row["domain"],
                 os=row["os"], browser=row["browser"],
         )
+        await _bump_domain_stats(pool, row, "impressions")
         await _bump_stats(pool, "impressions", 0, row["campaign_id"], row["line_item_id"], row["creative_id"], row["supply_partner_id"])
         # Count the impression against the frequency cap
         r = get_redis()
         meta = await r.get(f"bidfreq:{bid}")
         if meta:
-            device_id, _, period = meta.partition("|")
-            await bump_frequency(str(row["campaign_id"]), device_id, int(period or 24))
+            device_id, _, payload = meta.partition("|")
+            try:
+                windows = [(int(a), int(b)) for a, b in json.loads(payload)]
+            except Exception:
+                # Legacy meta format: "device|period_hours"
+                windows = [(0, int(payload or 24))]
+            await bump_frequency_multi(str(row["campaign_id"]), device_id, windows)
     return Response(content=_PIXEL, media_type="image/gif")
 
 
@@ -725,6 +944,9 @@ _VIDEO_EVENTS = {"start", "firstQuartile", "midpoint", "thirdQuartile", "complet
 async def video_event(bid: str, e: str):
     """VAST tracking-event callback: start / quartiles / complete / skip."""
     if e not in _VIDEO_EVENTS:
+        return Response(content=_PIXEL, media_type="image/gif")
+    bid = verify_event_token(bid)
+    if not bid:
         return Response(content=_PIXEL, media_type="image/gif")
     pool = await get_pool()
     if not await mark_once(f"vev:{e}", bid):
@@ -747,6 +969,9 @@ async def video_event(bid: str, e: str):
 
 @router.get("/click")
 async def click(bid: str, r: str = ""):
+    bid = verify_event_token(bid)
+    if not bid:
+        raise HTTPException(status_code=403, detail="Invalid event token")
     pool = await get_pool()
     row = None
     if await mark_once("click", bid):
@@ -759,6 +984,7 @@ async def click(bid: str, r: str = ""):
                 geo_country=row["geo_country"], ad_type=row["ad_type"], domain=row["domain"],
                 os=row["os"], browser=row["browser"],
             )
+            await _bump_domain_stats(pool, row, "clicks")
             await _bump_stats(pool, "clicks", 0, row["campaign_id"], row["line_item_id"], row["creative_id"], row["supply_partner_id"])
     # Redirect target: explicit r param, else fall back to the creative's click_url
     if not (r and r.startswith(("http://", "https://"))):

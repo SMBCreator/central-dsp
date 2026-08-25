@@ -2,7 +2,7 @@
 
 import { useState } from "react"
 import useSWR from "swr"
-import { fetcher } from "@/lib/api"
+import { api, fetcher } from "@/lib/api"
 import {
   fmtMoney,
   fmtNum,
@@ -11,8 +11,17 @@ import {
   type StatsSummary,
   type TimeseriesPoint,
 } from "@/lib/types"
-import { Card, CardHeader, ChartCard, EmptyState, KpiCard, PillTabs, Spinner, Table } from "@/components/ui"
+import { Button, Card, CardHeader, ChartCard, EmptyState, KpiCard, PillTabs, Spinner, Table } from "@/components/ui"
 import { TimeseriesChart } from "@/components/timeseries-chart"
+
+type DomainRow = {
+  domain: string
+  wins: number
+  impressions: number
+  clicks: number
+  spend: number
+  blacklisted: boolean
+}
 
 const DIMENSIONS = [
   { key: "campaign", label: "По кампаниям" },
@@ -33,6 +42,21 @@ export default function AnalyticsPage() {
   const { data: summary } = useSWR<StatsSummary>(`/stats/summary?hours=${hours}`, fetcher)
   const { data: series } = useSWR<TimeseriesPoint[]>(`/stats/timeseries?hours=${hours}`, fetcher)
   const { data: breakdown } = useSWR<BreakdownRow[]>(`/stats/breakdown?hours=${hours}&dimension=${dim}`, fetcher)
+  const { data: domains, mutate: mutateDomains } = useSWR<DomainRow[]>(`/stats/domains?hours=${hours}`, fetcher)
+  const [blacklisting, setBlacklisting] = useState<string | null>(null)
+
+  async function toBlacklist(domain: string) {
+    setBlacklisting(domain)
+    try {
+      await api("/settings/domain-lists", {
+        method: "POST",
+        body: JSON.stringify({ domain, list_type: "black", source: "stats_click" }),
+      })
+      await mutateDomains()
+    } finally {
+      setBlacklisting(null)
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -102,6 +126,45 @@ export default function AnalyticsPage() {
             </Table>
           ) : (
             <EmptyState title="Нет данных" description="Запустите трафик, чтобы увидеть разбивку." />
+          )
+        ) : (
+          <Spinner />
+        )}
+      </Card>
+
+      <Card>
+        <CardHeader
+          title="Площадки"
+          subtitle="Домены и приложения, где выкупались показы. Клик — в чёрный список (глобально, все кампании)."
+        />
+        {domains ? (
+          domains.length > 0 ? (
+            <Table headers={["Домен", "Выигрыши", "Показы", "Клики", "Расход", ""]}>
+              {domains.map((d) => (
+                <tr key={d.domain} className="hover:bg-surface">
+                  <td className="px-4 py-3 font-mono text-xs font-medium text-foreground">{d.domain}</td>
+                  <td className="px-4 py-3 font-mono text-xs">{fmtNum(d.wins)}</td>
+                  <td className="px-4 py-3 font-mono text-xs">{fmtNum(d.impressions)}</td>
+                  <td className="px-4 py-3 font-mono text-xs">{fmtNum(d.clicks)}</td>
+                  <td className="px-4 py-3 font-mono text-xs">{fmtMoney(d.spend)}</td>
+                  <td className="px-4 py-3 text-right">
+                    {d.blacklisted ? (
+                      <span className="text-xs text-muted">В чёрном списке</span>
+                    ) : (
+                      <Button
+                        variant="secondary"
+                        onClick={() => toBlacklist(d.domain)}
+                        disabled={blacklisting === d.domain}
+                      >
+                        {blacklisting === d.domain ? "..." : "В блэклист"}
+                      </Button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </Table>
+          ) : (
+            <EmptyState title="Нет данных по площадкам" description="Статистика по доменам появится после первых выкупленных показов." />
           )
         ) : (
           <Spinner />

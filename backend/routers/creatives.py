@@ -3,6 +3,7 @@ import json
 from fastapi import APIRouter, Depends, HTTPException
 
 from auth import current_user
+from rbac import require_campaign_editor
 from db import get_pool
 from schemas import CreativeIn, CreativePatch
 
@@ -54,7 +55,7 @@ async def list_creatives(campaign_id: str | None = None, user: dict = Depends(cu
 
 
 @router.post("", status_code=201)
-async def create_creative(body: CreativeIn, user: dict = Depends(current_user)):
+async def create_creative(body: CreativeIn, user: dict = Depends(require_campaign_editor)):
     _validate_type_fields(body)
     pool = await get_pool()
     camp = await pool.fetchval(
@@ -66,19 +67,21 @@ async def create_creative(body: CreativeIn, user: dict = Depends(current_user)):
         """
         INSERT INTO creatives (campaign_id, line_item_id, user_id, name, type, subtype, width, height,
                                asset_url, click_url, html_snippet, native_title, native_description,
-                               native_cta, native_icon_url, video_url, video_duration, vast_xml, crop, status)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,'approved') RETURNING *
+                               native_cta, native_icon_url, video_url, video_duration, vast_xml, crop,
+                               imp_tracker_url, click_tracker_url, status)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,'approved') RETURNING *
         """,
         body.campaign_id, body.line_item_id, user["id"], body.name, body.type, body.subtype, body.width,
         body.height, body.asset_url, body.click_url, body.html_snippet, body.native_title,
         body.native_description, body.native_cta, body.native_icon_url, body.video_url,
         body.video_duration, body.vast_xml, json.dumps(body.crop) if body.crop else None,
+        body.imp_tracker_url, body.click_tracker_url,
     )
     return _serialize(row)
 
 
 @router.patch("/{creative_id}")
-async def update_creative(creative_id: str, body: CreativePatch, user: dict = Depends(current_user)):
+async def update_creative(creative_id: str, body: CreativePatch, user: dict = Depends(require_campaign_editor)):
     updates = body.model_dump(exclude_none=True)
     if not updates:
         raise HTTPException(status_code=400, detail="Нет полей для обновления")
@@ -97,7 +100,7 @@ async def update_creative(creative_id: str, body: CreativePatch, user: dict = De
 
 
 @router.delete("/{creative_id}", status_code=204)
-async def delete_creative(creative_id: str, user: dict = Depends(current_user)):
+async def delete_creative(creative_id: str, user: dict = Depends(require_campaign_editor)):
     pool = await get_pool()
     result = await pool.execute(
         "DELETE FROM creatives WHERE id = $1 AND user_id = $2", creative_id, user["id"]

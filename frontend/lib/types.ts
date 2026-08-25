@@ -67,6 +67,8 @@ export interface Targeting {
   hours?: number[]
   days?: number[]
   ssp_allowlist?: string[]
+  audience_include?: string[]
+  audience_exclude?: string[]
   ad_types?: string[]
   /* Inventory environment & supply quality */
   traffic_types?: string[] // "site" | "app"

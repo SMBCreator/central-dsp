@@ -1,8 +1,10 @@
 from datetime import date
 
+import json
 from fastapi import APIRouter, Depends, HTTPException
 
 from auth import current_user
+from rbac import can_see_all, require_campaign_editor, require_campaign_write
 from db import get_pool
 from schemas import CampaignIn, CampaignPatch
 
@@ -14,6 +16,11 @@ _DATES = {"start_date", "end_date"}
 
 def _serialize(row) -> dict:
     d = dict(row)
+    if isinstance(d.get("frequency_caps"), str):
+        try:
+            d["frequency_caps"] = json.loads(d["frequency_caps"])
+        except Exception:
+            d["frequency_caps"] = None
     for k in ("id", "advertiser_id", "user_id"):
         d[k] = str(d[k])
     for k in ("group_id", "pixel_id", "goal_id"):
@@ -35,19 +42,28 @@ def _parse_date(val: str | None) -> date | None:
 @router.get("")
 async def list_campaigns(user: dict = Depends(current_user)):
     pool = await get_pool()
-    rows = await pool.fetch(
-        """
-        SELECT c.*, a.name AS advertiser_name
-        FROM campaigns c JOIN advertisers a ON a.id = c.advertiser_id
-        WHERE c.user_id = $1 ORDER BY c.created_at DESC
-        """,
-        user["id"],
-    )
+    if can_see_all(user):
+        rows = await pool.fetch(
+            """
+            SELECT c.*, a.name AS advertiser_name
+            FROM campaigns c JOIN advertisers a ON a.id = c.advertiser_id
+            ORDER BY c.created_at DESC
+            """
+        )
+    else:
+        rows = await pool.fetch(
+            """
+            SELECT c.*, a.name AS advertiser_name
+            FROM campaigns c JOIN advertisers a ON a.id = c.advertiser_id
+            WHERE c.user_id = $1 ORDER BY c.created_at DESC
+            """,
+            user["id"],
+        )
     return [_serialize(r) for r in rows]
 
 
 @router.post("", status_code=201)
-async def create_campaign(body: CampaignIn, user: dict = Depends(current_user)):
+async def create_campaign(body: CampaignIn, user: dict = Depends(require_campaign_editor)):
     pool = await get_pool()
     adv = await pool.fetchval(
         "SELECT 1 FROM advertisers WHERE id = $1 AND user_id = $2", body.advertiser_id, user["id"]
@@ -57,12 +73,15 @@ async def create_campaign(body: CampaignIn, user: dict = Depends(current_user)):
     row = await pool.fetchrow(
         """
         INSERT INTO campaigns (advertiser_id, user_id, name, objective, daily_budget, total_budget,
-                               start_date, end_date, pacing, frequency_cap_impressions, frequency_cap_period_hours, group_id)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *
+                               start_date, end_date, pacing, frequency_cap_impressions, frequency_cap_period_hours,
+                               group_id, kktu_code, kktu_label, bid_shading, frequency_caps)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *
         """,
         body.advertiser_id, user["id"], body.name, body.objective, body.daily_budget,
         body.total_budget, _parse_date(body.start_date), _parse_date(body.end_date),
         body.pacing, body.frequency_cap_impressions, body.frequency_cap_period_hours, body.group_id,
+        body.kktu_code, body.kktu_label, body.bid_shading,
+        json.dumps([w.model_dump() for w in body.frequency_caps]) if body.frequency_caps else None,
     )
     return _serialize(row)
 
@@ -79,18 +98,48 @@ async def get_campaign(campaign_id: str, user: dict = Depends(current_user)):
 
 
 @router.patch("/{campaign_id}")
-async def update_campaign(campaign_id: str, body: CampaignPatch, user: dict = Depends(current_user)):
+async def update_campaign(campaign_id: str, body: CampaignPatch, user: dict = Depends(require_campaign_editor)):
     updates = body.model_dump(exclude_none=True)
     if not updates:
         raise HTTPException(status_code=400, detail="Нет полей для обновления")
     for k in _DATES:
         if k in updates:
             updates[k] = _parse_date(updates[k])
+    if "frequency_caps" in updates:
+        updates["frequency_caps"] = json.dumps(updates["frequency_caps"])
     pool = await get_pool()
     sets, values = [], []
     for i, (k, v) in enumerate(updates.items(), start=3):
         sets.append(f"{k} = ${i}")
         values.append(v)
+    # Launch guard (ФЗ-347): кампания не активируется, пока у всех её
+    # креативов нет erid (маркировка через ОРД). ORD_LAUNCH_GUARD=off — только dev.
+    import os as _os
+    if updates.get("status") == "active" and _os.getenv("ORD_LAUNCH_GUARD", "on") != "off":
+        # Гуард действует только для РФ-трафика: Россия явно выбрана в гео
+        # хотя бы одного line item, или гео не ограничено (весь мир включает РФ).
+        targets_ru = await pool.fetchval(
+            """SELECT bool_or(
+                     COALESCE(jsonb_array_length(targeting->'geo_countries'), 0) = 0
+                     OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(targeting->'geo_countries') g
+                                WHERE upper(g) IN ('RU','RUS'))
+                   )
+               FROM line_items WHERE campaign_id = $1""",
+            campaign_id,
+        )
+        unmarked = 0
+        if targets_ru is None or targets_ru:  # нет line items = считаем, что РФ возможна
+            unmarked = await pool.fetchval(
+                """SELECT count(*) FROM creatives
+                   WHERE campaign_id = $1 AND (erid IS NULL OR erid = '')""",
+                campaign_id,
+            )
+        if unmarked:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Нельзя активировать: {unmarked} креатив(ов) без erid. "
+                       "Зарегистрируйте креативы в ОРД (раздел Маркировка).",
+            )
     row = await pool.fetchrow(
         f"UPDATE campaigns SET {', '.join(sets)}, updated_at = now() WHERE id = $1 AND user_id = $2 RETURNING *",
         campaign_id, user["id"], *values,
@@ -101,7 +150,7 @@ async def update_campaign(campaign_id: str, body: CampaignPatch, user: dict = De
 
 
 @router.delete("/{campaign_id}", status_code=204)
-async def delete_campaign(campaign_id: str, user: dict = Depends(current_user)):
+async def delete_campaign(campaign_id: str, user: dict = Depends(require_campaign_editor)):
     pool = await get_pool()
     result = await pool.execute(
         "DELETE FROM campaigns WHERE id = $1 AND user_id = $2", campaign_id, user["id"]
@@ -136,7 +185,7 @@ async def list_optimizer_blocks(campaign_id: str, user: dict = Depends(current_u
 
 
 @router.delete("/{campaign_id}/blocks/{block_id}", status_code=204)
-async def remove_optimizer_block(campaign_id: str, block_id: str, user: dict = Depends(current_user)):
+async def remove_optimizer_block(campaign_id: str, block_id: str, user: dict = Depends(require_campaign_editor)):
     """Manually unblock a source (the optimizer will not re-add it unless metrics degrade again)."""
     pool = await get_pool()
     deleted = await pool.fetchval(
@@ -147,3 +196,39 @@ async def remove_optimizer_block(campaign_id: str, block_id: str, user: dict = D
     )
     if not deleted:
         raise HTTPException(status_code=404, detail="Блок не найден")
+
+
+@router.get("/{campaign_id}/shading")
+async def get_shading_factors(campaign_id: str, user: dict = Depends(current_user)):
+    """Текущие факторы bid-шейдинга по SSP + оценка экономии за 7 дней."""
+    pool = await get_pool()
+    own = await pool.fetchval(
+        "SELECT 1 FROM campaigns WHERE id = $1 AND user_id = $2", campaign_id, user["id"]
+    )
+    if not own:
+        raise HTTPException(status_code=404, detail="Кампания не найдена")
+    factors = await pool.fetch(
+        """
+        SELECT f.supply_partner_id, sp.name AS partner_name, f.factor,
+               f.bids, f.wins, f.avg_ratio, f.updated_at
+        FROM bid_shading_factors f
+        JOIN supply_partners sp ON sp.id = f.supply_partner_id
+        WHERE f.campaign_id = $1
+        ORDER BY sp.name
+        """,
+        campaign_id,
+    )
+    savings = await pool.fetchval(
+        """
+        SELECT COALESCE(sum(price - clear_price), 0)
+        FROM bid_events
+        WHERE event_type = 'win' AND campaign_id = $1
+          AND clear_price IS NOT NULL AND price > clear_price
+          AND created_at > now() - interval '7 days'
+        """,
+        campaign_id,
+    )
+    return {
+        "factors": [dict(f) for f in factors],
+        "savings_7d": float(savings or 0),
+    }

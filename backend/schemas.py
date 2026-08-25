@@ -32,6 +32,11 @@ class AdvertiserPatch(BaseModel):
 
 
 # --- Campaigns ---------------------------------------------------------------
+class FreqCapWindow(BaseModel):
+    impressions: int = Field(ge=1, le=1000)
+    period_hours: int = Field(ge=1, le=720)
+
+
 class CampaignIn(BaseModel):
     advertiser_id: str
     name: str = Field(min_length=1, max_length=200)
@@ -44,6 +49,11 @@ class CampaignIn(BaseModel):
     pacing: str = Field(default="even", pattern="^(even|asap)$")
     frequency_cap_impressions: int | None = Field(default=None, ge=1, le=100)
     frequency_cap_period_hours: int | None = Field(default=None, ge=1, le=168)
+    frequency_caps: list[FreqCapWindow] | None = Field(default=None, max_length=3)
+    # Тематика ККТУ (ОРД): код и подпись; привязывается к креативам при регистрации
+    kktu_code: str | None = Field(default=None, max_length=20)
+    kktu_label: str | None = Field(default=None, max_length=300)
+    bid_shading: bool = False
 
 
 class CampaignPatch(BaseModel):
@@ -57,6 +67,7 @@ class CampaignPatch(BaseModel):
     pacing: str | None = Field(default=None, pattern="^(even|asap)$")
     frequency_cap_impressions: int | None = Field(default=None, ge=1, le=100)
     frequency_cap_period_hours: int | None = Field(default=None, ge=1, le=168)
+    frequency_caps: list[FreqCapWindow] | None = Field(default=None, max_length=3)
     # Optimization: pixel-driven buying
     pixel_id: str | None = None
     goal_id: str | None = None
@@ -66,6 +77,9 @@ class CampaignPatch(BaseModel):
     target_cpv: float | None = Field(default=None, ge=0)
     auto_optimize: bool | None = None
     group_id: str | None = None
+    kktu_code: str | None = Field(default=None, max_length=20)
+    kktu_label: str | None = Field(default=None, max_length=300)
+    bid_shading: bool | None = None
 
 
 # --- Line items ---------------------------------------------------------------
@@ -110,10 +124,15 @@ class CreativeIn(BaseModel):
     video_duration: int | None = Field(default=None, ge=1, le=600)
     vast_xml: str | None = None
     crop: dict | None = None
+    # Сторонние трекеры (показ и клик) — пиксели аудита
+    imp_tracker_url: str | None = Field(default=None, max_length=1000)
+    click_tracker_url: str | None = Field(default=None, max_length=1000)
 
 
 class CreativePatch(BaseModel):
     name: str | None = None
+    imp_tracker_url: str | None = Field(default=None, max_length=1000)
+    click_tracker_url: str | None = Field(default=None, max_length=1000)
     status: str | None = Field(default=None, pattern="^(pending|approved|rejected|archived)$")
     asset_url: str | None = None
     click_url: str | None = None
@@ -151,10 +170,10 @@ class SupplyPartnerPatch(BaseModel):
 class RuleIn(BaseModel):
     campaign_id: str | None = None
     name: str = Field(min_length=1, max_length=200)
-    metric: str = Field(pattern="^(ctr|cpm|cpc|spend|impressions|clicks|win_rate)$")
+    metric: str = Field(pattern="^(ctr|cpm|cpc|cpa|cvr|spend|impressions|clicks|conversions|win_rate|budget_spent_pct)$")
     operator: str = Field(pattern="^(gt|lt|gte|lte)$")
     threshold: float
-    action: str = Field(pattern="^(pause_campaign|pause_line_item|decrease_bid|increase_bid|notify)$")
+    action: str = Field(pattern="^(pause_campaign|pause_line_item|decrease_bid|increase_bid|decrease_daily_budget|increase_daily_budget|blacklist_domains|notify)$")
     action_value: float | None = None
     window_hours: int = Field(default=24, ge=1, le=168)
 
@@ -162,9 +181,9 @@ class RuleIn(BaseModel):
 class RulePatch(BaseModel):
     name: str | None = None
     status: str | None = Field(default=None, pattern="^(active|paused|archived)$")
-    metric: str | None = Field(default=None, pattern="^(ctr|cpm|cpc|spend|impressions|clicks|win_rate)$")
+    metric: str | None = Field(default=None, pattern="^(ctr|cpm|cpc|cpa|cvr|spend|impressions|clicks|conversions|win_rate|budget_spent_pct)$")
     operator: str | None = Field(default=None, pattern="^(gt|lt|gte|lte)$")
     threshold: float | None = None
-    action: str | None = Field(default=None, pattern="^(pause_campaign|pause_line_item|decrease_bid|increase_bid|notify)$")
+    action: str | None = Field(default=None, pattern="^(pause_campaign|pause_line_item|decrease_bid|increase_bid|decrease_daily_budget|increase_daily_budget|blacklist_domains|notify)$")
     action_value: float | None = None
     window_hours: int | None = Field(default=None, ge=1, le=168)

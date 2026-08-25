@@ -11,3 +11,8 @@ dependencies = [
     "pydantic>=2.9.0",
     "email-validator>=2.2.0",
 ]
+
+# This is an application, not a library: disable package discovery so
+# `pip install ./backend` installs only the dependencies.
+[tool.setuptools]
+packages = []

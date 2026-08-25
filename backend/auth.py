@@ -44,7 +44,7 @@ async def current_user(cdsp_session: str | None = Cookie(default=None)) -> dict:
     pool = await get_pool()
     row = await pool.fetchrow(
         """
-        SELECT u.id, u.email, u.name, u.role, u.status, s.token, s.expires_at
+        SELECT u.id, u.email, u.name, u.role, u.status, u.parent_user_id, u.markup_pct, u.permissions, s.token, s.expires_at
         FROM sessions s JOIN users u ON u.id = s.user_id
         WHERE s.token = $1
         """,
@@ -57,7 +57,17 @@ async def current_user(cdsp_session: str | None = Cookie(default=None)) -> dict:
         raise HTTPException(status_code=401, detail="Сессия истекла")
     if row["status"] != "active":
         raise HTTPException(status_code=403, detail="Аккаунт заблокирован")
-    return dict(row)
+    u = dict(row)
+    perms = u.get("permissions")
+    if isinstance(perms, str):
+        import json as _json
+        try:
+            u["permissions"] = _json.loads(perms)
+        except Exception:
+            u["permissions"] = {}
+    elif perms is None:
+        u["permissions"] = {}
+    return u
 
 
 def require_role(*roles: str):

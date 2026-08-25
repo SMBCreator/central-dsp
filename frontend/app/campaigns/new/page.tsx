@@ -27,6 +27,35 @@ const OBJECTIVES = [
 
 const STEPS = ["Формат", "Основное", "Бюджет и ставка", "Таргетинг", "Креативы"]
 
+
+const KKTU_CATEGORIES: { code: string; label: string }[] = [
+  { code: "1", label: "Продукты питания и напитки" },
+  { code: "2", label: "Алкоголь (ограничено)" },
+  { code: "3", label: "Одежда, обувь, аксессуары" },
+  { code: "4", label: "Бытовая техника и электроника" },
+  { code: "5", label: "Мебель и товары для дома" },
+  { code: "6", label: "Строительство и ремонт" },
+  { code: "7", label: "Автомобили и транспорт" },
+  { code: "8", label: "Недвижимость" },
+  { code: "9", label: "Финансовые услуги и банки" },
+  { code: "10", label: "Страхование" },
+  { code: "11", label: "Медицина и фармацевтика" },
+  { code: "12", label: "Красота и уход" },
+  { code: "13", label: "Спорт и фитнес" },
+  { code: "14", label: "Туризм и путешествия" },
+  { code: "15", label: "Образование" },
+  { code: "16", label: "Развлечения и досуг" },
+  { code: "17", label: "IT, софт и интернет-сервисы" },
+  { code: "18", label: "Телеком и связь" },
+  { code: "19", label: "Маркетплейсы и ритейл" },
+  { code: "20", label: "Услуги для бизнеса (B2B)" },
+  { code: "21", label: "Работа и HR" },
+  { code: "22", label: "Детские товары" },
+  { code: "23", label: "Зоотовары" },
+  { code: "24", label: "Азартные игры, лотереи (ограничено)" },
+  { code: "25", label: "Прочее" },
+]
+
 export default function NewCampaignPage() {
   const router = useRouter()
   const { data: advertisers } = useSWR<Advertiser[]>("/advertisers", fetcher)
@@ -39,13 +68,14 @@ export default function NewCampaignPage() {
   const [name, setName] = useState("")
   const [advertiserId, setAdvertiserId] = useState("")
   const [objective, setObjective] = useState("awareness")
+  const [kktu, setKktu] = useState("")
   const [groupId, setGroupId] = useState("")
   const [newGroupName, setNewGroupName] = useState("")
   const [startDate, setStartDate] = useState("")
   const [endDate, setEndDate] = useState("")
   const [pacing, setPacing] = useState("even")
-  const [freqCapImps, setFreqCapImps] = useState("")
-  const [freqCapHours, setFreqCapHours] = useState("24")
+  const [bidShading, setBidShading] = useState(false)
+  const [freqCaps, setFreqCaps] = useState<{ imps: string; hours: string }[]>([])
   // Step 2: budget + bid + optimizer targets
   const [dailyBudget, setDailyBudget] = useState("")
   const [totalBudget, setTotalBudget] = useState("")
@@ -85,6 +115,8 @@ export default function NewCampaignPage() {
         method: "POST",
         body: {
           advertiser_id: advertiserId,
+          kktu_code: kktu || null,
+          kktu_label: kktu ? (KKTU_CATEGORIES.find((k) => k.code === kktu)?.label ?? null) : null,
           name: name.trim(),
           objective,
           daily_budget: Number(dailyBudget),
@@ -93,8 +125,13 @@ export default function NewCampaignPage() {
           start_date: startDate || null,
           end_date: endDate || null,
           pacing,
-          frequency_cap_impressions: freqCapImps ? Number(freqCapImps) : null,
-          frequency_cap_period_hours: freqCapImps ? Number(freqCapHours) || 24 : null,
+          bid_shading: bidShading,
+          frequency_caps: freqCaps.filter((w) => Number(w.imps) > 0).length
+            ? freqCaps
+                .filter((w) => Number(w.imps) > 0)
+                .slice(0, 3)
+                .map((w) => ({ impressions: Number(w.imps), period_hours: Number(w.hours) || 24 }))
+            : null,
         },
       })
       // Optimizer targets + auto-optimize
@@ -199,6 +236,15 @@ export default function NewCampaignPage() {
                 ))}
               </select>
             </Field>
+
+            <Field label="Тематика товара/услуги (ККТУ для ОРД)" hint="Обязательно для РФ-кампаний — попадёт в маркировку">
+              <select className={inputCls} value={kktu} onChange={(e) => setKktu(e.target.value)}>
+                <option value="">Не выбрано</option>
+                {KKTU_CATEGORIES.map((k) => (
+                  <option key={k.code} value={k.code}>{k.label}</option>
+                ))}
+              </select>
+            </Field>
             <Field label="Цель">
               <select value={objective} onChange={(e) => setObjective(e.target.value)} className={inputCls}>
                 {OBJECTIVES.map((o) => (
@@ -235,14 +281,69 @@ export default function NewCampaignPage() {
                 <option value="asap">Как можно быстрее (ASAP)</option>
               </select>
             </Field>
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="Frequency cap" hint="Показов на пользователя">
-                <input type="number" min="1" max="100" value={freqCapImps} onChange={(e) => setFreqCapImps(e.target.value)} className={inputCls} placeholder="Без лимита" />
-              </Field>
-              <Field label="Период, часов">
-                <input type="number" min="1" max="168" value={freqCapHours} onChange={(e) => setFreqCapHours(e.target.value)} className={inputCls} placeholder="24" disabled={!freqCapImps} />
-              </Field>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium text-foreground">Частотные капы</span>
+                {freqCaps.length < 3 ? (
+                  <button
+                    type="button"
+                    onClick={() => setFreqCaps([...freqCaps, { imps: "", hours: freqCaps.length === 0 ? "24" : "168" }])}
+                    className="text-xs font-medium text-primary hover:underline"
+                  >
+                    + Добавить окно
+                  </button>
+                ) : null}
+              </div>
+              {freqCaps.length === 0 ? (
+                <p className="text-xs text-muted-foreground">{"Без лимита. Добавьте до 3 окон — например, 3 показа в день и 10 в неделю."}</p>
+              ) : null}
+              {freqCaps.map((w, i) => (
+                <div key={i} className="flex items-end gap-2">
+                  <div className="flex-1">
+                    <label className="mb-1 block text-xs text-muted-foreground">Показов</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="1000"
+                      value={w.imps}
+                      onChange={(e) => setFreqCaps(freqCaps.map((x, j) => (j === i ? { ...x, imps: e.target.value } : x)))}
+                      className={inputCls}
+                      placeholder="3"
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <label className="mb-1 block text-xs text-muted-foreground">Период</label>
+                    <select
+                      value={w.hours}
+                      onChange={(e) => setFreqCaps(freqCaps.map((x, j) => (j === i ? { ...x, hours: e.target.value } : x)))}
+                      className={inputCls}
+                    >
+                      <option value="1">Час</option>
+                      <option value="24">Сутки</option>
+                      <option value="168">Неделя</option>
+                      <option value="720">Месяц</option>
+                    </select>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setFreqCaps(freqCaps.filter((_, j) => j !== i))}
+                    className="h-8 rounded-lg border border-border px-2 text-xs text-muted-foreground hover:bg-accent"
+                    aria-label="Удалить окно"
+                  >
+                    Удалить
+                  </button>
+                </div>
+              ))}
             </div>
+            <label className="flex items-start gap-2 text-sm text-foreground">
+              <input type="checkbox" checked={bidShading} onChange={(e) => setBidShading(e.target.checked)} className="mt-0.5 h-4 w-4 rounded border-border" />
+              <span>
+                Bid-шейдинг
+                <span className="block text-xs text-muted-foreground">
+                  {"Автоматически снижает ставку ближе к реальной цене клиринга (first-price). Экономия 15–30% без потери объёма — факторы пересчитываются ежечасно по каждой SSP."}
+                </span>
+              </span>
+            </label>
           </div>
         </Card>
       ) : null}

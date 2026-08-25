@@ -9,21 +9,32 @@ import { Button, Card, CardHeader, EmptyState, Field, inputCls, Modal, Spinner, 
 const METRICS = [
   { value: "ctr", label: "CTR, %" },
   { value: "win_rate", label: "Win Rate, %" },
-  { value: "spend", label: "Расход, USD" },
-  { value: "cpm", label: "eCPM, USD" },
+  { value: "spend", label: "Расход, ₽" },
+  { value: "cpm", label: "eCPM, ₽" },
+  { value: "cpc", label: "CPC, ₽" },
+  { value: "cpa", label: "CPA (цена конверсии), ₽" },
+  { value: "cvr", label: "CVR (конверсия из клика), %" },
+  { value: "conversions", label: "Конверсии" },
   { value: "impressions", label: "Показы" },
   { value: "clicks", label: "Клики" },
+  { value: "budget_spent_pct", label: "Израсходовано бюджета, %" },
 ]
 
 const OPERATORS = [
   { value: "lt", label: "меньше" },
+  { value: "lte", label: "меньше или равно" },
   { value: "gt", label: "больше" },
+  { value: "gte", label: "больше или равно" },
 ]
 
 const ACTIONS = [
   { value: "pause_campaign", label: "Поставить кампанию на паузу" },
+  { value: "pause_line_item", label: "Поставить позиции на паузу" },
   { value: "decrease_bid", label: "Понизить ставку на %" },
   { value: "increase_bid", label: "Повысить ставку на %" },
+  { value: "decrease_daily_budget", label: "Понизить дневной бюджет на %" },
+  { value: "increase_daily_budget", label: "Повысить дневной бюджет на %" },
+  { value: "blacklist_domains", label: "Автоблэклист площадок без кликов (значение = мин. показов)" },
   { value: "notify", label: "Только зафиксировать срабатывание" },
 ]
 

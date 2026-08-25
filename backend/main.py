@@ -7,26 +7,35 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from routers.advertisers import router as advertisers_router
+from routers.bidder_feed import router as bidder_feed_router
 from routers.auth_router import router as auth_router
 from routers.billing import router as billing_router
 from routers.campaigns import router as campaigns_router
 from routers.creatives import router as creatives_router
 from routers.cron import router as cron_router
 from routers.groups import router as groups_router
+from routers.settings import router as settings_router
+from routers.audiences_router import router as audiences_router
 from routers.line_items import router as line_items_router
 from routers.pixel import router as pixel_router
 from routers.rtb import router as rtb_router
+from routers.ord_router import router as ord_router
+from routers.users_router import router as users_router
 from routers.rules import router as rules_router
 from routers.share import router as share_router
 from routers.simulator import router as simulator_router
 from routers.stats import router as stats_router
 from routers.supply_partners import router as supply_partners_router
 
+from audit import AuditMiddleware
+
 app = FastAPI(
     title="CentralDSP API",
     version="1.0.0",
     description="Demand-Side Platform: management API + OpenRTB 2.5 bidder",
 )
+
+app.add_middleware(AuditMiddleware)
 
 app.include_router(auth_router)
 app.include_router(advertisers_router)
@@ -36,13 +45,18 @@ app.include_router(creatives_router)
 app.include_router(supply_partners_router)
 app.include_router(rules_router)
 app.include_router(stats_router)
+app.include_router(audiences_router)
+app.include_router(bidder_feed_router)
 app.include_router(rtb_router)
+app.include_router(ord_router)
+app.include_router(users_router)
 app.include_router(simulator_router)
 app.include_router(cron_router)
 app.include_router(billing_router)
 app.include_router(share_router)
 app.include_router(pixel_router)
 app.include_router(groups_router)
+app.include_router(settings_router)
 
 
 _VIEWER_WRITE_ALLOWED = {"/auth/logout", "/auth/login"}
