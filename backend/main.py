@@ -7,6 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from routers.advertisers import router as advertisers_router
+from routers.bidder_feed import router as bidder_feed_router
 from routers.auth_router import router as auth_router
 from routers.billing import router as billing_router
 from routers.campaigns import router as campaigns_router
@@ -43,6 +44,7 @@ app.include_router(creatives_router)
 app.include_router(supply_partners_router)
 app.include_router(rules_router)
 app.include_router(stats_router)
+app.include_router(bidder_feed_router)
 app.include_router(rtb_router)
 app.include_router(ord_router)
 app.include_router(users_router)

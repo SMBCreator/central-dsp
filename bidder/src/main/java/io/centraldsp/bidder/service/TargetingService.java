@@ -5,6 +5,7 @@ import io.centraldsp.bidder.model.campaign.CreativeDTO;
 import io.centraldsp.bidder.model.ortb.BidRequest;
 import io.centraldsp.bidder.model.ortb.Device;
 import io.centraldsp.bidder.model.ortb.Impression;
+import io.centraldsp.bidder.model.ortb.Banner;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -71,7 +72,7 @@ public class TargetingService {
             ZonedDateTime now = ZonedDateTime.now(ZoneOffset.UTC);
             int day  = now.getDayOfWeek().getValue() - 1; // 0=Mon..6=Sun
             int hour = now.getHour();
-            if (!campaign.getHourSchedule()[day][hour]) {
+            if (campaign.getHourSchedule()[day][hour] == 0) {
                 return Optional.empty();
             }
         }
@@ -137,7 +138,4 @@ public class TargetingService {
         return false;
     }
 
-    // Workaround: import Banner in same file since it's an inner class
-    private io.centraldsp.bidder.model.ortb.Banner Banner = null;
-    { Banner = null; } // suppress unused warning
 }

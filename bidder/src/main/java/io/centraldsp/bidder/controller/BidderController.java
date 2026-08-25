@@ -3,6 +3,9 @@ package io.centraldsp.bidder.controller;
 import io.centraldsp.bidder.model.ortb.BidRequest;
 import io.centraldsp.bidder.model.ortb.BidResponse;
 import io.centraldsp.bidder.service.BidEngineService;
+import io.centraldsp.bidder.model.campaign.PartnerDTO;
+import io.centraldsp.bidder.service.PartnerLoaderService;
+import io.centraldsp.bidder.service.QpsService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
@@ -24,6 +27,8 @@ import java.util.concurrent.atomic.AtomicLong;
 public class BidderController {
 
     private final BidEngineService bidEngine;
+    private final PartnerLoaderService partnerLoader;
+    private final QpsService qpsService;
 
     private final AtomicLong requestCount = new AtomicLong(0);
 
@@ -52,6 +57,45 @@ public class BidderController {
             return ResponseEntity.noContent().build();
         }
 
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Production bid endpoint, path-compatible with the Python bidder:
+     * POST /rtb/bid/{endpointKey} with optional x-centraldsp-token header.
+     * Enforces partner auth (constant-time) and the shared QPS limit.
+     */
+    @PostMapping(
+        value = "/rtb/bid/{endpointKey}",
+        consumes = MediaType.APPLICATION_JSON_VALUE,
+        produces = MediaType.APPLICATION_JSON_VALUE
+    )
+    public ResponseEntity<BidResponse> bidForPartner(
+            @PathVariable String endpointKey,
+            @RequestHeader(value = "x-centraldsp-token", required = false) String sspToken,
+            @RequestBody BidRequest bidRequest) {
+
+        PartnerDTO partner = partnerLoader.byEndpointKey(endpointKey);
+        if (partner == null) {
+            return ResponseEntity.status(404).build();
+        }
+        String expected = partner.getAuthToken();
+        if (expected != null && !expected.isEmpty()
+                && !java.security.MessageDigest.isEqual(
+                        expected.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        (sspToken == null ? "" : sspToken)
+                                .getBytes(java.nio.charset.StandardCharsets.UTF_8))) {
+            return ResponseEntity.status(403).build();
+        }
+        if (!qpsService.allow(partner.getId(), partner.getQpsLimit())) {
+            return ResponseEntity.status(429).build();
+        }
+
+        requestCount.incrementAndGet();
+        BidResponse response = bidEngine.process(bidRequest);
+        if (response.getSeatbid() == null || response.getSeatbid().isEmpty()) {
+            return ResponseEntity.noContent().build();
+        }
         return ResponseEntity.ok(response);
     }
 

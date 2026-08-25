@@ -39,6 +39,7 @@ public class BidEngineService {
     private final BudgetService budgetService;
     private final FrequencyCapService frequencyCapService;
     private final AdMarkupService adMarkupService;
+    private final EventTokenService eventTokenService;
 
     @Value("${win.notify.url:http://backend:8000/api/rtb/win-notice}")
     private String winNotifyUrl;
@@ -159,12 +160,12 @@ public class BidEngineService {
      */
     private String buildWinNoticeUrl(String auctionId, String impId,
                                      Long campaignId, Long creativeId) {
+        // Parity with the Python bidder: the win notice carries an
+        // HMAC-signed token (tokens.py format), not a bare bid id.
+        String bidId = UUID.randomUUID().toString();
         return winNotifyUrl
-                + "?auction_id=" + encode(auctionId)
-                + "&imp_id="     + encode(impId)
-                + "&campaign_id=" + campaignId
-                + "&creative_id=" + creativeId
-                + "&win_price=${AUCTION_PRICE}";
+                + "?bid=" + encode(eventTokenService.sign(bidId))
+                + "&price=${AUCTION_PRICE}";
     }
 
     private String resolveUserId(BidRequest request) {

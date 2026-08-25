@@ -91,7 +91,7 @@ public class BudgetService {
         String key = dailyKey(campaignId);
         try (Jedis jedis = jedisPool.getResource()) {
             jedis.select(redisDb);
-            jedis.incrbyfloat(key, winPrice);
+            jedis.incrByFloat(key, winPrice);
         } catch (Exception e) {
             log.error("[BudgetService] recordSpend failed: {}", e.getMessage());
         }
