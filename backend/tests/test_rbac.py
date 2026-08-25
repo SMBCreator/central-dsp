@@ -51,11 +51,31 @@ def test_platform_write_matrix(role, allowed):
 def test_can_see_all():
     for role in ("superadmin", "admin", "analyst", "finance"):
         assert rbac.can_see_all(_user(role)), role
-    for role in ("manager", "advertiser"):
+    for role in ("manager", "advertiser", "agency", "client"):
         assert not rbac.can_see_all(_user(role)), role
 
 
 def test_all_roles_covered():
     assert set(rbac.ALL_ROLES) == {
-        "superadmin", "admin", "manager", "advertiser", "analyst", "finance"
+        "superadmin", "admin", "manager", "advertiser", "analyst", "finance",
+        "agency", "client",
     }
+
+
+def test_new_roles_scoping():
+    # agency/client не видят всё
+    for role in ("agency", "client"):
+        assert not rbac.can_see_all(_user(role)), role
+    # agency входит в CAMPAIGN_WRITE, client — нет (только с флагом)
+    assert "agency" in rbac.CAMPAIGN_WRITE
+    assert "client" not in rbac.CAMPAIGN_WRITE
+
+
+def test_client_can_edit_flag():
+    u = _user("client")
+    u["permissions"] = {}
+    assert not rbac.client_can_edit(u)
+    u["permissions"] = {"can_edit_campaigns": True}
+    assert rbac.client_can_edit(u)
+    # для остальных ролей флаг не нужен
+    assert rbac.client_can_edit(_user("manager"))

@@ -18,6 +18,7 @@ from routers.line_items import router as line_items_router
 from routers.pixel import router as pixel_router
 from routers.rtb import router as rtb_router
 from routers.ord_router import router as ord_router
+from routers.users_router import router as users_router
 from routers.rules import router as rules_router
 from routers.share import router as share_router
 from routers.simulator import router as simulator_router
@@ -44,6 +45,7 @@ app.include_router(rules_router)
 app.include_router(stats_router)
 app.include_router(rtb_router)
 app.include_router(ord_router)
+app.include_router(users_router)
 app.include_router(simulator_router)
 app.include_router(cron_router)
 app.include_router(billing_router)
