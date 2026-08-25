@@ -18,6 +18,7 @@ import hmac as _hmac
 
 from billing_core import bill_win
 from audiences import check_audiences, store_clid_bridge
+from shading import get_factor as shading_get_factor
 from cache import bump_frequency, check_frequency_cap, check_qps, gate_and_reserve, get_redis, mark_once, reserve_budget
 from db import get_pool
 from money import CURRENCY, clamp_clearing_price, cpm_to_cost
@@ -577,7 +578,7 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
         SELECT li.id AS li_id, li.bid_price, li.bid_type, li.max_bid, li.daily_budget AS li_budget,
                li.targeting, li.campaign_id, li.user_id AS owner_id,
                c.daily_budget AS camp_budget, c.frequency_cap_impressions, c.frequency_cap_period_hours,
-               c.pacing, c.advertiser_id, adv.domain AS adv_domain,
+               c.pacing, c.advertiser_id, c.bid_shading, adv.domain AS adv_domain,
                cr.id AS creative_id, cr.type, cr.width, cr.height, cr.asset_url, cr.click_url,
                cr.html_snippet, cr.native_title, cr.native_description, cr.native_cta,
                cr.native_icon_url, cr.video_url, cr.video_duration, cr.vast_xml, cr.name,
@@ -704,6 +705,13 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
                 price = min(price, float(c["max_bid"]))
             if price < floor:
                 continue
+            # Bid shading (opt-in): pay closer to clearing price, never below floor
+            if c["bid_shading"]:
+                _sf = await shading_get_factor(str(c["campaign_id"]), str(partner["id"]))
+                if _sf < 1.0:
+                    price = max(floor * 1.01, price * _sf)
+                    if c["max_bid"]:
+                        price = min(price, float(c["max_bid"]))
             if best is None or price > best[0]:
                 c["_deal_id"] = _matched_deal(targeting, imp)
                 best = (price, c)

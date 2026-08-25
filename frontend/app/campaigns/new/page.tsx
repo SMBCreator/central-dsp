@@ -74,6 +74,7 @@ export default function NewCampaignPage() {
   const [startDate, setStartDate] = useState("")
   const [endDate, setEndDate] = useState("")
   const [pacing, setPacing] = useState("even")
+  const [bidShading, setBidShading] = useState(false)
   const [freqCapImps, setFreqCapImps] = useState("")
   const [freqCapHours, setFreqCapHours] = useState("24")
   // Step 2: budget + bid + optimizer targets
@@ -125,6 +126,7 @@ export default function NewCampaignPage() {
           start_date: startDate || null,
           end_date: endDate || null,
           pacing,
+          bid_shading: bidShading,
           frequency_cap_impressions: freqCapImps ? Number(freqCapImps) : null,
           frequency_cap_period_hours: freqCapImps ? Number(freqCapHours) || 24 : null,
         },
@@ -284,6 +286,15 @@ export default function NewCampaignPage() {
                 <input type="number" min="1" max="168" value={freqCapHours} onChange={(e) => setFreqCapHours(e.target.value)} className={inputCls} placeholder="24" disabled={!freqCapImps} />
               </Field>
             </div>
+            <label className="flex items-start gap-2 text-sm text-foreground">
+              <input type="checkbox" checked={bidShading} onChange={(e) => setBidShading(e.target.checked)} className="mt-0.5 h-4 w-4 rounded border-border" />
+              <span>
+                Bid-шейдинг
+                <span className="block text-xs text-muted-foreground">
+                  {"Автоматически снижает ставку ближе к реальной цене клиринга (first-price). Экономия 15–30% без потери объёма — факторы пересчитываются ежечасно по каждой SSP."}
+                </span>
+              </span>
+            </label>
           </div>
         </Card>
       ) : null}

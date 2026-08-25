@@ -47,6 +47,7 @@ class CampaignIn(BaseModel):
     # Тематика ККТУ (ОРД): код и подпись; привязывается к креативам при регистрации
     kktu_code: str | None = Field(default=None, max_length=20)
     kktu_label: str | None = Field(default=None, max_length=300)
+    bid_shading: bool = False
 
 
 class CampaignPatch(BaseModel):
@@ -71,6 +72,7 @@ class CampaignPatch(BaseModel):
     group_id: str | None = None
     kktu_code: str | None = Field(default=None, max_length=20)
     kktu_label: str | None = Field(default=None, max_length=300)
+    bid_shading: bool | None = None
 
 
 # --- Line items ---------------------------------------------------------------

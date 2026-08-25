@@ -68,13 +68,13 @@ async def create_campaign(body: CampaignIn, user: dict = Depends(require_campaig
         """
         INSERT INTO campaigns (advertiser_id, user_id, name, objective, daily_budget, total_budget,
                                start_date, end_date, pacing, frequency_cap_impressions, frequency_cap_period_hours,
-                               group_id, kktu_code, kktu_label)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *
+                               group_id, kktu_code, kktu_label, bid_shading)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *
         """,
         body.advertiser_id, user["id"], body.name, body.objective, body.daily_budget,
         body.total_budget, _parse_date(body.start_date), _parse_date(body.end_date),
         body.pacing, body.frequency_cap_impressions, body.frequency_cap_period_hours, body.group_id,
-        body.kktu_code, body.kktu_label,
+        body.kktu_code, body.kktu_label, body.bid_shading,
     )
     return _serialize(row)
 
@@ -187,3 +187,39 @@ async def remove_optimizer_block(campaign_id: str, block_id: str, user: dict = D
     )
     if not deleted:
         raise HTTPException(status_code=404, detail="Блок не найден")
+
+
+@router.get("/{campaign_id}/shading")
+async def get_shading_factors(campaign_id: str, user: dict = Depends(current_user)):
+    """Текущие факторы bid-шейдинга по SSP + оценка экономии за 7 дней."""
+    pool = await get_pool()
+    own = await pool.fetchval(
+        "SELECT 1 FROM campaigns WHERE id = $1 AND user_id = $2", campaign_id, user["id"]
+    )
+    if not own:
+        raise HTTPException(status_code=404, detail="Кампания не найдена")
+    factors = await pool.fetch(
+        """
+        SELECT f.supply_partner_id, sp.name AS partner_name, f.factor,
+               f.bids, f.wins, f.avg_ratio, f.updated_at
+        FROM bid_shading_factors f
+        JOIN supply_partners sp ON sp.id = f.supply_partner_id
+        WHERE f.campaign_id = $1
+        ORDER BY sp.name
+        """,
+        campaign_id,
+    )
+    savings = await pool.fetchval(
+        """
+        SELECT COALESCE(sum(price - clear_price), 0)
+        FROM bid_events
+        WHERE event_type = 'win' AND campaign_id = $1
+          AND clear_price IS NOT NULL AND price > clear_price
+          AND created_at > now() - interval '7 days'
+        """,
+        campaign_id,
+    )
+    return {
+        "factors": [dict(f) for f in factors],
+        "savings_7d": float(savings or 0),
+    }

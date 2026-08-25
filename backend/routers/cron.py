@@ -64,6 +64,15 @@ async def fx_refresh(request: Request):
     return {"ok": True, "rates": rates}
 
 
+@router.get("/shading")
+async def shading_recompute(request: Request):
+    """Ежечасный пересчёт факторов bid-шейдинга по (кампания, SSP)."""
+    _check_secret(request)
+    import shading
+    result = await shading.recompute_factors()
+    return {"ok": True, **result}
+
+
 @router.get("/ord-export")
 async def ord_monthly_export(request: Request, period: str | None = None):
     """Месячная выгрузка статистики показов в ОРД (ФЗ-347).
