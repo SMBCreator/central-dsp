@@ -15,6 +15,7 @@ from routers.creatives import router as creatives_router
 from routers.cron import router as cron_router
 from routers.groups import router as groups_router
 from routers.settings import router as settings_router
+from routers.audiences_router import router as audiences_router
 from routers.line_items import router as line_items_router
 from routers.pixel import router as pixel_router
 from routers.rtb import router as rtb_router
@@ -44,6 +45,7 @@ app.include_router(creatives_router)
 app.include_router(supply_partners_router)
 app.include_router(rules_router)
 app.include_router(stats_router)
+app.include_router(audiences_router)
 app.include_router(bidder_feed_router)
 app.include_router(rtb_router)
 app.include_router(ord_router)

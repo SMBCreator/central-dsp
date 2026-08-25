@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
+from audiences import process_pixel_event
 from auth import current_user
 from rbac import require_campaign_write
 from db import get_pool
@@ -178,6 +179,7 @@ async def collect(request: Request):
         device, browser, os_name, dur, clid,
     )
     await _match_goals(pool, pixel_id, session_id, event_type, event_name, url, clid)
+    await process_pixel_event(pool, pixel_id, clid, event_type, event_name, url)
     return Response(status_code=204, headers={"Access-Control-Allow-Origin": "*"})
 
 

@@ -67,6 +67,7 @@ export function TargetingEditor({
 }) {
   const set = (patch: Partial<Targeting>) => onChange({ ...value, ...patch })
   const { data: sspList } = useSWR<{ id: string; name: string; status: string }[]>("/supply-partners", fetcher)
+  const { data: audList } = useSWR<{ id: string; name: string; members: number; is_active: boolean }[]>("/audiences", fetcher)
   const ruSelected = (value.geo_countries || []).includes("RU")
 
   return (
@@ -187,6 +188,38 @@ export function TargetingEditor({
           ) : null}
         </div>
       </Field>
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <Field label="Аудитории: показывать только им" hint="Ретаргетинг по сегментам пикселя; пусто — все">
+          <div className="flex flex-wrap gap-2">
+            {(audList || []).filter((a) => a.is_active).map((a) => (
+              <Chip
+                key={a.id}
+                active={(value.audience_include || []).includes(a.id)}
+                onClick={() => set({ audience_include: toggle(value.audience_include, a.id) })}
+              >
+                {a.name} ({a.members})
+              </Chip>
+            ))}
+            {audList && audList.length === 0 ? (
+              <span className="text-xs text-muted">Нет сегментов — создайте в разделе «Аудитории»</span>
+            ) : null}
+          </div>
+        </Field>
+        <Field label="Аудитории: исключить" hint="Например, уже купившие">
+          <div className="flex flex-wrap gap-2">
+            {(audList || []).filter((a) => a.is_active).map((a) => (
+              <Chip
+                key={a.id}
+                active={(value.audience_exclude || []).includes(a.id)}
+                onClick={() => set({ audience_exclude: toggle(value.audience_exclude, a.id) })}
+              >
+                {a.name}
+              </Chip>
+            ))}
+          </div>
+        </Field>
+      </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Field label="Белый список доменов" hint="Через запятую; пусто — все площадки">

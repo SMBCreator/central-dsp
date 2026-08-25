@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 import hmac as _hmac
 
 from billing_core import bill_win
+from audiences import check_audiences, store_clid_bridge
 from cache import bump_frequency, check_frequency_cap, check_qps, gate_and_reserve, get_redis, mark_once, reserve_budget
 from db import get_pool
 from money import CURRENCY, clamp_clearing_price, cpm_to_cost
@@ -692,6 +693,12 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
                 continue
             if not _match_imp_targeting(targeting, imp):
                 continue
+            # Retargeting: audience include/exclude via Redis sets (fail-open)
+            _aud_inc = targeting.get("audience_include") or []
+            _aud_exc = targeting.get("audience_exclude") or []
+            if (_aud_inc or _aud_exc) and not await check_audiences(
+                    device_id or "", [str(x) for x in _aud_inc], [str(x) for x in _aud_exc]):
+                continue
             price = float(c["bid_price"])
             if c["max_bid"]:
                 price = min(price, float(c["max_bid"]))
@@ -729,6 +736,9 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
 
         bid_id = str(uuid.uuid4())
         event_token = sign_event_token(bid_id)
+        # Retargeting bridge: pixel reports clid == bid_id after the click
+        if device_id:
+            _fire_and_forget(store_clid_bridge(bid_id, device_id))
         nurl = f"{base}/api/rtb/win?bid={event_token}&price=${{AUCTION_PRICE}}"
         adm = _build_adm(c, base, event_token)
 
