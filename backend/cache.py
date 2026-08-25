@@ -59,28 +59,29 @@ async def reserve_budget(scope: str, entity_id: str, amount: float, budget: floa
 # atomic budget reservation on campaign AND line-item keys. Rolls back the
 # campaign reservation when the line-item budget is exhausted.
 _GATE_LUA = """
-local freq_key, camp_key, li_key = KEYS[1], KEYS[2], KEYS[3]
-local cap        = tonumber(ARGV[1])
-local cost       = tonumber(ARGV[2])
-local camp_budget= tonumber(ARGV[3])
-local li_budget  = tonumber(ARGV[4])
-local ttl        = tonumber(ARGV[5])
-if cap > 0 then
-  local seen = tonumber(redis.call('GET', freq_key) or '0')
-  if seen >= cap then return 0 end
+local cost        = tonumber(ARGV[4])
+local camp_budget = tonumber(ARGV[5])
+local li_budget   = tonumber(ARGV[6])
+local ttl         = tonumber(ARGV[7])
+for i = 1, 3 do
+  local cap = tonumber(ARGV[i])
+  if cap > 0 then
+    local seen = tonumber(redis.call('GET', KEYS[i]) or '0')
+    if seen >= cap then return 0 end
+  end
 end
-local camp = redis.call('INCRBYFLOAT', camp_key, cost)
-if redis.call('TTL', camp_key) < 0 then redis.call('EXPIRE', camp_key, ttl) end
+local camp = redis.call('INCRBYFLOAT', KEYS[4], cost)
+if redis.call('TTL', KEYS[4]) < 0 then redis.call('EXPIRE', KEYS[4], ttl) end
 if tonumber(camp) > camp_budget then
-  redis.call('INCRBYFLOAT', camp_key, -cost)
+  redis.call('INCRBYFLOAT', KEYS[4], -cost)
   return 0
 end
 if li_budget > 0 then
-  local li = redis.call('INCRBYFLOAT', li_key, cost)
-  if redis.call('TTL', li_key) < 0 then redis.call('EXPIRE', li_key, ttl) end
+  local li = redis.call('INCRBYFLOAT', KEYS[5], cost)
+  if redis.call('TTL', KEYS[5]) < 0 then redis.call('EXPIRE', KEYS[5], ttl) end
   if tonumber(li) > li_budget then
-    redis.call('INCRBYFLOAT', li_key, -cost)
-    redis.call('INCRBYFLOAT', camp_key, -cost)
+    redis.call('INCRBYFLOAT', KEYS[5], -cost)
+    redis.call('INCRBYFLOAT', KEYS[4], -cost)
     return 0
   end
 end
@@ -96,23 +97,37 @@ async def gate_and_reserve(
     li_budget: float,
     device_id: str = "",
     freq_cap: int = 0,
+    caps: list[tuple[int, int]] | None = None,
 ) -> bool:
     """Bid-time gate in a single Redis roundtrip.
 
-    Checks the frequency cap (read-only) and atomically reserves budget on
-    both the campaign and line-item daily-spend keys. Either both
-    reservations succeed or neither does.
+    Checks up to 3 frequency-cap windows (read-only) and atomically reserves
+    budget on both the campaign and line-item daily-spend keys. Either both
+    reservations succeed or neither does. `caps` is a list of
+    (impressions, period_hours); the legacy `freq_cap` (24h) is used when
+    `caps` is empty.
     """
     if camp_budget <= 0:
         return False
+    windows = [(int(a), int(b)) for a, b in (caps or []) if int(a) > 0 and int(b) > 0][:3]
+    if not windows and freq_cap:
+        windows = [(int(freq_cap), 24)]
+    dev = device_id or "-"
+    keys, cap_args = [], []
+    for cap_n, hours in windows:
+        keys.append(f"freq:{campaign_id}:{hours}h:{dev}")
+        cap_args.append(str(cap_n if device_id else 0))
+    while len(keys) < 3:
+        keys.append(f"freq:{campaign_id}:pad{len(keys)}:{dev}")
+        cap_args.append("0")
     r = get_redis()
     ttl = _seconds_until_utc_midnight()
     ok = await r.eval(
-        _GATE_LUA, 3,
-        f"freq:{campaign_id}:{device_id or '-'}",
+        _GATE_LUA, 5,
+        *keys,
         f"spend:camp:{campaign_id}",
         f"spend:li:{li_id}",
-        str(int(freq_cap or 0)), str(cost), str(camp_budget),
+        *cap_args, str(cost), str(camp_budget),
         str(li_budget), str(ttl),
     )
     return bool(ok)
@@ -153,6 +168,18 @@ async def check_frequency_cap(campaign_id: str, device_id: str, cap: int, period
     r = get_redis()
     count = await r.get(f"freq:{campaign_id}:{device_id}")
     return int(count or 0) < cap
+
+
+async def bump_frequency_multi(campaign_id: str, device_id: str, windows: list[tuple[int, int]]) -> None:
+    """Increment all frequency-cap window counters after a confirmed impression."""
+    if not device_id:
+        return
+    r = get_redis()
+    for _cap, hours in windows[:3]:
+        key = f"freq:{campaign_id}:{int(hours)}h:{device_id}"
+        count = await r.incr(key)
+        if count == 1:
+            await r.expire(key, int(hours) * 3600)
 
 
 async def bump_frequency(campaign_id: str, device_id: str, period_hours: int) -> None:

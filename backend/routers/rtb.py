@@ -19,7 +19,7 @@ import hmac as _hmac
 from billing_core import bill_win
 from audiences import check_audiences, store_clid_bridge
 from shading import get_factor as shading_get_factor
-from cache import bump_frequency, check_frequency_cap, check_qps, gate_and_reserve, get_redis, mark_once, reserve_budget
+from cache import bump_frequency, bump_frequency_multi, check_frequency_cap, check_qps, gate_and_reserve, get_redis, mark_once, reserve_budget
 from db import get_pool
 from money import CURRENCY, clamp_clearing_price, cpm_to_cost
 from tokens import sign_event_token, verify_event_token
@@ -465,6 +465,44 @@ async def _bump_stats(pool, col: str, spend: float, campaign_id, line_item_id, c
     )
 
 
+
+def _parse_freq_caps(c) -> list[tuple[int, int]]:
+    """Multi-window caps from campaigns.frequency_caps (JSONB), legacy pair as fallback."""
+    raw = None
+    try:
+        raw = c["frequency_caps"]
+    except (KeyError, IndexError):
+        raw = None
+    windows: list[tuple[int, int]] = []
+    if raw:
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                raw = None
+        if isinstance(raw, list):
+            for w in raw[:3]:
+                try:
+                    imp = int(w.get("impressions", 0))
+                    hrs = int(w.get("period_hours", 24))
+                except (AttributeError, TypeError, ValueError):
+                    continue
+                if imp > 0 and hrs > 0:
+                    windows.append((imp, hrs))
+    if not windows:
+        try:
+            legacy = int(c["frequency_cap_impressions"] or 0)
+        except (KeyError, IndexError, TypeError):
+            legacy = 0
+        if legacy > 0:
+            try:
+                hrs = int(c["frequency_cap_period_hours"] or 24)
+            except (KeyError, IndexError, TypeError):
+                hrs = 24
+            windows.append((legacy, hrs))
+    return windows
+
+
 @router.post("/bid/{endpoint_key}")
 async def bid(endpoint_key: str, request: Request):
     try:
@@ -577,7 +615,7 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
         """
         SELECT li.id AS li_id, li.bid_price, li.bid_type, li.max_bid, li.daily_budget AS li_budget,
                li.targeting, li.campaign_id, li.user_id AS owner_id,
-               c.daily_budget AS camp_budget, c.frequency_cap_impressions, c.frequency_cap_period_hours,
+               c.daily_budget AS camp_budget, c.frequency_cap_impressions, c.frequency_cap_period_hours, c.frequency_caps,
                c.pacing, c.advertiser_id, c.bid_shading, adv.domain AS adv_domain,
                cr.id AS creative_id, cr.type, cr.width, cr.height, cr.asset_url, cr.click_url,
                cr.html_snippet, cr.native_title, cr.native_description, cr.native_cta,
@@ -731,13 +769,15 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
             # Allow a small burst ahead of schedule (10%) so delivery never stalls at 00:00
             effective_budget = effective_budget * min(1.0, day_fraction + 0.1)
 
+        # Multi-window frequency caps (up to 3); legacy pair is the fallback
+        caps_list = _parse_freq_caps(c)
         # Single Redis roundtrip: frequency-cap check + atomic budget
         # reservation on campaign AND line-item keys (all-or-nothing).
         ok = await gate_and_reserve(
             str(c["campaign_id"]), str(c["li_id"]), cost,
             effective_budget, float(c["li_budget"] or 0),
             device_id=device_id or "",
-            freq_cap=int(c["frequency_cap_impressions"] or 0),
+            caps=caps_list,
         )
         if not ok:
             continue
@@ -751,11 +791,11 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
         adm = _build_adm(c, base, event_token)
 
         # Remember device for frequency counting at impression time
-        if device_id and c["frequency_cap_impressions"]:
+        if device_id and caps_list:
             r = get_redis()
             _fire_and_forget(r.set(
                 f"bidfreq:{bid_id}",
-                f"{device_id}|{c['frequency_cap_period_hours'] or 24}",
+                f"{device_id}|{json.dumps(caps_list)}",
                 ex=3600,
             ))
 
@@ -885,8 +925,13 @@ async def impression(bid: str):
         r = get_redis()
         meta = await r.get(f"bidfreq:{bid}")
         if meta:
-            device_id, _, period = meta.partition("|")
-            await bump_frequency(str(row["campaign_id"]), device_id, int(period or 24))
+            device_id, _, payload = meta.partition("|")
+            try:
+                windows = [(int(a), int(b)) for a, b in json.loads(payload)]
+            except Exception:
+                # Legacy meta format: "device|period_hours"
+                windows = [(0, int(payload or 24))]
+            await bump_frequency_multi(str(row["campaign_id"]), device_id, windows)
     return Response(content=_PIXEL, media_type="image/gif")
 
 

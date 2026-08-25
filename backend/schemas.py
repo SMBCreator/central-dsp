@@ -32,6 +32,11 @@ class AdvertiserPatch(BaseModel):
 
 
 # --- Campaigns ---------------------------------------------------------------
+class FreqCapWindow(BaseModel):
+    impressions: int = Field(ge=1, le=1000)
+    period_hours: int = Field(ge=1, le=720)
+
+
 class CampaignIn(BaseModel):
     advertiser_id: str
     name: str = Field(min_length=1, max_length=200)
@@ -44,6 +49,7 @@ class CampaignIn(BaseModel):
     pacing: str = Field(default="even", pattern="^(even|asap)$")
     frequency_cap_impressions: int | None = Field(default=None, ge=1, le=100)
     frequency_cap_period_hours: int | None = Field(default=None, ge=1, le=168)
+    frequency_caps: list[FreqCapWindow] | None = Field(default=None, max_length=3)
     # Тематика ККТУ (ОРД): код и подпись; привязывается к креативам при регистрации
     kktu_code: str | None = Field(default=None, max_length=20)
     kktu_label: str | None = Field(default=None, max_length=300)
@@ -61,6 +67,7 @@ class CampaignPatch(BaseModel):
     pacing: str | None = Field(default=None, pattern="^(even|asap)$")
     frequency_cap_impressions: int | None = Field(default=None, ge=1, le=100)
     frequency_cap_period_hours: int | None = Field(default=None, ge=1, le=168)
+    frequency_caps: list[FreqCapWindow] | None = Field(default=None, max_length=3)
     # Optimization: pixel-driven buying
     pixel_id: str | None = None
     goal_id: str | None = None

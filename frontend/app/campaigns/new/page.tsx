@@ -75,8 +75,7 @@ export default function NewCampaignPage() {
   const [endDate, setEndDate] = useState("")
   const [pacing, setPacing] = useState("even")
   const [bidShading, setBidShading] = useState(false)
-  const [freqCapImps, setFreqCapImps] = useState("")
-  const [freqCapHours, setFreqCapHours] = useState("24")
+  const [freqCaps, setFreqCaps] = useState<{ imps: string; hours: string }[]>([])
   // Step 2: budget + bid + optimizer targets
   const [dailyBudget, setDailyBudget] = useState("")
   const [totalBudget, setTotalBudget] = useState("")
@@ -127,8 +126,12 @@ export default function NewCampaignPage() {
           end_date: endDate || null,
           pacing,
           bid_shading: bidShading,
-          frequency_cap_impressions: freqCapImps ? Number(freqCapImps) : null,
-          frequency_cap_period_hours: freqCapImps ? Number(freqCapHours) || 24 : null,
+          frequency_caps: freqCaps.filter((w) => Number(w.imps) > 0).length
+            ? freqCaps
+                .filter((w) => Number(w.imps) > 0)
+                .slice(0, 3)
+                .map((w) => ({ impressions: Number(w.imps), period_hours: Number(w.hours) || 24 }))
+            : null,
         },
       })
       // Optimizer targets + auto-optimize
@@ -278,13 +281,59 @@ export default function NewCampaignPage() {
                 <option value="asap">Как можно быстрее (ASAP)</option>
               </select>
             </Field>
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="Frequency cap" hint="Показов на пользователя">
-                <input type="number" min="1" max="100" value={freqCapImps} onChange={(e) => setFreqCapImps(e.target.value)} className={inputCls} placeholder="Без лимита" />
-              </Field>
-              <Field label="Период, часов">
-                <input type="number" min="1" max="168" value={freqCapHours} onChange={(e) => setFreqCapHours(e.target.value)} className={inputCls} placeholder="24" disabled={!freqCapImps} />
-              </Field>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium text-foreground">Частотные капы</span>
+                {freqCaps.length < 3 ? (
+                  <button
+                    type="button"
+                    onClick={() => setFreqCaps([...freqCaps, { imps: "", hours: freqCaps.length === 0 ? "24" : "168" }])}
+                    className="text-xs font-medium text-primary hover:underline"
+                  >
+                    + Добавить окно
+                  </button>
+                ) : null}
+              </div>
+              {freqCaps.length === 0 ? (
+                <p className="text-xs text-muted-foreground">{"Без лимита. Добавьте до 3 окон — например, 3 показа в день и 10 в неделю."}</p>
+              ) : null}
+              {freqCaps.map((w, i) => (
+                <div key={i} className="flex items-end gap-2">
+                  <div className="flex-1">
+                    <label className="mb-1 block text-xs text-muted-foreground">Показов</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="1000"
+                      value={w.imps}
+                      onChange={(e) => setFreqCaps(freqCaps.map((x, j) => (j === i ? { ...x, imps: e.target.value } : x)))}
+                      className={inputCls}
+                      placeholder="3"
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <label className="mb-1 block text-xs text-muted-foreground">Период</label>
+                    <select
+                      value={w.hours}
+                      onChange={(e) => setFreqCaps(freqCaps.map((x, j) => (j === i ? { ...x, hours: e.target.value } : x)))}
+                      className={inputCls}
+                    >
+                      <option value="1">Час</option>
+                      <option value="24">Сутки</option>
+                      <option value="168">Неделя</option>
+                      <option value="720">Месяц</option>
+                    </select>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setFreqCaps(freqCaps.filter((_, j) => j !== i))}
+                    className="h-8 rounded-lg border border-border px-2 text-xs text-muted-foreground hover:bg-accent"
+                    aria-label="Удалить окно"
+                  >
+                    Удалить
+                  </button>
+                </div>
+              ))}
             </div>
             <label className="flex items-start gap-2 text-sm text-foreground">
               <input type="checkbox" checked={bidShading} onChange={(e) => setBidShading(e.target.checked)} className="mt-0.5 h-4 w-4 rounded border-border" />

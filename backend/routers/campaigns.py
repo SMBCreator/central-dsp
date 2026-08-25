@@ -1,5 +1,6 @@
 from datetime import date
 
+import json
 from fastapi import APIRouter, Depends, HTTPException
 
 from auth import current_user
@@ -15,6 +16,11 @@ _DATES = {"start_date", "end_date"}
 
 def _serialize(row) -> dict:
     d = dict(row)
+    if isinstance(d.get("frequency_caps"), str):
+        try:
+            d["frequency_caps"] = json.loads(d["frequency_caps"])
+        except Exception:
+            d["frequency_caps"] = None
     for k in ("id", "advertiser_id", "user_id"):
         d[k] = str(d[k])
     for k in ("group_id", "pixel_id", "goal_id"):
@@ -68,13 +74,14 @@ async def create_campaign(body: CampaignIn, user: dict = Depends(require_campaig
         """
         INSERT INTO campaigns (advertiser_id, user_id, name, objective, daily_budget, total_budget,
                                start_date, end_date, pacing, frequency_cap_impressions, frequency_cap_period_hours,
-                               group_id, kktu_code, kktu_label, bid_shading)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *
+                               group_id, kktu_code, kktu_label, bid_shading, frequency_caps)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *
         """,
         body.advertiser_id, user["id"], body.name, body.objective, body.daily_budget,
         body.total_budget, _parse_date(body.start_date), _parse_date(body.end_date),
         body.pacing, body.frequency_cap_impressions, body.frequency_cap_period_hours, body.group_id,
         body.kktu_code, body.kktu_label, body.bid_shading,
+        json.dumps([w.model_dump() for w in body.frequency_caps]) if body.frequency_caps else None,
     )
     return _serialize(row)
 
@@ -98,6 +105,8 @@ async def update_campaign(campaign_id: str, body: CampaignPatch, user: dict = De
     for k in _DATES:
         if k in updates:
             updates[k] = _parse_date(updates[k])
+    if "frequency_caps" in updates:
+        updates["frequency_caps"] = json.dumps(updates["frequency_caps"])
     pool = await get_pool()
     sets, values = [], []
     for i, (k, v) in enumerate(updates.items(), start=3):
