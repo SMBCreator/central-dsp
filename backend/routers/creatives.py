@@ -67,13 +67,15 @@ async def create_creative(body: CreativeIn, user: dict = Depends(require_campaig
         """
         INSERT INTO creatives (campaign_id, line_item_id, user_id, name, type, subtype, width, height,
                                asset_url, click_url, html_snippet, native_title, native_description,
-                               native_cta, native_icon_url, video_url, video_duration, vast_xml, crop, status)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,'approved') RETURNING *
+                               native_cta, native_icon_url, video_url, video_duration, vast_xml, crop,
+                               imp_tracker_url, click_tracker_url, status)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,'approved') RETURNING *
         """,
         body.campaign_id, body.line_item_id, user["id"], body.name, body.type, body.subtype, body.width,
         body.height, body.asset_url, body.click_url, body.html_snippet, body.native_title,
         body.native_description, body.native_cta, body.native_icon_url, body.video_url,
         body.video_duration, body.vast_xml, json.dumps(body.crop) if body.crop else None,
+        body.imp_tracker_url, body.click_tracker_url,
     )
     return _serialize(row)
 

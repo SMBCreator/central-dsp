@@ -343,6 +343,14 @@ def _creative_fits_imp(creative: dict, imp: dict, ad_type: str) -> bool:
 
 
 def _build_adm(creative: dict, base: str, bid_id: str) -> str:
+    # Сторонние трекеры (аудит): пиксель на показ добавляется в разметку,
+    # клик-трекер дёргается из клиентского onclick / clicktrackers / VAST.
+    third_imp = creative.get("imp_tracker_url") or ""
+    third_imp_px = (
+        f'<img src="{third_imp}" width="1" height="1" style="display:none" alt=""/>'
+        if third_imp else ""
+    )
+    third_click = creative.get("click_tracker_url") or ""
     erid = creative.get("erid") or ""
     erid_label = (
         f'<span style="position:absolute;top:2px;left:2px;background:rgba(0,0,0,.55);'
@@ -352,19 +360,24 @@ def _build_adm(creative: dict, base: str, bid_id: str) -> str:
     click_url = f"{base}/api/rtb/click?bid={bid_id}&r={creative.get('click_url') or ''}"
     imp_pixel = f"{base}/api/rtb/imp?bid={bid_id}"
     if creative["type"] == "banner":
+        click_js = (
+            f' onclick="(new Image()).src=\'{third_click}\'"' if third_click else ""
+        )
         if creative.get("html_snippet"):
-            return creative["html_snippet"] + erid_label + f'<img src="{imp_pixel}" width="1" height="1" style="display:none"/>'
+            return (creative["html_snippet"] + erid_label
+                    + f'<img src="{imp_pixel}" width="1" height="1" style="display:none"/>' + third_imp_px)
         return (
-            f'<a href="{click_url}" target="_blank">'
+            f'<a href="{click_url}" target="_blank"{click_js}>'
             f'<img src="{creative.get("asset_url") or ""}" width="{creative.get("width")}" height="{creative.get("height")}" alt=""/></a>'
-            f'{erid_label}<img src="{imp_pixel}" width="1" height="1" style="display:none"/>'
+            f'{erid_label}<img src="{imp_pixel}" width="1" height="1" style="display:none"/>' + third_imp_px
         )
     if creative["type"] in ("native", "push"):
         # push over RTB is native markup: title + body + icon + main image.
         native = {
             "native": {
-                "link": {"url": click_url},
-                "imptrackers": [imp_pixel],
+                "link": {"url": click_url,
+                         **({"clicktrackers": [third_click]} if third_click else {})},
+                "imptrackers": [imp_pixel] + ([third_imp] if third_imp else []),
                 "assets": [
                     {"id": 1, "title": {"text": creative.get("native_title") or ""}},
                     {"id": 2, "data": {"type": 2, "value": creative.get("native_description") or ""}},
@@ -387,7 +400,7 @@ def _build_adm(creative: dict, base: str, bid_id: str) -> str:
     creative_id = creative.get("creative_id") or creative.get("id") or ""
     return f"""<VAST version="3.0"><Ad id="{creative_id}"><InLine>
 <AdSystem>CentralDSP</AdSystem>{f'<Extensions><Extension type="erid"><Erid>{erid}</Erid></Extension></Extensions>' if erid else ''}<AdTitle>{creative['name']}</AdTitle>
-<Impression><![CDATA[{imp_pixel}]]></Impression>
+<Impression><![CDATA[{imp_pixel}]]></Impression>{f'<Impression><![CDATA[{third_imp}]]></Impression>' if third_imp else ''}
 <Creatives><Creative><Linear><Duration>00:00:{duration:02d}</Duration>
 <TrackingEvents>
 <Tracking event="start"><![CDATA[{vevent}&e=start]]></Tracking>
@@ -398,7 +411,7 @@ def _build_adm(creative: dict, base: str, bid_id: str) -> str:
 <Tracking event="skip"><![CDATA[{vevent}&e=skip]]></Tracking>
 </TrackingEvents>
 <VideoClicks><ClickThrough><![CDATA[{creative.get('click_url') or ''}]]></ClickThrough>
-<ClickTracking><![CDATA[{click_url}]]></ClickTracking></VideoClicks>
+<ClickTracking><![CDATA[{click_url}]]></ClickTracking>{f'<ClickTracking><![CDATA[{third_click}]]></ClickTracking>' if third_click else ''}</VideoClicks>
 <MediaFiles><MediaFile delivery="progressive" type="video/mp4" width="640" height="360"><![CDATA[{creative.get('video_url') or ''}]]></MediaFile></MediaFiles>
 </Linear></Creative></Creatives></InLine></Ad></VAST>"""
 
@@ -561,12 +574,13 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
         candidates = await pool.fetch(
         """
         SELECT li.id AS li_id, li.bid_price, li.bid_type, li.max_bid, li.daily_budget AS li_budget,
-               li.targeting, li.campaign_id,
+               li.targeting, li.campaign_id, li.user_id AS owner_id,
                c.daily_budget AS camp_budget, c.frequency_cap_impressions, c.frequency_cap_period_hours,
                c.pacing, c.advertiser_id, adv.domain AS adv_domain,
                cr.id AS creative_id, cr.type, cr.width, cr.height, cr.asset_url, cr.click_url,
                cr.html_snippet, cr.native_title, cr.native_description, cr.native_cta,
-               cr.native_icon_url, cr.video_url, cr.video_duration, cr.vast_xml, cr.name
+               cr.native_icon_url, cr.video_url, cr.video_duration, cr.vast_xml, cr.name,
+               cr.imp_tracker_url, cr.click_tracker_url
         FROM line_items li
         JOIN campaigns c ON c.id = li.campaign_id AND c.status = 'active'
              AND (c.start_date IS NULL OR c.start_date <= CURRENT_DATE)
@@ -595,6 +609,23 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
     blocks: dict = {}
     for b in block_rows:
         blocks.setdefault(str(b["campaign_id"]), set()).add((b["block_type"], b["block_value"].lower()))
+
+    # Глобальные white/blacklist площадок (уровень аккаунта, раздел Настройки).
+    # Кэшируются так же, как блоки оптимизатора: TTL короткий, меняются людьми.
+    owner_ids = list({c["owner_id"] for c in candidates})
+    dl_key = "domain_lists:" + ",".join(sorted(str(i) for i in owner_ids))
+    dl_rows, _fresh = _cache_get(dl_key)
+    if dl_rows is None or (not _fresh and _claim_refresh(dl_key)):
+        dl_rows = await pool.fetch(
+            "SELECT user_id, domain, list_type FROM domain_lists WHERE user_id = ANY($1)",
+            owner_ids,
+        )
+        _cache_put(dl_key, dl_rows)
+    g_black: dict = {}
+    g_white: dict = {}
+    for r in dl_rows:
+        target = g_black if r["list_type"] == "black" else g_white
+        target.setdefault(str(r["user_id"]), set()).add(r["domain"].lower())
 
     from datetime import datetime, timezone as _tz
     req_domain = ((req.get("site") or req.get("app") or {}).get("domain")
@@ -647,6 +678,15 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
                 if ("line_item", str(c["li_id"]).lower()) in camp_blocks:
                     continue
                 if ("hour", req_hour) in camp_blocks:
+                    continue
+            # Глобальные листы аккаунта: блэклист всегда исключает домен;
+            # непустой вайтлист пропускает ТОЛЬКО перечисленные домены.
+            owner = str(c["owner_id"])
+            if req_domain:
+                if owner in g_black and req_domain in g_black[owner]:
+                    continue
+                owner_white = g_white.get(owner)
+                if owner_white and req_domain not in owner_white:
                     continue
             if not _match_targeting(targeting, req):
                 continue
@@ -738,6 +778,26 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
     }
 
 
+async def _bump_domain_stats(pool, row, col: str, spend=0):
+    """Upsert domain_stats_hourly from a found bid_events row. Best-effort."""
+    domain = (row.get("domain") or "").strip().lower() if hasattr(row, "get") else (row["domain"] or "").strip().lower()
+    if not domain:
+        return
+    try:
+        await pool.execute(
+            f"""
+            INSERT INTO domain_stats_hourly (ts_hour, campaign_id, supply_partner_id, domain, {col}, spend)
+            VALUES (date_trunc('hour', now()), $1, $2, $3, 1, $4)
+            ON CONFLICT (ts_hour, campaign_id, supply_partner_id, domain)
+            DO UPDATE SET {col} = domain_stats_hourly.{col} + 1,
+                          spend = domain_stats_hourly.spend + $4
+            """,
+            row["campaign_id"], row["supply_partner_id"], domain, spend or 0,
+        )
+    except Exception:
+        logger.exception("domain stats bump failed (non-fatal)")
+
+
 async def _find_bid(pool, bid_id: str):
     return await pool.fetchrow(
         "SELECT * FROM bid_events WHERE bid_id = $1 AND event_type = 'bid' ORDER BY id LIMIT 1", bid_id
@@ -779,6 +839,7 @@ async def win_notice(bid: str, price: str | None = None):
         geo_country=row["geo_country"], ad_type=row["ad_type"], domain=row["domain"],
         os=row["os"], browser=row["browser"],
     )
+    await _bump_domain_stats(pool, row, "wins", result.cost if result else 0)
     await _bump_stats(pool, "wins", cost, row["campaign_id"], row["line_item_id"], row["creative_id"], row["supply_partner_id"])
     return {"ok": True}
 
@@ -800,6 +861,7 @@ async def impression(bid: str):
             geo_country=row["geo_country"], ad_type=row["ad_type"], domain=row["domain"],
                 os=row["os"], browser=row["browser"],
         )
+        await _bump_domain_stats(pool, row, "impressions")
         await _bump_stats(pool, "impressions", 0, row["campaign_id"], row["line_item_id"], row["creative_id"], row["supply_partner_id"])
         # Count the impression against the frequency cap
         r = get_redis()
@@ -859,6 +921,7 @@ async def click(bid: str, r: str = ""):
                 geo_country=row["geo_country"], ad_type=row["ad_type"], domain=row["domain"],
                 os=row["os"], browser=row["browser"],
             )
+            await _bump_domain_stats(pool, row, "clicks")
             await _bump_stats(pool, "clicks", 0, row["campaign_id"], row["line_item_id"], row["creative_id"], row["supply_partner_id"])
     # Redirect target: explicit r param, else fall back to the creative's click_url
     if not (r and r.startswith(("http://", "https://"))):

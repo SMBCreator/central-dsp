@@ -155,6 +155,38 @@ _DIMENSIONS = {
 }
 
 
+@router.get("/domains")
+async def domain_breakdown(hours: int = 168, limit: int = 100, user: dict = Depends(current_user)):
+    """Domain-level stats for one-click blacklisting. Scoped to the user's campaigns."""
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """
+        SELECT d.domain,
+               sum(d.wins)        AS wins,
+               sum(d.impressions) AS impressions,
+               sum(d.clicks)      AS clicks,
+               sum(d.spend)       AS spend
+        FROM domain_stats_hourly d
+        JOIN campaigns c ON c.id = d.campaign_id
+        WHERE c.user_id = $1 AND d.ts_hour >= now() - ($2 || ' hours')::interval
+        GROUP BY d.domain
+        ORDER BY sum(d.spend) DESC, sum(d.impressions) DESC
+        LIMIT $3
+        """,
+        user["id"], str(hours), limit,
+    )
+    blocked = await pool.fetch(
+        "SELECT domain FROM domain_lists WHERE user_id = $1 AND list_type = 'black'", user["id"]
+    )
+    blocked_set = {r["domain"] for r in blocked}
+    return [
+        {"domain": r["domain"], "wins": int(r["wins"]), "impressions": int(r["impressions"]),
+         "clicks": int(r["clicks"]), "spend": float(r["spend"]),
+         "blacklisted": r["domain"] in blocked_set}
+        for r in rows
+    ]
+
+
 @router.get("/breakdown")
 async def breakdown(hours: int = 168, dimension: str = "campaign", user: dict = Depends(current_user)):
     """Aggregated stats grouped by campaign, partner, or creative."""

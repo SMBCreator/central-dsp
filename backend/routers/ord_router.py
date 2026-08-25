@@ -26,6 +26,7 @@ class CounterpartyIn(BaseModel):
     legal_type: str = "ul"           # ul | ip | fl | foreign
     role: str = "advertiser"         # advertiser | agency | publisher | ors
     advertiser_id: Optional[str] = None
+    address: Optional[str] = Field(default=None, max_length=500)  # местонахождение (юрадрес)
 
 
 class ContractIn(BaseModel):
@@ -67,11 +68,12 @@ async def create_counterparty(body: CounterpartyIn, user: dict = Depends(require
             raise HTTPException(400, "ИНН: 10 цифр для юрлица, 12 для ИП/физлица")
     pool = await get_pool()
     row = await pool.fetchrow(
-        """INSERT INTO counterparties (user_id, advertiser_id, name, inn, legal_type, role)
-           VALUES ($1,$2,$3,$4,$5,$6)
-           ON CONFLICT (user_id, inn, role) DO UPDATE SET name = EXCLUDED.name, updated_at = now()
+        """INSERT INTO counterparties (user_id, advertiser_id, name, inn, legal_type, role, address)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)
+           ON CONFLICT (user_id, inn, role) DO UPDATE
+             SET name = EXCLUDED.name, address = COALESCE(EXCLUDED.address, counterparties.address), updated_at = now()
            RETURNING *""",
-        user["id"], body.advertiser_id, body.name, body.inn, body.legal_type, body.role,
+        user["id"], body.advertiser_id, body.name, body.inn, body.legal_type, body.role, body.address,
     )
     return _row(row)
 
@@ -89,7 +91,8 @@ async def register_counterparty(cp_id: str, user: dict = Depends(require_platfor
     adapter = get_ord_adapter()
     try:
         out = await adapter.register_counterparty(
-            {"name": cp["name"], "inn": cp["inn"], "legal_type": cp["legal_type"], "role": cp["role"]}
+            {"name": cp["name"], "inn": cp["inn"], "legal_type": cp["legal_type"],
+             "role": cp["role"], "address": cp["address"]}
         )
         row = await pool.fetchrow(
             """UPDATE counterparties SET ord_external_id=$3, ord_status='registered',
@@ -201,12 +204,17 @@ async def register_creative(creative_id: str, body: CreativeRegisterIn, user: di
     if not contract or contract["ord_status"] != "registered":
         raise HTTPException(409, "Договор должен быть зарегистрирован в ОРД до регистрации креатива")
 
+    camp_kktu = await pool.fetchrow(
+        "SELECT kktu_code, kktu_label FROM campaigns WHERE id = $1", cr["campaign_id"]
+    )
     payload = {
         "contract_external_id": contract["ord_external_id"],
         "type": cr["type"],
         "name": cr["name"],
         "click_url": cr.get("click_url") if isinstance(cr, dict) else cr["click_url"],
         "description": cr["native_description"] or cr["name"],
+        # Тематика ККТУ берётся с кампании: привязывает креатив к категории товара/услуги
+        "kktu": camp_kktu["kktu_code"] if camp_kktu and camp_kktu["kktu_code"] else None,
     }
     adapter = get_ord_adapter()
     try:

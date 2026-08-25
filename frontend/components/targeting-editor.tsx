@@ -1,6 +1,8 @@
 "use client"
 
 import { Field, inputCls, Panel } from "@/components/ui"
+import useSWR from "swr"
+import { fetcher } from "@/lib/api"
 import { IAB_CATEGORIES, type Targeting } from "@/lib/types"
 
 export const COUNTRIES = ["RU", "KZ", "BY", "UZ", "KG", "AM", "AZ", "GE", "MD", "TJ", "TM", "UA"]
@@ -64,6 +66,8 @@ export function TargetingEditor({
   onChange: (t: Targeting) => void
 }) {
   const set = (patch: Partial<Targeting>) => onChange({ ...value, ...patch })
+  const { data: sspList } = useSWR<{ id: string; name: string; status: string }[]>("/supply-partners", fetcher)
+  const ruSelected = (value.geo_countries || []).includes("RU")
 
   return (
     <div className="space-y-4">
@@ -157,6 +161,31 @@ export function TargetingEditor({
             ))}
           </div>
         </Panel>
+      </Field>
+
+      {ruSelected ? (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-400">
+          Выбрана Россия: по закону о рекламе перед запуском потребуется маркировка — заполните
+          данные рекламодателя (наименование, ИНН, адрес), договор и получите erid в разделе
+          «Маркировка (ОРД)». Кампания на РФ без erid не активируется.
+        </div>
+      ) : null}
+
+      <Field label="SSP-источники" hint="Пусто — все подключённые SSP">
+        <div className="flex flex-wrap gap-1.5">
+          {(sspList || []).map((sp) => (
+            <Chip
+              key={sp.id}
+              active={(value.ssp_allowlist || []).includes(sp.id)}
+              onClick={() => set({ ssp_allowlist: toggle(value.ssp_allowlist, sp.id) })}
+            >
+              {sp.name}
+            </Chip>
+          ))}
+          {sspList && sspList.length === 0 ? (
+            <span className="text-xs text-muted">Нет подключённых SSP — добавьте в разделе «SSP-партнёры»</span>
+          ) : null}
+        </div>
       </Field>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">

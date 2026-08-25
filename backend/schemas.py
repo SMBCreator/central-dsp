@@ -44,6 +44,9 @@ class CampaignIn(BaseModel):
     pacing: str = Field(default="even", pattern="^(even|asap)$")
     frequency_cap_impressions: int | None = Field(default=None, ge=1, le=100)
     frequency_cap_period_hours: int | None = Field(default=None, ge=1, le=168)
+    # Тематика ККТУ (ОРД): код и подпись; привязывается к креативам при регистрации
+    kktu_code: str | None = Field(default=None, max_length=20)
+    kktu_label: str | None = Field(default=None, max_length=300)
 
 
 class CampaignPatch(BaseModel):
@@ -66,6 +69,8 @@ class CampaignPatch(BaseModel):
     target_cpv: float | None = Field(default=None, ge=0)
     auto_optimize: bool | None = None
     group_id: str | None = None
+    kktu_code: str | None = Field(default=None, max_length=20)
+    kktu_label: str | None = Field(default=None, max_length=300)
 
 
 # --- Line items ---------------------------------------------------------------
@@ -110,10 +115,15 @@ class CreativeIn(BaseModel):
     video_duration: int | None = Field(default=None, ge=1, le=600)
     vast_xml: str | None = None
     crop: dict | None = None
+    # Сторонние трекеры (показ и клик) — пиксели аудита
+    imp_tracker_url: str | None = Field(default=None, max_length=1000)
+    click_tracker_url: str | None = Field(default=None, max_length=1000)
 
 
 class CreativePatch(BaseModel):
     name: str | None = None
+    imp_tracker_url: str | None = Field(default=None, max_length=1000)
+    click_tracker_url: str | None = Field(default=None, max_length=1000)
     status: str | None = Field(default=None, pattern="^(pending|approved|rejected|archived)$")
     asset_url: str | None = None
     click_url: str | None = None

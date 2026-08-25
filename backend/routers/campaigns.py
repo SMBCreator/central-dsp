@@ -67,12 +67,14 @@ async def create_campaign(body: CampaignIn, user: dict = Depends(require_campaig
     row = await pool.fetchrow(
         """
         INSERT INTO campaigns (advertiser_id, user_id, name, objective, daily_budget, total_budget,
-                               start_date, end_date, pacing, frequency_cap_impressions, frequency_cap_period_hours, group_id)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *
+                               start_date, end_date, pacing, frequency_cap_impressions, frequency_cap_period_hours,
+                               group_id, kktu_code, kktu_label)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *
         """,
         body.advertiser_id, user["id"], body.name, body.objective, body.daily_budget,
         body.total_budget, _parse_date(body.start_date), _parse_date(body.end_date),
         body.pacing, body.frequency_cap_impressions, body.frequency_cap_period_hours, body.group_id,
+        body.kktu_code, body.kktu_label,
     )
     return _serialize(row)
 
@@ -105,11 +107,24 @@ async def update_campaign(campaign_id: str, body: CampaignPatch, user: dict = De
     # креативов нет erid (маркировка через ОРД). ORD_LAUNCH_GUARD=off — только dev.
     import os as _os
     if updates.get("status") == "active" and _os.getenv("ORD_LAUNCH_GUARD", "on") != "off":
-        unmarked = await pool.fetchval(
-            """SELECT count(*) FROM creatives
-               WHERE campaign_id = $1 AND (erid IS NULL OR erid = '')""",
+        # Гуард действует только для РФ-трафика: Россия явно выбрана в гео
+        # хотя бы одного line item, или гео не ограничено (весь мир включает РФ).
+        targets_ru = await pool.fetchval(
+            """SELECT bool_or(
+                     COALESCE(jsonb_array_length(targeting->'geo_countries'), 0) = 0
+                     OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(targeting->'geo_countries') g
+                                WHERE upper(g) IN ('RU','RUS'))
+                   )
+               FROM line_items WHERE campaign_id = $1""",
             campaign_id,
         )
+        unmarked = 0
+        if targets_ru is None or targets_ru:  # нет line items = считаем, что РФ возможна
+            unmarked = await pool.fetchval(
+                """SELECT count(*) FROM creatives
+                   WHERE campaign_id = $1 AND (erid IS NULL OR erid = '')""",
+                campaign_id,
+            )
         if unmarked:
             raise HTTPException(
                 status_code=409,

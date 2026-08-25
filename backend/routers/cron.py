@@ -55,6 +55,15 @@ async def run_buy_optimizer(request: Request):
     return await run_optimizer()
 
 
+@router.get("/fx-refresh")
+async def fx_refresh(request: Request):
+    """Ежедневное обновление курса ЦБ (дергается Vercel Cron)."""
+    _check_secret(request)
+    import fx
+    rates = await fx.refresh_rates()
+    return {"ok": True, "rates": rates}
+
+
 @router.get("/ord-export")
 async def ord_monthly_export(request: Request, period: str | None = None):
     """Месячная выгрузка статистики показов в ОРД (ФЗ-347).
