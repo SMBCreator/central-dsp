@@ -161,10 +161,10 @@ class SupplyPartnerPatch(BaseModel):
 class RuleIn(BaseModel):
     campaign_id: str | None = None
     name: str = Field(min_length=1, max_length=200)
-    metric: str = Field(pattern="^(ctr|cpm|cpc|spend|impressions|clicks|win_rate)$")
+    metric: str = Field(pattern="^(ctr|cpm|cpc|cpa|cvr|spend|impressions|clicks|conversions|win_rate|budget_spent_pct)$")
     operator: str = Field(pattern="^(gt|lt|gte|lte)$")
     threshold: float
-    action: str = Field(pattern="^(pause_campaign|pause_line_item|decrease_bid|increase_bid|notify)$")
+    action: str = Field(pattern="^(pause_campaign|pause_line_item|decrease_bid|increase_bid|decrease_daily_budget|increase_daily_budget|blacklist_domains|notify)$")
     action_value: float | None = None
     window_hours: int = Field(default=24, ge=1, le=168)
 
@@ -172,9 +172,9 @@ class RuleIn(BaseModel):
 class RulePatch(BaseModel):
     name: str | None = None
     status: str | None = Field(default=None, pattern="^(active|paused|archived)$")
-    metric: str | None = Field(default=None, pattern="^(ctr|cpm|cpc|spend|impressions|clicks|win_rate)$")
+    metric: str | None = Field(default=None, pattern="^(ctr|cpm|cpc|cpa|cvr|spend|impressions|clicks|conversions|win_rate|budget_spent_pct)$")
     operator: str | None = Field(default=None, pattern="^(gt|lt|gte|lte)$")
     threshold: float | None = None
-    action: str | None = Field(default=None, pattern="^(pause_campaign|pause_line_item|decrease_bid|increase_bid|notify)$")
+    action: str | None = Field(default=None, pattern="^(pause_campaign|pause_line_item|decrease_bid|increase_bid|decrease_daily_budget|increase_daily_budget|blacklist_domains|notify)$")
     action_value: float | None = None
     window_hours: int | None = Field(default=None, ge=1, le=168)
