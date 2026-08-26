@@ -18,6 +18,7 @@ export default function CampaignsPage() {
   const { data: advertisers } = useSWR<Advertiser[]>("/advertisers", fetcher)
   const [open, setOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [listError, setListError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState({
     advertiser_id: "",
@@ -79,11 +80,16 @@ export default function CampaignsPage() {
   }
 
   const toggleStatus = async (c: Campaign) => {
-    await api(`/campaigns/${c.id}`, {
-      method: "PATCH",
-      body: { status: c.status === "active" ? "paused" : "active" },
-    })
-    await mutate("/campaigns")
+    setListError(null)
+    try {
+      await api(`/campaigns/${c.id}`, {
+        method: "PATCH",
+        body: { status: c.status === "active" ? "paused" : "active" },
+      })
+      await mutate("/campaigns")
+    } catch (err) {
+      setListError(err instanceof Error ? err.message : "Не удалось изменить статус")
+    }
   }
 
   return (
@@ -119,6 +125,11 @@ export default function CampaignsPage() {
 
       <Card>
         <CardHeader title="Все кампании" subtitle={campaigns ? `Всего: ${campaigns.length}` : undefined} />
+        {listError && (
+          <p role="alert" className="mb-3 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
+            {listError}
+          </p>
+        )}
         {campaigns ? (
           campaigns.length > 0 ? (
             <Table headers={["Название", "Цель", "Статус", "Дневной бюджет", "Расход сегодня", "Расход всего", ""]}>
