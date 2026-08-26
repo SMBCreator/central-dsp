@@ -88,7 +88,7 @@ async def register_counterparty(cp_id: str, user: dict = Depends(require_platfor
         raise HTTPException(404, "Контрагент не найден")
     if cp["ord_status"] == "registered":
         return _row(cp)  # идемпотентно
-    adapter = get_ord_adapter()
+    adapter = await get_ord_adapter()
     try:
         out = await adapter.register_counterparty(
             {"name": cp["name"], "inn": cp["inn"], "legal_type": cp["legal_type"],
@@ -160,7 +160,7 @@ async def register_contract(contract_id: str, user: dict = Depends(require_platf
         st = await pool.fetchval("SELECT ord_status FROM counterparties WHERE id = $1", c[side])
         if st != "registered":
             raise HTTPException(409, "Сначала зарегистрируйте обоих контрагентов в ОРД")
-    adapter = get_ord_adapter()
+    adapter = await get_ord_adapter()
     try:
         out = await adapter.register_contract(
             {
@@ -216,7 +216,7 @@ async def register_creative(creative_id: str, body: CreativeRegisterIn, user: di
         # Тематика ККТУ берётся с кампании: привязывает креатив к категории товара/услуги
         "kktu": camp_kktu["kktu_code"] if camp_kktu and camp_kktu["kktu_code"] else None,
     }
-    adapter = get_ord_adapter()
+    adapter = await get_ord_adapter()
     try:
         out = await adapter.register_creative(payload)
     except OrdError as e:

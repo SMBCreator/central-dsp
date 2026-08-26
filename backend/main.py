@@ -91,6 +91,35 @@ async def viewer_readonly_guard(request: Request, call_next):
     return await call_next(request)
 
 
+# --- Глобальный rate limiting (GAP: все ручки, не только логин) ---------------
+# Redis fixed-window. Ключ: user_id (по сессионной cookie) либо client IP.
+# RTB hot path и health исключены: у бидера свой QPS-контроль per-SSP.
+_RL_EXEMPT_PREFIXES = ("/rtb", "/rtb-feed", "/health", "/uploads", "/pixel")
+_RL_LIMIT = int(os.getenv("API_RATE_LIMIT", "300"))          # запросов
+_RL_WINDOW = int(os.getenv("API_RATE_WINDOW", "60"))         # за окно, сек
+
+
+@app.middleware("http")
+async def global_rate_limiter(request: Request, call_next):
+    path = request.url.path
+    if not any(path.startswith(p) for p in _RL_EXEMPT_PREFIXES):
+        key = request.cookies.get("cdsp_session")
+        if not key:
+            fwd = request.headers.get("x-forwarded-for")
+            key = (fwd.split(",")[0].strip() if fwd else None) or (
+                request.client.host if request.client else "unknown"
+            )
+        from cache import rate_limit
+        ok = await rate_limit("api", key, limit=_RL_LIMIT, window_seconds=_RL_WINDOW)
+        if not ok:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Слишком много запросов — попробуйте через минуту"},
+                headers={"Retry-After": str(_RL_WINDOW)},
+            )
+    return await call_next(request)
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "centraldsp"}

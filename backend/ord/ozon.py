@@ -53,18 +53,36 @@ class OzonOrdClient:
             await asyncio.sleep(2**attempt)
         raise last_err or OrdError("ОРД Ozon: неизвестная ошибка")
 
+
+    async def ping(self) -> dict:
+        """Проверка ключа: лёгкий GET списка организаций. 401/403 => ключ неверный."""
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(
+                    f"{self._base}/api/external/v3/organisation/list",
+                    json={"pageSize": 1},
+                    headers=self._headers,
+                )
+            if resp.status_code in (401, 403):
+                raise OrdError(f"Ключ отклонён ({resp.status_code}): проверьте API-ключ и окружение")
+            if resp.status_code >= 400:
+                raise OrdError(f"ОРД Ozon {resp.status_code}: {resp.text[:300]}")
+            return {"ok": True}
+        except httpx.HTTPError as e:
+            raise OrdError(f"ОРД Ozon недоступен: {e}")
+
     # -- Пути ниже сверить со спецификацией при получении ключа --------------
 
     async def register_counterparty(self, data: dict[str, Any]) -> dict[str, Any]:
-        out = await self._request("POST", "/api/external/v1/organisation", data)
+        out = await self._request("POST", "/api/external/v3/organisation", data)
         return {"external_id": out.get("id") or out.get("external_id")}
 
     async def register_contract(self, data: dict[str, Any]) -> dict[str, Any]:
-        out = await self._request("POST", "/api/external/v1/contract", data)
+        out = await self._request("POST", "/api/external/v3/contract", data)
         return {"external_id": out.get("id") or out.get("external_id")}
 
     async def register_creative(self, data: dict[str, Any]) -> dict[str, Any]:
-        out = await self._request("POST", "/api/external/v1/creative", data)
+        out = await self._request("POST", "/api/external/v3/creative", data)
         erid = out.get("erid") or out.get("marker") or (out.get("creative") or {}).get("erid")
         if not erid:
             raise OrdError(f"ОРД Ozon: ответ без erid: {str(out)[:300]}")
@@ -72,6 +90,6 @@ class OzonOrdClient:
 
     async def submit_stats(self, period: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
         out = await self._request(
-            "POST", "/api/external/v1/statistics", {"period": period, "rows": rows}
+            "POST", "/api/external/v3/statistics", {"period": period, "rows": rows}
         )
         return {"accepted": out.get("accepted", len(rows))}
