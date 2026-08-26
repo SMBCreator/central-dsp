@@ -231,3 +231,195 @@ async def breakdown(hours: int = 168, dimension: str = "campaign", user: dict = 
             "ecpm": round(spend / imps * 1000, 2) if imps else 0,
         })
     return out
+
+
+# ---------------------------------------------------------------------------
+# Report constructor: flexible groupings + filters (whitelisted, no SQL injection)
+# ---------------------------------------------------------------------------
+
+from pydantic import BaseModel, Field
+
+# dimensions servable from stats_hourly (fast, pre-aggregated)
+_DIM_HOURLY: dict[str, str] = {
+    "hour": "date_trunc('hour', s.ts_hour)",
+    "day": "date_trunc('day', s.ts_hour)",
+    "week": "date_trunc('week', s.ts_hour)",
+    "month": "date_trunc('month', s.ts_hour)",
+    "campaign": "s.campaign_id",
+    "creative": "s.creative_id",
+    "supply_partner": "s.supply_partner_id",
+}
+
+# dimensions only available from raw bid_events
+_DIM_EVENTS: dict[str, str] = {
+    "hour": "date_trunc('hour', e.created_at)",
+    "day": "date_trunc('day', e.created_at)",
+    "week": "date_trunc('week', e.created_at)",
+    "month": "date_trunc('month', e.created_at)",
+    "campaign": "e.campaign_id",
+    "creative": "e.creative_id",
+    "supply_partner": "e.supply_partner_id",
+    "country": "COALESCE(e.geo_country, '—')",
+    "device": "COALESCE(e.device_type, '—')",
+    "os": "COALESCE(e.os, '—')",
+    "browser": "COALESCE(e.browser, '—')",
+    "ad_type": "COALESCE(e.ad_type, '—')",
+    "domain": "COALESCE(e.domain, '—')",
+}
+
+_EVENTS_ONLY_DIMS = {"country", "device", "os", "browser", "ad_type", "domain"}
+
+
+class ReportRequest(BaseModel):
+    date_from: str  # ISO date, inclusive
+    date_to: str  # ISO date, inclusive
+    groupings: list[str] = Field(default_factory=lambda: ["day"])
+    campaign_ids: list[str] = Field(default_factory=list)
+    group_id: str | None = None
+    countries: list[str] = Field(default_factory=list)
+    devices: list[str] = Field(default_factory=list)
+    limit: int = 1000
+
+
+@router.post("/report")
+async def report(body: ReportRequest, user: dict = Depends(current_user)):
+    """Flexible report: pick groupings + filters; returns rows with all base metrics.
+
+    Source auto-selection: stats_hourly when possible (fast), bid_events when a
+    raw-event dimension (country/device/os/browser/ad_type/domain) is requested.
+    """
+    owner_ids, adv_filter, _fx = await _resolve_scope(user)
+
+    groupings = [g for g in body.groupings if g][:4] or ["day"]
+    use_events = any(g in _EVENTS_ONLY_DIMS for g in groupings) or bool(body.countries) or bool(body.devices)
+    dim_map = _DIM_EVENTS if use_events else _DIM_HOURLY
+    for g in groupings:
+        if g not in dim_map:
+            raise HTTPException(status_code=400, detail=f"Недопустимая группировка: {g}")
+
+    from datetime import date as _date
+
+    try:
+        d_from = _date.fromisoformat(body.date_from)
+        d_to = _date.fromisoformat(body.date_to)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Неверный формат даты (ожидается YYYY-MM-DD)")
+    if d_from > d_to:
+        d_from, d_to = d_to, d_from
+
+    limit = max(1, min(body.limit, 5000))
+    pool = await get_pool()
+
+    # --- resolve campaign scope (ownership + optional group filter) ---
+    async with pool.acquire() as conn:
+        if body.group_id:
+            rows = await conn.fetch(
+                "SELECT id FROM campaigns WHERE user_id = ANY($1::uuid[]) AND group_id = $2::uuid",
+                owner_ids, body.group_id,
+            )
+        else:
+            rows = await conn.fetch(
+                "SELECT id FROM campaigns WHERE user_id = ANY($1::uuid[])", owner_ids
+            )
+        allowed = {str(r["id"]) for r in rows}
+        if body.campaign_ids:
+            scope_ids = [c for c in body.campaign_ids if c in allowed]
+            if not scope_ids:
+                return {"rows": [], "totals": None}
+        else:
+            scope_ids = list(allowed)
+        if not scope_ids:
+            return {"rows": [], "totals": None}
+
+        sel_dims = ", ".join(f"{dim_map[g]} AS dim_{i}" for i, g in enumerate(groupings))
+        grp_by = ", ".join(f"dim_{i}" for i in range(len(groupings)))
+
+        params: list = [scope_ids, d_from, d_to]
+
+        if use_events:
+            extra = ""
+            if body.countries:
+                params.append(body.countries)
+                extra += f" AND e.geo_country = ANY(${len(params)})"
+            if body.devices:
+                params.append(body.devices)
+                extra += f" AND e.device_type = ANY(${len(params)})"
+            q = f"""
+            SELECT {sel_dims},
+                   count(*) FILTER (WHERE e.event_type = 'bid')        AS bids,
+                   count(*) FILTER (WHERE e.event_type = 'win')        AS wins,
+                   count(*) FILTER (WHERE e.event_type = 'impression') AS impressions,
+                   count(*) FILTER (WHERE e.event_type = 'click')      AS clicks,
+                   COALESCE(sum(e.clear_price) FILTER (WHERE e.event_type = 'impression'), 0) / 1000.0 AS spend,
+                   0::bigint AS conversions
+            FROM bid_events e
+            WHERE e.campaign_id = ANY($1::uuid[])
+              AND e.created_at >= $2::date
+              AND e.created_at < ($3::date + interval '1 day')
+              {extra}
+            GROUP BY {grp_by}
+            ORDER BY {grp_by}
+            LIMIT {limit}
+            """
+        else:
+            q = f"""
+            SELECT {sel_dims},
+                   COALESCE(sum(s.bids), 0)        AS bids,
+                   COALESCE(sum(s.wins), 0)        AS wins,
+                   COALESCE(sum(s.impressions), 0) AS impressions,
+                   COALESCE(sum(s.clicks), 0)      AS clicks,
+                   COALESCE(sum(s.spend), 0)       AS spend,
+                   COALESCE(sum(s.conversions), 0) AS conversions
+            FROM stats_hourly s
+            WHERE s.campaign_id = ANY($1::uuid[])
+              AND s.ts_hour >= $2::date
+              AND s.ts_hour < ($3::date + interval '1 day')
+            GROUP BY {grp_by}
+            ORDER BY {grp_by}
+            LIMIT {limit}
+            """
+        recs = await conn.fetch(q, *params)
+
+        # name lookups for id dimensions
+        name_maps: dict[str, dict[str, str]] = {}
+        for kind, table in (("campaign", "campaigns"), ("creative", "creatives"), ("supply_partner", "supply_partners")):
+            if kind in groupings:
+                nrows = await conn.fetch(f"SELECT id, name FROM {table}")
+                name_maps[kind] = {str(r["id"]): r["name"] for r in nrows}
+
+    out_rows = []
+    tot = {"bids": 0, "wins": 0, "impressions": 0, "clicks": 0, "spend": 0.0, "conversions": 0}
+    for r in recs:
+        row: dict = {}
+        for i, g in enumerate(groupings):
+            v = r[f"dim_{i}"]
+            if v is not None and g in name_maps:
+                row[g] = name_maps[g].get(str(v), str(v))
+                row[f"{g}_id"] = str(v)
+            elif hasattr(v, "isoformat"):
+                row[g] = v.isoformat()
+            else:
+                row[g] = str(v) if v is not None else "—"
+        m = {
+            "bids": int(r["bids"]), "wins": int(r["wins"]),
+            "impressions": int(r["impressions"]), "clicks": int(r["clicks"]),
+            "spend": float(r["spend"]), "conversions": int(r["conversions"]),
+        }
+        m["win_rate"] = round(m["wins"] / m["bids"] * 100, 2) if m["bids"] else 0.0
+        m["ctr"] = round(m["clicks"] / m["impressions"] * 100, 3) if m["impressions"] else 0.0
+        m["cpm"] = round(m["spend"] / m["impressions"] * 1000, 4) if m["impressions"] else 0.0
+        m["cpc"] = round(m["spend"] / m["clicks"], 4) if m["clicks"] else 0.0
+        m["cpa"] = round(m["spend"] / m["conversions"], 4) if m["conversions"] else 0.0
+        row.update(m)
+        out_rows.append(row)
+        for k in tot:
+            tot[k] += m[k]
+
+    totals = dict(tot)
+    totals["win_rate"] = round(totals["wins"] / totals["bids"] * 100, 2) if totals["bids"] else 0.0
+    totals["ctr"] = round(totals["clicks"] / totals["impressions"] * 100, 3) if totals["impressions"] else 0.0
+    totals["cpm"] = round(totals["spend"] / totals["impressions"] * 1000, 4) if totals["impressions"] else 0.0
+    totals["cpc"] = round(totals["spend"] / totals["clicks"], 4) if totals["clicks"] else 0.0
+    totals["cpa"] = round(totals["spend"] / totals["conversions"], 4) if totals["conversions"] else 0.0
+    totals["spend"] = round(totals["spend"], 4)
+    return {"rows": out_rows, "totals": totals}

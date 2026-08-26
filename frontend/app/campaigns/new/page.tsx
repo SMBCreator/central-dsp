@@ -173,29 +173,15 @@ export default function NewCampaignPage() {
   }
 
   return (
-    <main className="mx-auto max-w-3xl space-y-6 p-4 md:p-8">
-      <header>
+    <main className="p-4 md:p-6">
+      <header className="mb-6">
         <h1 className="text-xl font-semibold text-foreground">Новая кампания</h1>
-        <nav aria-label="Шаги мастера" className="mt-4 flex flex-wrap items-center gap-2">
-          {STEPS.map((s, i) => (
-            <div key={s} className="flex items-center gap-2">
-              <span
-                className={`flex h-6 w-6 items-center justify-center rounded-full font-mono text-[11px] ${
-                  i === step
-                    ? "bg-foreground text-background"
-                    : i < step
-                      ? "bg-panel text-foreground"
-                      : "bg-panel text-muted"
-                }`}
-              >
-                {i + 1}
-              </span>
-              <span className={`text-xs ${i === step ? "text-foreground" : "text-muted"}`}>{s}</span>
-              {i < STEPS.length - 1 ? <span className="mx-1 h-px w-4 bg-border" aria-hidden /> : null}
-            </div>
-          ))}
-        </nav>
+        <p className="mt-0.5 text-sm text-muted">
+          Шаг {step + 1} из {STEPS.length}: {STEPS[step]}
+        </p>
       </header>
+      <div className="flex flex-col gap-6 lg:flex-row">
+        <div className="min-w-0 flex-1 space-y-6">
 
       {step === 0 ? (
         <Card>
@@ -424,25 +410,72 @@ export default function NewCampaignPage() {
         </div>
       ) : null}
 
-      {error ? (
-        <p role="alert" className="rounded-2xl bg-panel px-4 py-3 text-sm text-danger">
-          {error}
-        </p>
-      ) : null}
+          {error ? (
+            <p role="alert" className="rounded-2xl bg-panel px-4 py-3 text-sm text-danger">
+              {error}
+            </p>
+          ) : null}
+        </div>
 
-      <div className="flex items-center justify-between">
-        <Button variant="ghost" onClick={() => (step === 0 ? router.push("/campaigns") : setStep(step - 1))}>
-          {step === 0 ? "Отмена" : "Назад"}
-        </Button>
-        {step < 4 ? (
-          <Button onClick={() => setStep(step + 1)} disabled={!canNext}>
-            Далее
-          </Button>
-        ) : (
-          <Button onClick={launch} disabled={!canNext || saving}>
-            {saving ? "Запуск…" : `Запустить кампанию (${creatives.length} креативов)`}
-          </Button>
-        )}
+        <aside className="w-full shrink-0 lg:w-72">
+          <div className="sticky top-6 space-y-4">
+            <Card className="p-4">
+              <p className="mb-2 px-2.5 font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">
+                Шаги настройки
+              </p>
+              <ol className="space-y-1" aria-label="Шаги мастера">
+                {STEPS.map((s, i) => {
+                  const done = i < step
+                  const current = i === step
+                  return (
+                    <li key={s}>
+                      <button
+                        type="button"
+                        onClick={() => (done ? setStep(i) : undefined)}
+                        disabled={!done && !current}
+                        aria-current={current ? "step" : undefined}
+                        className={`flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm transition-colors ${
+                          current
+                            ? "bg-panel font-medium text-foreground"
+                            : done
+                              ? "text-foreground hover:bg-panel"
+                              : "text-muted"
+                        }`}
+                      >
+                        <span
+                          className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full font-mono text-[10px] ${
+                            current
+                              ? "bg-foreground text-background"
+                              : done
+                                ? "bg-success/15 text-success"
+                                : "bg-panel text-muted"
+                          }`}
+                        >
+                          {done ? "✓" : i + 1}
+                        </span>
+                        {s}
+                      </button>
+                    </li>
+                  )
+                })}
+              </ol>
+            </Card>
+            <div className="flex items-center gap-2">
+              <Button variant="ghost" onClick={() => (step === 0 ? router.push("/campaigns") : setStep(step - 1))}>
+                {step === 0 ? "Отмена" : "Назад"}
+              </Button>
+              {step < 4 ? (
+                <Button className="flex-1" onClick={() => setStep(step + 1)} disabled={!canNext}>
+                  Далее
+                </Button>
+              ) : (
+                <Button className="flex-1" onClick={launch} disabled={!canNext || saving}>
+                  {saving ? "Запуск…" : `Запустить (креативов: ${creatives.length})`}
+                </Button>
+              )}
+            </div>
+          </div>
+        </aside>
       </div>
     </main>
   )

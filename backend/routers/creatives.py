@@ -1,6 +1,6 @@
 import json
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 
 from auth import current_user
 from rbac import require_campaign_editor
@@ -107,3 +107,50 @@ async def delete_creative(creative_id: str, user: dict = Depends(require_campaig
     )
     if result == "DELETE 0":
         raise HTTPException(status_code=404, detail="Креатив не найден")
+
+
+# ---------------------------------------------------------------------------
+# File upload for creative assets (images / video)
+# ---------------------------------------------------------------------------
+
+_ALLOWED_UPLOAD_TYPES = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "video/mp4": ".mp4",
+    "video/webm": ".webm",
+}
+_MAX_UPLOAD_BYTES = 30 * 1024 * 1024  # 30 MB
+
+
+@router.post("/upload")
+async def upload_creative_asset(
+    request: Request,
+    file: UploadFile,
+    user: dict = Depends(require_campaign_editor),
+):
+    """Upload a creative asset file; returns a URL usable as asset_url/video_url."""
+    import os
+    import uuid
+
+    ext = _ALLOWED_UPLOAD_TYPES.get(file.content_type or "")
+    if not ext:
+        raise HTTPException(415, "Допустимы PNG, JPEG, GIF, WebP, MP4, WebM")
+
+    data = await file.read()
+    if len(data) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "Файл больше 30 МБ")
+    if not data:
+        raise HTTPException(400, "Пустой файл")
+
+    from main import UPLOAD_DIR
+
+    name = f"{uuid.uuid4().hex}{ext}"
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    with open(os.path.join(UPLOAD_DIR, name), "wb") as fh:
+        fh.write(data)
+
+    public_base = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
+    base = public_base or str(request.base_url).rstrip("/")
+    return {"url": f"{base}/uploads/{name}", "path": f"/uploads/{name}", "size": len(data)}

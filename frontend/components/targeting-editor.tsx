@@ -1,5 +1,6 @@
 "use client"
 
+import { useEffect, useRef, useState } from "react"
 import { Field, inputCls, Panel } from "@/components/ui"
 import useSWR from "swr"
 import { fetcher } from "@/lib/api"
@@ -47,6 +48,100 @@ function Chip({
   )
 }
 
+const LANGUAGES: [string, string][] = [
+  ["ru", "Русский"], ["en", "Английский"], ["kk", "Казахский"], ["uz", "Узбекский"],
+  ["ky", "Киргизский"], ["az", "Азербайджанский"], ["hy", "Армянский"], ["ka", "Грузинский"],
+  ["be", "Белорусский"], ["tg", "Таджикский"], ["ro", "Румынский"], ["tr", "Турецкий"],
+  ["de", "Немецкий"], ["fr", "Французский"], ["es", "Испанский"], ["ar", "Арабский"],
+  ["zh", "Китайский"], ["hi", "Хинди"],
+]
+
+const CARRIER_PRESETS = ["MTS", "Beeline", "Megafon", "Tele2", "Yota", "Rostelecom", "Kcell", "Ucell"]
+
+type GeoItem = { kind: "country" | "region" | "city"; label: string; value: string; hint: string }
+
+const GEO_KIND_LABEL: Record<GeoItem["kind"], string> = {
+  country: "Страна",
+  region: "Регион",
+  city: "Город",
+}
+
+function GeoSearch({ onPick }: { onPick: (item: GeoItem) => void }) {
+  const [q, setQ] = useState("")
+  const [items, setItems] = useState<GeoItem[]>([])
+  const [open, setOpen] = useState(false)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    if (timer.current) clearTimeout(timer.current)
+    const query = q.trim()
+    if (query.length < 2) {
+      setItems([])
+      setOpen(false)
+      return
+    }
+    timer.current = setTimeout(async () => {
+      try {
+        const res = (await fetcher(`/geo/search?q=${encodeURIComponent(query)}`)) as GeoItem[]
+        setItems(res)
+        setOpen(true)
+      } catch {
+        setItems([])
+      }
+    }, 200)
+    return () => {
+      if (timer.current) clearTimeout(timer.current)
+    }
+  }, [q])
+
+  return (
+    <div className="relative">
+      <input
+        className={inputCls}
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        onFocus={() => items.length > 0 && setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        placeholder="Начните вводить: Каз, Моск, Екатер…"
+        aria-label="Поиск гео: страна, регион или город"
+      />
+      {open && items.length > 0 ? (
+        <ul className="absolute z-20 mt-1 max-h-60 w-full overflow-y-auto rounded-md border border-border bg-card py-1 shadow-lg">
+          {items.map((it) => (
+            <li key={`${it.kind}:${it.value}`}>
+              <button
+                type="button"
+                className="flex w-full items-center justify-between px-3 py-1.5 text-left text-sm text-foreground hover:bg-surface"
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  onPick(it)
+                  setQ("")
+                  setOpen(false)
+                }}
+              >
+                <span>{it.label}</span>
+                <span className="ml-2 shrink-0 font-mono text-[10px] uppercase tracking-wide text-muted">
+                  {GEO_KIND_LABEL[it.kind]} · {it.hint}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  )
+}
+
+function addUnique(arr: string[] | undefined, v: string): string[] {
+  const a = arr || []
+  return a.includes(v) ? a : [...a, v]
+}
+
+function removeVal(arr: string[] | undefined, v: string): string[] | undefined {
+  const a = (arr || []).filter((x) => x !== v)
+  return a.length ? a : undefined
+}
+
 function toggle<T>(arr: T[] | undefined, v: T): T[] {
   const a = arr || []
   return a.includes(v) ? a.filter((x) => x !== v) : [...a, v]
@@ -72,34 +167,61 @@ export function TargetingEditor({
 
   return (
     <div className="space-y-4">
-      <Field label="Гео — страны" hint="Пусто — все страны">
-        <div className="flex flex-wrap gap-1.5">
-          {COUNTRIES.map((c) => (
-            <Chip key={c} active={(value.geo_countries || []).includes(c)} onClick={() => set({ geo_countries: toggle(value.geo_countries, c) })}>
-              {c}
-            </Chip>
-          ))}
+      <Field label="Гео-таргетинг" hint="Поиск: страна, регион или город — от 2 букв. Пусто — весь мир">
+        <div className="space-y-2">
+          <GeoSearch
+            onPick={(it) => {
+              if (it.kind === "country") set({ geo_countries: addUnique(value.geo_countries, it.value) })
+              else if (it.kind === "region") set({ geo_regions: addUnique(value.geo_regions, it.value) })
+              else set({ geo_cities: addUnique(value.geo_cities, it.value) })
+            }}
+          />
+          <div className="flex flex-wrap gap-1.5">
+            {COUNTRIES.map((c) => (
+              <Chip key={c} active={(value.geo_countries || []).includes(c)} onClick={() => set({ geo_countries: toggle(value.geo_countries, c) })}>
+                {c}
+              </Chip>
+            ))}
+          </div>
+          {(value.geo_countries?.length || value.geo_regions?.length || value.geo_cities?.length) ? (
+            <div className="flex flex-wrap gap-1.5 rounded-md border border-border bg-surface p-2">
+              {(value.geo_countries || []).map((c) => (
+                <button
+                  key={`c-${c}`}
+                  type="button"
+                  onClick={() => set({ geo_countries: removeVal(value.geo_countries, c) })}
+                  className="inline-flex items-center gap-1 rounded-full bg-primary px-2.5 py-0.5 text-xs font-medium text-primary-foreground"
+                  title="Убрать страну"
+                >
+                  {c} <span aria-hidden>×</span>
+                </button>
+              ))}
+              {(value.geo_regions || []).map((r) => (
+                <button
+                  key={`r-${r}`}
+                  type="button"
+                  onClick={() => set({ geo_regions: removeVal(value.geo_regions, r) })}
+                  className="inline-flex items-center gap-1 rounded-full bg-accent/15 px-2.5 py-0.5 text-xs font-medium text-accent"
+                  title="Убрать регион"
+                >
+                  {r} <span aria-hidden>×</span>
+                </button>
+              ))}
+              {(value.geo_cities || []).map((c) => (
+                <button
+                  key={`ct-${c}`}
+                  type="button"
+                  onClick={() => set({ geo_cities: removeVal(value.geo_cities, c) })}
+                  className="inline-flex items-center gap-1 rounded-full bg-panel px-2.5 py-0.5 text-xs font-medium text-foreground"
+                  title="Убрать город"
+                >
+                  {c} <span aria-hidden>×</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
         </div>
       </Field>
-
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <Field label="Регионы" hint="Через запятую, напр.: Москва, МО">
-          <input
-            className={inputCls}
-            defaultValue={(value.geo_regions || []).join(", ")}
-            onBlur={(e) => set({ geo_regions: csv(e.target.value) })}
-            placeholder="Все регионы"
-          />
-        </Field>
-        <Field label="Города" hint="Через запятую">
-          <input
-            className={inputCls}
-            defaultValue={(value.geo_cities || []).join(", ")}
-            onBlur={(e) => set({ geo_cities: csv(e.target.value) })}
-            placeholder="Все города"
-          />
-        </Field>
-      </div>
 
       <Field label="Устройства" hint="Пусто — все устройства">
         <div className="flex flex-wrap gap-1.5">
@@ -142,13 +264,14 @@ export function TargetingEditor({
             ))}
           </div>
         </Field>
-        <Field label="Языки" hint="Коды через запятую: ru, kk, uz">
-          <input
-            className={inputCls}
-            defaultValue={(value.languages || []).join(", ")}
-            onBlur={(e) => set({ languages: csv(e.target.value) })}
-            placeholder="Все языки"
-          />
+        <Field label="Языки" hint="Пусто — все языки">
+          <div className="flex max-h-28 flex-wrap gap-1.5 overflow-y-auto">
+            {LANGUAGES.map(([code, label]) => (
+              <Chip key={code} active={(value.languages || []).includes(code)} onClick={() => set({ languages: toggle(value.languages, code) })}>
+                {label}
+              </Chip>
+            ))}
+          </div>
         </Field>
       </div>
 
@@ -323,13 +446,21 @@ export function TargetingEditor({
             </Field>
           </div>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <Field label="Операторы связи" hint="Через запятую: MTS, Beeline, Megafon">
-              <input
-                className={inputCls}
-                defaultValue={(value.carriers || []).join(", ")}
-                onBlur={(e) => set({ carriers: csv(e.target.value) })}
-                placeholder="Все операторы"
-              />
+            <Field label="Операторы связи" hint="Пусто — все операторы">
+              <div className="flex flex-wrap gap-1.5">
+                {CARRIER_PRESETS.map((c) => (
+                  <Chip key={c} active={(value.carriers || []).includes(c)} onClick={() => set({ carriers: toggle(value.carriers, c) })}>
+                    {c}
+                  </Chip>
+                ))}
+                {(value.carriers || [])
+                  .filter((c) => !CARRIER_PRESETS.includes(c))
+                  .map((c) => (
+                    <Chip key={c} active onClick={() => set({ carriers: removeVal(value.carriers, c) })}>
+                      {c} ×
+                    </Chip>
+                  ))}
+              </div>
             </Field>
             <Field label="IP-префиксы" hint="Напр.: 95.24., 178.176.">
               <input

@@ -1,5 +1,6 @@
 "use client"
 
+import { useEffect, useState } from "react"
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
 import { setToken } from "@/lib/api"
@@ -10,7 +11,7 @@ const NAV_SECTIONS = [
     title: "Обзор",
     items: [
       { href: "/", label: "Дашборд", icon: "M3 13h4v8H3v-8zm7-6h4v14h-4V7zm7-4h4v18h-4V3z" },
-      { href: "/analytics", label: "Аналитика", icon: "M4 19h16M6 16V9m4 7V5m4 11v-5m4 5V8" },
+      { href: "/analytics", label: "Статистика", icon: "M4 19h16M6 16V9m4 7V5m4 11v-5m4 5V8" },
     ],
   },
   {
@@ -49,9 +50,26 @@ const NAV_SECTIONS = [
   },
 ]
 
+function isItemActive(href: string, pathname: string): boolean {
+  return href === "/" ? pathname === "/" : pathname.startsWith(href)
+}
+
+function sectionOfPath(pathname: string): string {
+  for (const s of NAV_SECTIONS) {
+    if (s.items.some((i) => isItemActive(i.href, pathname))) return s.title
+  }
+  return NAV_SECTIONS[0].title
+}
+
 export function Sidebar() {
   const pathname = usePathname()
   const router = useRouter()
+  const [openSection, setOpenSection] = useState<string>(() => sectionOfPath(pathname))
+
+  // При переходе на страницу из другой секции — раскрыть её секцию
+  useEffect(() => {
+    setOpenSection(sectionOfPath(pathname))
+  }, [pathname])
 
   const logout = () => {
     setToken(null)
@@ -74,34 +92,66 @@ export function Sidebar() {
       </div>
 
       <nav className="flex-1 overflow-y-auto px-3 py-2" aria-label="Основная навигация">
-        {NAV_SECTIONS.map((section) => (
-          <div key={section.title} className="mb-3">
-            <p className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-muted">
-              {section.title}
-            </p>
-            <div className="space-y-0.5">
-              {section.items.map((item) => {
-                const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href)
-                return (
-                  <Link
-                    key={item.href}
-                    href={item.href}
-                    className={`flex items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors ${
-                      active
-                        ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
-                        : "text-muted hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
-                    }`}
-                  >
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                      <path d={item.icon} stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" strokeLinecap="round" />
-                    </svg>
-                    {item.label}
-                  </Link>
-                )
-              })}
+        {NAV_SECTIONS.map((section) => {
+          const open = openSection === section.title
+          const hasActive = section.items.some((i) => isItemActive(i.href, pathname))
+          return (
+            <div key={section.title} className="mb-1">
+              <button
+                type="button"
+                onClick={() => setOpenSection(open ? "" : section.title)}
+                aria-expanded={open}
+                className={`flex w-full items-center justify-between rounded-md px-3 py-2 text-[10px] font-semibold uppercase tracking-wider transition-colors ${
+                  hasActive && !open ? "text-sidebar-foreground" : "text-muted"
+                } hover:bg-sidebar-accent/40 hover:text-sidebar-foreground`}
+              >
+                <span className="flex items-center gap-1.5">
+                  {section.title}
+                  {hasActive && !open ? (
+                    <span className="h-1.5 w-1.5 rounded-full bg-sidebar-primary" aria-hidden />
+                  ) : null}
+                </span>
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  aria-hidden="true"
+                  className={`transition-transform duration-200 ${open ? "rotate-180" : ""}`}
+                >
+                  <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
+              <div
+                className={`grid transition-[grid-template-rows] duration-200 ease-out ${open ? "grid-rows-[1fr]" : "grid-rows-[0fr]"}`}
+              >
+                <div className="overflow-hidden">
+                  <div className="space-y-0.5 pb-1 pt-0.5">
+                    {section.items.map((item) => {
+                      const active = isItemActive(item.href, pathname)
+                      return (
+                        <Link
+                          key={item.href}
+                          href={item.href}
+                          className={`flex items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors ${
+                            active
+                              ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
+                              : "text-muted hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
+                          }`}
+                        >
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                            <path d={item.icon} stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" strokeLinecap="round" />
+                          </svg>
+                          {item.label}
+                        </Link>
+                      )
+                    })}
+                  </div>
+                </div>
+              </div>
             </div>
-          </div>
-        ))}
+          )
+        })}
       </nav>
 
       <div className="border-t border-sidebar-border px-3 py-3">

@@ -2,7 +2,7 @@
 
 import { useState } from "react"
 import useSWR, { mutate } from "swr"
-import { api, fetcher } from "@/lib/api"
+import { api, apiUpload, fetcher } from "@/lib/api"
 import { AD_TYPE_LABELS, type Campaign, type Creative } from "@/lib/types"
 import { Button, Card, CardHeader, EmptyState, Field, inputCls, Modal, Spinner, StatusBadge, Table } from "@/components/ui"
 
@@ -14,6 +14,7 @@ export default function CreativesPage() {
   const [open, setOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [uploading, setUploading] = useState<string | null>(null)
   const [type, setType] = useState<"banner" | "native" | "video">("banner")
   const [form, setForm] = useState({
     campaign_id: "",
@@ -30,6 +31,20 @@ export default function CreativesPage() {
     video_url: "",
     video_duration: "15",
   })
+
+  const uploadFile = async (field: "asset_url" | "native_icon_url" | "video_url", file: File | null) => {
+    if (!file) return
+    setError(null)
+    setUploading(field)
+    try {
+      const res = await apiUpload<{ url: string }>("/creatives/upload", file)
+      setForm((f) => ({ ...f, [field]: res.url }))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Ошибка загрузки файла")
+    } finally {
+      setUploading(null)
+    }
+  }
 
   const openCreate = () => {
     setError(null)
@@ -222,8 +237,18 @@ export default function CreativesPage() {
                     ))}
                   </select>
                 </Field>
-                <Field label="URL изображения">
-                  <input type="url" required value={form.asset_url} onChange={(e) => setForm({ ...form, asset_url: e.target.value })} className={inputCls} placeholder="https://cdn.site.ru/banner.png" />
+                <Field label="Изображение" hint="Загрузите файл или укажите URL">
+                  <div className="flex items-center gap-2">
+                    <input type="url" required value={form.asset_url} onChange={(e) => setForm({ ...form, asset_url: e.target.value })} className={inputCls} placeholder="https://cdn.site.ru/banner.png" />
+                    <label className="shrink-0 cursor-pointer rounded-md border border-border bg-surface px-3 py-2 text-xs font-medium text-foreground hover:bg-panel">
+                      {uploading === "asset_url" ? "Загрузка…" : "Файл…"}
+                      <input type="file" accept="image/png,image/jpeg,image/gif,image/webp" className="sr-only" onChange={(e) => uploadFile("asset_url", e.target.files?.[0] || null)} />
+                    </label>
+                  </div>
+                  {form.asset_url ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={form.asset_url || "/placeholder.svg"} alt="Превью креатива" className="mt-2 max-h-24 rounded border border-border object-contain" />
+                  ) : null}
                 </Field>
               </>
             ) : null}
@@ -239,19 +264,37 @@ export default function CreativesPage() {
                 <Field label="Кнопка (CTA)">
                   <input value={form.native_cta} onChange={(e) => setForm({ ...form, native_cta: e.target.value })} className={inputCls} />
                 </Field>
-                <Field label="URL изображения">
-                  <input type="url" value={form.asset_url} onChange={(e) => setForm({ ...form, asset_url: e.target.value })} className={inputCls} placeholder="https://cdn.site.ru/native.png" />
+                <Field label="Изображение" hint="Файл или URL">
+                  <div className="flex items-center gap-2">
+                    <input type="url" value={form.asset_url} onChange={(e) => setForm({ ...form, asset_url: e.target.value })} className={inputCls} placeholder="https://cdn.site.ru/native.png" />
+                    <label className="shrink-0 cursor-pointer rounded-md border border-border bg-surface px-3 py-2 text-xs font-medium text-foreground hover:bg-panel">
+                      {uploading === "asset_url" ? "Загрузка…" : "Файл…"}
+                      <input type="file" accept="image/png,image/jpeg,image/gif,image/webp" className="sr-only" onChange={(e) => uploadFile("asset_url", e.target.files?.[0] || null)} />
+                    </label>
+                  </div>
                 </Field>
-                <Field label="URL иконки">
-                  <input type="url" value={form.native_icon_url} onChange={(e) => setForm({ ...form, native_icon_url: e.target.value })} className={inputCls} placeholder="https://cdn.site.ru/icon.png" />
+                <Field label="Иконка" hint="Файл или URL">
+                  <div className="flex items-center gap-2">
+                    <input type="url" value={form.native_icon_url} onChange={(e) => setForm({ ...form, native_icon_url: e.target.value })} className={inputCls} placeholder="https://cdn.site.ru/icon.png" />
+                    <label className="shrink-0 cursor-pointer rounded-md border border-border bg-surface px-3 py-2 text-xs font-medium text-foreground hover:bg-panel">
+                      {uploading === "native_icon_url" ? "Загрузка…" : "Файл…"}
+                      <input type="file" accept="image/png,image/jpeg,image/webp" className="sr-only" onChange={(e) => uploadFile("native_icon_url", e.target.files?.[0] || null)} />
+                    </label>
+                  </div>
                 </Field>
               </>
             ) : null}
 
             {type === "video" ? (
               <>
-                <Field label="URL видео (MP4)">
-                  <input type="url" required value={form.video_url} onChange={(e) => setForm({ ...form, video_url: e.target.value })} className={inputCls} placeholder="https://cdn.site.ru/video.mp4" />
+                <Field label="Видео (MP4/WebM)" hint="Файл или URL">
+                  <div className="flex items-center gap-2">
+                    <input type="url" required value={form.video_url} onChange={(e) => setForm({ ...form, video_url: e.target.value })} className={inputCls} placeholder="https://cdn.site.ru/video.mp4" />
+                    <label className="shrink-0 cursor-pointer rounded-md border border-border bg-surface px-3 py-2 text-xs font-medium text-foreground hover:bg-panel">
+                      {uploading === "video_url" ? "Загрузка…" : "Файл…"}
+                      <input type="file" accept="video/mp4,video/webm" className="sr-only" onChange={(e) => uploadFile("video_url", e.target.files?.[0] || null)} />
+                    </label>
+                  </div>
                 </Field>
                 <Field label="Длительность, сек">
                   <input type="number" min="5" max="120" value={form.video_duration} onChange={(e) => setForm({ ...form, video_duration: e.target.value })} className={inputCls} />
