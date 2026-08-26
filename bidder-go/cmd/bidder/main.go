@@ -1,0 +1,75 @@
+// Central DSP Go bidder — entrypoint.
+//
+// Скелет из итерации audit/prod-readiness. Функциональная спека:
+// docs/audit/go_bidder_plan.md + docs/audit/parity_matrix.md
+// (Python backend/routers/rtb.py — источник истины по поведению).
+package main
+
+import (
+	"context"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/SMBCreator/central-dsp/bidder-go/internal/feed"
+	"github.com/SMBCreator/central-dsp/bidder-go/internal/rtb"
+)
+
+func env(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+func main() {
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
+
+	addr := env("BIDDER_ADDR", ":8090")
+
+	store := feed.NewStore(feed.Config{
+		BackendURL: env("BACKEND_INTERNAL_URL", "http://backend:8000"),
+		FeedToken:  os.Getenv("INTERNAL_FEED_TOKEN"), // тот же контракт, что у Java: GET /internal/bidder-feed
+		Refresh:    30 * time.Second,
+	})
+
+	h := rtb.NewHandler(store)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /rtb/bid/{endpointKey}", h.Bid)
+	mux.HandleFunc("POST /rtb/win", h.Win)
+	mux.HandleFunc("POST /rtb/loss", h.Loss)
+	mux.HandleFunc("POST /rtb/imp", h.Imp)
+	mux.HandleFunc("GET /healthz", h.Healthz)
+
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 2 * time.Second,
+		ReadTimeout:       5 * time.Second,   // RTB timeout budget: ответ обязан уйти < 100ms
+		WriteTimeout:      5 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	go store.Run(ctx)
+
+	go func() {
+		slog.Info("bidder-go listening", "addr", addr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("server error", "err", err)
+			os.Exit(1)
+		}
+	}()
+
+	<-ctx.Done()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_ = srv.Shutdown(shutdownCtx)
+}
