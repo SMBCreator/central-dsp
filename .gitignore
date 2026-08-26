@@ -87,3 +87,4 @@ htmlcov/
 .coverage
 coverage.xml
 bidder-go/bin/
+backend/uploads/
