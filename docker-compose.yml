@@ -108,7 +108,12 @@ services:
     environment:
       BIDDER_ADDR: ":8090"
       BACKEND_INTERNAL_URL: http://backend:8000
-      INTERNAL_FEED_TOKEN: ${INTERNAL_FEED_TOKEN:?INTERNAL_FEED_TOKEN is required}
+      REDIS_URL: ${REDIS_URL_BIDDER:-redis://redis:6379/0}
+      RTB_API_TOKEN: ${RTB_API_TOKEN:?set RTB_API_TOKEN in .env}
+      EVENT_TOKEN_SECRET: ${EVENT_TOKEN_SECRET:?set EVENT_TOKEN_SECRET in .env (openssl rand -hex 32)}
+      EVENT_BASE_URL: ${PUBLIC_BASE_URL:-http://backend:8000}
+      APP_ENV: ${APP_ENV:-production}
+      INTERNAL_FEED_TOKEN: ${INTERNAL_FEED_TOKEN:-}
     depends_on:
       redis:
         condition: service_healthy
@@ -171,13 +176,15 @@ services:
       - centraldsp
 
   # ─────────────────────────────────────────
-  # FRONTEND (Vue 3 + nginx)
+  # FRONTEND (Next.js admin UI)
+  # В проде /api/* проксируется на backend реверс-прокси (nginx/caddy),
+  # см. docs/DEPLOYMENT.md.
   # ─────────────────────────────────────────
   frontend:
     build: ./frontend
     restart: unless-stopped
     ports:
-      - "80:80"
+      - "3000:3000"
     depends_on:
       - backend
     networks:
