@@ -18,7 +18,7 @@ import hmac as _hmac
 
 from billing_core import bill_win
 from audiences import check_audiences, store_clid_bridge
-from shading import get_factor as shading_get_factor
+from shading import get_factor as shading_get_factor, should_shade
 from cache import bump_frequency, bump_frequency_multi, check_frequency_cap, check_qps, gate_and_reserve, get_redis, mark_once, reserve_budget
 from db import get_pool
 from money import CURRENCY, clamp_clearing_price, cpm_to_cost
@@ -599,6 +599,11 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
     imps = req.get("imp") or []
     if not imps:
         return None
+    try:
+        # OpenRTB 2.5: 1 = first price, 2 = second price (default when absent)
+        auction_type = int(req.get("at") or 2)
+    except (TypeError, ValueError):
+        auction_type = 2
 
     device = req.get("device") or {}
     geo = (device.get("geo") or {})
@@ -743,8 +748,10 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
                 price = min(price, float(c["max_bid"]))
             if price < floor:
                 continue
-            # Bid shading (opt-in): pay closer to clearing price, never below floor
-            if c["bid_shading"]:
+            # Bid shading (opt-in, first-price only): pay closer to the
+            # clearing price, never below floor. Second-price auctions are
+            # excluded: shading there cuts win rate without saving money.
+            if should_shade(c["bid_shading"], auction_type):
                 _sf = await shading_get_factor(str(c["campaign_id"]), str(partner["id"]))
                 if _sf < 1.0:
                     price = max(floor * 1.01, price * _sf)

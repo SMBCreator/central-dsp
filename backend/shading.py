@@ -92,6 +92,15 @@ async def recompute_factors() -> dict:
     return {"pairs_updated": updated}
 
 
+def should_shade(bid_shading_enabled: bool, auction_type: int) -> bool:
+    """Shade only in explicit first-price auctions (OpenRTB `at` = 1).
+
+    In second-price auctions (at = 2, also the spec default when `at` is
+    absent) the clearing price is set by the auction itself, so lowering
+    the bid saves nothing and only reduces win rate."""
+    return bool(bid_shading_enabled) and auction_type == 1
+
+
 def compute_raw_factor(avg_ratio: float, bids: int, wins: int, prev: float = 1.0) -> float:
     """Pure math for tests: same formula as recompute_factors."""
     if bids < MIN_BIDS or wins == 0:

@@ -60,3 +60,30 @@ def test_shaded_price_respects_floor():
     floor2, price2 = 4.9, 5.0
     shaded2 = max(floor2 * 1.01, price2 * 0.55)
     assert shaded2 == floor2 * 1.01 and shaded2 > floor2
+
+
+# --- should_shade: first-price-only gate (audit GAP-005) ---
+
+def test_should_shade_first_price_enabled():
+    from shading import should_shade
+    assert should_shade(True, 1) is True
+
+
+def test_should_shade_second_price_never():
+    from shading import should_shade
+    # at=2 (second price) must never shade, even when campaign opts in
+    assert should_shade(True, 2) is False
+
+
+def test_should_shade_disabled_campaign():
+    from shading import should_shade
+    assert should_shade(False, 1) is False
+    assert should_shade(False, 2) is False
+
+
+def test_should_shade_unknown_auction_types():
+    from shading import should_shade
+    # 0 / 3 / 500+ (exchange-specific) — be conservative, do not shade
+    assert should_shade(True, 0) is False
+    assert should_shade(True, 3) is False
+    assert should_shade(True, 500) is False
