@@ -814,6 +814,22 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
                 ex=3600,
             ))
 
+        # Synchronously cache bid metadata in Redis (sub-ms) so win/imp/click
+        # handlers can resolve the bid immediately; the Postgres insert below
+        # is fire-and-forget and may land after the SSP's win notice (GAP-011).
+        await get_redis().set(
+            f"bidmeta:{bid_id}",
+            json.dumps({
+                "bid_id": bid_id, "imp_id": imp.get("id"),
+                "campaign_id": str(c["campaign_id"]), "line_item_id": str(c["li_id"]),
+                "creative_id": str(c["creative_id"]), "supply_partner_id": str(partner["id"]),
+                "price": price,
+                "device_type": DEVICE_TYPES.get(device.get("devicetype", 0), "unknown"),
+                "geo_country": geo.get("country"), "ad_type": ad_type,
+                "domain": site.get("domain"), "os": req_os, "browser": req_browser,
+            }),
+            ex=3600,
+        )
         _fire_and_forget(_log_event(
             pool, "bid", bid_id=bid_id, imp_id=imp.get("id"),
             campaign_id=c["campaign_id"], line_item_id=c["li_id"], creative_id=c["creative_id"],
@@ -872,6 +888,14 @@ async def _bump_domain_stats(pool, row, col: str, spend=0):
 
 
 async def _find_bid(pool, bid_id: str):
+    """Resolve bid metadata: Redis cache first (written synchronously in the
+    bid path), Postgres bid_events as fallback for older bids."""
+    try:
+        raw = await get_redis().get(f"bidmeta:{bid_id}")
+        if raw:
+            return json.loads(raw)
+    except Exception:
+        logger.exception("bidmeta redis lookup failed; falling back to PG")
     return await pool.fetchrow(
         "SELECT * FROM bid_events WHERE bid_id = $1 AND event_type = 'bid' ORDER BY id LIMIT 1", bid_id
     )
