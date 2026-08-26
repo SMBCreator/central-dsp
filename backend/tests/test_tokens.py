@@ -57,3 +57,25 @@ def test_secret_change_invalidates_tokens(monkeypatch):
     tok = sign_event_token("b1")
     monkeypatch.setenv("EVENT_TOKEN_SECRET", "a-completely-different-secret")
     assert verify_event_token(tok) is None
+
+
+def test_prod_refuses_dev_fallback_secret(monkeypatch):
+    """GAP-003: with APP_ENV=production and no secret configured, signing
+    must fail instead of silently using the public dev fallback."""
+    import tokens as tokens_mod
+
+    monkeypatch.delenv("EVENT_TOKEN_SECRET", raising=False)
+    monkeypatch.delenv("SESSION_SECRET", raising=False)
+    monkeypatch.setenv("APP_ENV", "production")
+    import pytest as _pytest
+
+    with _pytest.raises(RuntimeError):
+        tokens_mod.sign_event_token("b1")
+
+
+def test_dev_fallback_still_works_without_app_env(monkeypatch):
+    monkeypatch.delenv("EVENT_TOKEN_SECRET", raising=False)
+    monkeypatch.delenv("SESSION_SECRET", raising=False)
+    monkeypatch.delenv("APP_ENV", raising=False)
+    tok = sign_event_token("b1")
+    assert verify_event_token(tok) == "b1"
