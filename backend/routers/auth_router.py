@@ -1,6 +1,6 @@
 import os
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 
 from auth import (
     COOKIE_NAME,
@@ -10,6 +10,7 @@ from auth import (
     hash_password,
     verify_password,
 )
+from cache import rate_limit
 from db import get_pool
 from schemas import LoginIn, RegisterIn
 
@@ -54,7 +55,17 @@ async def register(body: RegisterIn, response: Response):
 
 
 @router.post("/login")
-async def login(body: LoginIn, response: Response):
+async def login(body: LoginIn, request: Request, response: Response):
+    # GAP-002: brute-force protection. Two fixed windows: per-IP and per-email.
+    client_ip = request.client.host if request.client else "unknown"
+    email_key = body.email.lower().strip()
+    ip_ok = await rate_limit("login:ip", client_ip, limit=20, window_seconds=300)
+    email_ok = await rate_limit("login:email", email_key, limit=8, window_seconds=300)
+    if not ip_ok or not email_ok:
+        raise HTTPException(
+            status_code=429,
+            detail="Слишком много попыток входа. Повторите через несколько минут.",
+        )
     pool = await get_pool()
     row = await pool.fetchrow(
         "SELECT id, email, name, role, status, password_hash FROM users WHERE email = $1",

@@ -220,3 +220,25 @@ async def mark_once(kind: str, token: str, ttl: int = 86400) -> bool:
     """Returns True the first time a (kind, token) pair is seen."""
     r = get_redis()
     return bool(await r.set(f"once:{kind}:{token}", "1", nx=True, ex=ttl))
+
+
+# --- Brute-force protection ---------------------------------------------------
+async def rate_limit(scope: str, key: str, limit: int, window_seconds: int) -> bool:
+    """Fixed-window rate limiter. Returns True while under the limit.
+
+    Used for login brute-force protection (GAP-002): scope="login",
+    key=client ip or normalized email. Fails open on Redis errors so a
+    Redis outage does not lock everyone out of the panel.
+    """
+    if not limit or limit <= 0:
+        return True
+    try:
+        r = get_redis()
+        rk = f"rl:{scope}:{key}"
+        pipe = r.pipeline(transaction=False)
+        pipe.incr(rk)
+        pipe.expire(rk, window_seconds)
+        count, _ = await pipe.execute()
+        return int(count) <= limit
+    except Exception:
+        return True
