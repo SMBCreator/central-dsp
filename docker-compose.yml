@@ -48,7 +48,7 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      RTB_API_TOKEN: ${RTB_API_TOKEN:-changeme-rtb-token}
+      RTB_API_TOKEN: ${RTB_API_TOKEN:?set RTB_API_TOKEN in .env (openssl rand -hex 32)}
     depends_on:
       postgres:
         condition: service_healthy
@@ -103,7 +103,7 @@ services:
     command: celery -A celery_app worker --loglevel=info --concurrency=4 -Q default,rtb,sync
     env_file: .env
     environment:
-      RTB_API_TOKEN: ${RTB_API_TOKEN:-changeme-rtb-token}
+      RTB_API_TOKEN: ${RTB_API_TOKEN:?set RTB_API_TOKEN in .env (openssl rand -hex 32)}
     depends_on:
       postgres:
         condition: service_healthy
@@ -131,10 +131,10 @@ services:
   flower:
     build: ./backend
     restart: unless-stopped
-    command: celery -A celery_app flower --port=5555 --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-admin123}
+    command: celery -A celery_app flower --port=5555 --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:?set FLOWER_PASSWORD in .env}
     env_file: .env
     ports:
-      - "5555:5555"
+      - "127.0.0.1:5555:5555"   # loopback only; use an SSH tunnel or reverse proxy with auth
     depends_on:
       - worker
     networks:
