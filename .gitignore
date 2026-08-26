@@ -86,3 +86,4 @@ GeoLite2-*/
 htmlcov/
 .coverage
 coverage.xml
+bidder-go/bin/

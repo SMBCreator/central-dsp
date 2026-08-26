@@ -74,6 +74,12 @@ async def campaigns_feed(authorization: str | None = Header(default=None)):
                 d["targeting"] = json.loads(t)
             except ValueError:
                 d["targeting"] = {}
+        fc = d.get("frequency_caps")
+        if isinstance(fc, str):
+            try:
+                d["frequency_caps"] = json.loads(fc)
+            except ValueError:
+                d["frequency_caps"] = []
         out.append(d)
 
     owner_ids = list({c["owner_id"] for c in cands})
