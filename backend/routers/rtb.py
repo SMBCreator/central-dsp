@@ -26,6 +26,11 @@ from tokens import sign_event_token, verify_event_token
 
 router = APIRouter(prefix="/rtb", tags=["rtb"])
 
+# Python RTB — reference-имплементация и dev/симулятор. Прод-трафик обслуживает
+# Go-биддер (bidder-go/). Флаг выключает bid-эндпоинт в прод-топологии;
+# win/imp/click-нотификации остаются активными для доигрывания in-flight бидов.
+_RTB_PYTHON_SERVING = os.getenv("RTB_PYTHON_SERVING", "true").strip().lower() in {"1", "true", "yes"}
+
 DEVICE_TYPES = {1: "mobile", 2: "desktop", 3: "ctv", 4: "phone", 5: "tablet", 6: "connected", 7: "settopbox"}
 
 _BROWSER_MARKERS = [
@@ -505,6 +510,9 @@ def _parse_freq_caps(c) -> list[tuple[int, int]]:
 
 @router.post("/bid/{endpoint_key}")
 async def bid(endpoint_key: str, request: Request):
+    if not _RTB_PYTHON_SERVING:
+        # 204 no-bid: SSP-совместимый ответ, не ломает партнёрские интеграции
+        return Response(status_code=204)
     try:
         req = await request.json()
     except Exception:
