@@ -187,7 +187,7 @@ function targetingSummary(t: Targeting): string {
 export default function CampaignDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
   const { data: campaign } = useSWR<Campaign>(`/campaigns/${id}`, fetcher)
-  const { data: lineItems } = useSWR<LineItem[]>(`/campaigns/${id}/line-items`, fetcher)
+  const { data: lineItems } = useSWR<LineItem[]>(`/line-items?campaign_id=${id}`, fetcher)
   const { data: stats } = useSWR<StatsSummary>(`/stats/summary?hours=168&campaign_id=${id}`, fetcher)
 
   const [open, setOpen] = useState(false)
@@ -214,9 +214,10 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
     setSaving(true)
     setError(null)
     try {
-      await api(`/campaigns/${id}/line-items`, {
+      await api(`/line-items`, {
         method: "POST",
         body: {
+          campaign_id: id,
           name: form.name,
           bid_type: form.bid_type,
           bid_price: Number(form.bid_price),
@@ -225,7 +226,7 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
           targeting,
         },
       })
-      await mutate(`/campaigns/${id}/line-items`)
+      await mutate(`/line-items?campaign_id=${id}`)
       setOpen(false)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Ошибка сохранения")
@@ -239,7 +240,7 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
       method: "PATCH",
       body: { status: li.status === "active" ? "paused" : "active" },
     })
-    await mutate(`/campaigns/${id}/line-items`)
+    await mutate(`/line-items?campaign_id=${id}`)
   }
 
   if (!campaign) return <Spinner />
