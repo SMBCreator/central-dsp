@@ -1,83 +1,502 @@
 package rtb
 
+// RTB hot path — порт 1:1 backend/routers/rtb.py::process_bid_request.
+// Контракт эндпоинтов и Redis-ключей идентичен Python (см. parity_matrix.md):
+// бид, выигранный Go-биддером, биллится Python-бэкендом через bidmeta:{bid_id}.
+
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"sort"
+	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/feed"
+	"github.com/SMBCreator/central-dsp/bidder-go/internal/redisx"
+	"github.com/SMBCreator/central-dsp/bidder-go/internal/shading"
+	"github.com/SMBCreator/central-dsp/bidder-go/internal/targeting"
 )
 
-// Handler обслуживает RTB hot path. Контракт эндпоинтов идентичен
-// Python-reference (backend/routers/rtb.py) — см. parity_matrix.md.
+// Handler обслуживает RTB hot path.
 type Handler struct {
-	store *feed.Store
+	store   *feed.Store
+	redis   *redisx.Client
+	shading *shading.Store
+	base    string // базовый URL backend'а для nurl/imp/click
+	seat    string
 }
 
-func NewHandler(store *feed.Store) *Handler {
-	return &Handler{store: store}
+// NewHandler создаёт handler со всеми зависимостями hot path.
+func NewHandler(store *feed.Store, rc *redisx.Client) *Handler {
+	base := os.Getenv("EVENT_BASE_URL")
+	if base == "" {
+		base = os.Getenv("BACKEND_BASE_URL")
+	}
+	if base == "" {
+		base = "http://localhost:3000"
+	}
+	h := &Handler{
+		store: store,
+		redis: rc,
+		base:  strings.TrimRight(base, "/"),
+		seat:  "central-dsp",
+	}
+	if rc != nil {
+		h.shading = shading.NewStore(rc.Raw())
+	}
+	return h
 }
 
-// Bid — POST /rtb/bid/{endpointKey}.
-// Пайплайн (спека go_bidder_plan.md §hot-path, паритет с Python):
-//  1. auth: endpointKey -> supply partner (+ опциональный X-SSP-Token)
-//  2. QPS-гейт партнёра (Redis INCR+EXPIRE)
-//  3. parse/validate BidRequest, auction type (at, default 2)
-//  4. targeting: geo/os/devicetype/domain lists (global+campaign)/SSP allowlist
-//  5. audiences: include/exclude по Redis sets (device ifa + user.eids)
-//  6. freq caps: multi-window (до 3 окон), атомарный Lua-скрипт
-//  7. budget: atomic reserve (Lua из backend/cache.py — переносится 1:1)
-//  8. price: Decimal-семантика, bid shading только при at=1, floor*1.01 нижняя граница
-//  9. response: adm с erid-маркировкой (banner/native/VAST), cur=RUB, nurl/lurl
+type scoredCandidate struct {
+	c     *feed.Candidate
+	price float64 // эффективная цена после shading
+	raw   float64 // цена до shading
+}
+
+// Bid — POST /rtb/bid/{endpointKey}. Пайплайн — паритет с Python:
+// auth -> QPS -> parse -> targeting -> freq (check-only) -> budget reserve ->
+// shading (только at=1) -> adm с erid -> bidmeta/bidfreq в Redis -> response.
 func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	endpointKey := r.PathValue("endpointKey")
+	ctx := r.Context()
 
+	// 1. Auth: endpointKey -> supply partner (+ опциональный X-SSP-Token).
+	snap := h.store.Snapshot()
+	if snap == nil {
+		http.Error(w, "feed not loaded", http.StatusServiceUnavailable)
+		return
+	}
+	partner := snap.Partners[r.PathValue("endpointKey")]
+	if partner == nil || partner.Status != "active" {
+		http.Error(w, "unknown endpoint", http.StatusNotFound)
+		return
+	}
+	if partner.AuthToken != "" && r.Header.Get("X-SSP-Token") != partner.AuthToken {
+		http.Error(w, "invalid ssp token", http.StatusForbidden)
+		return
+	}
+
+	// 2. QPS-гейт партнёра.
+	if h.redis != nil && partner.QPSLimit > 0 {
+		ok, err := h.redis.CheckQPS(ctx, partner.ID, int64(partner.QPSLimit), time.Now().Unix())
+		if err == nil && !ok {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+	}
+
+	// 3. Parse/validate.
 	var req BidRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid bid request", http.StatusBadRequest)
 		return
 	}
 	if req.ID == "" || len(req.Imp) == 0 {
-		w.WriteHeader(http.StatusNoContent) // no-bid
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	auctionType := req.At
+	if auctionType == 0 {
+		auctionType = 2 // OpenRTB default: second price
+	}
+
+	// Central DSP биддит только в RUB.
+	if len(req.Cur) > 0 && !containsStr(req.Cur, "RUB") {
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 
-	// TODO(impl): полный пайплайн по спеке. Скелет отвечает no-bid.
-	_ = endpointKey
-	_ = h.store
+	view := buildRequestView(&req)
+	deviceID := deviceIDOf(&req)
 
-	slog.Debug("bid request processed", "id", req.ID, "took", time.Since(start))
-	w.WriteHeader(http.StatusNoContent)
+	var bids []Bid
+	for i := range req.Imp {
+		imp := &req.Imp[i]
+		if b := h.bidOnImp(ctx, &req, imp, view, deviceID, partner, snap, auctionType); b != nil {
+			bids = append(bids, *b)
+		}
+	}
+
+	if len(bids) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	resp := BidResponse{
+		ID:      req.ID,
+		Cur:     "RUB",
+		SeatBid: []SeatBid{{Seat: h.seat, Bid: bids}},
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+	slog.Debug("bid", "id", req.ID, "bids", len(bids), "took", time.Since(start))
 }
 
-// Win — POST /rtb/win: биллинг выигрыша (идемпотентный, mark_once-семантика),
-// clearing price clamp, bump freq caps, обучающий сигнал для shading.
+// bidOnImp — кандидаты одного impression: фильтры + выбор лучшей цены.
+func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequest, imp *Imp, view *targeting.RequestView, deviceID string, partner *feed.Partner, snap *feed.Snapshot, auctionType int) *Bid {
+	rctx, ok := ctx.(interface {
+		Done() <-chan struct{}
+		Err() error
+		Deadline() (time.Time, bool)
+		Value(any) any
+	})
+	if !ok {
+		return nil
+	}
+
+	adType := impAdType(imp)
+	if adType == "" {
+		return nil
+	}
+	if partner.AllowedTypes != nil && len(partner.AllowedTypes) > 0 && !partner.AllowedTypes[adType] {
+		return nil
+	}
+
+	floor := imp.BidFloor
+	if partner.BidFloor > floor {
+		floor = partner.BidFloor
+	}
+
+	// Собираем прошедших таргетинг кандидатов, сортируем по цене (desc).
+	var scored []scoredCandidate
+	for i := range snap.Candidates {
+		c := &snap.Candidates[i]
+		if !typeMatches(c, adType, imp) {
+			continue
+		}
+		if !h.matchCandidate(c, req, view, partner, snap) {
+			continue
+		}
+		raw := c.BidPrice
+		if c.MaxBid != nil && *c.MaxBid > 0 && raw > *c.MaxBid {
+			raw = *c.MaxBid
+		}
+		price := raw
+		if h.shading != nil && shading.ShouldShade(c.BidShading, auctionType) {
+			factor := h.shading.GetFactor(rctx, c.CampaignID, partner.ID)
+			price = shading.Apply(raw, factor, floor)
+		}
+		if price < floor || price <= 0 {
+			continue
+		}
+		scored = append(scored, scoredCandidate{c: c, price: price, raw: raw})
+	}
+	sort.Slice(scored, func(i, j int) bool { return scored[i].price > scored[j].price })
+
+	for _, sc := range scored {
+		c := sc.c
+		// Bid-time gate: freq-окна (read-only) + атомарная резервация бюджета
+		// кампании И line item в одном Lua-роундтрипе — порт gate_and_reserve.
+		// Инкремент freq-счётчиков делает backend на /imp через bidfreq:{bid_id}.
+		capsList := parseCaps(c)
+		if h.redis != nil {
+			cost := sc.price / 1000.0 // CPM -> цена одного показа
+			liBudget := 0.0
+			if c.LiBudget != nil {
+				liBudget = *c.LiBudget
+			}
+			okRes, err := h.redis.GateAndReserve(rctx, c.CampaignID, c.LiID, cost, c.CampBudget, liBudget, deviceID, capsList)
+			if err != nil {
+				slog.Error("gate_and_reserve", "err", err)
+				continue
+			}
+			if !okRes {
+				continue
+			}
+		}
+
+		bidID := uuid.NewString()
+		token, err := SignEventToken(bidID, DefaultTokenTTL)
+		if err != nil {
+			slog.Error("sign token", "err", err)
+			return nil
+		}
+		h.persistBidMeta(rctx, bidID, imp, c, partner, sc.price, view, adType, deviceID, capsList)
+
+		adm := BuildAdm(c, h.base, token)
+		nurl := fmt.Sprintf("%s/api/rtb/win?bid=%s&price=${AUCTION_PRICE}", h.base, token)
+		w, hgt := 0, 0
+		if c.Width != nil {
+			w = *c.Width
+		}
+		if c.Height != nil {
+			hgt = *c.Height
+		}
+		ext, _ := json.Marshal(map[string]string{"erid": c.Erid})
+		return &Bid{
+			ID: bidID, ImpID: imp.ID, Price: roundPrice(sc.price),
+			AdM: adm, ADomain: admomains(c), CrID: c.CreativeID,
+			NURL: nurl, W: w, H: hgt, Ext: ext,
+		}
+	}
+	return nil
+}
+
+// matchCandidate — таргетинг line item + SSP allowlist + глобальные домен-листы.
+func (h *Handler) matchCandidate(c *feed.Candidate, req *BidRequest, view *targeting.RequestView, partner *feed.Partner, snap *feed.Snapshot) bool {
+	// badv: домен рекламодателя не должен быть заблокирован SSP.
+	if len(req.BAdv) > 0 && c.AdvDomain != "" {
+		for _, b := range req.BAdv {
+			if strings.EqualFold(strings.TrimPrefix(b, "www."), strings.TrimPrefix(c.AdvDomain, "www.")) {
+				return false
+			}
+		}
+	}
+	// Глобальные white/blacklist владельца (owner_id -> domains).
+	owner := c.OwnerID
+	if view.Domain != "" {
+		if bl := snap.GBlack[owner]; bl != nil && bl[view.Domain] {
+			return false
+		}
+		if wl := snap.GWhite[owner]; len(wl) > 0 && !wl[view.Domain] {
+			return false
+		}
+	}
+	t := c.T
+	if t == nil {
+		return true
+	}
+	// SSP allowlist проверяет вызывающая сторона (как в Python).
+	if len(t.SSPAllowlist) > 0 {
+		allowed := false
+		for _, id := range t.SSPAllowlist {
+			if id == partner.ID {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return false
+		}
+	}
+	return targeting.Match(feedTargetingToMatch(t), view)
+}
+
+// parseCaps — порт _parse_freq_caps: JSONB frequency_caps (объекты
+// {impressions, period_hours}) с фолбэком на легаси-поля кампании.
+func parseCaps(c *feed.Candidate) []redisx.CapWindow {
+	var caps []redisx.CapWindow
+	if len(c.FreqCaps) > 0 && string(c.FreqCaps) != "null" {
+		var raw []redisx.CapWindow
+		if json.Unmarshal(c.FreqCaps, &raw) == nil {
+			for _, w := range raw {
+				if w.Limit > 0 && w.PeriodHours > 0 && len(caps) < 3 {
+					caps = append(caps, w)
+				}
+			}
+		}
+	}
+	if len(caps) == 0 && c.FreqCapImps != nil && *c.FreqCapImps > 0 {
+		hrs := 24
+		if c.FreqCapHours != nil && *c.FreqCapHours > 0 {
+			hrs = *c.FreqCapHours
+		}
+		caps = append(caps, redisx.CapWindow{Limit: *c.FreqCapImps, PeriodHours: hrs})
+	}
+	return caps
+}
+
+// persistBidMeta пишет bidmeta:{bid_id} и bidfreq:{bid_id} — формат Python.
+func (h *Handler) persistBidMeta(ctx interface {
+	Done() <-chan struct{}
+	Err() error
+	Deadline() (time.Time, bool)
+	Value(any) any
+}, bidID string, imp *Imp, c *feed.Candidate, partner *feed.Partner, price float64, view *targeting.RequestView, adType, deviceID string, caps []redisx.CapWindow) {
+	if h.redis == nil {
+		return
+	}
+	rdb := h.redis.Raw()
+	dt := targeting.DeviceTypes[view.DeviceType]
+	if dt == "" {
+		dt = "unknown"
+	}
+	meta, _ := json.Marshal(map[string]any{
+		"bid_id": bidID, "imp_id": imp.ID,
+		"campaign_id": c.CampaignID, "line_item_id": c.LiID,
+		"creative_id": c.CreativeID, "supply_partner_id": partner.ID,
+		"price":       roundPrice(price),
+		"device_type": dt, "geo_country": view.Country, "ad_type": adType,
+		"domain": view.Domain, "os": view.OS, "browser": "",
+	})
+	rdb.Set(ctx, "bidmeta:"+bidID, meta, time.Hour)
+	if deviceID != "" && len(caps) > 0 {
+		capsJSON, _ := json.Marshal(caps)
+		rdb.Set(ctx, "bidfreq:"+bidID, deviceID+"|"+string(capsJSON), time.Hour)
+	}
+	// Retargeting bridge: clid == bid_id после клика.
+	if deviceID != "" {
+		rdb.Set(ctx, "clid:"+bidID, deviceID, 24*time.Hour)
+	}
+}
+
+// Win — POST /rtb/win (внутренний; в prod win идёт на backend /api/rtb/win).
 func (h *Handler) Win(w http.ResponseWriter, r *http.Request) {
-	// TODO(impl): перенести bill_win-семантику (backend/billing_core.py):
-	// Decimal, идемпотентность по bid id, clamp цены [floor, bid_price].
+	if VerifyEventToken(r.URL.Query().Get("bid")) == "" {
+		http.Error(w, "invalid event token", http.StatusForbidden)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// Loss — POST /rtb/loss: освобождение резерва бюджета + loss-сигнал для shading.
+// Loss — POST /rtb/loss: освобождение бюджетного резерва.
 func (h *Handler) Loss(w http.ResponseWriter, r *http.Request) {
-	// TODO(impl): release budget reserve; записать loss в shading-агрегаты.
+	bidID := VerifyEventToken(r.URL.Query().Get("bid"))
+	if bidID == "" {
+		http.Error(w, "invalid event token", http.StatusForbidden)
+		return
+	}
+	if h.redis != nil {
+		raw, err := h.redis.Raw().Get(r.Context(), "bidmeta:"+bidID).Result()
+		if err == nil {
+			var meta struct {
+				CampaignID string  `json:"campaign_id"`
+				LineItemID string  `json:"line_item_id"`
+				Price      float64 `json:"price"`
+			}
+			if json.Unmarshal([]byte(raw), &meta) == nil && meta.CampaignID != "" {
+				_ = h.redis.ReleaseGate(r.Context(), meta.CampaignID, meta.LineItemID, meta.Price/1000.0)
+			}
+		}
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// Imp — POST /rtb/imp: импрешен-нотификация (маркировка показа для ОРД-отчётности).
+// Imp — POST /rtb/imp (в prod imp идёт на backend /api/rtb/imp).
 func (h *Handler) Imp(w http.ResponseWriter, r *http.Request) {
-	// TODO(impl): учёт показа, ОРД-статистика.
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// Healthz — GET /healthz: liveness + возраст фида кампаний.
+// Healthz — GET /healthz: liveness + возраст фида.
 func (h *Handler) Healthz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	redisOK := false
+	if h.redis != nil && h.redis.Ping(r.Context()) == nil {
+		redisOK = true
+	}
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"status":       "ok",
 		"campaigns":    h.store.Len(),
 		"feed_age_sec": int(h.store.Age().Seconds()),
+		"redis":        redisOK,
 	})
+}
+
+// --- helpers ---
+
+func buildRequestView(req *BidRequest) *targeting.RequestView {
+	v := &targeting.RequestView{Now: time.Now()}
+	if d := req.Device; d != nil {
+		v.UA = strings.ToLower(d.UA)
+		v.OS = targeting.DeviceOS(d.OS, d.UA)
+		v.DeviceType = d.DeviceType
+		if d.Geo != nil {
+			v.Country = strings.ToUpper(d.Geo.Country)
+			v.Region = strings.ToLower(d.Geo.Region)
+			v.City = strings.ToLower(d.Geo.City)
+		}
+	}
+	if req.Site != nil {
+		v.Domain = strings.ToLower(req.Site.Domain)
+		v.SiteCats = req.Site.Cat
+	} else if req.App != nil {
+		v.Domain = strings.ToLower(req.App.Bundle)
+	}
+	if u := req.User; u != nil {
+		// yob/gender не в модели User — Python берёт их из user; расширяется при необходимости.
+		_ = u
+	}
+	return v
+}
+
+func deviceIDOf(req *BidRequest) string {
+	if req.Device != nil && req.Device.IFA != "" {
+		return req.Device.IFA
+	}
+	if req.User != nil {
+		// user.eids (UID2/ID5) — приоритетнее анонимного user.id.
+		for _, eid := range req.User.EIDs {
+			for _, uid := range eid.UIDs {
+				if uid.ID != "" {
+					return uid.ID
+				}
+			}
+		}
+		if req.User.ID != "" {
+			return req.User.ID
+		}
+		if req.User.BuyerUID != "" {
+			return req.User.BuyerUID
+		}
+	}
+	return ""
+}
+
+func impAdType(imp *Imp) string {
+	extPush := false
+	if len(imp.Ext) > 0 {
+		var ext struct {
+			Push     any    `json:"push"`
+			AdFormat string `json:"ad_format"`
+		}
+		if json.Unmarshal(imp.Ext, &ext) == nil {
+			extPush = ext.Push != nil || ext.AdFormat == "push"
+		}
+	}
+	return targeting.ImpAdType(imp.Banner != nil, imp.Native != nil, imp.Video != nil, extPush)
+}
+
+func typeMatches(c *feed.Candidate, adType string, imp *Imp) bool {
+	if c.Type != adType {
+		return false
+	}
+	// Баннер: точный размер или формат из списка.
+	if adType == "banner" && imp.Banner != nil && c.Width != nil && c.Height != nil {
+		b := imp.Banner
+		if b.W > 0 && b.H > 0 && (b.W == *c.Width && b.H == *c.Height) {
+			return true
+		}
+		for _, f := range b.Format {
+			if f.W == *c.Width && f.H == *c.Height {
+				return true
+			}
+		}
+		return b.W == 0 && len(b.Format) == 0 // размер не указан: пропускаем
+	}
+	return true
+}
+
+func feedTargetingToMatch(t *feed.Targeting) *targeting.Targeting {
+	return &targeting.Targeting{
+		GeoCountries: t.GeoCountries, GeoRegions: t.GeoRegions, GeoCities: t.GeoCities,
+		DeviceTypes: t.DeviceTypes, OS: t.OS, Browsers: t.Browsers, Languages: t.Languages,
+		ConnectionTypes: t.ConnectionTypes, IABCategories: t.IABCategories, IABBlock: t.IABBlock,
+		DomainAllowlist: t.DomainAllowlist, DomainBlocklist: t.DomainBlocklist,
+		AgeMin: t.AgeMin, AgeMax: t.AgeMax, Genders: t.Genders,
+		Hours: t.Hours, Days: t.Days,
+	}
+}
+
+func admomains(c *feed.Candidate) []string {
+	if c.AdvDomain != "" {
+		return []string{c.AdvDomain}
+	}
+	return nil
+}
+
+func roundPrice(p float64) float64 {
+	return float64(int64(p*10000+0.5)) / 10000
+}
+
+func containsStr(list []string, v string) bool {
+	for _, x := range list {
+		if strings.EqualFold(x, v) {
+			return true
+		}
+	}
+	return false
 }

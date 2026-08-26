@@ -48,6 +48,7 @@ async def campaigns_feed(authorization: str | None = Header(default=None)):
         SELECT li.id AS li_id, li.bid_price, li.bid_type, li.max_bid, li.daily_budget AS li_budget,
                li.targeting, li.campaign_id, li.user_id AS owner_id,
                c.daily_budget AS camp_budget, c.frequency_cap_impressions, c.frequency_cap_period_hours,
+               c.frequency_caps, c.bid_shading,
                c.pacing, c.advertiser_id, adv.domain AS adv_domain,
                cr.id AS creative_id, cr.type, cr.width, cr.height, cr.asset_url, cr.click_url,
                cr.html_snippet, cr.native_title, cr.native_description, cr.native_cta,

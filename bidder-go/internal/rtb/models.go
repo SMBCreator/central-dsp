@@ -12,9 +12,9 @@ type BidRequest struct {
 	App    *App            `json:"app,omitempty"`
 	Device *Device         `json:"device,omitempty"`
 	User   *User           `json:"user,omitempty"`
-	At     int             `json:"at,omitempty"`   // 1=first price, 2=second price (default). Shading только при at=1.
+	At     int             `json:"at,omitempty"` // 1=first price, 2=second price (default). Shading только при at=1.
 	TMax   int             `json:"tmax,omitempty"`
-	Cur    []string        `json:"cur,omitempty"`  // Central DSP биддит только в RUB
+	Cur    []string        `json:"cur,omitempty"` // Central DSP биддит только в RUB
 	BAdv   []string        `json:"badv,omitempty"`
 	Ext    json.RawMessage `json:"ext,omitempty"`
 }
@@ -55,9 +55,9 @@ type Native struct {
 }
 
 type Site struct {
-	ID     string `json:"id,omitempty"`
-	Domain string `json:"domain,omitempty"` // проверяется против global+campaign white/blacklist
-	Page   string `json:"page,omitempty"`
+	ID     string   `json:"id,omitempty"`
+	Domain string   `json:"domain,omitempty"` // проверяется против global+campaign white/blacklist
+	Page   string   `json:"page,omitempty"`
 	Cat    []string `json:"cat,omitempty"`
 }
 
@@ -68,14 +68,14 @@ type App struct {
 }
 
 type Device struct {
-	UA       string `json:"ua,omitempty"`
-	IP       string `json:"ip,omitempty"`
-	IPv6     string `json:"ipv6,omitempty"`
-	Geo      *Geo   `json:"geo,omitempty"`
-	OS       string `json:"os,omitempty"`
-	OSV      string `json:"osv,omitempty"`
-	DeviceType int  `json:"devicetype,omitempty"`
-	IFA      string `json:"ifa,omitempty"` // device id — вход для freq caps и audiences
+	UA         string `json:"ua,omitempty"`
+	IP         string `json:"ip,omitempty"`
+	IPv6       string `json:"ipv6,omitempty"`
+	Geo        *Geo   `json:"geo,omitempty"`
+	OS         string `json:"os,omitempty"`
+	OSV        string `json:"osv,omitempty"`
+	DeviceType int    `json:"devicetype,omitempty"`
+	IFA        string `json:"ifa,omitempty"` // device id — вход для freq caps и audiences
 }
 
 type Geo struct {
@@ -123,13 +123,13 @@ type SeatBid struct {
 type Bid struct {
 	ID      string          `json:"id"`
 	ImpID   string          `json:"impid"`
-	Price   float64         `json:"price"`            // сериализация из Decimal-вычислений, 4 знака
-	AdM     string          `json:"adm,omitempty"`    // креатив: banner HTML с erid-маркировкой / VAST / native JSON
+	Price   float64         `json:"price"`         // сериализация из Decimal-вычислений, 4 знака
+	AdM     string          `json:"adm,omitempty"` // креатив: banner HTML с erid-маркировкой / VAST / native JSON
 	ADomain []string        `json:"adomain,omitempty"`
 	CrID    string          `json:"crid,omitempty"`
-	NURL    string          `json:"nurl,omitempty"`   // win notice -> /rtb/win
-	LURL    string          `json:"lurl,omitempty"`   // loss notice -> /rtb/loss
+	NURL    string          `json:"nurl,omitempty"` // win notice -> /rtb/win
+	LURL    string          `json:"lurl,omitempty"` // loss notice -> /rtb/loss
 	W       int             `json:"w,omitempty"`
 	H       int             `json:"h,omitempty"`
-	Ext     json.RawMessage `json:"ext,omitempty"`    // ext.erid — ОРД-маркировка (обязательна для РФ)
+	Ext     json.RawMessage `json:"ext,omitempty"` // ext.erid — ОРД-маркировка (обязательна для РФ)
 }

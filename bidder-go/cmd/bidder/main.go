@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/feed"
+	"github.com/SMBCreator/central-dsp/bidder-go/internal/redisx"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/rtb"
 )
 
@@ -33,11 +34,29 @@ func main() {
 
 	store := feed.NewStore(feed.Config{
 		BackendURL: env("BACKEND_INTERNAL_URL", "http://backend:8000"),
-		FeedToken:  os.Getenv("INTERNAL_FEED_TOKEN"), // тот же контракт, что у Java: GET /internal/bidder-feed
+		FeedToken:  env("RTB_API_TOKEN", os.Getenv("INTERNAL_FEED_TOKEN")), // Bearer для GET /rtb-feed/*
 		Refresh:    30 * time.Second,
 	})
 
-	h := rtb.NewHandler(store)
+	// Redis: бюджеты (Lua), freq caps, QPS, shading-факторы, bidmeta.
+	// Без Redis биддер работает в degraded-режиме (без бюджет/freq-гейтов) —
+	// допустимо только в dev.
+	var rc *redisx.Client
+	if url := env("REDIS_URL", "redis://localhost:6379/0"); url != "" {
+		var err error
+		rc, err = redisx.New(url)
+		if err != nil {
+			slog.Error("redis init failed", "err", err)
+			os.Exit(1)
+		}
+		pingCtx, cancelPing := context.WithTimeout(context.Background(), 2*time.Second)
+		if err := rc.Ping(pingCtx); err != nil {
+			slog.Warn("redis unreachable at startup (degraded mode)", "err", err)
+		}
+		cancelPing()
+	}
+
+	h := rtb.NewHandler(store, rc)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /rtb/bid/{endpointKey}", h.Bid)
@@ -50,7 +69,7 @@ func main() {
 		Addr:              addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 2 * time.Second,
-		ReadTimeout:       5 * time.Second,   // RTB timeout budget: ответ обязан уйти < 100ms
+		ReadTimeout:       5 * time.Second, // RTB timeout budget: ответ обязан уйти < 100ms
 		WriteTimeout:      5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}

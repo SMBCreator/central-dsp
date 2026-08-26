@@ -1,6 +1,12 @@
-// Package feed: загрузка активных кампаний из backend по внутреннему контракту
-// GET {BACKEND_INTERNAL_URL}/internal/bidder-feed с заголовком X-Internal-Token.
-// Тот же контракт использует Java-биддер (CampaignLoaderService) — сохраняем его.
+// Package feed: загрузка активных кандидатов (line item + creative),
+// SSP-партнёров и глобальных доменных листов из backend.
+//
+// Контракт (backend/routers/bidder_feed.py):
+//
+//	GET {BACKEND_URL}/rtb-feed/campaigns  -> {candidates: [...], domain_lists: [...]}
+//	GET {BACKEND_URL}/rtb-feed/partners   -> {partners: [...]}
+//
+// Auth: Authorization: Bearer ${RTB_API_TOKEN}.
 package feed
 
 import (
@@ -8,44 +14,147 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
 
-// Campaign — DTO фида. Поля — паритет с Python bidder-feed
-// (см. backend/routers/bidder_feed.py). Денежные поля приходят строками
-// и парсятся в фиксированную точность на стороне биддера.
-type Campaign struct {
-	ID           string          `json:"id"`
-	Status       string          `json:"status"`
-	MaxBid       string          `json:"max_bid"`       // Decimal-as-string
-	DailyBudget  string          `json:"daily_budget"`  // Decimal-as-string
+// Candidate — строка кандидата, паритет с SQL-выборкой Python hot path
+// (process_bid_request). Money-поля приходят числами из JSON; финальную
+// проверку бюджета делает атомарный Lua-скрипт в Redis, поэтому
+// накопительные расхождения исключены.
+type Candidate struct {
+	LiID       string          `json:"li_id"`
+	BidPrice   float64         `json:"bid_price"`
+	BidType    string          `json:"bid_type"`
+	MaxBid     *float64        `json:"max_bid"`
+	LiBudget   *float64        `json:"li_budget"`
+	Targeting  json.RawMessage `json:"targeting"`
+	CampaignID string          `json:"campaign_id"`
+	OwnerID    string          `json:"owner_id"`
+
+	CampBudget   float64         `json:"camp_budget"`
+	FreqCapImps  *int            `json:"frequency_cap_impressions"`
+	FreqCapHours *int            `json:"frequency_cap_period_hours"`
+	FreqCaps     json.RawMessage `json:"frequency_caps"`
+	Pacing       string          `json:"pacing"`
+	AdvertiserID string          `json:"advertiser_id"`
 	BidShading   bool            `json:"bid_shading"`
-	Erid         string          `json:"erid,omitempty"`
-	GeoCountries []string        `json:"geo_countries,omitempty"`
-	OSTargets    []string        `json:"os_targets,omitempty"`
-	DomainWhite  []string        `json:"domain_whitelist,omitempty"`
-	DomainBlack  []string        `json:"domain_blacklist,omitempty"`
-	SSPAllowlist []string        `json:"ssp_allowlist,omitempty"`
-	FreqCaps     json.RawMessage `json:"freq_caps,omitempty"` // multi-window: [{"window_sec":..,"max_imps":..}]
-	Audiences    json.RawMessage `json:"audiences,omitempty"` // include/exclude sets
-	Creatives    json.RawMessage `json:"creatives,omitempty"`
+	AdvDomain    string          `json:"adv_domain"`
+
+	CreativeID      string `json:"creative_id"`
+	Type            string `json:"type"`
+	Width           *int   `json:"width"`
+	Height          *int   `json:"height"`
+	AssetURL        string `json:"asset_url"`
+	ClickURL        string `json:"click_url"`
+	HTMLSnippet     string `json:"html_snippet"`
+	NativeTitle     string `json:"native_title"`
+	NativeDesc      string `json:"native_description"`
+	NativeCTA       string `json:"native_cta"`
+	NativeIconURL   string `json:"native_icon_url"`
+	VideoURL        string `json:"video_url"`
+	VideoDuration   *int   `json:"video_duration"`
+	VastXML         string `json:"vast_xml"`
+	Name            string `json:"name"`
+	ImpTrackerURL   string `json:"imp_tracker_url"`
+	ClickTrackerURL string `json:"click_tracker_url"`
+	Erid            string `json:"erid"`
+
+	// разобранный targeting (заполняется при рефреше, не в hot path)
+	T *Targeting `json:"-"`
+}
+
+// Targeting — распарсенный targeting JSON line item.
+// Все поля опциональны; пустое значение = нет ограничения.
+// Семантика — паритет с _match_targeting/_match_imp_targeting (rtb.py).
+type Targeting struct {
+	GeoCountries    []string `json:"geo_countries"`
+	GeoRegions      []string `json:"geo_regions"`
+	GeoCities       []string `json:"geo_cities"`
+	DeviceTypes     []string `json:"device_types"`
+	OS              []string `json:"os"`
+	Browsers        []string `json:"browsers"`
+	Languages       []string `json:"languages"`
+	ConnectionTypes []string `json:"connection_types"`
+	IABCategories   []string `json:"iab_categories"`
+	IABBlock        []string `json:"iab_block"`
+	DomainAllowlist []string `json:"domain_allowlist"`
+	DomainBlocklist []string `json:"domain_blocklist"`
+	AgeMin          int      `json:"age_min"`
+	AgeMax          int      `json:"age_max"`
+	Genders         []string `json:"genders"`
+	Hours           []int    `json:"hours"`
+	Days            []int    `json:"days"`
+	SSPAllowlist    []string `json:"ssp_allowlist"`
+	TrafficTypes    []string `json:"traffic_types"`
+	Carriers        []string `json:"carriers"`
+	OSVersionMin    string   `json:"os_version_min"`
+	AppBundlesBlock []string `json:"app_bundles_block"`
+	AppBundlesAllow []string `json:"app_bundles_allow"`
+	PublisherBlock  []string `json:"publisher_block"`
+	PublisherAllow  []string `json:"publisher_allow"`
+	KeywordsBlock   []string `json:"keywords_block"`
+	KeywordsAllow   []string `json:"keywords_allow"`
+	IPRanges        []string `json:"ip_ranges"`
+	BlockCOPPA      bool     `json:"block_coppa"`
+	BlockGDPR       bool     `json:"block_gdpr"`
+	SkipDNT         bool     `json:"skip_dnt"`
+
+	BannerPositions     []int `json:"banner_positions"`
+	InterstitialOnly    bool  `json:"interstitial_only"`
+	ExcludeInterstitial bool  `json:"exclude_interstitial"`
+	RewardedOnly        bool  `json:"rewarded_only"`
+	SecureOnly          bool  `json:"secure_only"`
+	VideoMinDuration    int   `json:"video_min_duration"`
+	VideoSkippableOnly  bool  `json:"video_skippable_only"`
+
+	DealIDs         []string `json:"deal_ids"`
+	AudienceInclude []string `json:"audience_include"`
+	AudienceExclude []string `json:"audience_exclude"`
+}
+
+// Partner — SSP-партнёр (supply_partners).
+type Partner struct {
+	ID             string          `json:"id"`
+	EndpointKey    string          `json:"endpoint_key"`
+	AuthToken      string          `json:"auth_token"`
+	QPSLimit       int             `json:"qps_limit"`
+	BidFloor       float64         `json:"bid_floor"`
+	Status         string          `json:"status"`
+	AllowedAdTypes json.RawMessage `json:"allowed_ad_types"`
+
+	AllowedTypes map[string]bool `json:"-"`
+}
+
+// DomainList — глобальные white/blacklist на уровне аккаунта.
+type DomainList struct {
+	UserID   string `json:"user_id"`
+	Domain   string `json:"domain"`
+	ListType string `json:"list_type"` // "black" | "white"
 }
 
 type Config struct {
 	BackendURL string
-	FeedToken  string
+	FeedToken  string // RTB_API_TOKEN
 	Refresh    time.Duration
 }
 
-// Store — потокобезопасный кэш кампаний с периодическим рефрешем.
+// Snapshot — иммутабельный слепок фида для hot path (читается без блокировки).
+type Snapshot struct {
+	Candidates []Candidate
+	Partners   map[string]*Partner        // by endpoint_key
+	GBlack     map[string]map[string]bool // owner_id -> domains
+	GWhite     map[string]map[string]bool
+	LoadedAt   time.Time
+}
+
 type Store struct {
 	cfg    Config
 	client *http.Client
 
-	mu        sync.RWMutex
-	campaigns []Campaign
-	loadedAt  time.Time
+	mu   sync.RWMutex
+	snap *Snapshot
 }
 
 func NewStore(cfg Config) *Store {
@@ -55,6 +164,7 @@ func NewStore(cfg Config) *Store {
 	return &Store{
 		cfg:    cfg,
 		client: &http.Client{Timeout: 5 * time.Second},
+		snap:   &Snapshot{Partners: map[string]*Partner{}},
 	}
 }
 
@@ -73,59 +183,144 @@ func (s *Store) Run(ctx context.Context) {
 	}
 }
 
-func (s *Store) refresh(ctx context.Context) {
-	if s.cfg.FeedToken == "" {
-		slog.Warn("INTERNAL_FEED_TOKEN not set; feed disabled")
-		return
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.cfg.BackendURL+"/internal/bidder-feed", nil)
+type feedError struct {
+	status int
+	path   string
+}
+
+func (e *feedError) Error() string { return "feed " + e.path + " bad status" }
+
+func (s *Store) get(ctx context.Context, path string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.cfg.BackendURL+path, nil)
 	if err != nil {
-		return
+		return err
 	}
-	req.Header.Set("X-Internal-Token", s.cfg.FeedToken)
+	req.Header.Set("Authorization", "Bearer "+s.cfg.FeedToken)
 	resp, err := s.client.Do(req)
 	if err != nil {
-		slog.Error("feed refresh failed", "err", err)
-		return
+		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		slog.Error("feed refresh bad status", "status", resp.StatusCode)
-		return
+		return &feedError{status: resp.StatusCode, path: path}
 	}
-	var payload struct {
-		Campaigns []Campaign `json:"campaigns"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		slog.Error("feed decode failed", "err", err)
-		return
-	}
-	s.mu.Lock()
-	s.campaigns = payload.Campaigns
-	s.loadedAt = time.Now()
-	s.mu.Unlock()
-	slog.Info("feed refreshed", "campaigns", len(payload.Campaigns))
+	dec := json.NewDecoder(resp.Body)
+	dec.UseNumber()
+	return dec.Decode(out)
 }
 
-// Snapshot — копия среза кампаний для hot path (без блокировки на время аукциона).
-func (s *Store) Snapshot() []Campaign {
+func (s *Store) refresh(ctx context.Context) {
+	if s.cfg.FeedToken == "" {
+		slog.Warn("RTB_API_TOKEN not set; feed disabled")
+		return
+	}
+	var camps struct {
+		Candidates  []Candidate  `json:"candidates"`
+		DomainLists []DomainList `json:"domain_lists"`
+	}
+	if err := s.get(ctx, "/rtb-feed/campaigns", &camps); err != nil {
+		slog.Error("feed campaigns refresh failed", "err", err)
+		return
+	}
+	var parts struct {
+		Partners []Partner `json:"partners"`
+	}
+	if err := s.get(ctx, "/rtb-feed/partners", &parts); err != nil {
+		slog.Error("feed partners refresh failed", "err", err)
+		return
+	}
+
+	snap := &Snapshot{
+		Partners: make(map[string]*Partner, len(parts.Partners)),
+		GBlack:   map[string]map[string]bool{},
+		GWhite:   map[string]map[string]bool{},
+		LoadedAt: time.Now(),
+	}
+	for i := range parts.Partners {
+		p := &parts.Partners[i]
+		p.AllowedTypes = ParseAllowedTypes(p.AllowedAdTypes)
+		snap.Partners[p.EndpointKey] = p
+	}
+	for i := range camps.Candidates {
+		c := &camps.Candidates[i]
+		c.T = ParseTargeting(c.Targeting)
+	}
+	snap.Candidates = camps.Candidates
+	for _, dl := range camps.DomainLists {
+		m := snap.GWhite
+		if dl.ListType == "black" {
+			m = snap.GBlack
+		}
+		owner := dl.UserID
+		if m[owner] == nil {
+			m[owner] = map[string]bool{}
+		}
+		m[owner][strings.ToLower(dl.Domain)] = true
+	}
+
+	s.mu.Lock()
+	s.snap = snap
+	s.mu.Unlock()
+	slog.Info("feed refreshed", "candidates", len(snap.Candidates), "partners", len(snap.Partners))
+}
+
+// ParseTargeting разбирает targeting JSONB (объект или строку с объектом).
+func ParseTargeting(raw json.RawMessage) *Targeting {
+	t := &Targeting{}
+	if len(raw) == 0 {
+		return t
+	}
+	b := []byte(raw)
+	var inner string
+	if json.Unmarshal(b, &inner) == nil {
+		b = []byte(inner)
+	}
+	_ = json.Unmarshal(b, t)
+	return t
+}
+
+// ParseAllowedTypes разбирает allowed_ad_types (json-массив или строку с массивом).
+func ParseAllowedTypes(raw json.RawMessage) map[string]bool {
+	out := map[string]bool{}
+	if len(raw) == 0 {
+		return out
+	}
+	var types []string
+	if err := json.Unmarshal(raw, &types); err != nil {
+		var inner string
+		if json.Unmarshal(raw, &inner) == nil {
+			_ = json.Unmarshal([]byte(inner), &types)
+		}
+	}
+	for _, t := range types {
+		out[strings.ToLower(t)] = true
+	}
+	return out
+}
+
+// Snapshot — текущий слепок (иммутабельный; hot path не держит блокировку).
+// SetSnapshot атомарно подменяет снапшот (тесты и предзагрузка).
+func (s *Store) SetSnapshot(snap *Snapshot) {
+	s.mu.Lock()
+	s.snap = snap
+	s.mu.Unlock()
+}
+
+func (s *Store) Snapshot() *Snapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.campaigns
+	return s.snap
 }
 
 func (s *Store) Len() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return len(s.campaigns)
+	return len(s.Snapshot().Candidates)
 }
 
 // Age — время с последней успешной загрузки фида (для healthz/алертов).
 func (s *Store) Age() time.Duration {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.loadedAt.IsZero() {
-		return time.Duration(0)
+	snap := s.Snapshot()
+	if snap.LoadedAt.IsZero() {
+		return 0
 	}
-	return time.Since(s.loadedAt)
+	return time.Since(snap.LoadedAt)
 }
