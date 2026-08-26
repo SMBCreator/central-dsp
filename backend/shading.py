@@ -31,7 +31,7 @@ FACTOR_TTL = 60.0
 
 async def recompute_factors() -> dict:
     """Hourly cron: recompute factors from trailing 24h of bid_events."""
-    pool = get_pool()
+    pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
@@ -110,7 +110,7 @@ async def load_factors() -> None:
     """Refresh in-memory factor cache (called lazily from hot path)."""
     global _factors, _loaded_at
     try:
-        pool = get_pool()
+        pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT campaign_id, supply_partner_id, factor FROM bid_shading_factors"

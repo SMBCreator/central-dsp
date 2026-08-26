@@ -30,7 +30,7 @@ def _check(authorization: str | None):
 @router.get("/partners")
 async def partners_feed(authorization: str | None = Header(default=None)):
     _check(authorization)
-    pool = get_pool()
+    pool = await get_pool()
     rows = await pool.fetch(
         """SELECT id, endpoint_key, auth_token, qps_limit, bid_floor, status,
                   allowed_ad_types
@@ -42,7 +42,7 @@ async def partners_feed(authorization: str | None = Header(default=None)):
 @router.get("/campaigns")
 async def campaigns_feed(authorization: str | None = Header(default=None)):
     _check(authorization)
-    pool = get_pool()
+    pool = await get_pool()
     cands = await pool.fetch(
         """
         SELECT li.id AS li_id, li.bid_price, li.bid_type, li.max_bid, li.daily_budget AS li_budget,
