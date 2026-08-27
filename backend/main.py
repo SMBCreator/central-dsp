@@ -4,6 +4,10 @@ Routes are defined WITHOUT the /api prefix; Vercel strips it before
 forwarding (see vercel.json experimentalServices).
 """
 from fastapi import FastAPI, Request
+from fastapi.staticfiles import StaticFiles
+import os
+
+UPLOAD_DIR = os.environ.get("UPLOAD_DIR", os.path.join(os.path.dirname(__file__), "uploads"))
 from fastapi.responses import JSONResponse
 
 from routers.advertisers import router as advertisers_router
@@ -15,6 +19,9 @@ from routers.creatives import router as creatives_router
 from routers.cron import router as cron_router
 from routers.groups import router as groups_router
 from routers.settings import router as settings_router
+from routers.geo import router as geo_router
+from routers.notifications import router as notifications_router
+from routers.moderation import router as moderation_router
 from routers.audiences_router import router as audiences_router
 from routers.line_items import router as line_items_router
 from routers.pixel import router as pixel_router
@@ -57,6 +64,12 @@ app.include_router(share_router)
 app.include_router(pixel_router)
 app.include_router(groups_router)
 app.include_router(settings_router)
+app.include_router(geo_router)
+app.include_router(notifications_router)
+app.include_router(moderation_router)
+
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 
 _VIEWER_WRITE_ALLOWED = {"/auth/logout", "/auth/login"}
@@ -79,6 +92,35 @@ async def viewer_readonly_guard(request: Request, call_next):
                     status_code=403,
                     content={"detail": "Гостевой доступ доступен только для просмотра"},
                 )
+    return await call_next(request)
+
+
+# --- Глобальный rate limiting (GAP: все ручки, не только логин) ---------------
+# Redis fixed-window. Ключ: user_id (по сессионной cookie) либо client IP.
+# RTB hot path и health исключены: у бидера свой QPS-контроль per-SSP.
+_RL_EXEMPT_PREFIXES = ("/rtb", "/rtb-feed", "/health", "/uploads", "/pixel")
+_RL_LIMIT = int(os.getenv("API_RATE_LIMIT", "300"))          # запросов
+_RL_WINDOW = int(os.getenv("API_RATE_WINDOW", "60"))         # за окно, сек
+
+
+@app.middleware("http")
+async def global_rate_limiter(request: Request, call_next):
+    path = request.url.path
+    if not any(path.startswith(p) for p in _RL_EXEMPT_PREFIXES):
+        key = request.cookies.get("cdsp_session")
+        if not key:
+            fwd = request.headers.get("x-forwarded-for")
+            key = (fwd.split(",")[0].strip() if fwd else None) or (
+                request.client.host if request.client else "unknown"
+            )
+        from cache import rate_limit
+        ok = await rate_limit("api", key, limit=_RL_LIMIT, window_seconds=_RL_WINDOW)
+        if not ok:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Слишком много запросов — попробуйте через минуту"},
+                headers={"Retry-After": str(_RL_WINDOW)},
+            )
     return await call_next(request)
 
 

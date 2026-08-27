@@ -31,7 +31,7 @@ jobs:
           cache: pip
           cache-dependency-path: backend/pyproject.toml
       - name: Install backend dependencies
-        run: pip install ./backend pytest pytest-asyncio httpx fakeredis
+        run: pip install ./backend pytest pytest-asyncio httpx "fakeredis[lua]"
       - name: Apply migrations to a fresh database
         run: python backend/migrate.py
       - name: Migrations are idempotent on re-run
@@ -63,3 +63,21 @@ jobs:
       - name: Build
         working-directory: frontend
         run: pnpm run build
+
+  bidder-go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: bidder-go/go.sum
+      - name: Vet
+        working-directory: bidder-go
+        run: go vet ./...
+      - name: Build
+        working-directory: bidder-go
+        run: go build ./...
+      - name: Test
+        working-directory: bidder-go
+        run: go test ./...

@@ -57,3 +57,53 @@ def test_secret_change_invalidates_tokens(monkeypatch):
     tok = sign_event_token("b1")
     monkeypatch.setenv("EVENT_TOKEN_SECRET", "a-completely-different-secret")
     assert verify_event_token(tok) is None
+
+
+def test_prod_refuses_dev_fallback_secret(monkeypatch):
+    """GAP-003: with APP_ENV=production and no secret configured, signing
+    must fail instead of silently using the public dev fallback."""
+    import tokens as tokens_mod
+
+    monkeypatch.delenv("EVENT_TOKEN_SECRET", raising=False)
+    monkeypatch.delenv("SESSION_SECRET", raising=False)
+    monkeypatch.setenv("APP_ENV", "production")
+    import pytest as _pytest
+
+    with _pytest.raises(RuntimeError):
+        tokens_mod.sign_event_token("b1")
+
+
+def test_dev_fallback_still_works_without_app_env(monkeypatch):
+    monkeypatch.delenv("EVENT_TOKEN_SECRET", raising=False)
+    monkeypatch.delenv("SESSION_SECRET", raising=False)
+    monkeypatch.delenv("APP_ENV", raising=False)
+    tok = sign_event_token("b1")
+    assert verify_event_token(tok) == "b1"
+
+
+def test_rtb_python_serving_flag_parsing():
+    """RTB_PYTHON_SERVING gate (audit: Python RTB is non-prod, Go bidder serves prod)."""
+    import importlib
+    import os
+
+    import routers.rtb as rtb_module
+
+    old = os.environ.get("RTB_PYTHON_SERVING")
+    try:
+        os.environ["RTB_PYTHON_SERVING"] = "false"
+        importlib.reload(rtb_module)
+        assert rtb_module._RTB_PYTHON_SERVING is False
+
+        os.environ["RTB_PYTHON_SERVING"] = "true"
+        importlib.reload(rtb_module)
+        assert rtb_module._RTB_PYTHON_SERVING is True
+
+        os.environ.pop("RTB_PYTHON_SERVING")
+        importlib.reload(rtb_module)
+        assert rtb_module._RTB_PYTHON_SERVING is True  # default: enabled (dev)
+    finally:
+        if old is not None:
+            os.environ["RTB_PYTHON_SERVING"] = old
+        else:
+            os.environ.pop("RTB_PYTHON_SERVING", None)
+        importlib.reload(rtb_module)

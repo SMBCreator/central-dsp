@@ -31,7 +31,7 @@ FACTOR_TTL = 60.0
 
 async def recompute_factors() -> dict:
     """Hourly cron: recompute factors from trailing 24h of bid_events."""
-    pool = get_pool()
+    pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
@@ -92,6 +92,15 @@ async def recompute_factors() -> dict:
     return {"pairs_updated": updated}
 
 
+def should_shade(bid_shading_enabled: bool, auction_type: int) -> bool:
+    """Shade only in explicit first-price auctions (OpenRTB `at` = 1).
+
+    In second-price auctions (at = 2, also the spec default when `at` is
+    absent) the clearing price is set by the auction itself, so lowering
+    the bid saves nothing and only reduces win rate."""
+    return bool(bid_shading_enabled) and auction_type == 1
+
+
 def compute_raw_factor(avg_ratio: float, bids: int, wins: int, prev: float = 1.0) -> float:
     """Pure math for tests: same formula as recompute_factors."""
     if bids < MIN_BIDS or wins == 0:
@@ -110,7 +119,7 @@ async def load_factors() -> None:
     """Refresh in-memory factor cache (called lazily from hot path)."""
     global _factors, _loaded_at
     try:
-        pool = get_pool()
+        pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT campaign_id, supply_partner_id, factor FROM bid_shading_factors"

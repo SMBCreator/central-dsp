@@ -28,8 +28,13 @@ DEFAULT_TTL_SECONDS = 6 * 3600  # tracking pixels can fire long after the auctio
 def _secret() -> bytes:
     s = os.environ.get("EVENT_TOKEN_SECRET") or os.environ.get("SESSION_SECRET")
     if not s:
-        # Deterministic dev fallback so local runs work out of the box.
-        # The production deploy checklist requires EVENT_TOKEN_SECRET.
+        # GAP-003: the deterministic fallback is dev-only. In production a
+        # publicly known secret makes every win/imp/click token forgeable,
+        # so refuse to run instead of silently signing with it.
+        if os.environ.get("APP_ENV", "").lower() in ("production", "prod"):
+            raise RuntimeError(
+                "EVENT_TOKEN_SECRET (or SESSION_SECRET) must be set in production"
+            )
         s = "centraldsp-dev-event-secret"
     return s.encode()
 

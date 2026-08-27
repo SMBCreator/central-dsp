@@ -134,7 +134,7 @@ async def ord_monthly_export(request: Request, period: str | None = None):
         )
         return {"period": period, "status": "ok", "rows": 0}
 
-    adapter = get_ord_adapter()
+    adapter = await get_ord_adapter()
     try:
         out = await adapter.submit_stats(period, stats)
         await pool.execute(

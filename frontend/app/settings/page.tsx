@@ -34,6 +34,133 @@ const LIST_TABS = [
 const inputCls =
   "w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/30"
 
+
+type OrdSettings = {
+  configured: boolean
+  provider: string
+  environment?: string
+  api_key_masked?: string
+  note?: string
+}
+
+function OrdCard() {
+  const { data: ord, mutate } = useSWR<OrdSettings>("/settings/ord", fetcher)
+  const [apiKey, setApiKey] = useState("")
+  const [env, setEnv] = useState<"production" | "sandbox">("production")
+  const [saving, setSaving] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null)
+
+  async function save() {
+    if (apiKey.trim().length < 8) return
+    setSaving(true)
+    setMsg(null)
+    try {
+      await api("/settings/ord", {
+        method: "PUT",
+        body: JSON.stringify({ api_key: apiKey.trim(), environment: env }),
+      })
+      setApiKey("")
+      await mutate()
+      setMsg({ kind: "ok", text: "Ключ сохранён. Нажмите «Проверить связь», чтобы убедиться, что ОРД отвечает." })
+    } catch (e) {
+      setMsg({ kind: "err", text: e instanceof Error ? e.message : "Не удалось сохранить ключ" })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function test() {
+    setTesting(true)
+    setMsg(null)
+    try {
+      const r = await api<{ ok: boolean; provider: string; note?: string }>("/settings/ord/test", { method: "POST" })
+      setMsg({
+        kind: r.provider === "ozon" ? "ok" : "err",
+        text: r.provider === "ozon" ? "Связь с ОРД Озон установлена — ключ рабочий." : (r.note ?? "Работает mock-режим"),
+      })
+    } catch (e) {
+      setMsg({ kind: "err", text: e instanceof Error ? e.message : "ОРД не отвечает — проверьте ключ и окружение" })
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  async function disconnect() {
+    await api("/settings/ord", { method: "DELETE" })
+    setMsg(null)
+    await mutate()
+  }
+
+  return (
+    <Card>
+      <CardHeader
+        title="ОРД Озон (маркировка рекламы)"
+        subtitle="API-ключ из кабинета ОРД Озон → Настройки → API. С ключом креативы регистрируются по-настоящему и erid виден в вашем кабинете ОРД; без ключа работает mock-режим с фиктивными erid."
+      />
+      <div className="space-y-4 p-4 pt-0">
+        {ord ? (
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span
+              className={
+                "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium " +
+                (ord.configured ? "bg-success/10 text-success" : "bg-warning/10 text-warning")
+              }
+            >
+              {ord.configured ? `Подключено: Ozon (${ord.environment === "sandbox" ? "песочница" : "прод"})` : "Mock-режим"}
+            </span>
+            {ord.configured && <span className="font-mono text-xs text-muted">{ord.api_key_masked}</span>}
+            {!ord.configured && ord.note && <span className="text-xs text-muted">{ord.note}</span>}
+          </div>
+        ) : (
+          <Spinner />
+        )}
+
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <div className="sm:col-span-2">
+            <Field label="API-ключ" hint="Хранится в БД, наружу отдаётся только маска">
+              <input
+                className={inputCls}
+                type="password"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder={ord?.configured ? "Ввести новый ключ (заменит текущий)" : "Вставьте ключ ОРД Озон"}
+                autoComplete="off"
+              />
+            </Field>
+          </div>
+          <Field label="Окружение" hint="Песочница — для проверки интеграции без публикации">
+            <select className={inputCls} value={env} onChange={(e) => setEnv(e.target.value as "production" | "sandbox")}>
+              <option value="production">Прод (api-ord.ozon.ru)</option>
+              <option value="sandbox">Песочница (ord-sandbox.ozon.ru)</option>
+            </select>
+          </Field>
+        </div>
+
+        {msg && (
+          <p className={"text-sm " + (msg.kind === "ok" ? "text-success" : "text-danger")} role="status">
+            {msg.text}
+          </p>
+        )}
+
+        <div className="flex flex-wrap gap-2">
+          <Button onClick={save} disabled={saving || apiKey.trim().length < 8}>
+            {saving ? "Сохранение…" : "Сохранить ключ"}
+          </Button>
+          <Button variant="secondary" onClick={test} disabled={testing}>
+            {testing ? "Проверка…" : "Проверить связь"}
+          </Button>
+          {ord?.configured && (
+            <Button variant="secondary" onClick={disconnect}>
+              Отключить (вернуть mock)
+            </Button>
+          )}
+        </div>
+      </div>
+    </Card>
+  )
+}
+
 export default function SettingsPage() {
   const { data: settings, mutate: mutateSettings } = useSWR<AppSettings>("/settings", fetcher)
   const { data: fx } = useSWR<FxInfo>("/settings/fx?currency=USD", fetcher)
@@ -119,6 +246,8 @@ export default function SettingsPage() {
           <Spinner />
         )}
       </Card>
+
+      <OrdCard />
 
       <Card>
         <CardHeader

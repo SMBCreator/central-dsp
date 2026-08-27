@@ -26,12 +26,12 @@ def test_mock_erid_differs_per_creative():
 
 def test_factory_without_key_returns_mock(monkeypatch):
     monkeypatch.delenv("ORD_OZON_API_KEY", raising=False)
-    assert type(get_ord_adapter()).__name__ == "MockOrdAdapter"
+    assert type(asyncio.run(get_ord_adapter())).__name__ == "MockOrdAdapter"
 
 
 def test_factory_with_key_returns_ozon(monkeypatch):
     monkeypatch.setenv("ORD_OZON_API_KEY", "k")
-    assert type(get_ord_adapter()).__name__ == "OzonOrdClient"
+    assert type(asyncio.run(get_ord_adapter())).__name__ == "OzonOrdClient"
 
 
 def test_submit_stats_counts():

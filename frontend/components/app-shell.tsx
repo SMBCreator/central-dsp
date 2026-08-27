@@ -4,6 +4,7 @@ import { useEffect, useState, type ReactNode } from "react"
 import { usePathname, useRouter } from "next/navigation"
 import { Sidebar } from "@/components/sidebar"
 import { FadeIn } from "@/components/amicro/fade-in"
+import { NotificationsBell } from "@/components/notifications-bell"
 
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname()
@@ -30,7 +31,12 @@ export function AppShell({ children }: { children: ReactNode }) {
   return (
     <div className="flex h-screen overflow-hidden bg-background">
       <Sidebar />
-      <main className="flex-1 overflow-y-auto">
+      <main className="relative flex-1 overflow-y-auto">
+        <div className="pointer-events-none sticky top-0 z-40 flex justify-end px-6 pt-4">
+          <div className="pointer-events-auto">
+            <NotificationsBell />
+          </div>
+        </div>
         {/* Amicro fade-in page entrance, re-triggered on route change */}
         <FadeIn key={pathname} duration={0.35} className="mx-auto max-w-6xl px-6 py-6">
           {children}

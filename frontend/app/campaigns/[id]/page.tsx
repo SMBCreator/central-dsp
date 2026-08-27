@@ -1,6 +1,6 @@
 "use client"
 
-import { use, useState } from "react"
+import { use, useEffect, useState } from "react"
 import Link from "next/link"
 import useSWR, { mutate } from "swr"
 import { api, fetcher } from "@/lib/api"
@@ -19,6 +19,7 @@ import { DEVICES, TargetingEditor } from "@/components/targeting-editor"
 
 type PixelRow = { id: string; name: string; domain: string }
 type GoalRow = { id: string; name: string; goal_type: string; match_value: string }
+type Group = { id: string; name: string }
 type BlockRow = {
   id: string
   block_type: string
@@ -27,6 +28,207 @@ type BlockRow = {
   partner_name?: string | null
   created_at: string
 }
+type CampaignExt = Campaign & {
+  group_id?: string | null
+  pacing?: string
+  bid_shading?: boolean
+  frequency_caps?: { impressions: number; period_hours: number }[] | null
+  start_date?: string | null
+  end_date?: string | null
+  objective: string
+}
+
+const OBJECTIVES = [
+  { value: "awareness", label: "Охват" },
+  { value: "traffic", label: "Трафик" },
+  { value: "conversions", label: "Конверсии" },
+]
+
+/* ---------- Основные настройки кампании ---------- */
+
+function SettingsCard({ campaign }: { campaign: CampaignExt }) {
+  const { data: groups } = useSWR<Group[]>("/groups", fetcher)
+  const [name, setName] = useState(campaign.name)
+  const [objective, setObjective] = useState(campaign.objective)
+  const [groupId, setGroupId] = useState(campaign.group_id || "")
+  const [dailyBudget, setDailyBudget] = useState(String(campaign.daily_budget ?? ""))
+  const [totalBudget, setTotalBudget] = useState(campaign.total_budget ? String(campaign.total_budget) : "")
+  const [startDate, setStartDate] = useState(campaign.start_date || "")
+  const [endDate, setEndDate] = useState(campaign.end_date || "")
+  const [pacing, setPacing] = useState(campaign.pacing || "even")
+  const [bidShading, setBidShading] = useState(campaign.bid_shading !== false)
+  const [freqCaps, setFreqCaps] = useState<{ imps: string; hours: string }[]>(
+    (campaign.frequency_caps || []).map((w) => ({ imps: String(w.impressions), hours: String(w.period_hours) })),
+  )
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // Синхронизация при обновлении кампании после сохранения
+  useEffect(() => {
+    setName(campaign.name)
+    setObjective(campaign.objective)
+    setGroupId(campaign.group_id || "")
+  }, [campaign.name, campaign.objective, campaign.group_id])
+
+  const save = async () => {
+    setSaving(true)
+    setSaved(false)
+    setError(null)
+    try {
+      const caps = freqCaps
+        .filter((w) => w.imps && Number(w.imps) > 0)
+        .map((w) => ({ impressions: Number(w.imps), period_hours: Number(w.hours) }))
+      await api(`/campaigns/${campaign.id}`, {
+        method: "PATCH",
+        body: {
+          name: name.trim(),
+          objective,
+          group_id: groupId || null,
+          daily_budget: dailyBudget ? Number(dailyBudget) : undefined,
+          total_budget: totalBudget ? Number(totalBudget) : undefined,
+          start_date: startDate || null,
+          end_date: endDate || null,
+          pacing,
+          bid_shading: bidShading,
+          frequency_caps: caps,
+        },
+      })
+      await mutate(`/campaigns/${campaign.id}`)
+      await mutate("/campaigns")
+      setSaved(true)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Ошибка сохранения")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader title="Настройки кампании" subtitle="Название, бюджеты, сроки, частотные капы" />
+      <div className="space-y-4 p-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <Field label="Название кампании">
+            <input value={name} onChange={(e) => setName(e.target.value)} className={inputCls} />
+          </Field>
+          <Field label="Цель">
+            <select value={objective} onChange={(e) => setObjective(e.target.value)} className={inputCls}>
+              {OBJECTIVES.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Группа кампаний">
+            <select value={groupId} onChange={(e) => setGroupId(e.target.value)} className={inputCls}>
+              <option value="">Без группы</option>
+              {(groups || []).map((g) => (
+                <option key={g.id} value={g.id}>
+                  {g.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Дневной бюджет, USD">
+            <input type="number" min="1" step="1" value={dailyBudget} onChange={(e) => setDailyBudget(e.target.value)} className={inputCls} />
+          </Field>
+          <Field label="Общий бюджет, USD">
+            <input type="number" min="0" step="1" value={totalBudget} onChange={(e) => setTotalBudget(e.target.value)} className={inputCls} placeholder="Без ограничения" />
+          </Field>
+          <Field label="Темп расходования">
+            <select value={pacing} onChange={(e) => setPacing(e.target.value)} className={inputCls}>
+              <option value="even">Равномерно в течение дня</option>
+              <option value="asap">Как можно быстрее (ASAP)</option>
+            </select>
+          </Field>
+          <Field label="Дата старта" hint="Пусто — сразу">
+            <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className={inputCls} />
+          </Field>
+          <Field label="Дата окончания" hint="Пусто — без ограничения">
+            <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className={inputCls} />
+          </Field>
+        </div>
+
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-medium text-foreground">Частотные капы</span>
+            {freqCaps.length < 3 ? (
+              <button
+                type="button"
+                onClick={() => setFreqCaps([...freqCaps, { imps: "", hours: freqCaps.length === 0 ? "24" : "168" }])}
+                className="text-xs font-medium text-accent hover:underline"
+              >
+                + Добавить окно
+              </button>
+            ) : null}
+          </div>
+          {freqCaps.length === 0 ? (
+            <p className="text-xs text-muted">{"Без лимита. Добавьте до 3 окон — например, 3 показа в день и 10 в неделю."}</p>
+          ) : null}
+          {freqCaps.map((w, i) => (
+            <div key={i} className="flex max-w-md items-end gap-2">
+              <div className="flex-1">
+                <label className="mb-1 block text-xs text-muted">Показов</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="1000"
+                  value={w.imps}
+                  onChange={(e) => setFreqCaps(freqCaps.map((x, j) => (j === i ? { ...x, imps: e.target.value } : x)))}
+                  className={inputCls}
+                  placeholder="3"
+                />
+              </div>
+              <div className="flex-1">
+                <label className="mb-1 block text-xs text-muted">Период</label>
+                <select
+                  value={w.hours}
+                  onChange={(e) => setFreqCaps(freqCaps.map((x, j) => (j === i ? { ...x, hours: e.target.value } : x)))}
+                  className={inputCls}
+                >
+                  <option value="1">Час</option>
+                  <option value="24">Сутки</option>
+                  <option value="168">Неделя</option>
+                  <option value="720">Месяц</option>
+                </select>
+              </div>
+              <Button variant="ghost" onClick={() => setFreqCaps(freqCaps.filter((_, j) => j !== i))}>
+                Удалить
+              </Button>
+            </div>
+          ))}
+        </div>
+
+        <label className="flex cursor-pointer items-start gap-2.5">
+          <input
+            type="checkbox"
+            checked={bidShading}
+            onChange={(e) => setBidShading(e.target.checked)}
+            className="mt-0.5 h-4 w-4 rounded border-border accent-current"
+          />
+          <span className="text-sm text-foreground">
+            Bid-шейдинг
+            <span className="block text-xs text-muted">
+              {"Автоматически снижает ставку ближе к цене клиринга (first-price). Экономия 15–30% без потери объёма."}
+            </span>
+          </span>
+        </label>
+
+        {error ? <p className="text-xs text-danger">{error}</p> : null}
+        <div className="flex items-center gap-3">
+          <Button onClick={save} disabled={saving}>
+            {saving ? "Сохранение…" : "Сохранить настройки"}
+          </Button>
+          {saved ? <span className="font-mono text-[11px] text-success">Сохранено</span> : null}
+        </div>
+      </div>
+    </Card>
+  )
+}
+
+/* ---------- Оптимизация закупки ---------- */
 
 function OptimizationCard({ campaign }: { campaign: Campaign }) {
   const { data: pixels } = useSWR<PixelRow[]>("/pixels", fetcher)
@@ -99,7 +301,7 @@ function OptimizationCard({ campaign }: { campaign: Campaign }) {
         subtitle="Пиксель, цель и автоматическая отсечка слабых источников"
       />
       <div className="space-y-4 p-4">
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <Field label="Пиксель" hint={pixels && pixels.length === 0 ? "Создайте пиксель на странице «Пиксель и цели»" : "Куда придут конверсии"}>
             <select value={pixelId} onChange={(e) => { setPixelId(e.target.value); setGoalId("") }} className={inputCls}>
               <option value="">Без пикселя</option>
@@ -140,7 +342,7 @@ function OptimizationCard({ campaign }: { campaign: Campaign }) {
         </label>
         <div className="flex items-center gap-3">
           <Button onClick={saveOpt} disabled={saving}>
-            {saving ? "Сохранение…" : "Сохранить настройки"}
+            {saving ? "Сохранение…" : "Сохранить оптимизацию"}
           </Button>
           {saved ? <span className="font-mono text-[11px] text-success">Сохранено</span> : null}
         </div>
@@ -184,13 +386,16 @@ function targetingSummary(t: Targeting): string {
   return parts.filter(Boolean).join(" · ") || "Без ограничений"
 }
 
+/* ---------- Страница ---------- */
+
 export default function CampaignDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
-  const { data: campaign } = useSWR<Campaign>(`/campaigns/${id}`, fetcher)
-  const { data: lineItems } = useSWR<LineItem[]>(`/campaigns/${id}/line-items`, fetcher)
+  const { data: campaign } = useSWR<CampaignExt>(`/campaigns/${id}`, fetcher)
+  const { data: lineItems } = useSWR<LineItem[]>(`/line-items?campaign_id=${id}`, fetcher)
   const { data: stats } = useSWR<StatsSummary>(`/stats/summary?hours=168&campaign_id=${id}`, fetcher)
 
   const [open, setOpen] = useState(false)
+  const [editingLi, setEditingLi] = useState<LineItem | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [targeting, setTargeting] = useState<Targeting>({})
@@ -201,11 +406,27 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
     max_bid: "",
     daily_budget: "20",
   })
+  const [statusError, setStatusError] = useState<string | null>(null)
 
   const openCreate = () => {
     setError(null)
+    setEditingLi(null)
     setForm({ name: "", bid_type: "cpm", bid_price: "1.5", max_bid: "", daily_budget: "20" })
     setTargeting({})
+    setOpen(true)
+  }
+
+  const openEdit = (li: LineItem) => {
+    setError(null)
+    setEditingLi(li)
+    setForm({
+      name: li.name,
+      bid_type: li.bid_type,
+      bid_price: String(li.bid_price),
+      max_bid: li.max_bid ? String(li.max_bid) : "",
+      daily_budget: String(li.daily_budget),
+    })
+    setTargeting(li.targeting || {})
     setOpen(true)
   }
 
@@ -214,18 +435,20 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
     setSaving(true)
     setError(null)
     try {
-      await api(`/campaigns/${id}/line-items`, {
-        method: "POST",
-        body: {
-          name: form.name,
-          bid_type: form.bid_type,
-          bid_price: Number(form.bid_price),
-          max_bid: form.max_bid ? Number(form.max_bid) : null,
-          daily_budget: Number(form.daily_budget),
-          targeting,
-        },
-      })
-      await mutate(`/campaigns/${id}/line-items`)
+      const body = {
+        name: form.name,
+        bid_type: form.bid_type,
+        bid_price: Number(form.bid_price),
+        max_bid: form.max_bid ? Number(form.max_bid) : null,
+        daily_budget: Number(form.daily_budget),
+        targeting,
+      }
+      if (editingLi) {
+        await api(`/line-items/${editingLi.id}`, { method: "PATCH", body })
+      } else {
+        await api(`/line-items`, { method: "POST", body: { campaign_id: id, ...body } })
+      }
+      await mutate(`/line-items?campaign_id=${id}`)
       setOpen(false)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Ошибка сохранения")
@@ -239,26 +462,62 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
       method: "PATCH",
       body: { status: li.status === "active" ? "paused" : "active" },
     })
-    await mutate(`/campaigns/${id}/line-items`)
+    await mutate(`/line-items?campaign_id=${id}`)
+  }
+
+  const toggleCampaign = async () => {
+    if (!campaign) return
+    setStatusError(null)
+    try {
+      await api(`/campaigns/${id}`, {
+        method: "PATCH",
+        body: { status: campaign.status === "active" ? "paused" : "active" },
+      })
+      await mutate(`/campaigns/${id}`)
+    } catch (err) {
+      setStatusError(err instanceof Error ? err.message : "Не удалось изменить статус")
+    }
   }
 
   if (!campaign) return <Spinner />
 
   return (
     <div className="space-y-6">
-      <div>
-        <Link href="/campaigns" className="text-xs text-muted hover:text-accent">
-          ← Все кампании
-        </Link>
-        <div className="mt-1 flex flex-wrap items-center gap-3">
-          <h1 className="text-xl font-semibold text-foreground">{campaign.name}</h1>
-          <StatusBadge status={campaign.status} />
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <Link href="/campaigns" className="text-xs text-muted hover:text-accent">
+            ← Все кампании
+          </Link>
+          <div className="mt-1 flex flex-wrap items-center gap-3">
+            <h1 className="text-xl font-semibold text-foreground">{campaign.name}</h1>
+            <span className="font-mono text-xs text-muted">ID: {campaign.display_id}</span>
+            <StatusBadge status={campaign.status} />
+          </div>
+          <p className="mt-0.5 text-sm text-muted">
+            Дневной бюджет {fmtMoney(campaign.daily_budget)} · Общий {fmtMoney(campaign.total_budget)} · Потрачено{" "}
+            {fmtMoney(campaign.spent_total)}
+          </p>
         </div>
-        <p className="mt-0.5 text-sm text-muted">
-          Дневной бюджет {fmtMoney(campaign.daily_budget)} · Общий {fmtMoney(campaign.total_budget)} · Потрачено{" "}
-          {fmtMoney(campaign.spent_total)}
-        </p>
+        <div className="flex items-center gap-2">
+          <Button variant="secondary" onClick={toggleCampaign}>
+            {campaign.status === "active" ? "Пауза" : "Запустить"}
+          </Button>
+          <Link href={`/analytics?campaign_id=${id}`}>
+            <Button variant="secondary">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M4 20h16M7 16v-5m5 5V8m5 8v-3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+              </svg>
+              Статистика
+            </Button>
+          </Link>
+        </div>
       </div>
+
+      {statusError ? (
+        <p role="alert" className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
+          {statusError}
+        </p>
+      ) : null}
 
       {stats ? (
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
@@ -268,6 +527,8 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
           <KpiCard label="Win Rate" value={fmtPct(stats.win_rate)} />
         </div>
       ) : null}
+
+      <SettingsCard campaign={campaign} />
 
       <OptimizationCard campaign={campaign} />
 
@@ -293,7 +554,10 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
                   <td className="px-4 py-3 font-mono text-xs">{fmtMoney(li.spent_today)}</td>
                   <td className="max-w-[280px] px-4 py-3 text-xs text-muted">{targetingSummary(li.targeting)}</td>
                   <td className="px-4 py-3">
-                    <div className="flex justify-end">
+                    <div className="flex items-center justify-end gap-1.5">
+                      <Button variant="ghost" onClick={() => openEdit(li)}>
+                        Изменить
+                      </Button>
                       <Button variant="ghost" onClick={() => toggleLi(li)}>
                         {li.status === "active" ? "Пауза" : "Запустить"}
                       </Button>
@@ -314,7 +578,12 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
         )}
       </Card>
 
-      <Modal open={open} onClose={() => setOpen(false)} title="Новая строка закупки" wide>
+      <Modal
+        open={open}
+        onClose={() => setOpen(false)}
+        title={editingLi ? `Строка закупки: ${editingLi.name}` : "Новая строка закупки"}
+        wide
+      >
         <form onSubmit={save} className="space-y-4">
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Field label="Название">
@@ -345,7 +614,7 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
               Отмена
             </Button>
             <Button type="submit" disabled={saving}>
-              {saving ? "Создание…" : "Создать"}
+              {saving ? "Сохранение…" : editingLi ? "Сохранить" : "Создать"}
             </Button>
           </div>
         </form>

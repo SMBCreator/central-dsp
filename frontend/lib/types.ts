@@ -7,6 +7,7 @@ export interface User {
 
 export interface Advertiser {
   id: string
+  display_id: number
   name: string
   domain: string | null
   category: string | null
@@ -18,6 +19,7 @@ export interface Advertiser {
 
 export interface Campaign {
   id: string
+  display_id: number
   advertiser_id: string
   name: string
   objective: string
@@ -36,6 +38,7 @@ export interface Campaign {
 
 export interface LineItem {
   id: string
+  display_id: number
   campaign_id: string
   name: string
   status: string
@@ -128,6 +131,7 @@ export const IAB_CATEGORIES: Record<string, string> = {
 
 export interface Creative {
   id: string
+  display_id: number
   campaign_id: string
   line_item_id: string | null
   name: string
@@ -145,11 +149,14 @@ export interface Creative {
   video_url: string | null
   video_duration: number | null
   vast_xml: string | null
+  counterparty_id: string | null
+  moderation_comment: string | null
   created_at: string
 }
 
 export interface SupplyPartner {
   id: string
+  display_id: number
   name: string
   endpoint_key: string
   status: string
@@ -234,4 +241,16 @@ export const AD_TYPE_LABELS: Record<string, string> = {
   banner: "Баннер",
   native: "Натив",
   video: "Видео",
+}
+
+
+export interface Counterparty {
+  id: string
+  name: string
+  inn: string | null
+  ogrn: string | null
+  legal_form: string | null
+  address: string | null
+  role: string | null
+  created_at: string
 }

@@ -55,3 +55,24 @@ export async function api<T = unknown>(
 }
 
 export const fetcher = <T = unknown>(path: string) => api<T>(path)
+
+/** Multipart upload helper (creative assets). Returns backend JSON. */
+export async function apiUpload<T = unknown>(path: string, file: File): Promise<T> {
+  const headers: Record<string, string> = {}
+  const token = getToken()
+  if (token) headers["Authorization"] = `Bearer ${token}`
+  const fd = new FormData()
+  fd.append("file", file)
+  const res = await fetch(`${BASE}${path}`, { method: "POST", headers, body: fd })
+  if (!res.ok) {
+    let detail = `Ошибка ${res.status}`
+    try {
+      const data = await res.json()
+      if (typeof data.detail === "string") detail = data.detail
+    } catch {
+      // ignore
+    }
+    throw new ApiError(res.status, detail)
+  }
+  return (await res.json()) as T
+}

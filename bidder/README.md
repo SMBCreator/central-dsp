@@ -1,3 +1,7 @@
+> **DEPRECATED (2026-08):** Java-биддер заморожен решением владельца продукта.
+> Основной трек — Go-биддер (`bidder-go/`, план: `docs/audit/go_bidder_plan.md`).
+> Новые фичи сюда не добавляются; код остаётся как reference до cutover.
+
 # CentralBidder
 
 OpenRTB 2.x real-time bidding engine for Central DSP.

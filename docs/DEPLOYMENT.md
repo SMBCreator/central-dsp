@@ -1,134 +1,189 @@
-# Central DSP — развёртывание и тестирование
+# Развёртывание CentralDSP на сервере
 
-## 1. Забрать репозиторий и развернуть локально
+Пошаговый гайд: от голого VPS до работающего стека (Postgres + Redis + Backend API +
+Go-биддер + Celery + Frontend) за реверс-прокси с HTTPS.
 
-### Требования
-- Node.js 20+, Python 3.11+, Git
-- PostgreSQL (Neon или любой Postgres 15+)
-- Redis (Upstash или локальный)
+---
 
-### Шаги
+## 1. Минимальные требования (тестовый контур)
+
+| Ресурс | Минимум (тест) | Рекомендация (пилот с 1 SSP, ~500 QPS) |
+|---|---|---|
+| CPU | 2 vCPU | 4–8 vCPU |
+| RAM | 4 GB | 8–16 GB |
+| Диск | 40 GB SSD | 100+ GB NVMe |
+| ОС | Ubuntu 22.04/24.04 LTS | то же |
+| Сеть | публичный IPv4, домен | то же + низкий RTT до SSP |
+
+Для тестов всё умещается на одном VPS. Для боевого трафика биддер выносится
+на отдельную машину рядом с дата-центром SSP.
+
+## 2. Подготовка сервера
 
 ```bash
-# 1. Клонировать репозиторий
+# Обновление и базовые пакеты
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y git curl ufw
+
+# Docker + Compose plugin
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER && newgrp docker
+
+# Firewall: только SSH, HTTP, HTTPS
+sudo ufw allow OpenSSH
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw enable
+```
+
+## 3. Клонирование и конфигурация
+
+```bash
 git clone https://github.com/SMBCreator/central-dsp.git
 cd central-dsp
-git checkout central-dsp
-
-# 2. Бэкенд (FastAPI)
-cd backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-
-# 3. Переменные окружения (создать backend/.env)
-#    DATABASE_URL=postgresql://user:pass@host/db
-#    REDIS_URL=rediss://default:pass@host:6379
-#    CRON_SECRET=любая-случайная-строка
-#    BASE_URL=https://ваш-домен.ру   (для nurl/imp/click трекеров!)
-
-# 4. Применить миграции (по порядку)
-for f in migrations/0*.sql; do psql "$DATABASE_URL" -f "$f"; done
-
-# 5. Запустить бэкенд
-uvicorn main:app --host 0.0.0.0 --port 8000
-
-# 6. Фронтенд (Next.js)
-cd ../frontend
-npm install
-# NEXT_PUBLIC_API_URL указывает на бэкенд (по умолчанию /api -> rewrite на :8000)
-npm run dev   # или npm run build && npm start
+cp .env.example .env 2>/dev/null || touch .env
 ```
 
-### Проверка работоспособности
+Заполните `.env` (все секреты генерируйте через `openssl rand -hex 32`):
+
+```env
+# --- База данных ---
+POSTGRES_DB=centraldsp
+POSTGRES_USER=centraldsp
+POSTGRES_PASSWORD=<openssl rand -hex 16>
+DATABASE_URL=postgresql://centraldsp:<тот же пароль>@postgres:5432/centraldsp
+
+# --- Redis ---
+REDIS_URL=redis://redis:6379/0
+
+# --- Секреты (ОБЯЗАТЕЛЬНО уникальные, не из примеров!) ---
+SESSION_SECRET=<openssl rand -hex 32>
+RTB_API_TOKEN=<openssl rand -hex 32>
+EVENT_TOKEN_SECRET=<openssl rand -hex 32>
+
+# --- Прод-флаги ---
+APP_ENV=production
+PUBLIC_BASE_URL=https://ваш-домен.ру
+
+# --- Celery monitoring ---
+FLOWER_PASSWORD=<пароль для Flower UI>
+
+# --- ОРД Озон (можно позже задать через UI настроек) ---
+# ORD_OZON_API_KEY=<ключ из кабинета ОРД Озон>
+```
+
+## 4. Запуск стека
 
 ```bash
-# Health check
-curl http://localhost:8000/health
+# Собрать и поднять всё (Go-биддер включается профилем)
+docker compose --profile bidder-go up -d --build postgres redis backend bidder-go worker beat frontend
 
-# Создать аккаунт через UI: http://localhost:3000/register
-# Затем: рекламодатель -> кампания -> line item -> креатив -> SSP-партнёр
-
-# Тест биддера (endpoint_key берётся со страницы SSP-партнёры)
-curl -X POST http://localhost:8000/rtb/bid/<endpoint_key> \
-  -H "Content-Type: application/json" \
-  -d '{"id":"test1","imp":[{"id":"1","banner":{"w":300,"h":250},"bidfloor":0.1}],
-       "site":{"domain":"example.com"},
-       "device":{"geo":{"country":"RUS"},"devicetype":2}}'
-# 200 + JSON = бид; 204 = no-bid (проверьте статус кампании, баланс, таргетинг)
-
-# Встроенный симулятор трафика: страница "RTB-тестер" в UI
+# Проверить статусы
+docker compose ps
+docker compose logs backend --tail 20
+docker compose logs bidder-go --tail 20
 ```
 
-### Продакшн (Vercel)
-Проект уже настроен: `vercel.json` содержит билд фронтенда, python-бэкенд
-как serverless functions и cron-задачи (правила каждые 15 мин, сброс бюджетов
-в 00:00 UTC, оптимизатор закупки ежечасно). Достаточно подключить репозиторий
-к Vercel и задать env-переменные. Для нагрузки RTB рекомендуем вынести
-бэкенд на выделенный сервер/K8s (см. docs/ROADMAP.md).
+Миграции БД применяются автоматически при старте backend (`python migrate.py`).
 
-## 2. Требования SSP: что проверяют и что просят
+Проверка изнутри сервера:
 
-### 2.1. «Серые» / арбитражные сети (Kadam, PropellerAds, Adsterra, RichAds, Galaksion, ClickAdu)
+```bash
+curl -s http://localhost:8000/health        # backend -> {"status":"ok"}
+curl -s http://localhost:8090/healthz       # go-биддер -> feed fresh, redis ok
+curl -s http://localhost:3000 -o /dev/null -w "%{http_code}\n"  # frontend -> 200
+```
 
-Это самый простой вход — многие дают self-serve API и XML/OpenRTB фиды.
+## 5. Реверс-прокси с HTTPS (Caddy — проще всего)
 
-Что обычно просят:
-| Требование | Что предоставить | У нас |
+```bash
+sudo apt install -y caddy
+sudo tee /etc/caddy/Caddyfile > /dev/null << 'EOF'
+ваш-домен.ру {
+    # API -> FastAPI backend
+    handle /api/* {
+        uri strip_prefix /api
+        reverse_proxy localhost:8000
+    }
+    # RTB endpoint для SSP -> Go-биддер
+    handle /rtb/* {
+        reverse_proxy localhost:8090
+    }
+    # Всё остальное -> Next.js UI
+    handle {
+        reverse_proxy localhost:3000
+    }
+}
+EOF
+sudo systemctl reload caddy
+```
+
+Caddy сам получит и будет продлевать TLS-сертификат Let's Encrypt.
+SSP-партнёру отдаёте URL вида: `https://ваш-домен.ру/rtb/bid/<endpoint_key>`.
+
+## 6. Первичная настройка через UI
+
+1. Откройте `https://ваш-домен.ру` — вход супер-админа
+   (создаётся сидом; сразу смените пароль).
+2. **Настройки -> ОРД Озон**: вставьте API-ключ из кабинета ОРД Озон
+   (Настройки -> API). Выберите «Песочница» для проверки, потом «Прод».
+   Нажмите «Проверить связь».
+3. **Финансы**: пополните баланс рекламодателя (кнопка «Пополнить» —
+   ручная проводка супер-админа, п. биллинга ниже).
+4. **SSP-партнёры**: создайте партнёра, скопируйте endpoint key, отдайте
+   SSP URL эндпоинта.
+5. Создайте рекламодателя -> кампанию -> креатив (загрузкой файла) ->
+   line item. Креатив уйдёт на регистрацию в ОРД, erid появится в карточке.
+
+## 7. Как работает биллинг (для супер-админа)
+
+- **Деньги рекламодателей**: собираете по договору на счёт юрлица, затем
+  вручную пополняете баланс кабинета («Финансы» -> «Пополнить»). Система
+  списывает с баланса за каждый выигранный показ (по цене клиринга + маржа).
+- **Долг перед SSP**: копится автоматически (отчёт «Финансы -> SSP»).
+  Оплачиваете по договору с SSP (обычно постоплата раз в месяц по их отчёту).
+- **Ваша маржа** = списано с рекламодателей - выплачено SSP.
+- Расхождения (дискрепанс) с отчётом SSP — нормальны до 5–10%; сверяйте
+  ежемесячно.
+
+## 8. Обновление версии
+
+```bash
+cd central-dsp
+git pull
+docker compose --profile bidder-go up -d --build
+docker compose logs backend --tail 10   # миграции применились?
+```
+
+## 9. Бэкапы (обязательно с первого дня)
+
+```bash
+# Ежедневный дамп БД (добавьте в crontab)
+docker compose exec -T postgres pg_dump -U centraldsp centraldsp | gzip > /backup/dsp-$(date +%F).sql.gz
+
+# Redis (снапшот RDB) — счётчики бюджетов/капов
+docker compose exec -T redis redis-cli BGSAVE
+```
+
+## 10. Что мониторить (минимум)
+
+| Проверка | Как | Порог тревоги |
 |---|---|---|
-| OpenRTB 2.4–2.6 endpoint | URL вида `https://dsp.ru/rtb/bid/{key}` | Есть |
-| Ответ за 150–300 мс | Замер latency с их стороны | Нужен сервер рядом с их DC |
-| QPS-квота (от 1–5К) | Согласовать стартовый QPS, авто-скейл | Согласуется |
-| Nurl/burl win-notice | `${AUCTION_PRICE}` макрос | Есть (nurl) |
-| No-bid = HTTP 204 | Пустой ответ без тела | Есть |
-| gzip запросов/ответов | Content-Encoding: gzip | Добавить на прокси/nginx |
-| Юрлицо или аккаунт | Иногда достаточно физлица/самозанятого | — |
-| Депозит | $50–500 на баланс сети | — |
+| Backend health | `GET /health` раз в минуту | нет ответа 2 мин |
+| Биддер health | `GET /healthz` | `feed_age > 120s` или redis down |
+| Диск | `df -h` | > 80% |
+| p99 время ответа биддера | лог биддера | > 80 мс |
+| Баланс рекламодателей | UI «Финансы» | близок к 0 — кампании встанут |
 
-Особенности: трафик грязный (боты, авто-редиректы), поэтому наш оптимизатор
-скликивания и блок-листы критичны. Начинать с CPM $0.1–0.5, popunder/push
-форматов у них больше, чем banner.
+Полноценный контур (Prometheus + Grafana + алерты) — следующий этап,
+см. `docs/PROD_RUNBOOK.md`.
 
-### 2.2. Топовые российские сети (VK Реклама / myTarget SSP, Яндекс ADFOX/Monetization, Sape/RTB.Sape, Buzzoola, Otm, Hybrid, MediaSniper, AdRiver)
+## 11. Типичные проблемы
 
-Вход сложнее — модерация DSP как контрагента.
-
-Что проверяют:
-1. **Юрлицо РФ** (ООО/ИП) с ОКВЭД рекламы; договор-оферта, ЭДО.
-2. **Маркировка рекламы (ФЗ-347)**: обязательна регистрация креативов в ОРД
-   (ОРД ВК, Яндекс ОРД, МедиаСкаут и др.), получение erid-токенов и передача
-   их в креативах. Без этого топовые SSP не подключают. **Это главный
-   технический блокер — нужен модуль ОРД-интеграции** (в плане развития).
-3. **Техническая анкета**: OpenRTB версия, поддерживаемые форматы
-   (banner/video/native), QPS, гео серверов, latency, cookie matching.
-4. **Cookie matching / user sync** — топовые SSP просят sync-пиксель
-   (`/rtb/sync?ssp_uid=...`) для матчинга аудиторий. Нужно добавить.
-5. **Тестовый период**: 1–2 недели на тестовом QPS (100–500), проверяют
-   discrepancy (расхождение показов < 5–10%), timeout rate (< 3–5%),
-   валидность креативов.
-6. **Модерация креативов** — предпросмотр всех креативов, категории
-   (без 18+, крипты, лекарств без лицензии и т.п.).
-7. **Финансы**: предоплата/депозит, для крупных — банковская гарантия.
-
-### 2.3. Оценка возможности интеграции сегодня
-
-| Сеть | Реалистичность | Блокеры |
+| Симптом | Причина | Решение |
 |---|---|---|
-| Kadam, RichAds, Adsterra | Высокая, 1–2 недели | Только сервер с низкой latency + депозит |
-| PropellerAds, Galaksion | Высокая | То же |
-| RTB.Sape | Средняя, 3–6 недель | Юрлицо, ОРД/erid, cookie sync |
-| Buzzoola, Hybrid, Otm | Средняя | ОРД/erid, видео-VAST доработка, юрлицо |
-| VK Реклама (SSP) | Ниже средней, 2–4 месяца | Юрлицо + ОРД + объёмные требования + аудит |
-| Яндекс | Низкая на старте | Только крупные DSP с историей |
-
-Рекомендованный порядок: арбитражные сети (быстрая выручка и обкатка
-биддера) -> RTB.Sape/Buzzoola (после ОРД-модуля) -> VK.
-
-### 2.4. Чеклист перед подачей заявки в любой SSP
-
-- [ ] Бэкенд на сервере с latency < 50 мс до SSP (обычно Москва/EU-central)
-- [ ] gzip на bid-эндпоинте
-- [ ] Мониторинг timeout rate и bid rate (страница Аналитика)
-- [ ] 3–5 боевых кампаний с бюджетом и валидными креативами
-- [ ] Баланс рекламодателей пополнен (биддер не ставит при нуле)
-- [ ] Для РФ-сетей: юрлицо + регистрация в ОРД + erid в креативах
+| Биддер NOBID на всё | пустой фид (нет активных кампаний/креативов с erid) | проверьте `GET /healthz` биддера и статусы кампаний |
+| 401 на фиде | `RTB_API_TOKEN` не совпадает у backend и биддера | одинаковое значение в `.env`, перезапуск |
+| Кампания не стартует | нет одобренного креатива или баланс 0 | одобрить креатив, пополнить баланс |
+| ОРД-ошибки при создании креатива | неверный API-ключ или прод вместо песочницы | «Настройки -> ОРД Озон -> Проверить связь» |
+| 429 на API | сработал rate limit (300 req/min на пользователя) | это защита; для интеграций поднять лимит в `main.py` |

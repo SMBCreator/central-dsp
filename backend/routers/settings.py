@@ -121,3 +121,78 @@ async def remove_domain(item_id: str, user: dict = Depends(current_user)):
     )
     if result == "DELETE 0":
         raise HTTPException(404, "Запись не найдена")
+
+
+# ------------------------------------------------------------------ ОРД Озон --
+# Платформенные настройки ОРД: API-ключ хранится в platform_settings (jsonb),
+# доступ на чтение/запись — только superadmin. Ключ наружу отдаётся маской.
+from rbac import require_roles as _require_roles  # noqa: E402
+
+_require_superadmin = _require_roles("superadmin")
+
+_ORD_BASE_URLS = {
+    "production": "https://api-ord.ozon.ru",
+    "sandbox": "https://ord-sandbox.ozon.ru",
+}
+
+
+class OrdSettingsIn(BaseModel):
+    api_key: str = Field(min_length=8, max_length=512)
+    environment: str = Field(default="production", pattern="^(production|sandbox)$")
+
+
+def _mask(key: str) -> str:
+    return key[:4] + "•" * 8 + key[-4:] if len(key) > 12 else "•" * len(key)
+
+
+@router.get("/ord")
+async def get_ord_settings_api(user: dict = Depends(_require_superadmin)):
+    from ord.adapter import get_ord_settings
+
+    cfg = await get_ord_settings()
+    if not cfg:
+        return {"configured": False, "provider": "mock",
+                "note": "Ключ не задан — используется mock-ОРД (фиктивные erid)"}
+    env = "sandbox" if "sandbox" in cfg["base_url"] else "production"
+    return {"configured": True, "provider": "ozon", "environment": env,
+            "base_url": cfg["base_url"], "api_key_masked": _mask(cfg["api_key"]),
+            "source": cfg.get("source", "db")}
+
+
+@router.put("/ord")
+async def put_ord_settings(body: OrdSettingsIn, user: dict = Depends(_require_superadmin)):
+    pool = await get_pool()
+    value = json.dumps({
+        "api_key": body.api_key.strip(),
+        "base_url": _ORD_BASE_URLS[body.environment],
+    })
+    await pool.execute(
+        """INSERT INTO platform_settings (key, value, updated_by)
+           VALUES ('ord_ozon', $1::jsonb, $2)
+           ON CONFLICT (key) DO UPDATE
+             SET value = EXCLUDED.value, updated_by = EXCLUDED.updated_by, updated_at = now()""",
+        value, user["id"],
+    )
+    return {"ok": True, "environment": body.environment,
+            "api_key_masked": _mask(body.api_key.strip())}
+
+
+@router.delete("/ord", status_code=204)
+async def delete_ord_settings(user: dict = Depends(_require_superadmin)):
+    pool = await get_pool()
+    await pool.execute("DELETE FROM platform_settings WHERE key = 'ord_ozon'")
+
+
+@router.post("/ord/test")
+async def test_ord_connection(user: dict = Depends(_require_superadmin)):
+    from ord.adapter import OrdError, get_ord_adapter
+
+    adapter = await get_ord_adapter()
+    if adapter.provider == "mock":
+        return {"ok": True, "provider": "mock",
+                "note": "Ключ не задан — работает mock. Сохраните ключ и повторите."}
+    try:
+        await adapter.ping()
+        return {"ok": True, "provider": "ozon"}
+    except OrdError as e:
+        raise HTTPException(502, str(e))

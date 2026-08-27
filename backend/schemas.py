@@ -127,10 +127,13 @@ class CreativeIn(BaseModel):
     # Сторонние трекеры (показ и клик) — пиксели аудита
     imp_tracker_url: str | None = Field(default=None, max_length=1000)
     click_tracker_url: str | None = Field(default=None, max_length=1000)
+    # Информация о рекламодателе (контрагент из ОРД): ОГРН, наименование, адрес
+    counterparty_id: str | None = None
 
 
 class CreativePatch(BaseModel):
     name: str | None = None
+    counterparty_id: str | None = None
     imp_tracker_url: str | None = Field(default=None, max_length=1000)
     click_tracker_url: str | None = Field(default=None, max_length=1000)
     status: str | None = Field(default=None, pattern="^(pending|approved|rejected|archived)$")

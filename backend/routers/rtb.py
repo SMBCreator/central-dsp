@@ -18,13 +18,18 @@ import hmac as _hmac
 
 from billing_core import bill_win
 from audiences import check_audiences, store_clid_bridge
-from shading import get_factor as shading_get_factor
+from shading import get_factor as shading_get_factor, should_shade
 from cache import bump_frequency, bump_frequency_multi, check_frequency_cap, check_qps, gate_and_reserve, get_redis, mark_once, reserve_budget
 from db import get_pool
 from money import CURRENCY, clamp_clearing_price, cpm_to_cost
 from tokens import sign_event_token, verify_event_token
 
 router = APIRouter(prefix="/rtb", tags=["rtb"])
+
+# Python RTB — reference-имплементация и dev/симулятор. Прод-трафик обслуживает
+# Go-биддер (bidder-go/). Флаг выключает bid-эндпоинт в прод-топологии;
+# win/imp/click-нотификации остаются активными для доигрывания in-flight бидов.
+_RTB_PYTHON_SERVING = os.getenv("RTB_PYTHON_SERVING", "true").strip().lower() in {"1", "true", "yes"}
 
 DEVICE_TYPES = {1: "mobile", 2: "desktop", 3: "ctv", 4: "phone", 5: "tablet", 6: "connected", 7: "settopbox"}
 
@@ -344,6 +349,64 @@ def _creative_fits_imp(creative: dict, imp: dict, ad_type: str) -> bool:
     return True
 
 
+def _html_escape(s: str) -> str:
+    out = str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return out.replace('"', "&quot;").replace("'", "&#39;")
+
+
+def _build_ad_info_badge(creative: dict) -> str:
+    # Рекламное меню (38-ФЗ): значок "Реклама (i)", по клику раскрываются erid и данные рекламодателя.
+    erid = creative.get("erid") or ""
+    adv_name = creative.get("adv_name") or ""
+    if not erid and not adv_name:
+        return ""
+    uid = str(creative.get("creative_id") or "")[:8]
+    rows = ""
+    if erid:
+        rows += "<div>erid: " + _html_escape(erid) + "</div>"
+    if adv_name:
+        rows += "<div>" + _html_escape(adv_name) + "</div>"
+    if creative.get("adv_inn"):
+        rows += "<div>ИНН: " + _html_escape(creative["adv_inn"]) + "</div>"
+    if creative.get("adv_ogrn"):
+        rows += "<div>ОГРН: " + _html_escape(creative["adv_ogrn"]) + "</div>"
+    if creative.get("adv_address"):
+        rows += "<div>" + _html_escape(creative["adv_address"]) + "</div>"
+    toggle = (
+        "var p=document.getElementById('cdsp-ap-" + uid + "');"
+        "p.style.display=p.style.display==='none'?'block':'none';"
+        "event.preventDefault();event.stopPropagation();"
+    )
+    return (
+        '<span id="cdsp-ai-' + uid + '" style="position:absolute;top:2px;left:2px;z-index:9;font:10px/1.4 sans-serif">'
+        '<span onclick="' + toggle + '" style="cursor:pointer;background:rgba(0,0,0,.55);color:#fff;padding:1px 5px;'
+        'border-radius:2px;user-select:none">Реклама &#9432;</span>'
+        '<span id="cdsp-ap-' + uid + '" style="display:none;position:absolute;top:16px;left:0;background:rgba(0,0,0,.85);'
+        'color:#fff;padding:6px 8px;border-radius:3px;min-width:180px;max-width:260px;white-space:normal;word-break:break-word">'
+        + rows + "</span></span>"
+    )
+
+
+def _build_vast_extensions(creative: dict, erid: str) -> str:
+    # VAST Extensions: erid + сведения о рекламодателе (38-ФЗ).
+    if not erid and not creative.get("adv_name"):
+        return ""
+    def esc(s):
+        return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                .replace('"', "&quot;").replace("'", "&apos;"))
+    parts = ""
+    if erid:
+        parts += f'<Extension type="erid"><Erid>{esc(erid)}</Erid></Extension>'
+    if creative.get("adv_name"):
+        parts += ('<Extension type="AdvertiserInfo">'
+                  f'<Name>{esc(creative.get("adv_name") or "")}</Name>'
+                  f'<INN>{esc(creative.get("adv_inn") or "")}</INN>'
+                  f'<OGRN>{esc(creative.get("adv_ogrn") or "")}</OGRN>'
+                  f'<Address>{esc(creative.get("adv_address") or "")}</Address>'
+                  "</Extension>")
+    return f"<Extensions>{parts}</Extensions>"
+
+
 def _build_adm(creative: dict, base: str, bid_id: str) -> str:
     # Сторонние трекеры (аудит): пиксель на показ добавляется в разметку,
     # клик-трекер дёргается из клиентского onclick / clicktrackers / VAST.
@@ -354,11 +417,7 @@ def _build_adm(creative: dict, base: str, bid_id: str) -> str:
     )
     third_click = creative.get("click_tracker_url") or ""
     erid = creative.get("erid") or ""
-    erid_label = (
-        f'<span style="position:absolute;top:2px;left:2px;background:rgba(0,0,0,.55);'
-        f'color:#fff;font:10px/1.4 sans-serif;padding:1px 4px;border-radius:2px;z-index:9">'
-        f'Реклама erid: {erid}</span>'
-    ) if erid else ""
+    erid_label = _build_ad_info_badge(creative)
     click_url = f"{base}/api/rtb/click?bid={bid_id}&r={creative.get('click_url') or ''}"
     imp_pixel = f"{base}/api/rtb/imp?bid={bid_id}"
     if creative["type"] == "banner":
@@ -391,6 +450,11 @@ def _build_adm(creative: dict, base: str, bid_id: str) -> str:
         }
         if erid:
             native["native"].setdefault("ext", {})["erid"] = erid
+        adv_info = {v: creative.get(k) for k, v in
+                    [("adv_name", "name"), ("adv_inn", "inn"), ("adv_ogrn", "ogrn"), ("adv_address", "address")]
+                    if creative.get(k)}
+        if adv_info:
+            native["native"].setdefault("ext", {})["advertiser_info"] = adv_info
         if creative["type"] == "push":
             native["native"].setdefault("ext", {})["ad_format"] = "push"
         return json.dumps(native, ensure_ascii=False)
@@ -401,7 +465,7 @@ def _build_adm(creative: dict, base: str, bid_id: str) -> str:
     vevent = f"{base}/api/rtb/vevent?bid={bid_id}"
     creative_id = creative.get("creative_id") or creative.get("id") or ""
     return f"""<VAST version="3.0"><Ad id="{creative_id}"><InLine>
-<AdSystem>CentralDSP</AdSystem>{f'<Extensions><Extension type="erid"><Erid>{erid}</Erid></Extension></Extensions>' if erid else ''}<AdTitle>{creative['name']}</AdTitle>
+<AdSystem>CentralDSP</AdSystem>{_build_vast_extensions(creative, erid)}<AdTitle>{creative['name']}</AdTitle>
 <Impression><![CDATA[{imp_pixel}]]></Impression>{f'<Impression><![CDATA[{third_imp}]]></Impression>' if third_imp else ''}
 <Creatives><Creative><Linear><Duration>00:00:{duration:02d}</Duration>
 <TrackingEvents>
@@ -505,6 +569,9 @@ def _parse_freq_caps(c) -> list[tuple[int, int]]:
 
 @router.post("/bid/{endpoint_key}")
 async def bid(endpoint_key: str, request: Request):
+    if not _RTB_PYTHON_SERVING:
+        # 204 no-bid: SSP-совместимый ответ, не ломает партнёрские интеграции
+        return Response(status_code=204)
     try:
         req = await request.json()
     except Exception:
@@ -599,6 +666,11 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
     imps = req.get("imp") or []
     if not imps:
         return None
+    try:
+        # OpenRTB 2.5: 1 = first price, 2 = second price (default when absent)
+        auction_type = int(req.get("at") or 2)
+    except (TypeError, ValueError):
+        auction_type = 2
 
     device = req.get("device") or {}
     geo = (device.get("geo") or {})
@@ -620,7 +692,8 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
                cr.id AS creative_id, cr.type, cr.width, cr.height, cr.asset_url, cr.click_url,
                cr.html_snippet, cr.native_title, cr.native_description, cr.native_cta,
                cr.native_icon_url, cr.video_url, cr.video_duration, cr.vast_xml, cr.name,
-               cr.imp_tracker_url, cr.click_tracker_url
+               cr.imp_tracker_url, cr.click_tracker_url, cr.erid,
+               cp.name AS adv_name, cp.inn AS adv_inn, cp.ogrn AS adv_ogrn, cp.address AS adv_address
         FROM line_items li
         JOIN campaigns c ON c.id = li.campaign_id AND c.status = 'active'
              AND (c.start_date IS NULL OR c.start_date <= CURRENT_DATE)
@@ -629,6 +702,7 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
         JOIN advertisers adv ON adv.id = c.advertiser_id AND adv.status = 'active' AND adv.balance > 0
         JOIN creatives cr ON cr.campaign_id = c.id AND cr.status = 'approved'
              AND (cr.line_item_id IS NULL OR cr.line_item_id = li.id)
+        LEFT JOIN counterparties cp ON cp.id = cr.counterparty_id
         WHERE li.status = 'active' AND li.bid_price > 0
         """
         )
@@ -743,8 +817,10 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
                 price = min(price, float(c["max_bid"]))
             if price < floor:
                 continue
-            # Bid shading (opt-in): pay closer to clearing price, never below floor
-            if c["bid_shading"]:
+            # Bid shading (opt-in, first-price only): pay closer to the
+            # clearing price, never below floor. Second-price auctions are
+            # excluded: shading there cuts win rate without saving money.
+            if should_shade(c["bid_shading"], auction_type):
                 _sf = await shading_get_factor(str(c["campaign_id"]), str(partner["id"]))
                 if _sf < 1.0:
                     price = max(floor * 1.01, price * _sf)
@@ -799,6 +875,22 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
                 ex=3600,
             ))
 
+        # Synchronously cache bid metadata in Redis (sub-ms) so win/imp/click
+        # handlers can resolve the bid immediately; the Postgres insert below
+        # is fire-and-forget and may land after the SSP's win notice (GAP-011).
+        await get_redis().set(
+            f"bidmeta:{bid_id}",
+            json.dumps({
+                "bid_id": bid_id, "imp_id": imp.get("id"),
+                "campaign_id": str(c["campaign_id"]), "line_item_id": str(c["li_id"]),
+                "creative_id": str(c["creative_id"]), "supply_partner_id": str(partner["id"]),
+                "price": price,
+                "device_type": DEVICE_TYPES.get(device.get("devicetype", 0), "unknown"),
+                "geo_country": geo.get("country"), "ad_type": ad_type,
+                "domain": site.get("domain"), "os": req_os, "browser": req_browser,
+            }),
+            ex=3600,
+        )
         _fire_and_forget(_log_event(
             pool, "bid", bid_id=bid_id, imp_id=imp.get("id"),
             campaign_id=c["campaign_id"], line_item_id=c["li_id"], creative_id=c["creative_id"],
@@ -857,6 +949,14 @@ async def _bump_domain_stats(pool, row, col: str, spend=0):
 
 
 async def _find_bid(pool, bid_id: str):
+    """Resolve bid metadata: Redis cache first (written synchronously in the
+    bid path), Postgres bid_events as fallback for older bids."""
+    try:
+        raw = await get_redis().get(f"bidmeta:{bid_id}")
+        if raw:
+            return json.loads(raw)
+    except Exception:
+        logger.exception("bidmeta redis lookup failed; falling back to PG")
     return await pool.fetchrow(
         "SELECT * FROM bid_events WHERE bid_id = $1 AND event_type = 'bid' ORDER BY id LIMIT 1", bid_id
     )
