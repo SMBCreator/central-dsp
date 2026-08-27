@@ -61,6 +61,12 @@ type Candidate struct {
 	ClickTrackerURL string `json:"click_tracker_url"`
 	Erid            string `json:"erid"`
 
+	// Информация о рекламодателе (38-ФЗ): для инфо-значка на креативе
+	AdvName    string `json:"adv_name"`
+	AdvINN     string `json:"adv_inn"`
+	AdvOGRN    string `json:"adv_ogrn"`
+	AdvAddress string `json:"adv_address"`
+
 	// разобранный targeting (заполняется при рефреше, не в hot path)
 	T *Targeting `json:"-"`
 }

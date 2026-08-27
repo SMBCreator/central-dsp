@@ -145,6 +145,8 @@ export interface Creative {
   video_url: string | null
   video_duration: number | null
   vast_xml: string | null
+  counterparty_id: string | null
+  moderation_comment: string | null
   created_at: string
 }
 
@@ -234,4 +236,16 @@ export const AD_TYPE_LABELS: Record<string, string> = {
   banner: "Баннер",
   native: "Натив",
   video: "Видео",
+}
+
+
+export interface Counterparty {
+  id: string
+  name: string
+  inn: string | null
+  ogrn: string | null
+  legal_form: string | null
+  address: string | null
+  role: string | null
+  created_at: string
 }

@@ -7,6 +7,7 @@ package rtb
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/feed"
 )
@@ -21,10 +22,7 @@ func BuildAdm(c *feed.Candidate, base, eventToken string) string {
 	}
 	thirdClick := c.ClickTrackerURL
 	erid := c.Erid
-	eridLabel := ""
-	if erid != "" {
-		eridLabel = fmt.Sprintf(`<span style="position:absolute;top:2px;left:2px;background:rgba(0,0,0,.55);color:#fff;font:10px/1.4 sans-serif;padding:1px 4px;border-radius:2px;z-index:9">Реклама erid: %s</span>`, erid)
-	}
+	eridLabel := buildAdInfoBadge(c)
 	clickURL := fmt.Sprintf("%s/api/rtb/click?bid=%s&r=%s", base, eventToken, c.ClickURL)
 	impPixel := fmt.Sprintf("%s/api/rtb/imp?bid=%s", base, eventToken)
 
@@ -76,6 +74,9 @@ func BuildAdm(c *feed.Candidate, base, eventToken string) string {
 		if erid != "" {
 			ext["erid"] = erid
 		}
+		if adv := advertiserInfoMap(c); adv != nil {
+			ext["advertiser_info"] = adv
+		}
 		if c.Type == "push" {
 			ext["ad_format"] = "push"
 		}
@@ -95,8 +96,9 @@ func BuildAdm(c *feed.Candidate, base, eventToken string) string {
 		}
 		vevent := fmt.Sprintf("%s/api/rtb/vevent?bid=%s", base, eventToken)
 		eridExt := ""
-		if erid != "" {
-			eridExt = fmt.Sprintf(`<Extensions><Extension type="erid"><Erid>%s</Erid></Extension></Extensions>`, erid)
+		if erid != "" || c.AdvName != "" {
+			eridExt = fmt.Sprintf(`<Extensions><Extension type="erid"><Erid>%s</Erid></Extension><Extension type="AdvertiserInfo"><Name>%s</Name><INN>%s</INN><OGRN>%s</OGRN><Address>%s</Address></Extension></Extensions>`,
+				erid, xmlEscape(c.AdvName), xmlEscape(c.AdvINN), xmlEscape(c.AdvOGRN), xmlEscape(c.AdvAddress))
 		}
 		thirdImpNode := ""
 		if thirdImp != "" {
@@ -126,4 +128,72 @@ func BuildAdm(c *feed.Candidate, base, eventToken string) string {
 			vevent, vevent, vevent, vevent, vevent, vevent,
 			c.ClickURL, clickURL, thirdClickNode, c.VideoURL)
 	}
+}
+
+// advertiserInfoMap возвращает данные рекламодателя для native ext (38-ФЗ), либо nil.
+func advertiserInfoMap(c *feed.Candidate) map[string]string {
+	if c.AdvName == "" && c.AdvINN == "" && c.AdvOGRN == "" {
+		return nil
+	}
+	m := map[string]string{}
+	if c.AdvName != "" {
+		m["name"] = c.AdvName
+	}
+	if c.AdvINN != "" {
+		m["inn"] = c.AdvINN
+	}
+	if c.AdvOGRN != "" {
+		m["ogrn"] = c.AdvOGRN
+	}
+	if c.AdvAddress != "" {
+		m["address"] = c.AdvAddress
+	}
+	return m
+}
+
+// buildAdInfoBadge собирает рекламное меню для баннера: уголок «Реклама ⓘ»,
+// по клику раскрывается панель с erid и сведениями о рекламодателе (38-ФЗ).
+// Без внешних зависимостей; id уникален по creative id, чтобы не конфликтовать
+// при нескольких баннерах на странице.
+func buildAdInfoBadge(c *feed.Candidate) string {
+	if c.Erid == "" && c.AdvName == "" {
+		return ""
+	}
+	uid := c.CreativeID
+	if len(uid) > 8 {
+		uid = uid[:8]
+	}
+	rows := ""
+	if c.Erid != "" {
+		rows += fmt.Sprintf(`<div>erid: %s</div>`, htmlEscape(c.Erid))
+	}
+	if c.AdvName != "" {
+		rows += fmt.Sprintf(`<div>%s</div>`, htmlEscape(c.AdvName))
+	}
+	if c.AdvINN != "" {
+		rows += fmt.Sprintf(`<div>ИНН: %s</div>`, htmlEscape(c.AdvINN))
+	}
+	if c.AdvOGRN != "" {
+		rows += fmt.Sprintf(`<div>ОГРН: %s</div>`, htmlEscape(c.AdvOGRN))
+	}
+	if c.AdvAddress != "" {
+		rows += fmt.Sprintf(`<div>%s</div>`, htmlEscape(c.AdvAddress))
+	}
+	return fmt.Sprintf(`<span id="cdsp-ai-%s" style="position:absolute;top:2px;left:2px;z-index:9;font:10px/1.4 sans-serif">`+
+		`<span onclick="var p=document.getElementById('cdsp-ap-%s');p.style.display=p.style.display==='none'?'block':'none';event.preventDefault();event.stopPropagation();" `+
+		`style="cursor:pointer;background:rgba(0,0,0,.55);color:#fff;padding:1px 5px;border-radius:2px;user-select:none">Реклама &#9432;</span>`+
+		`<span id="cdsp-ap-%s" style="display:none;position:absolute;top:16px;left:0;background:rgba(0,0,0,.85);color:#fff;padding:6px 8px;border-radius:3px;min-width:180px;max-width:260px;white-space:normal;word-break:break-word">%s</span></span>`,
+		uid, uid, uid, rows)
+}
+
+// htmlEscape экранирует спецсимволы HTML.
+func htmlEscape(s string) string {
+	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;", "'", "&#39;")
+	return r.Replace(s)
+}
+
+// xmlEscape экранирует спецсимволы XML (для VAST).
+func xmlEscape(s string) string {
+	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;", "'", "&apos;")
+	return r.Replace(s)
 }

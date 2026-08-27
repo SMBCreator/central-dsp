@@ -20,6 +20,8 @@ from routers.cron import router as cron_router
 from routers.groups import router as groups_router
 from routers.settings import router as settings_router
 from routers.geo import router as geo_router
+from routers.notifications import router as notifications_router
+from routers.moderation import router as moderation_router
 from routers.audiences_router import router as audiences_router
 from routers.line_items import router as line_items_router
 from routers.pixel import router as pixel_router
@@ -63,6 +65,8 @@ app.include_router(pixel_router)
 app.include_router(groups_router)
 app.include_router(settings_router)
 app.include_router(geo_router)
+app.include_router(notifications_router)
+app.include_router(moderation_router)
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")

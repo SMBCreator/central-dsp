@@ -23,6 +23,7 @@ router = APIRouter(prefix="/ord", tags=["ord"])
 class CounterpartyIn(BaseModel):
     name: str
     inn: str = Field(min_length=5, max_length=30)
+    ogrn: Optional[str] = Field(default=None, max_length=20)
     legal_type: str = "ul"           # ul | ip | fl | foreign
     role: str = "advertiser"         # advertiser | agency | publisher | ors
     advertiser_id: Optional[str] = None
@@ -68,12 +69,12 @@ async def create_counterparty(body: CounterpartyIn, user: dict = Depends(require
             raise HTTPException(400, "ИНН: 10 цифр для юрлица, 12 для ИП/физлица")
     pool = await get_pool()
     row = await pool.fetchrow(
-        """INSERT INTO counterparties (user_id, advertiser_id, name, inn, legal_type, role, address)
-           VALUES ($1,$2,$3,$4,$5,$6,$7)
+        """INSERT INTO counterparties (user_id, advertiser_id, name, inn, ogrn, legal_type, role, address)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
            ON CONFLICT (user_id, inn, role) DO UPDATE
-             SET name = EXCLUDED.name, address = COALESCE(EXCLUDED.address, counterparties.address), updated_at = now()
+             SET name = EXCLUDED.name, ogrn = COALESCE(EXCLUDED.ogrn, counterparties.ogrn), address = COALESCE(EXCLUDED.address, counterparties.address), updated_at = now()
            RETURNING *""",
-        user["id"], body.advertiser_id, body.name, body.inn, body.legal_type, body.role, body.address,
+        user["id"], body.advertiser_id, body.name, body.inn, body.ogrn, body.legal_type, body.role, body.address,
     )
     return _row(row)
 
@@ -91,7 +92,7 @@ async def register_counterparty(cp_id: str, user: dict = Depends(require_platfor
     adapter = await get_ord_adapter()
     try:
         out = await adapter.register_counterparty(
-            {"name": cp["name"], "inn": cp["inn"], "legal_type": cp["legal_type"],
+            {"name": cp["name"], "inn": cp["inn"], "ogrn": cp.get("ogrn"), "legal_type": cp["legal_type"],
              "role": cp["role"], "address": cp["address"]}
         )
         row = await pool.fetchrow(

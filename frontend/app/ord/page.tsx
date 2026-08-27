@@ -9,6 +9,7 @@ interface Counterparty {
   id: string
   name: string
   inn: string
+  ogrn?: string | null
   legal_type: string
   role: string
   ord_status: string
@@ -77,7 +78,7 @@ export default function OrdPage() {
   // --- модалка контрагента
   const [cpOpen, setCpOpen] = useState(false)
   const [cpSaving, setCpSaving] = useState(false)
-  const [cpForm, setCpForm] = useState({ name: "", inn: "", legal_type: "ul", role: "advertiser", address: "" })
+  const [cpForm, setCpForm] = useState({ name: "", inn: "", ogrn: "", legal_type: "ul", role: "advertiser", address: "" })
 
   // --- модалка договора
   const [ctOpen, setCtOpen] = useState(false)
@@ -100,7 +101,7 @@ export default function OrdPage() {
       await api("/ord/counterparties", { method: "POST", body: cpForm })
       await mutate("/ord/counterparties")
       setCpOpen(false)
-      setCpForm({ name: "", inn: "", legal_type: "ul", role: "advertiser", address: "" })
+      setCpForm({ name: "", inn: "", ogrn: "", legal_type: "ul", role: "advertiser", address: "" })
     } catch (err) {
       setError(err instanceof Error ? err.message : "Ошибка сохранения")
     } finally {
@@ -343,6 +344,9 @@ export default function OrdPage() {
           </Field>
           <Field label="ИНН" hint="10 цифр для юрлица, 12 для ИП/физлица">
             <input required minLength={5} className={inputCls} value={cpForm.inn} onChange={(e) => setCpForm({ ...cpForm, inn: e.target.value })} placeholder="7700000000" />
+          </Field>
+          <Field label="ОГРН / ОГРНИП">
+            <input className={inputCls} value={cpForm.ogrn} onChange={(e) => setCpForm({ ...cpForm, ogrn: e.target.value })} placeholder="1027700000000" />
           </Field>
           <Field label="Местонахождение (юр. адрес)" hint="Требуется для регистрации в ОРД">
             <input className={inputCls} value={cpForm.address} onChange={(e) => setCpForm({ ...cpForm, address: e.target.value })} placeholder="г. Москва, ул. Ленина, д. 1" />
