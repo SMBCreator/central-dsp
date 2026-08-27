@@ -490,6 +490,7 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
           </Link>
           <div className="mt-1 flex flex-wrap items-center gap-3">
             <h1 className="text-xl font-semibold text-foreground">{campaign.name}</h1>
+            <span className="font-mono text-xs text-muted">ID: {campaign.display_id}</span>
             <StatusBadge status={campaign.status} />
           </div>
           <p className="mt-0.5 text-sm text-muted">

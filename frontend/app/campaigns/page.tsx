@@ -13,7 +13,7 @@ const OBJECTIVES = [
   { value: "conversions", label: "Конверсии" },
 ]
 
-type Group = { id: string; name: string; campaigns_count: number; spent_total: number }
+type Group = { id: string; display_id?: number; name: string; campaigns_count: number; spent_total: number }
 type BreakdownRow = {
   id: string
   name: string
@@ -314,6 +314,7 @@ function GroupsTab({
                               <Link href={`/campaigns/${c.id}`} className="text-sm font-medium text-foreground hover:text-accent">
                                 {c.name}
                               </Link>
+                              <span className="font-mono text-[11px] text-muted">#{c.display_id}</span>
                               <StatusBadge status={c.status} />
                             </div>
                             <Button variant="ghost" disabled={assigning} onClick={() => setCampaignGroup(c.id, null)}>
@@ -539,6 +540,7 @@ export default function CampaignsPage() {
                           <Link href={`/campaigns/${c.id}`} className="font-medium text-foreground hover:text-accent">
                             {c.name}
                           </Link>
+                          <p className="mt-0.5 font-mono text-[11px] text-muted">ID: {c.display_id}</p>
                           {c.group_id ? (
                             <p className="mt-0.5 text-[11px] text-muted">
                               {groups?.find((g) => g.id === c.group_id)?.name}

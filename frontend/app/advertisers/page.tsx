@@ -75,9 +75,10 @@ export default function AdvertisersPage() {
         <CardHeader title="Список рекламодателей" subtitle={advertisers ? `Всего: ${advertisers.length}` : undefined} />
         {advertisers ? (
           advertisers.length > 0 ? (
-            <Table headers={["Название", "Домен", "Категория", "Баланс", "Статус", ""]}>
+            <Table headers={["ID", "Название", "Домен", "Категория", "Баланс", "Статус", ""]}>
               {advertisers.map((a) => (
                 <tr key={a.id} className="hover:bg-surface">
+                  <td className="px-4 py-3 font-mono text-xs text-muted">{a.display_id}</td>
                   <td className="px-4 py-3 font-medium text-foreground">{a.name}</td>
                   <td className="px-4 py-3 text-muted">{a.domain || "—"}</td>
                   <td className="px-4 py-3 text-muted">{a.category || "—"}</td>

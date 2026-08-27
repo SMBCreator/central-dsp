@@ -7,6 +7,7 @@ export interface User {
 
 export interface Advertiser {
   id: string
+  display_id: number
   name: string
   domain: string | null
   category: string | null
@@ -18,6 +19,7 @@ export interface Advertiser {
 
 export interface Campaign {
   id: string
+  display_id: number
   advertiser_id: string
   name: string
   objective: string
@@ -36,6 +38,7 @@ export interface Campaign {
 
 export interface LineItem {
   id: string
+  display_id: number
   campaign_id: string
   name: string
   status: string
@@ -128,6 +131,7 @@ export const IAB_CATEGORIES: Record<string, string> = {
 
 export interface Creative {
   id: string
+  display_id: number
   campaign_id: string
   line_item_id: string | null
   name: string
@@ -152,6 +156,7 @@ export interface Creative {
 
 export interface SupplyPartner {
   id: string
+  display_id: number
   name: string
   endpoint_key: string
   status: string

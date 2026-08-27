@@ -136,11 +136,12 @@ export default function CreativesPage() {
         <CardHeader title="Все креативы" subtitle={creatives ? `Всего: ${creatives.length}` : undefined} />
         {creatives ? (
           creatives.length > 0 ? (
-            <Table headers={["Название", "Тип", "Размер", "Статус", "Кампания", ""]}>
+            <Table headers={["ID", "Название", "Тип", "Размер", "Статус", "Кампания", ""]}>
               {creatives.map((c) => {
                 const camp = campaigns?.find((x) => x.id === c.campaign_id)
                 return (
                   <tr key={c.id} className="hover:bg-surface">
+                    <td className="px-4 py-3 font-mono text-xs text-muted">{c.display_id}</td>
                     <td className="px-4 py-3 font-medium text-foreground">{c.name}</td>
                     <td className="px-4 py-3 text-muted">{AD_TYPE_LABELS[c.type] || c.type}</td>
                     <td className="px-4 py-3 font-mono text-xs text-muted">
