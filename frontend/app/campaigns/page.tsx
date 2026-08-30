@@ -371,7 +371,7 @@ function GroupsTab({
         ) : (
           <EmptyState
             title="Нет групп"
-            description="Создайте группу, чтобы объединить кампании: например, по продукту или заказчику."
+            description="Создайте группу, чтобы объедин��ть кампании: например, по продукту или заказчику."
             action={<Button onClick={openCreate}>Создать группу</Button>}
           />
         )
@@ -582,7 +582,7 @@ export default function CampaignsPage() {
                   <thead>
                     <tr className="border-b border-border text-left">
                       <th className="px-4 py-2.5 text-xs font-medium text-muted">Кампания</th>
-                      <th className="px-4 py-2.5 text-xs font-medium text-muted">Стат��с</th>
+                      <th className="px-4 py-2.5 text-xs font-medium text-muted">Статус</th>
                       {activeCols.map((c) => (
                         <th key={c.key} className="px-4 py-2.5 text-xs font-medium text-muted">
                           {c.label}
