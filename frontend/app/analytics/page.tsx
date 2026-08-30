@@ -6,6 +6,7 @@ import useSWR from "swr"
 import { api, fetcher } from "@/lib/api"
 import { fmtMoney, fmtNum, fmtPct } from "@/lib/types"
 import { Button, Card, CardHeader, EmptyState, Spinner, inputCls } from "@/components/ui"
+import { ColumnsButton, ColumnsModal, useTableColumns } from "@/components/table-columns"
 
 type Campaign = { id: string; name: string }
 type Group = { id: string; name: string }
@@ -145,7 +146,13 @@ function AnalyticsInner() {
   const [campaignIds, setCampaignIds] = useState<string[]>(urlCampaign ? [urlCampaign] : [])
   const [groupId, setGroupId] = useState<string>(urlGroup || "")
   const [groupings, setGroupings] = useState<string[]>(["day"])
-  const [metrics, setMetrics] = useState<string[]>(DEFAULT_METRICS)
+  // метрики = настраиваемые столбцы результата (единый вид с «Кампаниями»)
+  const [metrics, setMetrics] = useTableColumns(
+    "dsp_analytics_metrics_v1",
+    METRICS.map((m) => m.key),
+    DEFAULT_METRICS,
+  )
+  const [colsOpen, setColsOpen] = useState(false)
 
   const [report, setReport] = useState<ReportResponse | null>(null)
   const [loading, setLoading] = useState(false)
@@ -198,7 +205,10 @@ function AnalyticsInner() {
     }
   }
 
-  const activeMetrics = METRICS.filter((m) => metrics.includes(m.key))
+  // порядок метрик = порядок в настройке столбцов
+  const activeMetrics = metrics
+    .map((k) => METRICS.find((m) => m.key === k))
+    .filter(Boolean) as typeof METRICS
   const activeGroupings = GROUPINGS.filter((g) => groupings.includes(g.key))
 
   function fmtDim(key: string, value: string): string {
@@ -231,7 +241,8 @@ function AnalyticsInner() {
       </div>
 
       <Card>
-        <div className="space-y-5 p-4">
+        <CardHeader title="Параметры отчёта" subtitle="Период, фильтры и группировки" />
+        <div className="space-y-5 px-4 pb-4">
           {/* Period */}
           <div className="flex flex-wrap items-center gap-2">
             {PRESETS.map((p) => (
@@ -327,13 +338,6 @@ function AnalyticsInner() {
             }}
           />
 
-          {/* Metrics */}
-          <ChipPicker
-            title="Метрики"
-            options={METRICS.map((m) => ({ key: m.key, label: m.label }))}
-            selected={metrics}
-            onToggle={(k) => toggle(metrics, setMetrics, k, 1)}
-          />
         </div>
       </Card>
 
@@ -349,6 +353,15 @@ function AnalyticsInner() {
               ? `${report.rows.length} строк · ${dateFrom} — ${dateTo}`
               : undefined
           }
+          action={<ColumnsButton onClick={() => setColsOpen(true)} />}
+        />
+        <ColumnsModal
+          open={colsOpen}
+          onClose={() => setColsOpen(false)}
+          all={METRICS.map((m) => ({ key: m.key, label: m.label }))}
+          locked={activeGroupings.map((g) => g.label)}
+          value={metrics}
+          onSave={(keys) => setMetrics(keys.length ? keys : DEFAULT_METRICS)}
         />
         {loading ? (
           <div className="p-8">
@@ -359,23 +372,27 @@ function AnalyticsInner() {
             title="Отчёт ещё не построен"
             description="Настройте фильтры и нажмите «Обновить», чтобы увидеть статистику."
           />
-        ) : !report || report.rows.length === 0 ? (
+        ) : !report?.rows?.length ? (
           <EmptyState
             title="Нет данных за выбранный период"
             description="Попробуйте расширить период или изменить фильтры."
           />
         ) : (
+          /* Метрики скроллятся горизонтально, первая группировка закреплена слева */
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
-                  {activeGroupings.map((g) => (
-                    <th key={g.key} className="px-4 py-2.5 font-medium">
+                  {activeGroupings.map((g, gi) => (
+                    <th
+                      key={g.key}
+                      className={`whitespace-nowrap px-4 py-2.5 font-medium ${gi === 0 ? "sticky left-0 z-10 min-w-[140px] bg-card" : ""}`}
+                    >
                       {g.label}
                     </th>
                   ))}
                   {activeMetrics.map((m) => (
-                    <th key={m.key} className="px-4 py-2.5 text-right font-medium">
+                    <th key={m.key} className="whitespace-nowrap px-4 py-2.5 text-right font-medium">
                       {m.label}
                     </th>
                   ))}
@@ -383,14 +400,17 @@ function AnalyticsInner() {
               </thead>
               <tbody>
                 {report.rows.map((row, i) => (
-                  <tr key={i} className="border-b border-border/50 hover:bg-surface">
-                    {activeGroupings.map((g) => (
-                      <td key={g.key} className="px-4 py-2.5 font-medium text-foreground">
+                  <tr key={i} className="group border-b border-border/50">
+                    {activeGroupings.map((g, gi) => (
+                      <td
+                        key={g.key}
+                        className={`whitespace-nowrap px-4 py-2.5 font-medium text-foreground transition-colors group-hover:bg-surface ${gi === 0 ? "sticky left-0 z-10 min-w-[140px] bg-card" : ""}`}
+                      >
                         {fmtDim(g.key, String(row[g.key] ?? "—"))}
                       </td>
                     ))}
                     {activeMetrics.map((m) => (
-                      <td key={m.key} className="px-4 py-2.5 text-right font-mono text-xs">
+                      <td key={m.key} className="whitespace-nowrap px-4 py-2.5 text-right font-mono text-xs transition-colors group-hover:bg-surface">
                         {m.fmt(Number(row[m.key] ?? 0))}
                       </td>
                     ))}
@@ -400,11 +420,14 @@ function AnalyticsInner() {
               {report.totals ? (
                 <tfoot>
                   <tr className="bg-surface font-medium">
-                    <td className="px-4 py-2.5 text-xs uppercase tracking-wide text-muted" colSpan={activeGroupings.length}>
+                    <td
+                      className="sticky left-0 z-10 whitespace-nowrap bg-surface px-4 py-2.5 text-xs uppercase tracking-wide text-muted"
+                      colSpan={activeGroupings.length}
+                    >
                       Итого
                     </td>
                     {activeMetrics.map((m) => (
-                      <td key={m.key} className="px-4 py-2.5 text-right font-mono text-xs text-foreground">
+                      <td key={m.key} className="whitespace-nowrap px-4 py-2.5 text-right font-mono text-xs text-foreground">
                         {m.fmt(Number(report.totals![m.key] ?? 0))}
                       </td>
                     ))}

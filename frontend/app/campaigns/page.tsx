@@ -7,6 +7,7 @@ import { api, fetcher } from "@/lib/api"
 import { fmtMoney, fmtNum, fmtPct, type Advertiser, type Campaign } from "@/lib/types"
 import { Button, Card, CardHeader, EmptyState, Field, inputCls, Modal, Spinner, StatusBadge } from "@/components/ui"
 import { ConfirmDialog } from "@/components/confirm-dialog"
+import { ColumnsButton, ColumnsModal, useTableColumns } from "@/components/table-columns"
 
 const OBJECTIVES = [
   { value: "awareness", label: "Охват" },
@@ -71,31 +72,6 @@ const ALL_COLUMNS: ColumnDef[] = [
 ]
 
 const DEFAULT_COLUMNS = ["daily_budget", "spent_today", "spent_total", "impressions", "clicks", "ctr"]
-const COLUMNS_LS_KEY = "dsp_campaign_columns_v1"
-
-function useColumns(): [string[], (keys: string[]) => void] {
-  const [cols, setCols] = useState<string[]>(DEFAULT_COLUMNS)
-  useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(COLUMNS_LS_KEY)
-      if (raw) {
-        const parsed = JSON.parse(raw) as string[]
-        if (Array.isArray(parsed) && parsed.length) setCols(parsed.filter((k) => ALL_COLUMNS.some((c) => c.key === k)))
-      }
-    } catch {
-      // ignore
-    }
-  }, [])
-  const save = (keys: string[]) => {
-    setCols(keys)
-    try {
-      window.localStorage.setItem(COLUMNS_LS_KEY, JSON.stringify(keys))
-    } catch {
-      // ignore
-    }
-  }
-  return [cols, save]
-}
 
 /* ---------- Иконки-действия строки ---------- */
 
@@ -127,63 +103,6 @@ function RowActions({ campaign }: { campaign: CampaignExt }) {
           />
         </svg>
       </Link>
-    </div>
-  )
-}
-
-/* ---------- Выбор столбцов ---------- */
-
-function ColumnsPicker({
-  cols,
-  onChange,
-}: {
-  cols: string[]
-  onChange: (keys: string[]) => void
-}) {
-  const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!open) return
-    const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
-    }
-    document.addEventListener("mousedown", onDoc)
-    return () => document.removeEventListener("mousedown", onDoc)
-  }, [open])
-
-  const toggleKey = (key: string) => {
-    onChange(cols.includes(key) ? cols.filter((k) => k !== key) : [...cols, key])
-  }
-
-  return (
-    <div className="relative" ref={ref}>
-      <Button variant="secondary" onClick={() => setOpen(!open)}>
-        Столбцы
-      </Button>
-      {open ? (
-        <div className="absolute right-0 z-20 mt-1 w-56 rounded-xl border border-border bg-card p-2 shadow-lg">
-          <p className="px-2 pb-1.5 pt-1 font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">
-            Столбцы таблицы
-          </p>
-          <div className="max-h-72 space-y-0.5 overflow-y-auto">
-            {ALL_COLUMNS.map((c) => (
-              <label
-                key={c.key}
-                className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 text-sm text-foreground hover:bg-panel"
-              >
-                <input
-                  type="checkbox"
-                  checked={cols.includes(c.key)}
-                  onChange={() => toggleKey(c.key)}
-                  className="h-3.5 w-3.5 rounded border-border accent-current"
-                />
-                {c.label}
-              </label>
-            ))}
-          </div>
-        </div>
-      ) : null}
     </div>
   )
 }
@@ -371,7 +290,7 @@ function GroupsTab({
         ) : (
           <EmptyState
             title="Нет групп"
-            description="Создайте группу, чтобы объединять кампании: например, по продукту или заказчику."
+            description="Создайте группу, чтобы объедин��ть кампании: например, по продукту или заказчику."
             action={<Button onClick={openCreate}>Создать группу</Button>}
           />
         )
@@ -412,7 +331,12 @@ export default function CampaignsPage() {
   const [groupFilter, setGroupFilter] = useState("")
   const [statusFilter, setStatusFilter] = useState("")
   const [search, setSearch] = useState("")
-  const [cols, setCols] = useColumns()
+  const [cols, setCols] = useTableColumns(
+    "dsp_campaign_columns_v2",
+    ALL_COLUMNS.map((c) => c.key),
+    DEFAULT_COLUMNS,
+  )
+  const [colsOpen, setColsOpen] = useState(false)
 
   const statsById = useMemo(() => {
     const m = new Map<string, BreakdownRow>()
@@ -438,7 +362,10 @@ export default function CampaignsPage() {
     return list
   }, [campaigns, groupFilter, statusFilter, search])
 
-  const activeCols = ALL_COLUMNS.filter((c) => cols.includes(c.key))
+  // порядок столбцов = порядок в настройке (компоновка)
+  const activeCols = cols
+    .map((k) => ALL_COLUMNS.find((c) => c.key === k))
+    .filter(Boolean) as typeof ALL_COLUMNS
 
   const toggleStatus = async (c: CampaignExt) => {
     setListError(null)
@@ -559,9 +486,18 @@ export default function CampaignsPage() {
                   <path d="M21 12a9 9 0 11-2.64-6.36M21 3v6h-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
               </button>
-              <ColumnsPicker cols={cols} onChange={setCols} />
+              <ColumnsButton onClick={() => setColsOpen(true)} />
             </div>
           </div>
+
+          <ColumnsModal
+            open={colsOpen}
+            onClose={() => setColsOpen(false)}
+            all={ALL_COLUMNS.map((c) => ({ key: c.key, label: c.label }))}
+            locked={["Кампания", "Статус"]}
+            value={cols}
+            onSave={setCols}
+          />
 
           {listError && (
             <p role="alert" className="mx-6 mb-3 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
@@ -577,14 +513,17 @@ export default function CampaignsPage() {
             />
           ) : campaigns ? (
             visible.length > 0 ? (
+              /* Метрики скроллятся горизонтально, колонка «Кампания» закреплена слева (как на Авито) */
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-border text-left">
-                      <th className="px-4 py-2.5 text-xs font-medium text-muted">Кампания</th>
-                      <th className="px-4 py-2.5 text-xs font-medium text-muted">Статус</th>
+                      <th className="sticky left-0 z-10 min-w-[200px] bg-card px-4 py-2.5 text-xs font-medium text-muted">
+                        Кампания
+                      </th>
+                      <th className="whitespace-nowrap px-4 py-2.5 text-xs font-medium text-muted">Статус</th>
                       {activeCols.map((c) => (
-                        <th key={c.key} className="px-4 py-2.5 text-xs font-medium text-muted">
+                        <th key={c.key} className="whitespace-nowrap px-4 py-2.5 text-xs font-medium text-muted">
                           {c.label}
                         </th>
                       ))}
@@ -593,8 +532,8 @@ export default function CampaignsPage() {
                   </thead>
                   <tbody className="divide-y divide-border">
                     {visible.map((c) => (
-                      <tr key={c.id} className="hover:bg-surface">
-                        <td className="px-4 py-3">
+                      <tr key={c.id} className="group">
+                        <td className="sticky left-0 z-10 min-w-[200px] bg-card px-4 py-3 transition-colors group-hover:bg-surface">
                           <Link href={`/campaigns/${c.id}`} className="font-medium text-foreground hover:text-accent">
                             {c.name}
                           </Link>
@@ -605,15 +544,15 @@ export default function CampaignsPage() {
                             </p>
                           ) : null}
                         </td>
-                        <td className="px-4 py-3">
+                        <td className="whitespace-nowrap px-4 py-3 transition-colors group-hover:bg-surface">
                           <StatusBadge status={c.status} />
                         </td>
                         {activeCols.map((col) => (
-                          <td key={col.key} className="px-4 py-3 text-muted">
+                          <td key={col.key} className="whitespace-nowrap px-4 py-3 text-muted transition-colors group-hover:bg-surface">
                             {col.render(c, statsById.get(c.id), groups || [])}
                           </td>
                         ))}
-                        <td className="px-4 py-3">
+                        <td className="whitespace-nowrap px-4 py-3 transition-colors group-hover:bg-surface">
                           <div className="flex items-center justify-end gap-2">
                             <Button variant="ghost" onClick={() => toggleStatus(c)}>
                               {c.status === "active" ? "Пауза" : "Запустить"}

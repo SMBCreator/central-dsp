@@ -544,7 +544,50 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
   if (path === "/stats/summary")
     return mockSummary(Number(search.get("hours") || 24), search.get("campaign_id"))
   if (path === "/stats/timeseries") return mockTimeseries(Math.min(Number(search.get("hours") || 24), 168))
-  if (path === "/stats/report") return []
+  if (path === "/stats/report") {
+    // Демо-отчёт по дням: форма ответа совпадает с бэком ({rows, totals})
+    const days = 7
+    const rows = Array.from({ length: days }, (_, i) => {
+      const d = new Date()
+      d.setDate(d.getDate() - (days - 1 - i))
+      const imp = 12000 + Math.round(Math.sin(i * 1.7) * 3500) + i * 900
+      const clk = Math.round(imp * (0.011 + 0.002 * Math.sin(i)))
+      const spend = Math.round(imp * 0.14 * 100) / 100
+      const conv = Math.round(clk * 0.06)
+      return {
+        day: d.toISOString().slice(0, 10),
+        impressions: imp,
+        clicks: clk,
+        ctr: imp ? Math.round((clk / imp) * 100 * 1000) / 1000 : 0,
+        spend,
+        conversions: conv,
+        bids: Math.round(imp * 1.8),
+        wins: imp,
+        win_rate: Math.round((55 + 5 * Math.sin(i)) * 100) / 100,
+        cpm: imp ? (spend / imp) * 1000 : 0,
+        cpc: clk ? spend / clk : 0,
+        cpa: conv ? spend / conv : 0,
+      }
+    })
+    const totals = rows.reduce(
+      (acc, r) => {
+        acc.impressions += r.impressions
+        acc.clicks += r.clicks
+        acc.spend = Math.round((acc.spend + r.spend) * 100) / 100
+        acc.conversions += r.conversions
+        acc.bids += r.bids
+        acc.wins += r.wins
+        return acc
+      },
+      { impressions: 0, clicks: 0, spend: 0, conversions: 0, bids: 0, wins: 0 } as Record<string, number>,
+    )
+    totals.ctr = totals.impressions ? Math.round((totals.clicks / totals.impressions) * 100 * 1000) / 1000 : 0
+    totals.win_rate = totals.bids ? Math.round((totals.wins / totals.bids) * 100 * 100) / 100 : 0
+    totals.cpm = totals.impressions ? (totals.spend / totals.impressions) * 1000 : 0
+    totals.cpc = totals.clicks ? totals.spend / totals.clicks : 0
+    totals.cpa = totals.conversions ? totals.spend / totals.conversions : 0
+    return { rows, totals }
+  }
   if (path.startsWith("/stats/breakdown")) return []
 
   // --- Сущности ---
