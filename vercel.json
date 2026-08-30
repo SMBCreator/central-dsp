@@ -1,20 +1,3 @@
 {
-  "crons": [
-    { "path": "/api/cron/rules", "schedule": "0 6 * * *" },
-    { "path": "/api/cron/reset-daily", "schedule": "0 21 * * *" },
-    { "path": "/api/cron/optimize", "schedule": "0 7 * * *" }
-  ],
-  "services": {
-    "frontend": {
-      "root": "frontend/"
-    },
-    "backend": {
-      "root": "backend/",
-      "entrypoint": "main:app"
-    }
-  },
-  "rewrites": [
-    { "source": "/api/(.*)", "destination": { "service": "backend" } },
-    { "source": "/(.*)", "destination": { "service": "frontend" } }
-  ]
+  "$comment": "Проект Vercel собирает только frontend/ (Root Directory = frontend). Полный мультисервисный конфиг (frontend + Python backend + crons) сохранён в deploy/vercel.services.json — используйте его, если решите деплоить весь стек на Vercel: очистите Root Directory, выставьте Framework Preset = Services и верните этот файл на место."
 }
