@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation"
 import { Sidebar } from "@/components/sidebar"
 import { FadeIn } from "@/components/amicro/fade-in"
 import { NotificationsBell } from "@/components/notifications-bell"
+import { Toaster } from "@/components/toaster"
 
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname()
@@ -25,11 +26,18 @@ export function AppShell({ children }: { children: ReactNode }) {
     setReady(true)
   }, [isAuthPage, pathname, router])
 
-  if (isAuthPage) return <>{children}</>
+  if (isAuthPage)
+    return (
+      <>
+        {children}
+        <Toaster />
+      </>
+    )
   if (!ready) return null
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">
+      <Toaster />
       <Sidebar />
       <main className="relative flex-1 overflow-y-auto">
         <div className="pointer-events-none sticky top-0 z-40 flex justify-end px-6 pt-4">

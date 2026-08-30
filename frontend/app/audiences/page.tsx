@@ -4,6 +4,7 @@ import { useState } from "react"
 import useSWR, { mutate } from "swr"
 import { api, fetcher } from "@/lib/api"
 import { Button, Card, CardHeader, EmptyState, Field, inputCls, Modal, Spinner, Table } from "@/components/ui"
+import { ConfirmDialog } from "@/components/confirm-dialog"
 
 type Segment = {
   id: string
@@ -66,14 +67,32 @@ export default function AudiencesPage() {
     await mutate("/audiences")
   }
 
-  const remove = async (s: Segment) => {
-    if (!confirm(`Удалить сегмент «${s.name}»?`)) return
-    await api(`/audiences/${s.id}`, { method: "DELETE" })
-    await mutate("/audiences")
+  // H2: модалка подтверждения вместо confirm()
+  const [removing, setRemoving] = useState<Segment | null>(null)
+  const [removeBusy, setRemoveBusy] = useState(false)
+  const remove = (s: Segment) => setRemoving(s)
+  const confirmRemove = async () => {
+    if (!removing) return
+    setRemoveBusy(true)
+    try {
+      await api(`/audiences/${removing.id}`, { method: "DELETE" })
+      await mutate("/audiences")
+      setRemoving(null)
+    } finally {
+      setRemoveBusy(false)
+    }
   }
 
   return (
     <div className="flex flex-col gap-6">
+      <ConfirmDialog
+        open={removing !== null}
+        title="Удалить сегмент?"
+        description={`Сегмент «${removing?.name ?? ""}» будет удалён. Кампании, использующие его в таргетинге, перестанут учитывать этот сегмент.`}
+        busy={removeBusy}
+        onConfirm={confirmRemove}
+        onClose={() => setRemoving(null)}
+      />
       <Card>
         <CardHeader
           title="Аудитории"

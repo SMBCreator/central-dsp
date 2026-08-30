@@ -159,6 +159,77 @@ async def delete_campaign(campaign_id: str, user: dict = Depends(require_campaig
         raise HTTPException(status_code=404, detail="Кампания не найдена")
 
 
+async def _copy_columns(conn, table: str, exclude: set[str]) -> list[str]:
+    """Столбцы таблицы для копирования (по information_schema, устойчиво к миграциям)."""
+    rows = await conn.fetch(
+        """SELECT column_name FROM information_schema.columns
+           WHERE table_name = $1 AND table_schema = 'public'
+           ORDER BY ordinal_position""",
+        table,
+    )
+    return [r["column_name"] for r in rows if r["column_name"] not in exclude]
+
+
+@router.post("/{campaign_id}/duplicate", status_code=201)
+async def duplicate_campaign(campaign_id: str, user: dict = Depends(require_campaign_editor)):
+    """H1: «Создать похожую» — копия кампании со всеми line items и креативами.
+
+    Копия создаётся в статусе draft, траты обнуляются, креативы — draft без erid
+    (пойдут через модерацию и ОРД заново).
+    """
+    pool = await get_pool()
+    src = await pool.fetchrow(
+        "SELECT * FROM campaigns WHERE id = $1 AND user_id = $2", campaign_id, user["id"]
+    )
+    if not src:
+        raise HTTPException(status_code=404, detail="Кампания не найдена")
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # --- кампания ---
+            camp_cols = await _copy_columns(
+                conn, "campaigns",
+                exclude={"id", "display_id", "created_at", "updated_at", "name", "status",
+                         "spent_today", "spent_total"},
+            )
+            col_list = ", ".join(f'"{c}"' for c in camp_cols)
+            new_camp = await conn.fetchrow(
+                f"""INSERT INTO campaigns ("name", "status", {col_list})
+                    SELECT "name" || ' (копия)', 'draft', {col_list}
+                    FROM campaigns WHERE id = $1 RETURNING *""",
+                campaign_id,
+            )
+            new_id = new_camp["id"]
+
+            # --- line items ---
+            li_cols = await _copy_columns(
+                conn, "line_items",
+                exclude={"id", "display_id", "created_at", "updated_at", "campaign_id",
+                         "spent_today", "spent_total"},
+            )
+            li_list = ", ".join(f'"{c}"' for c in li_cols)
+            await conn.execute(
+                f"""INSERT INTO line_items ("campaign_id", {li_list})
+                    SELECT $2, {li_list} FROM line_items WHERE campaign_id = $1""",
+                campaign_id, new_id,
+            )
+
+            # --- креативы: draft, без erid и привязки к line item ---
+            cr_cols = await _copy_columns(
+                conn, "creatives",
+                exclude={"id", "display_id", "created_at", "updated_at", "campaign_id",
+                         "status", "erid", "line_item_id", "moderation_comment"},
+            )
+            cr_list = ", ".join(f'"{c}"' for c in cr_cols)
+            await conn.execute(
+                f"""INSERT INTO creatives ("campaign_id", "status", {cr_list})
+                    SELECT $2, 'draft', {cr_list} FROM creatives WHERE campaign_id = $1""",
+                campaign_id, new_id,
+            )
+
+    return _serialize(new_camp)
+
+
 @router.get("/{campaign_id}/diagnostics")
 async def campaign_diagnostics(campaign_id: str, user: dict = Depends(current_user)):
     """Почему кампания не откручивается: пошаговая проверка условий участия в торгах.

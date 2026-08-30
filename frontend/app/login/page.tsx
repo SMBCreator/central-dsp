@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { api, setToken } from "@/lib/api"
@@ -12,6 +12,15 @@ export default function LoginPage() {
   const [password, setPassword] = useState("")
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  // H5: при редиректе после 401 показываем причину, а не молчаливый выход
+  const [notice, setNotice] = useState<string | null>(null)
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    if (params.get("reason") === "session_expired") {
+      setNotice("Сессия истекла — войдите заново.")
+    }
+  }, [])
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -46,6 +55,11 @@ export default function LoginPage() {
 
         <form onSubmit={submit} className="space-y-4 rounded-lg border border-border bg-card p-6">
           <h2 className="text-sm font-semibold text-foreground">Вход в систему</h2>
+          {notice ? (
+            <p className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning" role="status">
+              {notice}
+            </p>
+          ) : null}
           <Field label="Email">
             <input
               type="email"

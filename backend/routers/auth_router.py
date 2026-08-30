@@ -12,7 +12,7 @@ from auth import (
 )
 from cache import rate_limit
 from db import get_pool
-from schemas import LoginIn, RegisterIn
+from schemas import ChangePasswordIn, LoginIn, ProfilePatch, RegisterIn
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -91,3 +91,28 @@ async def logout(response: Response, cdsp_session: str | None = Cookie(default=N
 @router.get("/me")
 async def me(user: dict = Depends(current_user)):
     return {"id": str(user["id"]), "email": user["email"], "name": user["name"], "role": user["role"]}
+
+
+@router.patch("/me")
+async def update_me(body: ProfilePatch, user: dict = Depends(current_user)):
+    """H9: обновление имени в профиле."""
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        "UPDATE users SET name = $2 WHERE id = $1 RETURNING id, email, name, role",
+        user["id"], body.name.strip(),
+    )
+    return {"id": str(row["id"]), "email": row["email"], "name": row["name"], "role": row["role"]}
+
+
+@router.post("/change-password")
+async def change_password(body: ChangePasswordIn, user: dict = Depends(current_user)):
+    """H9: смена пароля с проверкой текущего."""
+    pool = await get_pool()
+    row = await pool.fetchrow("SELECT password_hash FROM users WHERE id = $1", user["id"])
+    if not row or not verify_password(body.current_password, row["password_hash"]):
+        raise HTTPException(status_code=400, detail="Текущий пароль указан неверно")
+    await pool.execute(
+        "UPDATE users SET password_hash = $2 WHERE id = $1",
+        user["id"], hash_password(body.new_password),
+    )
+    return {"ok": True}

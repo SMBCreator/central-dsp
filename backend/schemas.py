@@ -14,6 +14,19 @@ class LoginIn(BaseModel):
     password: str
 
 
+class ProfilePatch(BaseModel):
+    """H9: обновление имени в профиле."""
+
+    name: str = Field(min_length=1, max_length=120)
+
+
+class ChangePasswordIn(BaseModel):
+    """H9: смена пароля пользователем."""
+
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
+
+
 # --- Advertisers ------------------------------------------------------------
 class AdvertiserIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)

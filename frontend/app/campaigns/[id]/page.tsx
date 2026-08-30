@@ -2,8 +2,11 @@
 
 import { use, useEffect, useState } from "react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import useSWR, { mutate } from "swr"
 import { api, ApiError, fetcher } from "@/lib/api"
+import { CopyId } from "@/components/copy-id"
+import { toastSuccess } from "@/components/toaster"
 import {
   AD_TYPE_LABELS,
   fmtMoney,
@@ -604,6 +607,24 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
     }
   }
 
+  // H1: «Создать похожую» — копия кампании + line items + креативы (draft)
+  const router = useRouter()
+  const [duplicating, setDuplicating] = useState(false)
+  const duplicateCampaign = async () => {
+    if (!campaign || duplicating) return
+    setDuplicating(true)
+    try {
+      const copy = await api<Campaign>(`/campaigns/${id}/duplicate`, { method: "POST" })
+      toastSuccess("Копия создана — креативы отправятся на модерацию заново")
+      await mutate("/campaigns")
+      router.push(`/campaigns/${copy.id}`)
+    } catch {
+      // ошибка уже показана toast-обработчиком api()
+    } finally {
+      setDuplicating(false)
+    }
+  }
+
   // Ошибка загрузки (404/500/сеть) — показываем состояние вместо вечного спиннера
   if (campaignError) {
     const notFound = campaignError instanceof ApiError && campaignError.status === 404
@@ -639,7 +660,7 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
           </Link>
           <div className="mt-1 flex flex-wrap items-center gap-3">
             <h1 className="text-xl font-semibold text-foreground">{campaign.name}</h1>
-            <span className="font-mono text-xs text-muted">ID: {campaign.display_id}</span>
+            <CopyId value={campaign.display_id} label={`ID: ${campaign.display_id}`} />
             <StatusBadge status={campaign.status} />
           </div>
           <p className="mt-0.5 text-sm text-muted">
@@ -648,6 +669,9 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <Button variant="secondary" onClick={duplicateCampaign} disabled={duplicating}>
+            {duplicating ? "Копирование…" : "Создать похожую"}
+          </Button>
           <Button variant="secondary" onClick={toggleCampaign}>
             {campaign.status === "active" ? "Пауза" : "Запустить"}
           </Button>

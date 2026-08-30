@@ -60,8 +60,9 @@ export async function api<T = unknown>(
 
   if (res.status === 401 && typeof window !== "undefined" && !path.startsWith("/auth/")) {
     setToken(null)
-    window.location.href = "/login"
-    throw new ApiError(401, "Не авторизован")
+    // H5: не молчаливый фейл — сообщение на /login
+    window.location.href = "/login?reason=session_expired"
+    throw new ApiError(401, "Сессия истекла — войдите заново")
   }
 
   if (!res.ok) {
@@ -70,6 +71,11 @@ export async function api<T = unknown>(
       detail = extractErrorDetail(res.status, await res.json())
     } catch {
       // ignore
+    }
+    // F5: единый toast-обработчик — ни одна ошибка API не проглатывается молча.
+    // Динамический импорт, чтобы lib/api.ts оставался импортируемым из любого контекста.
+    if (typeof window !== "undefined") {
+      import("@/components/toaster").then(({ toastError }) => toastError(detail)).catch(() => {})
     }
     throw new ApiError(res.status, detail)
   }
@@ -124,6 +130,9 @@ export async function apiUpload<T = unknown>(path: string, file: File): Promise<
       if (typeof data.detail === "string") detail = data.detail
     } catch {
       // ignore
+    }
+    if (typeof window !== "undefined") {
+      import("@/components/toaster").then(({ toastError }) => toastError(detail)).catch(() => {})
     }
     throw new ApiError(res.status, detail)
   }

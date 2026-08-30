@@ -156,6 +156,19 @@ export function Sidebar() {
       </nav>
 
       <div className="border-t border-sidebar-border px-3 py-3">
+        <Link
+          href="/profile"
+          className={`flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors ${
+            pathname.startsWith("/profile")
+              ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
+              : "text-muted hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
+          }`}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M12 3a4 4 0 110 8 4 4 0 010-8zm-7 18a7 7 0 0114 0" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          Профиль
+        </Link>
         <button
           type="button"
           onClick={logout}

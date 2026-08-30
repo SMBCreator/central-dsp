@@ -4,6 +4,7 @@ import { useState } from "react"
 import useSWR from "swr"
 import { api, fetcher } from "@/lib/api"
 import { Button, Card, CardHeader, Field, Modal, EmptyState, Spinner, inputCls } from "@/components/ui"
+import { ConfirmDialog } from "@/components/confirm-dialog"
 
 interface Pixel {
   id: string
@@ -65,11 +66,21 @@ export default function PixelsPage() {
     }
   }
 
-  const deletePixel = async (id: string) => {
-    if (!confirm("Удалить пиксель? Все события и цели будут удалены.")) return
-    await api(`/pixels/${id}`, { method: "DELETE" })
-    if (selected?.id === id) setSelected(null)
-    mutate()
+  // H2: модалка подтверждения вместо confirm()
+  const [deletingPixel, setDeletingPixel] = useState<string | null>(null)
+  const [deleteBusy, setDeleteBusy] = useState(false)
+  const deletePixel = (id: string) => setDeletingPixel(id)
+  const confirmDeletePixel = async () => {
+    if (!deletingPixel) return
+    setDeleteBusy(true)
+    try {
+      await api(`/pixels/${deletingPixel}`, { method: "DELETE" })
+      if (selected?.id === deletingPixel) setSelected(null)
+      setDeletingPixel(null)
+      mutate()
+    } finally {
+      setDeleteBusy(false)
+    }
   }
 
   const snippet = (id: string) =>
@@ -83,6 +94,14 @@ export default function PixelsPage() {
 
   return (
     <div className="space-y-6">
+      <ConfirmDialog
+        open={deletingPixel !== null}
+        title="Удалить пиксель?"
+        description="Все события и цели этого пикселя будут удалены безвозвратно."
+        busy={deleteBusy}
+        onConfirm={confirmDeletePixel}
+        onClose={() => setDeletingPixel(null)}
+      />
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold tracking-tight text-foreground">Central Pixel</h1>

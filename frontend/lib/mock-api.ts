@@ -518,6 +518,7 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
   // --- Auth ---
   if (path === "/auth/login" || path === "/auth/register") return { token: "demo-token" }
   if (path === "/auth/me" || path === "/users/me") return mockUser
+  if (path === "/auth/change-password") return { ok: true }
 
   // --- Кампании ---
   if (path === "/campaigns" && method === "GET") return mockCampaigns
@@ -525,10 +526,19 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
   if (diagMatch) return mockDiagnostics(diagMatch[1])
   const blocksMatch = path.match(/^\/campaigns\/([^/]+)\/blocks$/)
   if (blocksMatch) return []
+  const dupMatch = path.match(/^\/campaigns\/([^/]+)\/duplicate$/)
+  if (dupMatch && method === "POST") {
+    const src = mockCampaigns.find((c) => c.id === dupMatch[1]) ?? mockCampaigns[0]
+    return { ...src, id: `${src.id}-copy`, display_id: 99, name: `${src.name} (копия)`, status: "draft", spent_today: 0, spent_total: 0 }
+  }
   const campMatch = path.match(/^\/campaigns\/([^/]+)$/)
   if (campMatch && method === "GET") {
     return mockCampaigns.find((c) => c.id === campMatch[1]) ?? mockCampaigns[0]
   }
+
+  // --- Line items: привязка креативов (G9) ---
+  const liCrMatch = path.match(/^\/line-items\/([^/]+)\/creatives$/)
+  if (liCrMatch) return { line_item_id: liCrMatch[1], creative_ids: [] }
 
   // --- Статистика ---
   if (path === "/stats/summary")

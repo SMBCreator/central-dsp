@@ -6,6 +6,7 @@ import useSWR, { mutate } from "swr"
 import { api, fetcher } from "@/lib/api"
 import { fmtMoney, fmtNum, fmtPct, type Advertiser, type Campaign } from "@/lib/types"
 import { Button, Card, CardHeader, EmptyState, Field, inputCls, Modal, Spinner, StatusBadge } from "@/components/ui"
+import { ConfirmDialog } from "@/components/confirm-dialog"
 
 const OBJECTIVES = [
   { value: "awareness", label: "Охват" },
@@ -236,12 +237,22 @@ function GroupsTab({
     }
   }
 
-  const remove = async (g: Group) => {
-    if (!window.confirm(`Удалить группу «${g.name}»? Кампании останутся, но будут без группы.`)) return
-    await api(`/groups/${g.id}`, { method: "DELETE" })
-    await mutate("/groups")
-    await mutate("/campaigns")
+  // H2: модалка подтверждения вместо window.confirm
+  const [removingGroup, setRemovingGroup] = useState<Group | null>(null)
+  const [removeBusy, setRemoveBusy] = useState(false)
+  const confirmRemove = async () => {
+    if (!removingGroup) return
+    setRemoveBusy(true)
+    try {
+      await api(`/groups/${removingGroup.id}`, { method: "DELETE" })
+      await mutate("/groups")
+      await mutate("/campaigns")
+      setRemovingGroup(null)
+    } finally {
+      setRemoveBusy(false)
+    }
   }
+  const remove = (g: Group) => setRemovingGroup(g)
 
   const setCampaignGroup = async (campaignId: string, groupId: string | null) => {
     setAssigning(true)
@@ -256,6 +267,14 @@ function GroupsTab({
 
   return (
     <Card>
+      <ConfirmDialog
+        open={removingGroup !== null}
+        title="Удалить группу?"
+        description={`Группа «${removingGroup?.name ?? ""}» будет удалена. Кампании останутся, но будут без группы.`}
+        busy={removeBusy}
+        onConfirm={confirmRemove}
+        onClose={() => setRemovingGroup(null)}
+      />
       <CardHeader
         title="Группы кампаний"
         subtitle="Объединяйте кампании в группы для фильтрации и сводной статистики"

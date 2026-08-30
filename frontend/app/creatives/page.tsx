@@ -249,6 +249,21 @@ export default function CreativesPage() {
                     <td className="px-4 py-3 text-muted">{camp?.name || "—"}</td>
                     <td className="px-4 py-3">
                       <div className="flex justify-end gap-2">
+                        {/* H10: открыть креатив в реальном размере в новой вкладке */}
+                        {c.asset_url || c.video_url ? (
+                          <a
+                            href={assetUrl(c.asset_url || c.video_url || "") || "#"}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center rounded-md px-2 py-1 text-xs font-medium text-muted transition-colors hover:text-foreground"
+                            title="Открыть в реальном размере в новой вкладке"
+                          >
+                            Открыть
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" aria-hidden="true" className="ml-1">
+                              <path d="M7 17L17 7M17 7H8M17 7v9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                          </a>
+                        ) : null}
                         {c.status === "pending" ? (
                           <>
                             <Button variant="ghost" onClick={() => moderate(c, "approved")}>

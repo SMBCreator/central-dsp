@@ -221,7 +221,8 @@ export interface BreakdownRow {
   ecpm: number
 }
 
-export const fmtMoney = (v: number, currency = "USD") =>
+// H7: единый формат денег по ТЗ — «12 500,50 ₽», разряды пробелами
+export const fmtMoney = (v: number, currency = "RUB") =>
   new Intl.NumberFormat("ru-RU", { style: "currency", currency, maximumFractionDigits: 2 }).format(v)
 
 export const fmtNum = (v: number) => new Intl.NumberFormat("ru-RU").format(v)

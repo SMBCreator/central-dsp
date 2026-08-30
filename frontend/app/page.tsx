@@ -31,10 +31,13 @@ const PERIODS = [
 export default function DashboardPage() {
   const [hours, setHours] = useState(24)
   const [metric, setMetric] = useState<(typeof METRICS)[number]["key"]>("impressions")
+  // H6: автообновление — байер держит вкладку открытой весь день
+  const [autoRefresh, setAutoRefresh] = useState(true)
+  const refreshInterval = autoRefresh ? 30000 : 0
 
-  const { data: summary } = useSWR<StatsSummary>(`/stats/summary?hours=${hours}`, fetcher)
-  const { data: series } = useSWR<TimeseriesPoint[]>(`/stats/timeseries?hours=${hours}`, fetcher)
-  const { data: campaigns } = useSWR<Campaign[]>("/campaigns", fetcher)
+  const { data: summary } = useSWR<StatsSummary>(`/stats/summary?hours=${hours}`, fetcher, { refreshInterval })
+  const { data: series } = useSWR<TimeseriesPoint[]>(`/stats/timeseries?hours=${hours}`, fetcher, { refreshInterval })
+  const { data: campaigns } = useSWR<Campaign[]>("/campaigns", fetcher, { refreshInterval })
 
   const activeMetric = METRICS.find((m) => m.key === metric)!
   const topCampaigns = (campaigns || []).slice(0, 5)
@@ -46,11 +49,22 @@ export default function DashboardPage() {
           <h1 className="text-xl font-semibold text-foreground">Дашборд</h1>
           <p className="mt-0.5 text-sm text-muted">Обзор эффективности закупки в реальном времени</p>
         </div>
-        <PillTabs
-          value={String(hours) as (typeof PERIODS)[number]["key"]}
-          onChange={(v) => setHours(Number(v))}
-          options={PERIODS}
-        />
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted">
+            <input
+              type="checkbox"
+              checked={autoRefresh}
+              onChange={(e) => setAutoRefresh(e.target.checked)}
+              className="h-3.5 w-3.5 accent-accent"
+            />
+            Автообновление 30 сек
+          </label>
+          <PillTabs
+            value={String(hours) as (typeof PERIODS)[number]["key"]}
+            onChange={(v) => setHours(Number(v))}
+            options={PERIODS}
+          />
+        </div>
       </div>
 
       {summary ? (
