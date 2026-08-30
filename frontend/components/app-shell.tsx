@@ -6,6 +6,7 @@ import { Sidebar } from "@/components/sidebar"
 import { FadeIn } from "@/components/amicro/fade-in"
 import { NotificationsBell } from "@/components/notifications-bell"
 import { Toaster } from "@/components/toaster"
+import { Breadcrumbs } from "@/components/breadcrumbs"
 
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname()
@@ -47,6 +48,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </div>
         {/* B1: единый контейнер контента для всех страниц — страницы не задают собственную ширину */}
         <FadeIn key={pathname} duration={0.35} className="mx-auto w-full max-w-[1400px] px-6 py-6">
+          <Breadcrumbs />
           {children}
         </FadeIn>
       </main>

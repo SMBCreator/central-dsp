@@ -135,10 +135,10 @@ function SettingsCard({ campaign }: { campaign: CampaignExt }) {
               ))}
             </select>
           </Field>
-          <Field label="Дневной бюджет, USD">
+          <Field label="Дневной бюджет, ₽">
             <input type="number" min="1" step="1" value={dailyBudget} onChange={(e) => setDailyBudget(e.target.value)} className={inputCls} />
           </Field>
-          <Field label="Общий бюджет, USD">
+          <Field label="Общий бюджет, ₽">
             <input type="number" min="0" step="1" value={totalBudget} onChange={(e) => setTotalBudget(e.target.value)} className={inputCls} placeholder="Без ограничения" />
           </Field>
           <Field label="Темп расходования">
@@ -295,7 +295,7 @@ function OptimizationCard({ campaign }: { campaign: Campaign }) {
     ad_type: "Формат",
     creative: "Креатив",
     line_item: "Строка закупки",
-    hour: "Час (UTC)",
+    hour: "��ас (UTC)",
   }
 
   return (
@@ -326,16 +326,16 @@ function OptimizationCard({ campaign }: { campaign: Campaign }) {
               ))}
             </select>
           </Field>
-          <Field label="Целевой CPA, USD" hint="Максимальная цена конверсии">
+          <Field label="Целевой CPA, ₽" hint="Максимальная цена конверсии">
             <input type="number" min="0" step="0.01" value={cpa} onChange={(e) => setCpa(e.target.value)} className={inputCls} placeholder="Не задан" />
           </Field>
-          <Field label="Целевой CPC, USD" hint="Максимальная цена клика">
+          <Field label="Целевой CPC, ₽" hint="Максимальная цена клика">
             <input type="number" min="0" step="0.001" value={cpc} onChange={(e) => setCpc(e.target.value)} className={inputCls} placeholder="Не задан" />
           </Field>
-          <Field label="Целевой CPM, USD" hint="Максимальная цена 1000 показов">
+          <Field label="Целевой CPM, ₽" hint="Максимальная цена 1000 показов">
             <input type="number" min="0" step="0.01" value={cpm} onChange={(e) => setCpm(e.target.value)} className={inputCls} placeholder="Не задан" />
           </Field>
-          <Field label="Целевой CPV, USD" hint="Максимальная цена досмотра видео">
+          <Field label="Целевой CPV, ₽" hint="Максимальная цена досмотра видео">
             <input type="number" min="0" step="0.001" value={cpv} onChange={(e) => setCpv(e.target.value)} className={inputCls} placeholder="Не задан" />
           </Field>
         </div>
@@ -771,19 +771,19 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
               </select>
             </Field>
             <Field
-              label="Ставка, USD"
+              label="Ставка, ₽"
               hint={
                 Number(form.bid_price) > 0 && Number(form.bid_price) < 0.5
-                  ? "Низкая ставка: многие SSP имеют bid floor 0.5–2 USD CPM — показов может не быть совсем"
+                  ? "Низкая ставка: у большинства SSP bid floor выше — показов может не быть совсем"
                   : "Ставка должна быть выше bid floor площадок, иначе биддер проигрывает аукционы"
               }
             >
               <input type="number" required min="0.01" step="0.01" value={form.bid_price} onChange={(e) => setForm({ ...form, bid_price: e.target.value })} className={inputCls} />
             </Field>
-            <Field label="Макс. ставка, USD" hint="Для автооптимизатора">
+            <Field label="Макс. ставка, ₽" hint="Для автооптимизатора">
               <input type="number" min="0.01" step="0.01" value={form.max_bid} onChange={(e) => setForm({ ...form, max_bid: e.target.value })} className={inputCls} />
             </Field>
-            <Field label="Дневной бюджет, USD">
+            <Field label="Дневной бюджет, ₽">
               <input type="number" required min="0.01" step="0.01" value={form.daily_budget} onChange={(e) => setForm({ ...form, daily_budget: e.target.value })} className={inputCls} />
             </Field>
           </div>

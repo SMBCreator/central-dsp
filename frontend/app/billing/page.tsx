@@ -167,7 +167,7 @@ export default function BillingPage() {
               ))}
             </select>
           </Field>
-          <Field label="Сумма, USD">
+          <Field label="Сумма, ₽">
             <input
               type="number"
               required

@@ -122,7 +122,7 @@ export default function AdvertisersPage() {
           <Field label="Категория">
             <input value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} className={inputCls} placeholder="E-commerce" />
           </Field>
-          <Field label="Баланс, USD">
+          <Field label="Баланс, ₽">
             <input type="number" step="0.01" min="0" value={form.balance} onChange={(e) => setForm({ ...form, balance: e.target.value })} className={inputCls} />
           </Field>
           {error ? <p className="text-xs text-danger">{error}</p> : null}

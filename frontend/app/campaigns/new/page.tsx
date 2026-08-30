@@ -339,10 +339,10 @@ export default function NewCampaignPage() {
           <Card>
             <CardHeader title="Бюджет и ставка" subtitle="Ставка используется биддером в RTB-аукционе" />
             <div className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2">
-              <Field label="Дневной бюджет, USD">
+              <Field label="Дневной бюджет, ₽">
                 <input type="number" min="1" step="1" value={dailyBudget} onChange={(e) => setDailyBudget(e.target.value)} className={inputCls} placeholder="100" />
               </Field>
-              <Field label="Общий бюджет, USD" hint="Пусто = дневной × 30">
+              <Field label="Общий бюджет, ₽" hint="Пусто = дневной × 30">
                 <input type="number" min="0" step="1" value={totalBudget} onChange={(e) => setTotalBudget(e.target.value)} className={inputCls} placeholder="3000" />
               </Field>
               <Field label="Тип ставки">
@@ -351,10 +351,10 @@ export default function NewCampaignPage() {
                   <option value="cpc">CPC — за клик</option>
                 </select>
               </Field>
-              <Field label={bidType === "cpm" ? "Ставка CPM, USD" : "Ставка CPC, USD"}>
+              <Field label={bidType === "cpm" ? "Ставка CPM, ₽" : "Ставка CPC, ₽"}>
                 <input type="number" min="0.01" step="0.01" value={bidPrice} onChange={(e) => setBidPrice(e.target.value)} className={inputCls} placeholder={bidType === "cpm" ? "2.50" : "0.15"} />
               </Field>
-              <Field label="Макс. ставка, USD" hint="Потолок для аукциона; пусто — без потолка">
+              <Field label="Макс. ставка, ₽" hint="Потолок для аукциона; пусто — без потолка">
                 <input type="number" min="0.01" step="0.01" value={maxBid} onChange={(e) => setMaxBid(e.target.value)} className={inputCls} placeholder="Не задан" />
               </Field>
             </div>
@@ -367,16 +367,16 @@ export default function NewCampaignPage() {
                 Включить автооптимизацию закупки
               </label>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <Field label="Целевой CPA, USD">
+                <Field label="Целевой CPA, ₽">
                   <input type="number" min="0" step="0.01" value={targetCpa} onChange={(e) => setTargetCpa(e.target.value)} className={inputCls} placeholder="—" />
                 </Field>
-                <Field label="Целевой CPC, USD">
+                <Field label="Целевой CPC, ₽">
                   <input type="number" min="0" step="0.001" value={targetCpc} onChange={(e) => setTargetCpc(e.target.value)} className={inputCls} placeholder="—" />
                 </Field>
-                <Field label="Целевой CPM, USD">
+                <Field label="Целевой CPM, ₽">
                   <input type="number" min="0" step="0.01" value={targetCpm} onChange={(e) => setTargetCpm(e.target.value)} className={inputCls} placeholder="—" />
                 </Field>
-                <Field label="Целевой CPV, USD">
+                <Field label="Целевой CPV, ₽">
                   <input type="number" min="0" step="0.001" value={targetCpv} onChange={(e) => setTargetCpv(e.target.value)} className={inputCls} placeholder="—" />
                 </Field>
               </div>
