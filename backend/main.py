@@ -1,7 +1,8 @@
 """CentralDSP backend: management API + OpenRTB 2.5 bidder.
 
-Routes are defined WITHOUT the /api prefix; Vercel strips it before
-forwarding (see vercel.json experimentalServices).
+Routes are defined WITHOUT the /api prefix. The new Vercel `services`
+model forwards the ORIGINAL path (/api/...), so an ASGI middleware at
+the bottom of this file strips the prefix before routing.
 """
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
@@ -127,3 +128,25 @@ async def global_rate_limiter(request: Request, call_next):
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "centraldsp"}
+
+
+class ApiPrefixStripper:
+    """Срезает /api из пути запроса (новая модель Vercel services
+    передаёт оригинальный путь, роуты объявлены без префикса).
+    Локальный запуск без префикса продолжает работать как раньше."""
+
+    def __init__(self, asgi_app):
+        self.asgi_app = asgi_app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] in ("http", "websocket"):
+            path = scope.get("path", "")
+            if path == "/api" or path.startswith("/api/"):
+                scope = dict(scope)
+                new_path = path[4:] or "/"
+                scope["path"] = new_path
+                scope["raw_path"] = new_path.encode()
+        await self.asgi_app(scope, receive, send)
+
+
+app.add_middleware(ApiPrefixStripper)
