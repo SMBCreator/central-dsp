@@ -1,3 +1,0 @@
-{
-  "$comment": "Проект Vercel собирает только frontend/ (Root Directory = frontend). Полный мультисервисный конфиг (frontend + Python backend + crons) сохранён в deploy/vercel.services.json — используйте его, если решите деплоить весь стек на Vercel: очистите Root Directory, выставьте Framework Preset = Services и верните этот файл на место."
-}
