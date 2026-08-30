@@ -159,6 +159,206 @@ async def delete_campaign(campaign_id: str, user: dict = Depends(require_campaig
         raise HTTPException(status_code=404, detail="Кампания не найдена")
 
 
+@router.get("/{campaign_id}/diagnostics")
+async def campaign_diagnostics(campaign_id: str, user: dict = Depends(current_user)):
+    """Почему кампания не откручивается: пошаговая проверка условий участия в торгах.
+
+    Зеркалит JOIN-условия фида для биддера (routers/bidder_feed.campaigns_feed),
+    поэтому диагностика совпадает с реальной логикой отбора кандидатов. Каждый
+    пункт — {code, ok, severity, title, detail}. severity: 'blocker' полностью
+    останавливает показы, 'warning' — сужает охват.
+    """
+    pool = await get_pool()
+    camp = await pool.fetchrow(
+        "SELECT * FROM campaigns WHERE id = $1 AND user_id = $2", campaign_id, user["id"]
+    )
+    if not camp:
+        raise HTTPException(status_code=404, detail="Кампания не найдена")
+
+    checks: list[dict] = []
+
+    def add(code, ok, severity, title, detail):
+        checks.append(
+            {"code": code, "ok": bool(ok), "severity": severity, "title": title, "detail": detail}
+        )
+
+    # 1. Статус кампании
+    add(
+        "campaign_status",
+        camp["status"] == "active",
+        "blocker",
+        "Статус кампании",
+        "Кампания активна" if camp["status"] == "active"
+        else f"Кампания в статусе «{camp['status']}». Запустите её, чтобы участвовать в торгах.",
+    )
+
+    # 2. Даты открутки
+    today = date.today()
+    start_ok = camp["start_date"] is None or camp["start_date"] <= today
+    end_ok = camp["end_date"] is None or camp["end_date"] >= today
+    add(
+        "schedule",
+        start_ok and end_ok,
+        "blocker",
+        "Период открутки",
+        "Сегодня входит в период кампании" if start_ok and end_ok
+        else ("Дата старта ещё не наступила" if not start_ok else "Дата окончания уже прошла"),
+    )
+
+    # 3. Общий бюджет
+    total_budget = float(camp["total_budget"] or 0)
+    spent_total = float(camp["spent_total"] or 0)
+    budget_ok = total_budget <= 0 or spent_total < total_budget
+    add(
+        "total_budget",
+        budget_ok,
+        "blocker",
+        "Общий бюджет",
+        "Общий бюджет не исчерпан" if budget_ok
+        else f"Израсходован весь общий бюджет ({spent_total:.2f} ₽ из {total_budget:.2f} ₽). Увеличьте бюджет.",
+    )
+
+    # 4. Дневной бюджет
+    daily_budget = float(camp["daily_budget"] or 0)
+    spent_today = float(camp["spent_today"] or 0)
+    daily_ok = daily_budget <= 0 or spent_today < daily_budget
+    add(
+        "daily_budget",
+        daily_ok,
+        "warning",
+        "Дневной бюджет",
+        "Дневной бюджет не исчерпан" if daily_ok
+        else f"Дневной бюджет на сегодня израсходован ({spent_today:.2f} ₽). Показы возобновятся после сброса в 00:00 МСК.",
+    )
+
+    # 5. Рекламодатель и баланс
+    adv = await pool.fetchrow(
+        "SELECT name, status, balance FROM advertisers WHERE id = $1", camp["advertiser_id"]
+    )
+    adv_active = adv is not None and adv["status"] == "active"
+    balance = float(adv["balance"]) if adv and adv["balance"] is not None else 0.0
+    add(
+        "advertiser_status",
+        adv_active,
+        "blocker",
+        "Рекламодатель",
+        "Рекламодатель активен" if adv_active
+        else "Рекламодатель не активен — активируйте его в разделе «Рекламодатели».",
+    )
+    add(
+        "balance",
+        balance > 0,
+        "blocker",
+        "Баланс",
+        f"Баланс рекламодателя: {balance:.2f} ₽" if balance > 0
+        else "Баланс рекламодателя 0 ₽ — торги остановлены. Пополните баланс в разделе «Финансы».",
+    )
+
+    # 6. Line items (группы объявлений)
+    li_total = await pool.fetchval(
+        "SELECT count(*) FROM line_items WHERE campaign_id = $1", campaign_id
+    )
+    li_active = await pool.fetchval(
+        "SELECT count(*) FROM line_items WHERE campaign_id = $1 AND status = 'active' AND bid_price > 0",
+        campaign_id,
+    )
+    add(
+        "line_items",
+        li_active > 0,
+        "blocker",
+        "Группы объявлений",
+        f"Активных групп со ставкой > 0: {li_active}" if li_active > 0
+        else (
+            "Нет ни одной группы объявлений — создайте группу с таргетингом и ставкой."
+            if li_total == 0
+            else "Все группы на паузе или со ставкой 0 ₽. Активируйте группу и задайте ставку."
+        ),
+    )
+
+    # 7. Одобренные креативы
+    cr_total = await pool.fetchval(
+        "SELECT count(*) FROM creatives WHERE campaign_id = $1", campaign_id
+    )
+    cr_approved = await pool.fetchval(
+        "SELECT count(*) FROM creatives WHERE campaign_id = $1 AND status = 'approved'", campaign_id
+    )
+    cr_pending = await pool.fetchval(
+        "SELECT count(*) FROM creatives WHERE campaign_id = $1 AND status = 'pending'", campaign_id
+    )
+    add(
+        "creatives",
+        cr_approved > 0,
+        "blocker",
+        "Одобренные креативы",
+        f"Одобренных креативов: {cr_approved}" if cr_approved > 0
+        else (
+            "Нет ни одного креатива — загрузите креативы в кампанию."
+            if cr_total == 0
+            else f"Ни один креатив не одобрен ({cr_pending} на модерации). Дождитесь модерации."
+        ),
+    )
+
+    # 8. Маркировка ОРД (erid) — блокер только для РФ-трафика
+    targets_ru = await pool.fetchval(
+        """SELECT bool_or(
+                 COALESCE(jsonb_array_length(targeting->'geo_countries'), 0) = 0
+                 OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(targeting->'geo_countries') g
+                            WHERE upper(g) IN ('RU','RUS'))
+               )
+           FROM line_items WHERE campaign_id = $1""",
+        campaign_id,
+    )
+    ru_relevant = targets_ru is None or targets_ru
+    unmarked = 0
+    if ru_relevant and cr_approved:
+        unmarked = await pool.fetchval(
+            "SELECT count(*) FROM creatives WHERE campaign_id = $1 AND status = 'approved' AND (erid IS NULL OR erid = '')",
+            campaign_id,
+        )
+    add(
+        "ord_marking",
+        not (ru_relevant and unmarked),
+        "blocker",
+        "Маркировка ОРД (erid)",
+        "Маркировка не требуется для выбранного гео" if not ru_relevant
+        else ("Все одобренные креативы промаркированы" if not unmarked
+              else f"{unmarked} одобренных креатив(ов) без erid. Зарегистрируйте их в ОРД (38-ФЗ)."),
+    )
+
+    # 9. Заблокированные оптимизатором источники (только предупреждение)
+    blocked = await pool.fetchval(
+        "SELECT count(*) FROM optimizer_blocks WHERE campaign_id = $1", campaign_id
+    )
+    add(
+        "optimizer_blocks",
+        True,
+        "warning",
+        "Заблокированные источники",
+        "Оптимизатор не блокировал источники" if not blocked
+        else f"Оптимизатор заблокировал {blocked} источник(ов) из-за низкого качества трафика. Это сужает охват.",
+    )
+
+    blockers = [c for c in checks if not c["ok"] and c["severity"] == "blocker"]
+    warnings = [c for c in checks if not c["ok"] and c["severity"] == "warning"]
+    if blockers:
+        summary = "Кампания не откручивается: устраните блокирующие проблемы ниже."
+        eligible = False
+    elif warnings:
+        summary = "Кампания участвует в торгах, но охват ограничен — см. предупреждения."
+        eligible = True
+    else:
+        summary = "Все проверки пройдены — кампания готова к откруткам."
+        eligible = True
+
+    return {
+        "eligible": eligible,
+        "summary": summary,
+        "blocker_count": len(blockers),
+        "warning_count": len(warnings),
+        "checks": checks,
+    }
+
+
 @router.get("/{campaign_id}/blocks")
 async def list_optimizer_blocks(campaign_id: str, user: dict = Depends(current_user)):
     """Traffic sources blocked by the buying optimizer for this campaign."""

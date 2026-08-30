@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import { assetUrl } from "@/lib/api"
 import { Button, Field, inputCls, Panel } from "@/components/ui"
 import { ImageCropper } from "@/components/image-cropper"
 
@@ -77,7 +78,7 @@ export function CreativePreview({ d }: { d: CreativeDraft }) {
     }
     return d.asset_url ? (
       // eslint-disable-next-line @next/next/no-img-element
-      <img src={d.asset_url || "/placeholder.svg"} alt="Превью баннера" style={{ maxWidth: 340 }} className="rounded-xl border border-border" />
+      <img src={assetUrl(d.asset_url) || "/placeholder.svg"} alt="Превью баннера" style={{ maxWidth: 340 }} className="rounded-xl border border-border" />
     ) : (
       <p className="text-xs text-muted">Укажите изображение</p>
     )
@@ -87,12 +88,12 @@ export function CreativePreview({ d }: { d: CreativeDraft }) {
       <div className="w-72 overflow-hidden rounded-xl border border-border bg-card">
         {d.asset_url ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={d.asset_url || "/placeholder.svg"} alt="" className="aspect-[1.91/1] w-full object-cover" />
+          <img src={assetUrl(d.asset_url) || "/placeholder.svg"} alt="" className="aspect-[1.91/1] w-full object-cover" />
         ) : null}
         <div className="flex gap-2.5 p-3">
           {d.native_icon_url ? (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={d.native_icon_url || "/placeholder.svg"} alt="" className="h-10 w-10 shrink-0 rounded-lg object-cover" />
+            <img src={assetUrl(d.native_icon_url) || "/placeholder.svg"} alt="" className="h-10 w-10 shrink-0 rounded-lg object-cover" />
           ) : null}
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold text-foreground">{d.native_title || "Заголовок объявления"}</p>
@@ -115,7 +116,7 @@ export function CreativePreview({ d }: { d: CreativeDraft }) {
         <div className="flex gap-2.5 p-3">
           {d.native_icon_url ? (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={d.native_icon_url || "/placeholder.svg"} alt="" className="h-12 w-12 shrink-0 rounded-lg object-cover" />
+            <img src={assetUrl(d.native_icon_url) || "/placeholder.svg"} alt="" className="h-12 w-12 shrink-0 rounded-lg object-cover" />
           ) : (
             <div className="h-12 w-12 shrink-0 rounded-lg bg-panel" />
           )}
@@ -126,14 +127,14 @@ export function CreativePreview({ d }: { d: CreativeDraft }) {
         </div>
         {d.asset_url ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={d.asset_url || "/placeholder.svg"} alt="" className="aspect-[3/2] w-full object-cover" />
+          <img src={assetUrl(d.asset_url) || "/placeholder.svg"} alt="" className="aspect-[3/2] w-full object-cover" />
         ) : null}
       </div>
     )
   }
   // video
   return d.video_url ? (
-    <video src={d.video_url} controls className="w-80 rounded-xl border border-border" />
+    <video src={assetUrl(d.video_url)} controls className="w-80 rounded-xl border border-border" />
   ) : d.vast_xml ? (
     <p className="w-72 text-xs text-muted">VAST XML задан — превью недоступно, проверьте в RTB-тесте</p>
   ) : (
@@ -320,7 +321,7 @@ export function CreativeBuilder({
                 <div className="flex min-w-0 items-center gap-3">
                   {c.asset_url && c.type !== "video" ? (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img src={c.asset_url || "/placeholder.svg"} alt="" className="h-9 w-9 shrink-0 rounded-lg object-cover" />
+                    <img src={assetUrl(c.asset_url) || "/placeholder.svg"} alt="" className="h-9 w-9 shrink-0 rounded-lg object-cover" />
                   ) : (
                     <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-panel font-mono text-[10px] text-muted">
                       {c.type === "video" ? "VID" : c.subtype === "html5" ? "H5" : "AD"}

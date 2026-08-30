@@ -2,7 +2,9 @@
 
 import { useState } from "react"
 import useSWR, { mutate } from "swr"
-import { api, apiUpload, fetcher } from "@/lib/api"
+import { api, apiUpload, assetUrl, fetcher } from "@/lib/api"
+import { kktuShortLabel } from "@/lib/kktu"
+import { KktuSelect } from "@/components/kktu-select"
 import { AD_TYPE_LABELS, type Campaign, type Counterparty, type Creative } from "@/lib/types"
 import { Button, Card, CardHeader, EmptyState, Field, inputCls, Modal, Spinner, StatusBadge, Table } from "@/components/ui"
 import { CreativePreview } from "@/components/creative-preview"
@@ -22,6 +24,8 @@ export default function CreativesPage() {
   const [form, setForm] = useState({
     campaign_id: "",
     counterparty_id: "",
+    kktu_code: "",
+    kktu_label: "",
     name: "",
     size: "300x250",
     asset_url: "",
@@ -43,8 +47,10 @@ export default function CreativesPage() {
     setError(null)
     setUploading(field)
     try {
-      const res = await apiUpload<{ url: string }>("/creatives/upload", file)
-      setForm((f) => ({ ...f, [field]: res.url }))
+      const res = await apiUpload<{ url: string; path: string }>("/creatives/upload", file)
+      // Храним канонический относительный путь (/uploads/<file>); в браузер он
+      // отдаётся через assetUrl() как /api/uploads/<file> и работает и в dev, и в проде.
+      setForm((f) => ({ ...f, [field]: res.path || res.url }))
     } catch (err) {
       setError(err instanceof Error ? err.message : "Ошибка загрузки файла")
     } finally {
@@ -58,6 +64,8 @@ export default function CreativesPage() {
     setForm({
       campaign_id: campaigns?.[0]?.id || "",
       counterparty_id: "",
+      kktu_code: "",
+      kktu_label: "",
       name: "",
       size: "300x250",
       asset_url: "",
@@ -76,6 +84,11 @@ export default function CreativesPage() {
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault()
+    // Классификатор ККТУ обязателен для маркировки (38-ФЗ)
+    if (!form.kktu_code) {
+      setError("Выберите классификатор ККТУ на шаге «Маркировка» — это обязательное поле для регистрации в ОРД.")
+      return
+    }
     setSaving(true)
     setError(null)
     try {
@@ -85,6 +98,8 @@ export default function CreativesPage() {
         name: form.name,
         type,
         counterparty_id: form.counterparty_id || null,
+        kktu_code: form.kktu_code || null,
+        kktu_label: form.kktu_label || null,
         click_url: form.click_url || null,
         imp_tracker_url: form.imp_tracker_url || null,
         click_tracker_url: form.click_tracker_url || null,
@@ -136,7 +151,7 @@ export default function CreativesPage() {
         <CardHeader title="Все креативы" subtitle={creatives ? `Всего: ${creatives.length}` : undefined} />
         {creatives ? (
           creatives.length > 0 ? (
-            <Table headers={["ID", "Название", "Тип", "Размер", "Статус", "Кампания", ""]}>
+            <Table headers={["ID", "Название", "Тип", "Классификатор", "Размер", "Статус", "Кампания", ""]}>
               {creatives.map((c) => {
                 const camp = campaigns?.find((x) => x.id === c.campaign_id)
                 return (
@@ -144,6 +159,16 @@ export default function CreativesPage() {
                     <td className="px-4 py-3 font-mono text-xs text-muted">{c.display_id}</td>
                     <td className="px-4 py-3 font-medium text-foreground">{c.name}</td>
                     <td className="px-4 py-3 text-muted">{AD_TYPE_LABELS[c.type] || c.type}</td>
+                    <td className="px-4 py-3 text-muted">
+                      {c.kktu_code ? (
+                        <span title={kktuShortLabel(c.kktu_code)} className="inline-flex items-center gap-1.5">
+                          <span className="font-mono text-xs text-foreground">{c.kktu_code}</span>
+                          <span className="max-w-40 truncate text-xs">{c.kktu_label || ""}</span>
+                        </span>
+                      ) : (
+                        <span className="text-xs text-warning">не задан</span>
+                      )}
+                    </td>
                     <td className="px-4 py-3 font-mono text-xs text-muted">
                       {c.width && c.height ? `${c.width}×${c.height}` : c.video_duration ? `${c.video_duration} сек` : "—"}
                     </td>
@@ -259,7 +284,7 @@ export default function CreativesPage() {
                   </div>
                   {form.asset_url ? (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img src={form.asset_url || "/placeholder.svg"} alt="Превью креатива" className="mt-2 max-h-24 rounded border border-border object-contain" />
+                    <img src={assetUrl(form.asset_url) || "/placeholder.svg"} alt="Превью креатива" className="mt-2 max-h-24 rounded border border-border object-contain" />
                   ) : null}
                 </Field>
               </>
@@ -357,20 +382,38 @@ export default function CreativesPage() {
                 </p>
               )}
             </div>
+
+            <div className="mt-3 border-t border-border pt-3">
+              <Field label="Классификатор ККТУ *">
+                <KktuSelect
+                  value={form.kktu_code}
+                  onChange={(code, label) => setForm((f) => ({ ...f, kktu_code: code, kktu_label: label }))}
+                />
+              </Field>
+              {form.kktu_code ? (
+                <p className="mt-1.5 text-xs text-muted">
+                  Категория: <span className="text-foreground">{kktuShortLabel(form.kktu_code)}</span>
+                </p>
+              ) : (
+                <p className="mt-1.5 text-xs text-muted">
+                  Обязательное поле: выберите категорию товара/услуги для маркировки объявления. Код уходит в ОРД вместе с erid.
+                </p>
+              )}
+            </div>
           </div>
 
           <div className="rounded-md border border-border bg-surface p-3">
             <p className="mb-2 text-xs font-semibold text-foreground">Превью: так увидит пользователь</p>
             <CreativePreview
               type={type}
-              assetUrl={form.asset_url || null}
+              assetUrl={assetUrl(form.asset_url) || null}
               width={Number(form.size.split("x")[0]) || 300}
               height={Number(form.size.split("x")[1]) || 250}
               nativeTitle={form.native_title || null}
               nativeDescription={form.native_description || null}
               nativeCta={form.native_cta || null}
-              nativeIconUrl={form.native_icon_url || null}
-              videoUrl={form.video_url || null}
+              nativeIconUrl={assetUrl(form.native_icon_url) || null}
+              videoUrl={assetUrl(form.video_url) || null}
               advertiser={{
                 name: selectedCp?.name,
                 inn: selectedCp?.inn,

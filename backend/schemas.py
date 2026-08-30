@@ -129,11 +129,16 @@ class CreativeIn(BaseModel):
     click_tracker_url: str | None = Field(default=None, max_length=1000)
     # Информация о рекламодателе (контрагент из ОРД): ОГРН, наименование, адрес
     counterparty_id: str | None = None
+    # ККТУ-классификатор объявления (маркировка), см. миграцию 024
+    kktu_code: str | None = Field(default=None, max_length=20)
+    kktu_label: str | None = Field(default=None, max_length=300)
 
 
 class CreativePatch(BaseModel):
     name: str | None = None
     counterparty_id: str | None = None
+    kktu_code: str | None = Field(default=None, max_length=20)
+    kktu_label: str | None = Field(default=None, max_length=300)
     imp_tracker_url: str | None = Field(default=None, max_length=1000)
     click_tracker_url: str | None = Field(default=None, max_length=1000)
     status: str | None = Field(default=None, pattern="^(pending|approved|rejected|archived)$")

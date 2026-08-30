@@ -1,7 +1,7 @@
 {
   "crons": [
     { "path": "/api/cron/rules", "schedule": "*/15 * * * *" },
-    { "path": "/api/cron/reset-daily", "schedule": "0 0 * * *" },
+    { "path": "/api/cron/reset-daily", "schedule": "0 21 * * *" },
     { "path": "/api/cron/optimize", "schedule": "0 * * * *" }
   ],
   "experimentalServices": {

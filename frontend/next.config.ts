@@ -14,14 +14,10 @@ const nextConfig: NextConfig = {
   async headers() {
     return [{ source: '/(.*)', headers: securityHeaders }]
   },
-  async rewrites() {
-    // In production Vercel routes /api/* to the Python service (vercel.json).
-    // In the sandbox only `next dev` runs, so proxy /api/* to the local FastAPI.
-    if (process.env.NODE_ENV === 'development') {
-      return [{ source: '/api/:path*', destination: 'http://127.0.0.1:8000/:path*' }]
-    }
-    return []
-  },
+  // /api/* обрабатывает app/api/[...path]/route.ts: сначала проксирует на локальный
+  // FastAPI (127.0.0.1:8000 или BACKEND_INTERNAL_URL), при его недоступности отвечает
+  // demo-данными (lib/mock-api.ts) — так превью работает без Python/Postgres.
+  // В проде vercel.json направляет /api/* на Python-функцию до Next.js.
 }
 
 export default nextConfig

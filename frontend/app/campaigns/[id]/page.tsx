@@ -3,7 +3,7 @@
 import { use, useEffect, useState } from "react"
 import Link from "next/link"
 import useSWR, { mutate } from "swr"
-import { api, fetcher } from "@/lib/api"
+import { api, ApiError, fetcher } from "@/lib/api"
 import {
   AD_TYPE_LABELS,
   fmtMoney,
@@ -386,11 +386,123 @@ function targetingSummary(t: Targeting): string {
   return parts.filter(Boolean).join(" · ") || "Без ограничений"
 }
 
+/* ---------- Диагностика показов ---------- */
+
+type DiagCheck = {
+  code: string
+  ok: boolean
+  severity: "blocker" | "warning"
+  title: string
+  detail: string
+}
+type Diagnostics = {
+  eligible: boolean
+  summary: string
+  blocker_count: number
+  warning_count: number
+  checks: DiagCheck[]
+}
+
+function DiagnosticsCard({ campaignId, campaignStatus }: { campaignId: string; campaignStatus: string }) {
+  const { data, error, isLoading } = useSWR<Diagnostics>(`/campaigns/${campaignId}/diagnostics`, fetcher, {
+    refreshInterval: 30000,
+  })
+  const [expanded, setExpanded] = useState(campaignStatus !== "active")
+
+  const CheckIcon = () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true" className="shrink-0 text-emerald-600">
+      <path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+  const FailIcon = ({ blocker }: { blocker: boolean }) => (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden="true"
+      className={`shrink-0 ${blocker ? "text-danger" : "text-amber-500"}`}
+    >
+      {blocker ? (
+        <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+      ) : (
+        <path d="M12 8v5m0 3h.01M10.3 3.9L2.4 18a1.9 1.9 0 001.7 2.9h15.8a1.9 1.9 0 001.7-2.9L13.7 3.9a1.9 1.9 0 00-3.4 0z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      )}
+    </svg>
+  )
+
+  return (
+    <Card>
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex w-full items-center justify-between gap-3 px-6 py-4 text-left"
+        aria-expanded={expanded}
+      >
+        <div className="flex items-center gap-2.5">
+          <h2 className="text-sm font-semibold text-foreground">Диагностика показов</h2>
+          {data ? (
+            data.eligible && data.blocker_count === 0 && data.warning_count === 0 ? (
+              <span className="rounded-md bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">Всё в порядке</span>
+            ) : data.blocker_count > 0 ? (
+              <span className="rounded-md bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-700">
+                {data.blocker_count} проблем(а)
+              </span>
+            ) : (
+              <span className="rounded-md bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
+                {data.warning_count} предупреждени(я)
+              </span>
+            )
+          ) : null}
+        </div>
+        <svg
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          aria-hidden="true"
+          className={`text-muted transition-transform ${expanded ? "rotate-180" : ""}`}
+        >
+          <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+      {expanded ? (
+        <div className="border-t border-border px-6 py-4">
+          {isLoading ? (
+            <Spinner />
+          ) : error ? (
+            <p className="text-sm text-muted">
+              {error instanceof Error ? error.message : "Не удалось загрузить диагностику."}
+            </p>
+          ) : data ? (
+            <>
+              <p className="mb-3 text-sm text-muted">{data.summary}</p>
+              <ul className="space-y-2">
+                {data.checks.map((c) => (
+                  <li key={c.code} className="flex items-start gap-2.5">
+                    {c.ok ? <CheckIcon /> : <FailIcon blocker={c.severity === "blocker"} />}
+                    <div>
+                      <p className={`text-sm font-medium ${c.ok ? "text-foreground" : c.severity === "blocker" ? "text-danger" : "text-amber-600"}`}>
+                        {c.title}
+                      </p>
+                      <p className="text-xs text-muted">{c.detail}</p>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : null}
+        </div>
+      ) : null}
+    </Card>
+  )
+}
+
 /* ---------- Страница ---------- */
 
 export default function CampaignDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
-  const { data: campaign } = useSWR<CampaignExt>(`/campaigns/${id}`, fetcher)
+  const { data: campaign, error: campaignError, isLoading: campaignLoading } = useSWR<CampaignExt>(`/campaigns/${id}`, fetcher)
   const { data: lineItems } = useSWR<LineItem[]>(`/line-items?campaign_id=${id}`, fetcher)
   const { data: stats } = useSWR<StatsSummary>(`/stats/summary?hours=168&campaign_id=${id}`, fetcher)
 
@@ -479,7 +591,31 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
     }
   }
 
-  if (!campaign) return <Spinner />
+  // Ошибка загрузки (404/500/сеть) — показываем состояние вместо вечного спиннера
+  if (campaignError) {
+    const notFound = campaignError instanceof ApiError && campaignError.status === 404
+    return (
+      <div className="space-y-4">
+        <Link href="/campaigns" className="text-xs text-muted hover:text-accent">
+          ← Все кампании
+        </Link>
+        <EmptyState
+          title={notFound ? "Кампания не найдена" : "Не удалось загрузить кампанию"}
+          description={
+            notFound
+              ? "Возможно, кампания была удалена или у вас нет к ней доступа."
+              : campaignError instanceof Error
+                ? campaignError.message
+                : "Попробуйте обновить страницу."
+          }
+          action={
+            <Button onClick={() => mutate(`/campaigns/${id}`)}>Повторить</Button>
+          }
+        />
+      </div>
+    )
+  }
+  if (campaignLoading || !campaign) return <Spinner />
 
   return (
     <div className="space-y-6">
@@ -527,6 +663,8 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
           <KpiCard label="Win Rate" value={fmtPct(stats.win_rate)} />
         </div>
       ) : null}
+
+      <DiagnosticsCard campaignId={id} campaignStatus={campaign.status} />
 
       <SettingsCard campaign={campaign} />
 

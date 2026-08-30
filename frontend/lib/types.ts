@@ -150,6 +150,9 @@ export interface Creative {
   video_duration: number | null
   vast_xml: string | null
   counterparty_id: string | null
+  kktu_code: string | null
+  kktu_label: string | null
+  erid: string | null
   moderation_comment: string | null
   created_at: string
 }

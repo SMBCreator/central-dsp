@@ -39,7 +39,11 @@ async def run_all_rules(request: Request):
 
 @router.get("/reset-daily")
 async def reset_daily_budgets(request: Request):
-    """Reset daily spend counters in Postgres AND Redis (run at 00:00 UTC)."""
+    """Reset daily spend counters in Postgres AND Redis.
+
+    Расписание в vercel.json — 21:00 UTC, что соответствует 00:00 МСК (UTC+3):
+    дневные бюджеты обнуляются по московской полуночи, как в кабинете.
+    """
     _check_secret(request)
     pool = await get_pool()
     campaigns = await pool.execute("UPDATE campaigns SET spent_today = 0 WHERE spent_today > 0")

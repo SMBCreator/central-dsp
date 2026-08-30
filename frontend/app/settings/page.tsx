@@ -52,13 +52,24 @@ function OrdCard() {
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null)
 
   async function save() {
-    if (apiKey.trim().length < 8) return
+    const key = apiKey.trim()
+    // Человекочитаемая валидация до запроса — не голый 422 от бэкенда
+    if (!key) {
+      setMsg({ kind: "err", text: "Введите API-ключ ОРД Озон — поле не может быть пустым." })
+      return
+    }
+    if (key.length < 8) {
+      setMsg({ kind: "err", text: "Ключ слишком короткий (минимум 8 символов). Скопируйте его целиком из кабинета ОРД Озон." })
+      return
+    }
     setSaving(true)
     setMsg(null)
     try {
+      // ВАЖНО: api() сам сериализует body в JSON. Передаём объект, а не строку —
+      // иначе получалась двойная JSON.stringify и бэкенд отвечал 422 (ожидал объект, получал строку).
       await api("/settings/ord", {
         method: "PUT",
-        body: JSON.stringify({ api_key: apiKey.trim(), environment: env }),
+        body: { api_key: key, environment: env },
       })
       setApiKey("")
       await mutate()

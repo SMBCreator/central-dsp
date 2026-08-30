@@ -383,7 +383,7 @@ function GroupsTab({
 /* ---------- Страница ---------- */
 
 export default function CampaignsPage() {
-  const { data: campaigns } = useSWR<CampaignExt[]>("/campaigns", fetcher)
+  const { data: campaigns, error: campaignsError } = useSWR<CampaignExt[]>("/campaigns", fetcher)
   const { data: advertisers } = useSWR<Advertiser[]>("/advertisers", fetcher)
   const { data: groups } = useSWR<Group[]>("/groups", fetcher)
   const { data: breakdown } = useSWR<BreakdownRow[]>("/stats/breakdown?hours=720&dimension=campaign", fetcher)
@@ -517,7 +517,13 @@ export default function CampaignsPage() {
             </p>
           )}
 
-          {campaigns ? (
+          {campaignsError ? (
+            <EmptyState
+              title="Не удалось загрузить кампании"
+              description={campaignsError instanceof Error ? campaignsError.message : "Проверьте соединение и попробуйте ещё раз."}
+              action={<Button onClick={() => mutate("/campaigns")}>Повторить</Button>}
+            />
+          ) : campaigns ? (
             visible.length > 0 ? (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">

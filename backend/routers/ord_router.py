@@ -205,17 +205,22 @@ async def register_creative(creative_id: str, body: CreativeRegisterIn, user: di
     if not contract or contract["ord_status"] != "registered":
         raise HTTPException(409, "Договор должен быть зарегистрирован в ОРД до регистрации креатива")
 
-    camp_kktu = await pool.fetchrow(
-        "SELECT kktu_code, kktu_label FROM campaigns WHERE id = $1", cr["campaign_id"]
-    )
+    # ККТУ: приоритет у классификатора самого креатива (шаг «Маркировка»);
+    # если у креатива не задан — берём значение по умолчанию с кампании (миграция 014).
+    cr_kktu = cr["kktu_code"] if cr["kktu_code"] else None
+    if not cr_kktu:
+        camp_kktu = await pool.fetchrow(
+            "SELECT kktu_code, kktu_label FROM campaigns WHERE id = $1", cr["campaign_id"]
+        )
+        cr_kktu = camp_kktu["kktu_code"] if camp_kktu and camp_kktu["kktu_code"] else None
     payload = {
         "contract_external_id": contract["ord_external_id"],
         "type": cr["type"],
         "name": cr["name"],
         "click_url": cr.get("click_url") if isinstance(cr, dict) else cr["click_url"],
         "description": cr["native_description"] or cr["name"],
-        # Тематика ККТУ берётся с кампании: привязывает креатив к категории товара/услуги
-        "kktu": camp_kktu["kktu_code"] if camp_kktu and camp_kktu["kktu_code"] else None,
+        # Тематика ККТУ: категория товара/услуги для маркировки объявления
+        "kktu": cr_kktu,
     }
     adapter = await get_ord_adapter()
     try:

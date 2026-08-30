@@ -2,7 +2,7 @@
 
 import { useState } from "react"
 import useSWR, { mutate } from "swr"
-import { api, fetcher } from "@/lib/api"
+import { api, assetUrl, fetcher } from "@/lib/api"
 import { AD_TYPE_LABELS } from "@/lib/types"
 import { Button, Card, CardHeader, EmptyState, Modal, Spinner, inputCls } from "@/components/ui"
 import { CreativePreview } from "@/components/creative-preview"
@@ -123,14 +123,14 @@ export default function ModerationPage() {
                 <div className="shrink-0">
                   <CreativePreview
                     type={item.type}
-                    assetUrl={item.asset_url}
+                    assetUrl={assetUrl(item.asset_url)}
                     width={item.width}
                     height={item.height}
                     nativeTitle={item.native_title}
                     nativeDescription={item.native_description}
                     nativeCta={item.native_cta}
-                    nativeIconUrl={item.native_icon_url}
-                    videoUrl={item.video_url}
+                    nativeIconUrl={assetUrl(item.native_icon_url)}
+                    videoUrl={assetUrl(item.video_url)}
                     advertiser={{
                       name: item.counterparty_name,
                       inn: item.counterparty_inn,
