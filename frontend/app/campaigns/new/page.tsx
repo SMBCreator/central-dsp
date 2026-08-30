@@ -361,8 +361,8 @@ export default function NewCampaignPage() {
             <dl className="grid grid-cols-1 gap-x-6 gap-y-2 p-4 text-sm sm:grid-cols-2">
               <div className="flex justify-between gap-3"><dt className="text-muted">Формат</dt><dd className="text-foreground">{FORMAT_LABELS[format] || format}</dd></div>
               <div className="flex justify-between gap-3"><dt className="text-muted">Цель</dt><dd className="text-foreground">{OBJECTIVES.find((o) => o.key === objective)?.label}</dd></div>
-              <div className="flex justify-between gap-3"><dt className="text-muted">Бюджет/день</dt><dd className="text-foreground">${dailyBudget}</dd></div>
-              <div className="flex justify-between gap-3"><dt className="text-muted">Ставка</dt><dd className="text-foreground">{bidType.toUpperCase()} ${bidPrice}</dd></div>
+              <div className="flex justify-between gap-3"><dt className="text-muted">Бюджет/день</dt><dd className="text-foreground">{dailyBudget} ₽</dd></div>
+              <div className="flex justify-between gap-3"><dt className="text-muted">Ставка</dt><dd className="text-foreground">{bidType.toUpperCase()} {bidPrice} ₽</dd></div>
               <div className="flex justify-between gap-3 sm:col-span-2"><dt className="text-muted">Таргетинг</dt><dd className="text-right text-foreground">{targetingSummary(targeting)}</dd></div>
             </dl>
           </Card>
