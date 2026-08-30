@@ -28,34 +28,6 @@ const OBJECTIVES = [
 const STEPS = ["Формат", "Основное", "Бюджет и ставка", "Таргетинг", "Креативы"]
 
 
-const KKTU_CATEGORIES: { code: string; label: string }[] = [
-  { code: "1", label: "Продукты питания и напитки" },
-  { code: "2", label: "Алкоголь (ограничено)" },
-  { code: "3", label: "Одежда, обувь, аксессуары" },
-  { code: "4", label: "Бытовая техника и электроника" },
-  { code: "5", label: "Мебель и товары для дома" },
-  { code: "6", label: "Строительство и ремонт" },
-  { code: "7", label: "Автомобили и транспорт" },
-  { code: "8", label: "Недвижимость" },
-  { code: "9", label: "Финансовые услуги и банки" },
-  { code: "10", label: "Страхование" },
-  { code: "11", label: "Медицина и фармацевтика" },
-  { code: "12", label: "Красота и уход" },
-  { code: "13", label: "Спорт и фитнес" },
-  { code: "14", label: "Туризм и путешествия" },
-  { code: "15", label: "Образование" },
-  { code: "16", label: "Развлечения и досуг" },
-  { code: "17", label: "IT, софт и интернет-сервисы" },
-  { code: "18", label: "Телеком и связь" },
-  { code: "19", label: "Маркетплейсы и ритейл" },
-  { code: "20", label: "Услуги для бизнеса (B2B)" },
-  { code: "21", label: "Работа и HR" },
-  { code: "22", label: "Детские товары" },
-  { code: "23", label: "Зоотовары" },
-  { code: "24", label: "Азартные игры, лотереи (ограничено)" },
-  { code: "25", label: "Прочее" },
-]
-
 export default function NewCampaignPage() {
   const router = useRouter()
   const { data: advertisers } = useSWR<Advertiser[]>("/advertisers", fetcher)
@@ -68,7 +40,6 @@ export default function NewCampaignPage() {
   const [name, setName] = useState("")
   const [advertiserId, setAdvertiserId] = useState("")
   const [objective, setObjective] = useState("awareness")
-  const [kktu, setKktu] = useState("")
   const [groupId, setGroupId] = useState("")
   const [newGroupName, setNewGroupName] = useState("")
   const [startDate, setStartDate] = useState("")
@@ -115,8 +86,6 @@ export default function NewCampaignPage() {
         method: "POST",
         body: {
           advertiser_id: advertiserId,
-          kktu_code: kktu || null,
-          kktu_label: kktu ? (KKTU_CATEGORIES.find((k) => k.code === kktu)?.label ?? null) : null,
           name: name.trim(),
           objective,
           daily_budget: Number(dailyBudget),
@@ -223,14 +192,6 @@ export default function NewCampaignPage() {
               </select>
             </Field>
 
-            <Field label="Тематика товара/услуги (ККТУ для ОРД)" hint="Обязательно для РФ-кампаний — попадёт в маркировку">
-              <select className={inputCls} value={kktu} onChange={(e) => setKktu(e.target.value)}>
-                <option value="">Не выбрано</option>
-                {KKTU_CATEGORIES.map((k) => (
-                  <option key={k.code} value={k.code}>{k.label}</option>
-                ))}
-              </select>
-            </Field>
             <Field label="Цель">
               <select value={objective} onChange={(e) => setObjective(e.target.value)} className={inputCls}>
                 {OBJECTIVES.map((o) => (

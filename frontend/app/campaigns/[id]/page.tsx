@@ -110,7 +110,7 @@ function SettingsCard({ campaign }: { campaign: CampaignExt }) {
 
   return (
     <Card>
-      <CardHeader title="Настройки кампании" subtitle="Название, бюджеты, сроки, частотные капы" />
+      <CardHeader title="Основные настройки" subtitle="Название, бюджеты, сроки, частотные капы" />
       <div className="space-y-4 p-4">
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <Field label="Название кампании">
@@ -374,6 +374,88 @@ function OptimizationCard({ campaign }: { campaign: Campaign }) {
         ) : null}
       </div>
     </Card>
+  )
+}
+
+/** Ставка и таргетинг в том же виде, что шаги «Бюджет и ставка» + «Таргетинг» мастера запуска. */
+function BidTargetingEditor({ campaignId, li, extraCount }: { campaignId: string; li: LineItem; extraCount: number }) {
+  const [bidType, setBidType] = useState<"cpm" | "cpc">(li.bid_type as "cpm" | "cpc")
+  const [bidPrice, setBidPrice] = useState(String(li.bid_price ?? ""))
+  const [liBudget, setLiBudget] = useState(String(li.daily_budget ?? ""))
+  const [targeting, setTargeting] = useState<Targeting>(li.targeting || {})
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // синхронизация при обновлении данных с сервера
+  useEffect(() => {
+    setBidType(li.bid_type as "cpm" | "cpc")
+    setBidPrice(String(li.bid_price ?? ""))
+    setLiBudget(String(li.daily_budget ?? ""))
+    setTargeting(li.targeting || {})
+  }, [li.id, li.bid_type, li.bid_price, li.daily_budget, li.targeting])
+
+  const save = async () => {
+    setSaving(true)
+    setError(null)
+    try {
+      await api(`/line-items/${li.id}`, {
+        method: "PATCH",
+        body: {
+          bid_type: bidType,
+          bid_price: Number(bidPrice),
+          daily_budget: Number(liBudget),
+          targeting,
+        },
+      })
+      await mutate(`/line-items?campaign_id=${campaignId}`)
+      toastSuccess("Ставка и таргетинг сохранены")
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Ошибка сохранения")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <>
+      <Card>
+        <CardHeader title="Бюджет и ставка" subtitle="Ставка используется биддером в RTB-аукционе" />
+        <div className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2 lg:grid-cols-3">
+          <Field label="Тип ставки">
+            <select value={bidType} onChange={(e) => setBidType(e.target.value as "cpm" | "cpc")} className={inputCls}>
+              <option value="cpm">CPM — за 1000 показов</option>
+              <option value="cpc">CPC — за клик</option>
+            </select>
+          </Field>
+          <Field label={bidType === "cpm" ? "Ставка CPM, ₽" : "Ставка CPC, ₽"}>
+            <input type="number" min="0.01" step="0.01" value={bidPrice} onChange={(e) => setBidPrice(e.target.value)} className={inputCls} />
+          </Field>
+          <Field label="Дневной бюджет строки, ₽">
+            <input type="number" min="1" value={liBudget} onChange={(e) => setLiBudget(e.target.value)} className={inputCls} />
+          </Field>
+        </div>
+      </Card>
+
+      <Card>
+        <CardHeader
+          title="Таргетинг"
+          subtitle={extraCount > 0 ? `Основная строка закупки; ещё ${extraCount} — во вкладке «Продвинутое»` : "Пустые секции — показ без ограничений"}
+        />
+        <div className="p-4">
+          <TargetingEditor value={targeting} onChange={setTargeting} />
+        </div>
+        <div className="flex items-center gap-3 border-t border-border px-4 py-3">
+          <Button onClick={save} disabled={saving || !Number(bidPrice) || !Number(liBudget)}>
+            {saving ? "Сохранение…" : "Сохранить ставку и таргетинг"}
+          </Button>
+          {error ? (
+            <p role="alert" className="text-sm text-danger">
+              {error}
+            </p>
+          ) : null}
+        </div>
+      </Card>
+    </>
   )
 }
 
@@ -724,50 +806,22 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
         <>
           <SettingsCard campaign={campaign} />
 
-          {/* Ставка и таргетинг — как на шагах мастера запуска. Правится первая
-              (основная) строка закупки; несколько строк — в «Продвинутое» */}
-          <Card>
-            <CardHeader
-              title="Ставка и таргетинг"
-              subtitle="Те же настройки, что при запуске кампании"
-              action={
-                lineItems && lineItems.length > 0 ? (
-                  <Button variant="secondary" onClick={() => openEdit(lineItems[0])}>
-                    Изменить
-                  </Button>
-                ) : (
-                  <Button onClick={openCreate}>Настроить</Button>
-                )
-              }
-            />
-            {lineItems && lineItems.length > 0 ? (
-              <div className="grid gap-4 px-4 pb-4 sm:grid-cols-3">
-                <div>
-                  <p className="text-xs text-muted">Ставка</p>
-                  <p className="mt-0.5 font-mono text-sm text-foreground">
-                    {fmtMoney(lineItems[0].bid_price)} {lineItems[0].bid_type.toUpperCase()}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-xs text-muted">Дневной бюджет строки</p>
-                  <p className="mt-0.5 font-mono text-sm text-foreground">{fmtMoney(lineItems[0].daily_budget)}</p>
-                </div>
-                <div className="sm:col-span-3">
-                  <p className="text-xs text-muted">Таргетинг</p>
-                  <p className="mt-0.5 text-sm text-foreground">{targetingSummary(lineItems[0].targeting)}</p>
-                </div>
-                {lineItems.length > 1 ? (
-                  <p className="text-xs text-muted sm:col-span-3">
-                    Ещё {lineItems.length - 1} строк(и) закупки — во вкладке «Продвинутое»
-                  </p>
-                ) : null}
-              </div>
-            ) : (
+          {/* Ставка и таргетинг — тот же вид, что при запуске кампании.
+              Правится первая (основная) строка закупки; несколько строк — в «Продвинутое» */}
+          {lineItems && lineItems.length > 0 ? (
+            <BidTargetingEditor campaignId={id} li={lineItems[0]} extraCount={lineItems.length - 1} />
+          ) : (
+            <Card>
+              <CardHeader
+                title="Бюджет и ставка"
+                subtitle="Ставка используется биддером в RTB-аукционе"
+                action={<Button onClick={openCreate}>Настроить</Button>}
+              />
               <p className="px-4 pb-4 text-sm text-muted">
                 Ставка и таргетинг не настроены — без них кампания не участвует в аукционах.
               </p>
-            )}
-          </Card>
+            </Card>
+          )}
 
           {/* Креативы кампании — как на последнем шаге мастера */}
           <Card>

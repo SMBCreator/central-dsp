@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react"
 import { Field, inputCls } from "@/components/ui"
 import { MultiSelect } from "@/components/multi-select"
-import { GeoDrawer } from "@/components/geo-panel"
+import { GeoDrawer, countryLabel } from "@/components/geo-panel"
 import useSWR from "swr"
 import { fetcher } from "@/lib/api"
 import { IAB_CATEGORIES, type Targeting } from "@/lib/types"
@@ -280,6 +280,7 @@ export function TargetingEditor({
   const { data: audList } = useSWR<{ id: string; name: string; members: number; is_active: boolean }[]>("/audiences", fetcher)
   const ruSelected =
     (value.geo_countries || []).includes("RU") || !!value.geo_regions?.length || !!value.geo_cities?.length
+  const otherCountries = (value.geo_countries || []).filter((c) => c !== "RU")
 
   return (
     <div className="space-y-3">
@@ -298,7 +299,7 @@ export function TargetingEditor({
             className="flex min-h-10 w-full items-center justify-between gap-2 rounded-lg border border-input bg-card px-2 py-1.5 text-left transition-colors hover:border-muted"
           >
             <span className="flex min-w-0 flex-wrap items-center gap-1.5">
-              {!value.geo_regions?.length && !value.geo_cities?.length ? (
+              {!value.geo_regions?.length && !value.geo_cities?.length && !otherCountries.length ? (
                 <span className="rounded-md bg-panel px-2.5 py-1 text-sm font-medium text-foreground">
                   Все регионы и города
                 </span>
@@ -348,6 +349,28 @@ export function TargetingEditor({
                       {c} <span aria-hidden>×</span>
                     </span>
                   ))}
+                  {otherCountries.map((code) => (
+                    <span
+                      key={`cn-${code}`}
+                      role="button"
+                      tabIndex={0}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        set({ geo_countries: removeVal(value.geo_countries, code) })
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          set({ geo_countries: removeVal(value.geo_countries, code) })
+                        }
+                      }}
+                      className="inline-flex cursor-pointer items-center gap-1 rounded-md bg-primary/10 px-2.5 py-1 text-sm font-medium text-primary hover:bg-primary/20"
+                      title="Убрать страну"
+                    >
+                      {countryLabel(code)} <span aria-hidden>×</span>
+                    </span>
+                  ))}
                 </>
               )}
             </span>
@@ -361,14 +384,17 @@ export function TargetingEditor({
           onClose={() => setGeoOpen(false)}
           regions={value.geo_regions || []}
           cities={value.geo_cities || []}
-          onApply={({ regions, cities }) =>
+          countries={otherCountries}
+          onApply={({ regions, cities, countries }) => {
+            // страны: выбранные «другие» + Россия, если заданы её регионы/города
+            const ru = regions.length || cities.length ? ["RU"] : []
+            const next = [...ru, ...countries]
             set({
               geo_regions: regions.length ? regions : undefined,
               geo_cities: cities.length ? cities : undefined,
-              // регионы/города РФ подразумевают показ в России
-              geo_countries: regions.length || cities.length ? addUnique(value.geo_countries, "RU") : value.geo_countries,
+              geo_countries: next.length ? next : undefined,
             })
-          }
+          }}
         />
         {ruSelected ? (
           <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-400">
