@@ -295,7 +295,7 @@ function OptimizationCard({ campaign }: { campaign: Campaign }) {
     ad_type: "Формат",
     creative: "Креатив",
     line_item: "Строка закупки",
-    hour: "��ас (UTC)",
+    hour: "Час (UTC)",
   }
 
   return (
@@ -607,6 +607,10 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
     }
   }
 
+  // Вкладки: «Настройки» открывается первой — как при запуске кампании,
+  // техника (строки закупки) убрана в «Продвинутое»
+  const [tab, setTab] = useState<"settings" | "stats" | "advanced">("settings")
+
   // H1: «Создать похожую» — копия кампании + line items + креативы (draft)
   const router = useRouter()
   const [duplicating, setDuplicating] = useState(false)
@@ -692,21 +696,136 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
         </p>
       ) : null}
 
-      {stats ? (
-        <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-          <KpiCard label="Расход (7 дней)" value={fmtMoney(stats.spend)} />
-          <KpiCard label="Показы" value={fmtNum(stats.impressions)} />
-          <KpiCard label="Клики" value={fmtNum(stats.clicks)} hint={`CTR ${fmtPct(stats.ctr)}`} />
-          <KpiCard label="Win Rate" value={fmtPct(stats.win_rate)} />
-        </div>
+      {/* Вкладки карточки кампании: настройки как при запуске — первыми */}
+      <div role="tablist" aria-label="Разделы кампании" className="flex gap-1 border-b border-border">
+        {(
+          [
+            ["settings", "Настройки"],
+            ["stats", "Статистика"],
+            ["advanced", "Продвинутое"],
+          ] as const
+        ).map(([key, label]) => (
+          <button
+            key={key}
+            role="tab"
+            aria-selected={tab === key}
+            onClick={() => setTab(key)}
+            className={`-mb-px rounded-t-md px-4 py-2 text-sm font-medium transition-colors ${
+              tab === key
+                ? "border-x border-t border-border bg-card text-foreground"
+                : "text-muted hover:text-foreground"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "settings" ? (
+        <>
+          <SettingsCard campaign={campaign} />
+
+          {/* Ставка и таргетинг — как на шагах мастера запуска. Правится первая
+              (основная) строка закупки; несколько строк — в «Продвинутое» */}
+          <Card>
+            <CardHeader
+              title="Ставка и таргетинг"
+              subtitle="Те же настройки, что при запуске кампании"
+              action={
+                lineItems && lineItems.length > 0 ? (
+                  <Button variant="secondary" onClick={() => openEdit(lineItems[0])}>
+                    Изменить
+                  </Button>
+                ) : (
+                  <Button onClick={openCreate}>Настроить</Button>
+                )
+              }
+            />
+            {lineItems && lineItems.length > 0 ? (
+              <div className="grid gap-4 px-4 pb-4 sm:grid-cols-3">
+                <div>
+                  <p className="text-xs text-muted">Ставка</p>
+                  <p className="mt-0.5 font-mono text-sm text-foreground">
+                    {fmtMoney(lineItems[0].bid_price)} {lineItems[0].bid_type.toUpperCase()}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted">Дневной бюджет строки</p>
+                  <p className="mt-0.5 font-mono text-sm text-foreground">{fmtMoney(lineItems[0].daily_budget)}</p>
+                </div>
+                <div className="sm:col-span-3">
+                  <p className="text-xs text-muted">Таргетинг</p>
+                  <p className="mt-0.5 text-sm text-foreground">{targetingSummary(lineItems[0].targeting)}</p>
+                </div>
+                {lineItems.length > 1 ? (
+                  <p className="text-xs text-muted sm:col-span-3">
+                    Ещё {lineItems.length - 1} строк(и) закупки — во вкладке «Продвинутое»
+                  </p>
+                ) : null}
+              </div>
+            ) : (
+              <p className="px-4 pb-4 text-sm text-muted">
+                Ставка и таргетинг не настроены — без них кампания не участвует в аукционах.
+              </p>
+            )}
+          </Card>
+
+          {/* Креативы кампании — как на последнем шаге мастера */}
+          <Card>
+            <CardHeader
+              title="Креативы"
+              subtitle="Объявления этой кампании"
+              action={
+                <Link href={`/creatives?campaign_id=${id}`}>
+                  <Button variant="secondary">Управлять креативами</Button>
+                </Link>
+              }
+            />
+            {campaignCreatives ? (
+              campaignCreatives.length > 0 ? (
+                <div className="grid gap-3 px-4 pb-4 sm:grid-cols-2 lg:grid-cols-3">
+                  {campaignCreatives.map((c) => (
+                    <div key={c.id} className="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-2">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium text-foreground">{c.name}</p>
+                        <p className="text-xs text-muted">
+                          {c.type === "banner" ? `Баннер ${c.width}×${c.height}` : c.type === "video" ? "Видео" : "Native"}
+                        </p>
+                      </div>
+                      <StatusBadge status={c.status} />
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="px-4 pb-4 text-sm text-muted">
+                  Нет креативов — добавьте хотя бы один, чтобы кампания могла показываться.
+                </p>
+              )
+            ) : (
+              <Spinner />
+            )}
+          </Card>
+        </>
       ) : null}
 
-      <DiagnosticsCard campaignId={id} campaignStatus={campaign.status} />
+      {tab === "stats" ? (
+        <>
+          {stats ? (
+            <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+              <KpiCard label="Расход (7 дней)" value={fmtMoney(stats.spend)} />
+              <KpiCard label="Показы" value={fmtNum(stats.impressions)} />
+              <KpiCard label="Клики" value={fmtNum(stats.clicks)} hint={`CTR ${fmtPct(stats.ctr)}`} />
+              <KpiCard label="Win Rate" value={fmtPct(stats.win_rate)} />
+            </div>
+          ) : (
+            <Spinner />
+          )}
+          <DiagnosticsCard campaignId={id} campaignStatus={campaign.status} />
+          <OptimizationCard campaign={campaign} />
+        </>
+      ) : null}
 
-      <SettingsCard campaign={campaign} />
-
-      <OptimizationCard campaign={campaign} />
-
+      {tab !== "advanced" ? null : (
       <Card>
         <CardHeader
           title="Строки закупки (Line Items)"
@@ -752,6 +871,7 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
           <Spinner />
         )}
       </Card>
+      )}
 
       <Modal
         open={open}
