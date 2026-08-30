@@ -37,8 +37,8 @@ export function AppShell({ children }: { children: ReactNode }) {
             <NotificationsBell />
           </div>
         </div>
-        {/* Amicro fade-in page entrance, re-triggered on route change */}
-        <FadeIn key={pathname} duration={0.35} className="mx-auto max-w-6xl px-6 py-6">
+        {/* B1: единый контейнер контента для всех страниц — страницы не задают собственную ширину */}
+        <FadeIn key={pathname} duration={0.35} className="mx-auto w-full max-w-[1400px] px-6 py-6">
           {children}
         </FadeIn>
       </main>

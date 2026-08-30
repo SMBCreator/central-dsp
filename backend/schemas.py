@@ -103,6 +103,12 @@ class LineItemPatch(BaseModel):
     targeting: dict | None = None
 
 
+class LineItemCreativesIn(BaseModel):
+    """G9: список креативов, привязанных к line item. Пустой список = все креативы кампании."""
+
+    creative_ids: list[str] = Field(default_factory=list, max_length=500)
+
+
 # --- Creatives -----------------------------------------------------------------
 class CreativeIn(BaseModel):
     campaign_id: str

@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from auth import current_user
 from rbac import require_campaign_editor
 from db import get_pool
-from schemas import LineItemIn, LineItemPatch
+from schemas import LineItemCreativesIn, LineItemIn, LineItemPatch
 
 router = APIRouter(prefix="/line-items", tags=["line-items"])
 
@@ -87,3 +87,48 @@ async def delete_line_item(line_item_id: str, user: dict = Depends(require_campa
     )
     if result == "DELETE 0":
         raise HTTPException(status_code=404, detail="Позиция не найдена")
+
+
+@router.put("/{line_item_id}/creatives")
+async def set_line_item_creatives(
+    line_item_id: str, body: LineItemCreativesIn, user: dict = Depends(require_campaign_editor)
+):
+    """G9: привязка креативов к line item.
+
+    Пустой список creative_ids = «все креативы кампании» (снимаем привязку у всех).
+    Непустой список = только эти креативы крутятся в данном line item.
+    """
+    pool = await get_pool()
+    li = await pool.fetchrow(
+        "SELECT id, campaign_id FROM line_items WHERE id = $1 AND user_id = $2",
+        line_item_id, user["id"],
+    )
+    if not li:
+        raise HTTPException(status_code=404, detail="Позиция не найдена")
+    campaign_id = li["campaign_id"]
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # Снимаем привязку с креативов кампании, которые больше не выбраны
+            await conn.execute(
+                """UPDATE creatives SET line_item_id = NULL, updated_at = now()
+                   WHERE campaign_id = $1 AND user_id = $2 AND line_item_id = $3
+                     AND NOT (id = ANY($4::uuid[]))""",
+                campaign_id, user["id"], line_item_id, body.creative_ids,
+            )
+            if body.creative_ids:
+                result = await conn.execute(
+                    """UPDATE creatives SET line_item_id = $3, updated_at = now()
+                       WHERE campaign_id = $1 AND user_id = $2 AND id = ANY($4::uuid[])""",
+                    campaign_id, user["id"], line_item_id, body.creative_ids,
+                )
+                updated = int(result.split(" ")[-1] or 0)
+                if updated != len(set(body.creative_ids)):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Некоторые креативы не принадлежат этой кампании",
+                    )
+    rows = await pool.fetch(
+        "SELECT id FROM creatives WHERE line_item_id = $1 AND user_id = $2",
+        line_item_id, user["id"],
+    )
+    return {"line_item_id": str(line_item_id), "creative_ids": [str(r["id"]) for r in rows]}

@@ -10,6 +10,7 @@ import {
   fmtNum,
   fmtPct,
   type Campaign,
+  type Creative,
   type LineItem,
   type StatsSummary,
   type Targeting,
@@ -505,12 +506,15 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
   const { data: campaign, error: campaignError, isLoading: campaignLoading } = useSWR<CampaignExt>(`/campaigns/${id}`, fetcher)
   const { data: lineItems } = useSWR<LineItem[]>(`/line-items?campaign_id=${id}`, fetcher)
   const { data: stats } = useSWR<StatsSummary>(`/stats/summary?hours=168&campaign_id=${id}`, fetcher)
+  const { data: campaignCreatives } = useSWR<Creative[]>(`/creatives?campaign_id=${id}`, fetcher)
 
   const [open, setOpen] = useState(false)
   const [editingLi, setEditingLi] = useState<LineItem | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [targeting, setTargeting] = useState<Targeting>({})
+  // G9: креативы, привязанные к line item (пусто = все креативы кампании)
+  const [liCreativeIds, setLiCreativeIds] = useState<string[]>([])
   const [form, setForm] = useState({
     name: "",
     bid_type: "cpm",
@@ -525,6 +529,7 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
     setEditingLi(null)
     setForm({ name: "", bid_type: "cpm", bid_price: "1.5", max_bid: "", daily_budget: "20" })
     setTargeting({})
+    setLiCreativeIds([])
     setOpen(true)
   }
 
@@ -539,6 +544,7 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
       daily_budget: String(li.daily_budget),
     })
     setTargeting(li.targeting || {})
+    setLiCreativeIds((campaignCreatives || []).filter((c) => c.line_item_id === li.id).map((c) => c.id))
     setOpen(true)
   }
 
@@ -555,12 +561,19 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
         daily_budget: Number(form.daily_budget),
         targeting,
       }
+      let liId = editingLi?.id
       if (editingLi) {
         await api(`/line-items/${editingLi.id}`, { method: "PATCH", body })
       } else {
-        await api(`/line-items`, { method: "POST", body: { campaign_id: id, ...body } })
+        const created = await api<LineItem>(`/line-items`, { method: "POST", body: { campaign_id: id, ...body } })
+        liId = created.id
+      }
+      // G9: сохраняем привязку креативов (пустой список = все креативы кампании)
+      if (liId) {
+        await api(`/line-items/${liId}/creatives`, { method: "PUT", body: { creative_ids: liCreativeIds } })
       }
       await mutate(`/line-items?campaign_id=${id}`)
+      await mutate(`/creatives?campaign_id=${id}`)
       setOpen(false)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Ошибка сохранения")
@@ -733,7 +746,14 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
                 <option value="cpc">CPC (за клик)</option>
               </select>
             </Field>
-            <Field label="Ставка, USD">
+            <Field
+              label="Ставка, USD"
+              hint={
+                Number(form.bid_price) > 0 && Number(form.bid_price) < 0.5
+                  ? "Низкая ставка: многие SSP имеют bid floor 0.5–2 USD CPM — показов может не быть совсем"
+                  : "Ставка должна быть выше bid floor площадок, иначе биддер проигрывает аукционы"
+              }
+            >
               <input type="number" required min="0.01" step="0.01" value={form.bid_price} onChange={(e) => setForm({ ...form, bid_price: e.target.value })} className={inputCls} />
             </Field>
             <Field label="Макс. ставка, USD" hint="Для автооптимизатора">
@@ -745,6 +765,39 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
           </div>
 
           <TargetingEditor value={targeting} onChange={setTargeting} />
+
+          {/* G9: привязка креативов к строке закупки */}
+          <div className="rounded-md border border-border bg-surface p-3">
+            <p className="text-xs font-medium text-foreground">Креативы этой строки</p>
+            <p className="mb-2 mt-0.5 text-[11px] text-muted">
+              Если ничего не выбрано — крутятся все креативы кампании. Выберите конкретные, чтобы ограничить.
+            </p>
+            {campaignCreatives && campaignCreatives.length > 0 ? (
+              <div className="flex max-h-40 flex-col gap-1 overflow-y-auto">
+                {campaignCreatives.map((c) => (
+                  <label key={c.id} className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-xs hover:bg-background">
+                    <input
+                      type="checkbox"
+                      checked={liCreativeIds.includes(c.id)}
+                      onChange={(e) =>
+                        setLiCreativeIds((prev) =>
+                          e.target.checked ? [...prev, c.id] : prev.filter((x) => x !== c.id),
+                        )
+                      }
+                      className="h-3.5 w-3.5 accent-accent"
+                    />
+                    <span className="truncate text-foreground">{c.name}</span>
+                    <span className="ml-auto shrink-0 font-mono text-[10px] text-muted">
+                      {c.width && c.height ? `${c.width}×${c.height}` : c.type}
+                    </span>
+                    <StatusBadge status={c.status} />
+                  </label>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-muted">В кампании пока нет креативов — добавьте их в разделе «Креативы».</p>
+            )}
+          </div>
 
           {error ? <p className="text-xs text-danger">{error}</p> : null}
           <div className="flex justify-end gap-2">

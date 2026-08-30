@@ -45,6 +45,54 @@ export default function ModerationPage() {
   const [comment, setComment] = useState("")
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // E: фильтры, сортировка и массовые операции
+  const [typeFilter, setTypeFilter] = useState("")
+  const [q, setQ] = useState("")
+  const [sort, setSort] = useState<"newest" | "oldest">("oldest")
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [bulkBusy, setBulkBusy] = useState(false)
+
+  const visible = (items || [])
+    .filter((i) => (typeFilter ? i.type === typeFilter : true))
+    .filter((i) => {
+      const s = q.trim().toLowerCase()
+      if (!s) return true
+      return (
+        i.name.toLowerCase().includes(s) ||
+        i.campaign_name.toLowerCase().includes(s) ||
+        i.owner_email.toLowerCase().includes(s)
+      )
+    })
+    .sort((a, b) => {
+      const d = new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      return sort === "oldest" ? d : -d
+    })
+
+  const toggleSelected = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const bulkApprove = async () => {
+    if (selected.size === 0) return
+    setBulkBusy(true)
+    setError(null)
+    try {
+      for (const id of selected) {
+        await api(`/moderation/${id}/approve`, { method: "POST" })
+      }
+      setSelected(new Set())
+      await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Ошибка массового одобрения")
+    } finally {
+      setBulkBusy(false)
+    }
+  }
 
   const refresh = async () => {
     await mutate(`/moderation/queue?status=${tab}`)
@@ -107,18 +155,71 @@ export default function ModerationPage() {
         ))}
       </div>
 
+      {/* E: панель фильтров и массовых действий */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="w-64">
+          <input
+            type="search"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Поиск: название, кампания, email"
+            className={`${inputCls} h-8 py-0`}
+            aria-label="Поиск по очереди модерации"
+          />
+        </div>
+        <div className="w-36">
+          <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} className={`${inputCls} h-8 py-0`} aria-label="Фильтр по типу">
+            <option value="">Все типы</option>
+            <option value="banner">Баннеры</option>
+            <option value="native">Нативные</option>
+            <option value="video">Видео</option>
+          </select>
+        </div>
+        <div className="w-40">
+          <select value={sort} onChange={(e) => setSort(e.target.value as "newest" | "oldest")} className={`${inputCls} h-8 py-0`} aria-label="Сортировка">
+            <option value="oldest">Сначала старые</option>
+            <option value="newest">Сначала новые</option>
+          </select>
+        </div>
+        {tab === "pending" && selected.size > 0 ? (
+          <div className="ml-auto flex items-center gap-2">
+            <span className="text-xs text-muted">Выбрано: {selected.size}</span>
+            <Button onClick={bulkApprove} disabled={bulkBusy}>
+              {bulkBusy ? "Обработка…" : `Одобрить выбранные (${selected.size})`}
+            </Button>
+          </div>
+        ) : (
+          <span className="ml-auto text-xs text-muted">
+            {items ? `Показано ${visible.length} из ${items.length}` : ""}
+          </span>
+        )}
+      </div>
+
       {error ? <p className="text-xs text-danger">{error}</p> : null}
 
       {isLoading ? (
         <Spinner />
-      ) : items && items.length > 0 ? (
+      ) : visible.length > 0 ? (
         <div className="space-y-4">
-          {items.map((item) => (
+          {visible.map((item) => (
             <Card key={item.id}>
-              <CardHeader
-                title={item.name}
-                subtitle={`${AD_TYPE_LABELS[item.type] || item.type} · Кампания «${item.campaign_name}» · Владелец: ${item.owner_email} · ${new Date(item.created_at).toLocaleString("ru-RU")}`}
-              />
+              <div className="flex items-start gap-3">
+                {tab === "pending" ? (
+                  <input
+                    type="checkbox"
+                    checked={selected.has(item.id)}
+                    onChange={() => toggleSelected(item.id)}
+                    className="mt-6 ml-6 h-4 w-4 shrink-0 accent-accent"
+                    aria-label={`Выбрать «${item.name}» для массовых действий`}
+                  />
+                ) : null}
+                <div className="min-w-0 flex-1">
+                  <CardHeader
+                    title={item.name}
+                    subtitle={`${AD_TYPE_LABELS[item.type] || item.type} · Кампания «${item.campaign_name}» · Владелец: ${item.owner_email} · ${new Date(item.created_at).toLocaleString("ru-RU")}`}
+                  />
+                </div>
+              </div>
               <div className="flex flex-col gap-4 lg:flex-row">
                 <div className="shrink-0">
                   <CreativePreview

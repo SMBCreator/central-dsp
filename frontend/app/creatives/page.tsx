@@ -42,6 +42,47 @@ export default function CreativesPage() {
 
   const selectedCp = (counterparties || []).find((cp) => cp.id === form.counterparty_id) || null
 
+  // D: мультизагрузка баннеров — каждый файл станет отдельным креативом, размер определяется автоматически
+  const [bannerAssets, setBannerAssets] = useState<{ path: string; width: number; height: number; name: string }[]>([])
+
+  const readImageSize = (file: File): Promise<{ width: number; height: number }> =>
+    new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file)
+      const img = new Image()
+      img.crossOrigin = "anonymous"
+      img.onload = () => {
+        URL.revokeObjectURL(url)
+        resolve({ width: img.naturalWidth, height: img.naturalHeight })
+      }
+      img.onerror = () => {
+        URL.revokeObjectURL(url)
+        reject(new Error("Не удалось прочитать изображение"))
+      }
+      img.src = url
+    })
+
+  const uploadBannerFiles = async (files: FileList | null) => {
+    if (!files || files.length === 0) return
+    setError(null)
+    setUploading("asset_url")
+    try {
+      for (const file of Array.from(files)) {
+        const [{ width, height }, res] = await Promise.all([
+          readImageSize(file),
+          apiUpload<{ url: string; path: string }>("/creatives/upload", file),
+        ])
+        setBannerAssets((prev) => [
+          ...prev,
+          { path: res.path || res.url, width, height, name: file.name.replace(/\.[^.]+$/, "") },
+        ])
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Ошибка загрузки файлов")
+    } finally {
+      setUploading(null)
+    }
+  }
+
   const uploadFile = async (field: "asset_url" | "native_icon_url" | "video_url", file: File | null) => {
     if (!file) return
     setError(null)
@@ -61,6 +102,7 @@ export default function CreativesPage() {
   const openCreate = () => {
     setError(null)
     setType("banner")
+    setBannerAssets([])
     setForm({
       campaign_id: campaigns?.[0]?.id || "",
       counterparty_id: "",
@@ -89,6 +131,11 @@ export default function CreativesPage() {
       setError("Выберите классификатор ККТУ на шаге «Маркировка» — это обязательное поле для регистрации в ОРД.")
       return
     }
+    // G7: для баннера нужен хотя бы один файл или URL
+    if (type === "banner" && bannerAssets.length === 0 && !form.asset_url) {
+      setError("Загрузите хотя бы одно изображение баннера или укажите URL.")
+      return
+    }
     setSaving(true)
     setError(null)
     try {
@@ -103,6 +150,27 @@ export default function CreativesPage() {
         click_url: form.click_url || null,
         imp_tracker_url: form.imp_tracker_url || null,
         click_tracker_url: form.click_tracker_url || null,
+      }
+      if (type === "banner" && bannerAssets.length > 0) {
+        // D: пакетное создание — каждый загруженный файл становится отдельным креативом
+        for (let i = 0; i < bannerAssets.length; i++) {
+          const a = bannerAssets[i]
+          await api("/creatives", {
+            method: "POST",
+            body: {
+              ...body,
+              name: bannerAssets.length > 1 ? `${form.name} — ${a.width}×${a.height}` : form.name,
+              width: a.width,
+              height: a.height,
+              asset_url: a.path,
+            },
+          })
+        }
+        await mutate("/creatives")
+        setBannerAssets([])
+        setOpen(false)
+        setSaving(false)
+        return
       }
       if (type === "banner") {
         body.width = w
@@ -265,28 +333,68 @@ export default function CreativesPage() {
 
             {type === "banner" ? (
               <>
-                <Field label="Размер">
-                  <select value={form.size} onChange={(e) => setForm({ ...form, size: e.target.value })} className={inputCls}>
-                    {SIZES.map((s) => (
-                      <option key={s} value={s}>
-                        {s}
-                      </option>
+                {/* D: мультизагрузка — несколько файлов, размер определяется автоматически */}
+                <Field label="Изображения" hint="Можно выбрать несколько файлов — размеры определятся автоматически, каждый файл станет отдельным креативом">
+                  <label className="flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-md border border-dashed border-border bg-surface px-4 py-6 text-center transition-colors hover:bg-panel">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true" className="text-muted">
+                      <path d="M12 16V4m0 0l-4 4m4-4l4 4M4 20h16" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                    <span className="text-xs font-medium text-foreground">
+                      {uploading === "asset_url" ? "Загрузка…" : "Выбрать файлы (PNG, JPG, GIF, WebP)"}
+                    </span>
+                    <span className="text-[11px] text-muted">или перетащите сюда</span>
+                    <input
+                      type="file"
+                      multiple
+                      accept="image/png,image/jpeg,image/gif,image/webp"
+                      className="sr-only"
+                      onChange={(e) => uploadBannerFiles(e.target.files)}
+                    />
+                  </label>
+                </Field>
+                {bannerAssets.length > 0 ? (
+                  <div className="flex flex-wrap gap-2">
+                    {bannerAssets.map((a, i) => (
+                      <div key={`${a.path}-${i}`} className="relative rounded-md border border-border bg-surface p-1.5">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={assetUrl(a.path) || "/placeholder.svg"} alt={`Баннер ${a.width}×${a.height}`} className="max-h-20 rounded object-contain" />
+                        <p className="mt-1 text-center font-mono text-[10px] text-muted">{a.width}×{a.height}</p>
+                        <button
+                          type="button"
+                          onClick={() => setBannerAssets((prev) => prev.filter((_, j) => j !== i))}
+                          className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full border border-border bg-panel text-muted hover:text-danger"
+                          aria-label={`Убрать баннер ${a.width}×${a.height}`}
+                        >
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                            <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+                          </svg>
+                        </button>
+                      </div>
                     ))}
-                  </select>
-                </Field>
-                <Field label="Изображение" hint="Загрузите файл или укажите URL">
-                  <div className="flex items-center gap-2">
-                    <input type="url" required value={form.asset_url} onChange={(e) => setForm({ ...form, asset_url: e.target.value })} className={inputCls} placeholder="https://cdn.site.ru/banner.png" />
-                    <label className="shrink-0 cursor-pointer rounded-md border border-border bg-surface px-3 py-2 text-xs font-medium text-foreground hover:bg-panel">
-                      {uploading === "asset_url" ? "Загрузка…" : "Файл…"}
-                      <input type="file" accept="image/png,image/jpeg,image/gif,image/webp" className="sr-only" onChange={(e) => uploadFile("asset_url", e.target.files?.[0] || null)} />
-                    </label>
                   </div>
-                  {form.asset_url ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={assetUrl(form.asset_url) || "/placeholder.svg"} alt="Превью креатива" className="mt-2 max-h-24 rounded border border-border object-contain" />
-                  ) : null}
-                </Field>
+                ) : (
+                  <details className="rounded-md border border-border bg-surface px-3 py-2">
+                    <summary className="cursor-pointer text-xs text-muted">Или укажите URL изображения вручную</summary>
+                    <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <Field label="Размер">
+                        <select value={form.size} onChange={(e) => setForm({ ...form, size: e.target.value })} className={inputCls}>
+                          {SIZES.map((s) => (
+                            <option key={s} value={s}>
+                              {s}
+                            </option>
+                          ))}
+                        </select>
+                      </Field>
+                      <Field label="URL изображения">
+                        <input type="url" value={form.asset_url} onChange={(e) => setForm({ ...form, asset_url: e.target.value })} className={inputCls} placeholder="https://cdn.site.ru/banner.png" />
+                      </Field>
+                    </div>
+                    {form.asset_url ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={assetUrl(form.asset_url) || "/placeholder.svg"} alt="Превью креатива" className="mt-2 max-h-24 rounded border border-border object-contain" />
+                    ) : null}
+                  </details>
+                )}
               </>
             ) : null}
 

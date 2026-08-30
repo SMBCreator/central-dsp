@@ -392,6 +392,7 @@ export default function CampaignsPage() {
   const [listError, setListError] = useState<string | null>(null)
   const [groupFilter, setGroupFilter] = useState("")
   const [statusFilter, setStatusFilter] = useState("")
+  const [search, setSearch] = useState("")
   const [cols, setCols] = useColumns()
 
   const statsById = useMemo(() => {
@@ -405,8 +406,18 @@ export default function CampaignsPage() {
     if (groupFilter === "__none__") list = list.filter((c) => !c.group_id)
     else if (groupFilter) list = list.filter((c) => c.group_id === groupFilter)
     if (statusFilter) list = list.filter((c) => c.status === statusFilter)
+    // Поиск по названию и display_id (F2: поиск по ID в фильтрах)
+    const q = search.trim().toLowerCase()
+    if (q) {
+      list = list.filter(
+        (c) =>
+          c.name.toLowerCase().includes(q) ||
+          String(c.display_id ?? "").includes(q) ||
+          c.id.toLowerCase().includes(q),
+      )
+    }
     return list
-  }, [campaigns, groupFilter, statusFilter])
+  }, [campaigns, groupFilter, statusFilter, search])
 
   const activeCols = ALL_COLUMNS.filter((c) => cols.includes(c.key))
 
@@ -475,16 +486,37 @@ export default function CampaignsPage() {
         <GroupsTab groups={groups} campaigns={campaigns} />
       ) : (
         <Card>
-          <div className="flex flex-wrap items-center justify-between gap-3 px-6 pb-2 pt-5">
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-sm font-semibold text-foreground">Все кампании</h2>
-              {campaigns ? <span className="font-mono text-[11px] text-muted">{visible.length} из {campaigns.length}</span> : null}
+          {/* B2: горизонтальная панель — фильтры слева в ряд, действия справа */}
+          <div className="flex flex-wrap items-center gap-2 px-6 pb-2 pt-5">
+            <div className="w-56">
+              <input
+                type="search"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Поиск: название или ID"
+                className={`${inputCls} h-8 py-0`}
+                aria-label="Поиск кампаний по названию или ID"
+              />
             </div>
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="w-36">
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className={`${inputCls} h-8 py-0`}
+                aria-label="Фильтр по статусу"
+              >
+                <option value="">Все статусы</option>
+                <option value="active">Активные</option>
+                <option value="paused">На паузе</option>
+                <option value="draft">Черновики</option>
+                <option value="archived">Архив</option>
+              </select>
+            </div>
+            <div className="w-40">
               <select
                 value={groupFilter}
                 onChange={(e) => setGroupFilter(e.target.value)}
-                className={`${inputCls} h-8 w-auto min-w-36 py-0`}
+                className={`${inputCls} h-8 py-0`}
                 aria-label="Фильтр по группе"
               >
                 <option value="">Все группы</option>
@@ -495,18 +527,19 @@ export default function CampaignsPage() {
                   </option>
                 ))}
               </select>
-              <select
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value)}
-                className={`${inputCls} h-8 w-auto min-w-32 py-0`}
-                aria-label="Фильтр по статусу"
+            </div>
+            <div className="ml-auto flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => mutate("/campaigns")}
+                className="flex h-8 w-8 items-center justify-center rounded-md border border-border text-muted transition-colors hover:text-foreground"
+                aria-label="Обновить список"
+                title="Обновить список"
               >
-                <option value="">Все статусы</option>
-                <option value="active">Активные</option>
-                <option value="paused">На паузе</option>
-                <option value="draft">Черновики</option>
-                <option value="archived">Архив</option>
-              </select>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M21 12a9 9 0 11-2.64-6.36M21 3v6h-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
               <ColumnsPicker cols={cols} onChange={setCols} />
             </div>
           </div>
@@ -530,7 +563,7 @@ export default function CampaignsPage() {
                   <thead>
                     <tr className="border-b border-border text-left">
                       <th className="px-4 py-2.5 text-xs font-medium text-muted">Кампания</th>
-                      <th className="px-4 py-2.5 text-xs font-medium text-muted">Статус</th>
+                      <th className="px-4 py-2.5 text-xs font-medium text-muted">Стат��с</th>
                       {activeCols.map((c) => (
                         <th key={c.key} className="px-4 py-2.5 text-xs font-medium text-muted">
                           {c.label}
@@ -572,6 +605,14 @@ export default function CampaignsPage() {
                       </tr>
                     ))}
                   </tbody>
+                  <tfoot>
+                    <tr className="border-t border-border">
+                      <td colSpan={activeCols.length + 3} className="px-4 py-2.5 text-xs text-muted">
+                        Всего: {visible.length}
+                        {campaigns && visible.length !== campaigns.length ? ` (отфильтровано из ${campaigns.length})` : ""}
+                      </td>
+                    </tr>
+                  </tfoot>
                 </table>
               </div>
             ) : (
