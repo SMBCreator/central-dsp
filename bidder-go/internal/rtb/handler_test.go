@@ -195,6 +195,28 @@ func TestEventTokenRoundtrip(t *testing.T) {
 	}
 }
 
+// BenchmarkBidHotPath измеряет latency/аллокации горячего пути принятия
+// решения о ставке (degraded mode без Redis): парсинг запроса, матчинг
+// таргетинга, сборка adm с erid, подпись nurl. Служит ориентиром для
+// нагрузочного профиля и регрессий производительности в CI.
+func BenchmarkBidHotPath(b *testing.B) {
+	h := newTestHandler(testSnapshot())
+	body := `{"id":"r2","at":1,"imp":[{"id":"1","banner":{"w":300,"h":250},"bidfloor":10.5}],
+		"site":{"domain":"news.example","cat":["IAB12"]},
+		"device":{"ua":"Mozilla","os":"android","devicetype":1,"geo":{"country":"RUS"},"ifa":"ifa-1"}}`
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		r := httptest.NewRequest(http.MethodPost, "/rtb/bid/key1", strings.NewReader(body))
+		r.SetPathValue("endpointKey", "key1")
+		w := httptest.NewRecorder()
+		h.Bid(w, r)
+		if w.Code != http.StatusOK {
+			b.Fatalf("want 200, got %d", w.Code)
+		}
+	}
+}
+
 func TestHealthz(t *testing.T) {
 	h := newTestHandler(testSnapshot())
 	r := httptest.NewRequest(http.MethodGet, "/healthz", nil)
