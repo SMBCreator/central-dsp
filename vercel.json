@@ -1,0 +1,20 @@
+{
+  "crons": [
+    { "path": "/api/cron/rules", "schedule": "0 6 * * *" },
+    { "path": "/api/cron/reset-daily", "schedule": "0 21 * * *" },
+    { "path": "/api/cron/optimize", "schedule": "0 7 * * *" }
+  ],
+  "services": {
+    "frontend": {
+      "root": "frontend/"
+    },
+    "backend": {
+      "root": "backend/",
+      "entrypoint": "main:app"
+    }
+  },
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": { "service": "backend" } },
+    { "source": "/(.*)", "destination": { "service": "frontend" } }
+  ]
+}
