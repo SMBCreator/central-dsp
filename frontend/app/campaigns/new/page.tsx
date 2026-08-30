@@ -4,7 +4,7 @@ import { useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
 import useSWR from "swr"
 import { api, fetcher } from "@/lib/api"
-import { Button, Card, CardHeader, Field, inputCls } from "@/components/ui"
+import { Button, Card, CardHeader, Field, HelpTip, inputCls } from "@/components/ui"
 import { CreativeBuilder, type CreativeDraft, FORMAT_LABELS } from "@/components/creative-builder"
 import { TargetingEditor, targetingSummary } from "@/components/targeting-editor"
 import type { Targeting } from "@/lib/types"
@@ -208,7 +208,7 @@ export default function NewCampaignPage() {
       {step === 1 ? (
         <Card>
           <CardHeader title="Основные настройки" subtitle={`Формат: ${FORMAT_LABELS[format] || format}`} />
-          <div className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2 lg:grid-cols-3">
             <Field label="Название кампании">
               <input value={name} onChange={(e) => setName(e.target.value)} className={inputCls} placeholder="Осенняя распродажа" />
             </Field>
@@ -269,7 +269,10 @@ export default function NewCampaignPage() {
             </Field>
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <span className="text-sm font-medium text-foreground">Частотные капы</span>
+                <span className="flex items-center gap-1.5 text-sm font-medium text-foreground">
+                  Частотные капы
+                  <HelpTip text="Ограничение показов одному пользователю. До 3 окон — например, 3 показа в день и 10 в неделю. Пусто — без лимита." />
+                </span>
                 {freqCaps.length < 3 ? (
                   <button
                     type="button"
@@ -280,9 +283,7 @@ export default function NewCampaignPage() {
                   </button>
                 ) : null}
               </div>
-              {freqCaps.length === 0 ? (
-                <p className="text-xs text-muted-foreground">{"Без лимита. Добавьте до 3 окон — например, 3 показа в день и 10 в неделю."}</p>
-              ) : null}
+              {freqCaps.length === 0 ? <p className="text-xs text-muted-foreground">Без лимита</p> : null}
               {freqCaps.map((w, i) => (
                 <div key={i} className="flex items-end gap-2">
                   <div className="flex-1">
@@ -323,11 +324,9 @@ export default function NewCampaignPage() {
             </div>
             <label className="flex items-start gap-2 text-sm text-foreground">
               <input type="checkbox" checked={bidShading} onChange={(e) => setBidShading(e.target.checked)} className="mt-0.5 h-4 w-4 rounded border-border" />
-              <span>
+              <span className="flex items-center gap-1.5">
                 Bid-шейдинг
-                <span className="block text-xs text-muted-foreground">
-                  {"Автоматически снижает ставку ближе к реальной цене клиринга (first-price). Экономия 15–30% без потери объёма — факторы пересчитываются ежечасно по каждой SSP."}
-                </span>
+                <HelpTip text="Автоматически снижает ставку ближе к реальной цене клиринга (first-price). Экономия 15–30% без потери объёма — факторы пересчитываются ежечасно по каждой SSP." />
               </span>
             </label>
           </div>
@@ -338,7 +337,7 @@ export default function NewCampaignPage() {
         <div className="space-y-4">
           <Card>
             <CardHeader title="Бюджет и ставка" subtitle="Ставка используется биддером в RTB-аукционе" />
-            <div className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2">
+            <div className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2 lg:grid-cols-3">
               <Field label="Дневной бюджет, ₽">
                 <input type="number" min="1" step="1" value={dailyBudget} onChange={(e) => setDailyBudget(e.target.value)} className={inputCls} placeholder="100" />
               </Field>

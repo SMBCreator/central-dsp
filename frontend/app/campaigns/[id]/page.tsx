@@ -18,7 +18,7 @@ import {
   type StatsSummary,
   type Targeting,
 } from "@/lib/types"
-import { Button, Card, CardHeader, EmptyState, Field, inputCls, KpiCard, Modal, Spinner, StatusBadge, Table } from "@/components/ui"
+import { Button, Card, CardHeader, EmptyState, Field, HelpTip, inputCls, KpiCard, Modal, Spinner, StatusBadge, Table } from "@/components/ui"
 import { DEVICES, TargetingEditor } from "@/components/targeting-editor"
 
 type PixelRow = { id: string; name: string; domain: string }
@@ -157,7 +157,10 @@ function SettingsCard({ campaign }: { campaign: CampaignExt }) {
 
         <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <span className="text-sm font-medium text-foreground">Частотные капы</span>
+            <span className="flex items-center gap-1.5 text-sm font-medium text-foreground">
+              Частотные капы
+              <HelpTip text="Ограничение показов одному пользователю. До 3 окон — например, 3 показа в день и 10 в неделю. Пусто — без лимита." />
+            </span>
             {freqCaps.length < 3 ? (
               <button
                 type="button"
@@ -168,9 +171,7 @@ function SettingsCard({ campaign }: { campaign: CampaignExt }) {
               </button>
             ) : null}
           </div>
-          {freqCaps.length === 0 ? (
-            <p className="text-xs text-muted">{"Без лимита. Добавьте до 3 окон — например, 3 показа в день и 10 в неделю."}</p>
-          ) : null}
+          {freqCaps.length === 0 ? <p className="text-xs text-muted">Без лимита</p> : null}
           {freqCaps.map((w, i) => (
             <div key={i} className="flex max-w-md items-end gap-2">
               <div className="flex-1">
@@ -212,11 +213,9 @@ function SettingsCard({ campaign }: { campaign: CampaignExt }) {
             onChange={(e) => setBidShading(e.target.checked)}
             className="mt-0.5 h-4 w-4 rounded border-border accent-current"
           />
-          <span className="text-sm text-foreground">
+          <span className="flex items-center gap-1.5 text-sm text-foreground">
             Bid-шейдинг
-            <span className="block text-xs text-muted">
-              {"Автоматически снижает ставку ближе к цене клиринга (first-price). Экономия 15–30% без потери объёма."}
-            </span>
+            <HelpTip text="Автоматически снижает ставку ближе к цене клиринга (first-price). Экономия 15–30% без потери объёма." />
           </span>
         </label>
 
@@ -342,7 +341,7 @@ function OptimizationCard({ campaign }: { campaign: Campaign }) {
         <label className="flex cursor-pointer items-center gap-2.5">
           <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} className="h-4 w-4 rounded border-border accent-current" />
           <span className="text-sm text-foreground">Автооптимизация</span>
-          <span className="text-xs text-muted">— ежечасно блокировать площадки со скликиванием, нулевой вовлечённостью и дорогими кликами/конверсиями</span>
+          <HelpTip text="Ежечасно блокировать площадки со скликиванием, нулевой вовлечённостью и дорогими кликами/конверсиями." />
         </label>
         <div className="flex items-center gap-3">
           <Button onClick={saveOpt} disabled={saving}>

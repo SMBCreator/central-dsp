@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react"
 import { Field, inputCls } from "@/components/ui"
 import { MultiSelect } from "@/components/multi-select"
+import { GeoDrawer } from "@/components/geo-panel"
 import useSWR from "swr"
 import { fetcher } from "@/lib/api"
 import { IAB_CATEGORIES, type Targeting } from "@/lib/types"
@@ -158,13 +159,13 @@ function norm(next: string[]): string[] | undefined {
   return next.length ? next : undefined
 }
 
-/* ---------- C2: секция-аккордеон таргетинга ---------- */
+/* ---------- Секция таргетинга: плоская, всегда раскрыта (структура как на Авито) ---------- */
 
 function TargetSection({
   title,
   summary,
   onReset,
-  defaultOpen = false,
+  defaultOpen: _defaultOpen = false,
   children,
 }: {
   title: string
@@ -173,44 +174,24 @@ function TargetSection({
   defaultOpen?: boolean
   children: ReactNode
 }) {
-  const [open, setOpen] = useState(defaultOpen)
+  const isDefault = /^(Весь мир|Все устройства и среды|Весь инвентарь|Все пользователи|Круглосуточно|Любой слот|Без ограничений)$/.test(summary)
   return (
-    <div className="rounded-lg border border-border">
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          aria-expanded={open}
-          className="flex flex-1 items-center justify-between gap-3 px-4 py-3 text-left"
-        >
-          <div className="min-w-0">
-            <p className="text-sm font-semibold text-foreground">{title}</p>
-            {!open ? <p className="mt-0.5 truncate text-xs text-muted">{summary}</p> : null}
-          </div>
-          <svg
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            aria-hidden="true"
-            className={`shrink-0 text-muted transition-transform ${open ? "rotate-180" : ""}`}
-          >
-            <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </button>
-        {open ? (
+    <section className="rounded-xl border border-border bg-card p-5">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <h3 className="text-base font-bold text-foreground">{title}</h3>
+        {!isDefault ? (
           <button
             type="button"
             onClick={onReset}
-            className="mr-3 shrink-0 rounded px-2 py-1 text-xs font-medium text-muted transition-colors hover:text-danger"
+            className="shrink-0 rounded px-2 py-1 text-xs font-medium text-muted transition-colors hover:text-danger"
             title="Сбросить все поля секции"
           >
-            Сбросить секцию
+            Сбросить
           </button>
         ) : null}
       </div>
-      {open ? <div className="space-y-4 border-t border-border px-4 py-4">{children}</div> : null}
-    </div>
+      <div className="space-y-4">{children}</div>
+    </section>
   )
 }
 
@@ -294,74 +275,101 @@ export function TargetingEditor({
   onChange: (t: Targeting) => void
 }) {
   const set = (patch: Partial<Targeting>) => onChange({ ...value, ...patch })
+  const [geoOpen, setGeoOpen] = useState(false)
   const { data: sspList } = useSWR<{ id: string; name: string; status: string }[]>("/supply-partners", fetcher)
   const { data: audList } = useSWR<{ id: string; name: string; members: number; is_active: boolean }[]>("/audiences", fetcher)
-  const ruSelected = (value.geo_countries || []).includes("RU")
+  const ruSelected =
+    (value.geo_countries || []).includes("RU") || !!value.geo_regions?.length || !!value.geo_cities?.length
 
   return (
     <div className="space-y-3">
-      {/* --- География --- */}
+      {/* --- География: поле-триггер + выезжающая справа панель (как на Авито) --- */}
       <TargetSection
         title="География"
         summary={geoSummary(value)}
         defaultOpen
         onReset={() => set({ geo_countries: undefined, geo_regions: undefined, geo_cities: undefined })}
       >
-        <Field label="Гео-таргетинг" hint="Поиск: страна, регион или город — от 2 букв. Пусто — весь мир">
-          <div className="space-y-2">
-            <GeoSearch
-              onPick={(it) => {
-                if (it.kind === "country") set({ geo_countries: addUnique(value.geo_countries, it.value) })
-                else if (it.kind === "region") set({ geo_regions: addUnique(value.geo_regions, it.value) })
-                else set({ geo_cities: addUnique(value.geo_cities, it.value) })
-              }}
-            />
-            <div className="flex flex-wrap gap-1.5">
-              {COUNTRIES.map((c) => (
-                <Chip key={c} active={(value.geo_countries || []).includes(c)} onClick={() => set({ geo_countries: toggle(value.geo_countries, c) })}>
-                  {c}
-                </Chip>
-              ))}
-            </div>
-            {(value.geo_countries?.length || value.geo_regions?.length || value.geo_cities?.length) ? (
-              <div className="flex flex-wrap gap-1.5 rounded-md border border-border bg-surface p-2">
-                {(value.geo_countries || []).map((c) => (
-                  <button
-                    key={`c-${c}`}
-                    type="button"
-                    onClick={() => set({ geo_countries: removeVal(value.geo_countries, c) })}
-                    className="inline-flex items-center gap-1 rounded-full bg-primary px-2.5 py-0.5 text-xs font-medium text-primary-foreground"
-                    title="Убрать страну"
-                  >
-                    {c} <span aria-hidden>×</span>
-                  </button>
-                ))}
-                {(value.geo_regions || []).map((r) => (
-                  <button
-                    key={`r-${r}`}
-                    type="button"
-                    onClick={() => set({ geo_regions: removeVal(value.geo_regions, r) })}
-                    className="inline-flex items-center gap-1 rounded-full bg-accent/15 px-2.5 py-0.5 text-xs font-medium text-accent"
-                    title="Убрать регион"
-                  >
-                    {r} <span aria-hidden>×</span>
-                  </button>
-                ))}
-                {(value.geo_cities || []).map((c) => (
-                  <button
-                    key={`ct-${c}`}
-                    type="button"
-                    onClick={() => set({ geo_cities: removeVal(value.geo_cities, c) })}
-                    className="inline-flex items-center gap-1 rounded-full bg-panel px-2.5 py-0.5 text-xs font-medium text-foreground"
-                    title="Убрать город"
-                  >
-                    {c} <span aria-hidden>×</span>
-                  </button>
-                ))}
-              </div>
-            ) : null}
-          </div>
+        <Field label="Регионы и города показа" hint="Нажмите на поле — справа откроется список регионов и городов России. Пусто — показ без гео-ограничений">
+          <button
+            type="button"
+            onClick={() => setGeoOpen(true)}
+            aria-haspopup="dialog"
+            className="flex min-h-10 w-full items-center justify-between gap-2 rounded-lg border border-input bg-card px-2 py-1.5 text-left transition-colors hover:border-muted"
+          >
+            <span className="flex min-w-0 flex-wrap items-center gap-1.5">
+              {!value.geo_regions?.length && !value.geo_cities?.length ? (
+                <span className="rounded-md bg-panel px-2.5 py-1 text-sm font-medium text-foreground">
+                  Все регионы и города
+                </span>
+              ) : (
+                <>
+                  {(value.geo_regions || []).map((r) => (
+                    <span
+                      key={`r-${r}`}
+                      role="button"
+                      tabIndex={0}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        set({ geo_regions: removeVal(value.geo_regions, r) })
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          set({ geo_regions: removeVal(value.geo_regions, r) })
+                        }
+                      }}
+                      className="inline-flex cursor-pointer items-center gap-1 rounded-md bg-panel px-2.5 py-1 text-sm font-medium text-foreground hover:bg-border"
+                      title="Убрать регион"
+                    >
+                      {r} <span aria-hidden className="text-muted">×</span>
+                    </span>
+                  ))}
+                  {(value.geo_cities || []).map((c) => (
+                    <span
+                      key={`ct-${c}`}
+                      role="button"
+                      tabIndex={0}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        set({ geo_cities: removeVal(value.geo_cities, c) })
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          set({ geo_cities: removeVal(value.geo_cities, c) })
+                        }
+                      }}
+                      className="inline-flex cursor-pointer items-center gap-1 rounded-md bg-accent/10 px-2.5 py-1 text-sm font-medium text-accent hover:bg-accent/20"
+                      title="Убрать город"
+                    >
+                      {c} <span aria-hidden>×</span>
+                    </span>
+                  ))}
+                </>
+              )}
+            </span>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true" className="shrink-0 text-muted">
+              <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
         </Field>
+        <GeoDrawer
+          open={geoOpen}
+          onClose={() => setGeoOpen(false)}
+          regions={value.geo_regions || []}
+          cities={value.geo_cities || []}
+          onApply={({ regions, cities }) =>
+            set({
+              geo_regions: regions.length ? regions : undefined,
+              geo_cities: cities.length ? cities : undefined,
+              // регионы/города РФ подразумевают показ в России
+              geo_countries: regions.length || cities.length ? addUnique(value.geo_countries, "RU") : value.geo_countries,
+            })
+          }
+        />
         {ruSelected ? (
           <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-400">
             Выбрана Россия: по закону о рекламе перед запуском потребуется маркировка — заполните
@@ -625,11 +633,31 @@ export function TargetingEditor({
             />
           </Field>
           <Field label="Пол">
-            <div className="flex flex-wrap gap-1.5 pt-1.5">
+            <div className="grid grid-cols-3 gap-1.5">
+              <button
+                type="button"
+                onClick={() => set({ genders: undefined })}
+                className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
+                  !value.genders?.length
+                    ? "border-foreground bg-card text-foreground"
+                    : "border-border bg-panel text-muted hover:text-foreground"
+                }`}
+              >
+                Любой
+              </button>
               {GENDERS.map((g) => (
-                <Chip key={g.value} active={(value.genders || []).includes(g.value)} onClick={() => set({ genders: toggle(value.genders, g.value) })}>
+                <button
+                  key={g.value}
+                  type="button"
+                  onClick={() => set({ genders: toggle(value.genders, g.value) })}
+                  className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
+                    (value.genders || []).includes(g.value)
+                      ? "border-foreground bg-card text-foreground"
+                      : "border-border bg-panel text-muted hover:text-foreground"
+                  }`}
+                >
                   {g.label}
-                </Chip>
+                </button>
               ))}
             </div>
           </Field>

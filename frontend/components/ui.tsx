@@ -176,6 +176,29 @@ export function PillTabs<T extends string>({
   )
 }
 
+/** Подсказка под знаком «?» — раскрывается по наведению/фокусу, не занимает место в форме. */
+export function HelpTip({ text }: { text: string }) {
+  return (
+    <span className="group relative inline-flex">
+      <button
+        type="button"
+        tabIndex={0}
+        aria-label={`Подсказка: ${text}`}
+        className="flex h-4 w-4 items-center justify-center rounded-full bg-panel text-[10px] font-semibold leading-none text-muted transition-colors hover:bg-border hover:text-foreground focus:bg-border focus:text-foreground focus:outline-none"
+        onClick={(e) => e.preventDefault()}
+      >
+        ?
+      </button>
+      <span
+        role="tooltip"
+        className="pointer-events-none invisible absolute bottom-full left-1/2 z-40 mb-1.5 w-56 -translate-x-1/2 rounded-md border border-border bg-card px-2.5 py-1.5 text-left text-xs font-normal leading-relaxed text-foreground opacity-0 shadow-lg transition-opacity group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100"
+      >
+        {text}
+      </span>
+    </span>
+  )
+}
+
 export function Field({
   label,
   children,
@@ -187,9 +210,11 @@ export function Field({
 }) {
   return (
     <label className="block">
-      <span className="mb-1.5 block text-xs font-medium text-foreground">{label}</span>
+      <span className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-foreground">
+        {label}
+        {hint ? <HelpTip text={hint} /> : null}
+      </span>
       {children}
-      {hint ? <span className="mt-1 block text-xs text-muted">{hint}</span> : null}
     </label>
   )
 }
