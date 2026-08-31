@@ -56,6 +56,7 @@ async def summary(hours: int = 24, campaign_id: str | None = None, user: dict = 
           COALESCE(SUM(s.wins), 0)        AS wins,
           COALESCE(SUM(s.impressions), 0) AS impressions,
           COALESCE(SUM(s.clicks), 0)      AS clicks,
+          COALESCE(SUM(s.viewable_imps), 0) AS viewable_imps,
           COALESCE(SUM(s.spend), 0)       AS spend
         FROM stats_hourly s
         JOIN campaigns c ON c.id = s.campaign_id
@@ -75,16 +76,19 @@ async def summary(hours: int = 24, campaign_id: str | None = None, user: dict = 
     )
     bids, wins = int(row["bids"]), int(row["wins"])
     imps, clicks = int(row["impressions"]), int(row["clicks"])
+    viewable = int(row["viewable_imps"])
     spend = float(row["spend"]) * mult
     return {
         "bids": bids,
         "wins": wins,
         "impressions": imps,
         "clicks": clicks,
+        "viewable_imps": viewable,
         "spend": round(spend, 4),
         "win_rate": round(wins / bids * 100, 2) if bids else 0,
         "ctr": round(clicks / imps * 100, 3) if imps else 0,
         "ecpm": round(spend / imps * 1000, 2) if imps else 0,
+        "viewability": round(viewable / imps * 100, 1) if imps else 0,
         **{k: int(v) for k, v in dict(counts).items()},
     }
 
@@ -176,7 +180,8 @@ _DIMENSIONS = {
         SELECT c.id, c.name, c.status,
                COALESCE(SUM(s.bids), 0) AS bids, COALESCE(SUM(s.wins), 0) AS wins,
                COALESCE(SUM(s.impressions), 0) AS impressions,
-               COALESCE(SUM(s.clicks), 0) AS clicks, COALESCE(SUM(s.spend), 0) AS spend
+               COALESCE(SUM(s.clicks), 0) AS clicks, COALESCE(SUM(s.spend), 0) AS spend,
+               COALESCE(SUM(s.viewable_imps), 0) AS viewable_imps
         FROM campaigns c
         LEFT JOIN stats_hourly s ON s.campaign_id = c.id AND s.ts_hour >= now() - ($2 || ' hours')::interval
         WHERE c.user_id = ANY($1::uuid[])
@@ -189,7 +194,8 @@ _DIMENSIONS = {
         SELECT p.id, p.name, p.status,
                COALESCE(SUM(s.bids), 0) AS bids, COALESCE(SUM(s.wins), 0) AS wins,
                COALESCE(SUM(s.impressions), 0) AS impressions,
-               COALESCE(SUM(s.clicks), 0) AS clicks, COALESCE(SUM(s.spend), 0) AS spend
+               COALESCE(SUM(s.clicks), 0) AS clicks, COALESCE(SUM(s.spend), 0) AS spend,
+               COALESCE(SUM(s.viewable_imps), 0) AS viewable_imps
         FROM supply_partners p
         LEFT JOIN stats_hourly s ON s.supply_partner_id = p.id AND s.ts_hour >= now() - ($2 || ' hours')::interval
         WHERE p.user_id = ANY($1::uuid[])
@@ -202,7 +208,8 @@ _DIMENSIONS = {
         SELECT cr.id, cr.name, cr.status,
                COALESCE(SUM(s.bids), 0) AS bids, COALESCE(SUM(s.wins), 0) AS wins,
                COALESCE(SUM(s.impressions), 0) AS impressions,
-               COALESCE(SUM(s.clicks), 0) AS clicks, COALESCE(SUM(s.spend), 0) AS spend
+               COALESCE(SUM(s.clicks), 0) AS clicks, COALESCE(SUM(s.spend), 0) AS spend,
+               COALESCE(SUM(s.viewable_imps), 0) AS viewable_imps
         FROM creatives cr
         LEFT JOIN stats_hourly s ON s.creative_id = cr.id AND s.ts_hour >= now() - ($2 || ' hours')::interval
         WHERE cr.user_id = ANY($1::uuid[])
@@ -221,10 +228,11 @@ async def domain_breakdown(hours: int = 168, limit: int = 100, user: dict = Depe
     rows = await pool.fetch(
         """
         SELECT d.domain,
-               sum(d.wins)        AS wins,
-               sum(d.impressions) AS impressions,
-               sum(d.clicks)      AS clicks,
-               sum(d.spend)       AS spend
+               sum(d.wins)          AS wins,
+               sum(d.impressions)   AS impressions,
+               sum(d.clicks)        AS clicks,
+               sum(d.viewable_imps) AS viewable_imps,
+               sum(d.spend)         AS spend
         FROM domain_stats_hourly d
         JOIN campaigns c ON c.id = d.campaign_id
         WHERE c.user_id = ANY($1::uuid[]) AND d.ts_hour >= now() - ($2 || ' hours')::interval
@@ -241,6 +249,7 @@ async def domain_breakdown(hours: int = 168, limit: int = 100, user: dict = Depe
     return [
         {"domain": r["domain"], "wins": int(r["wins"]), "impressions": int(r["impressions"]),
          "clicks": int(r["clicks"]), "spend": round(float(r["spend"]) * mult, 4),
+         "viewability": round(int(r["viewable_imps"] or 0) / int(r["impressions"]) * 100, 1) if int(r["impressions"]) else 0,
          "blacklisted": r["domain"] in blocked_set}
         for r in rows
     ]
@@ -303,16 +312,19 @@ async def breakdown(hours: int = 168, dimension: str = "campaign", user: dict = 
     for r in rows:
         bids, wins = int(r["bids"]), int(r["wins"])
         imps, clicks = int(r["impressions"]), int(r["clicks"])
+        viewable = int(r["viewable_imps"] or 0)
         spend = float(r["spend"])
         out.append({
             "id": str(r["id"]),
             "name": r["name"],
             "status": r["status"],
             "bids": bids, "wins": wins, "impressions": imps, "clicks": clicks,
+            "viewable_imps": viewable,
             "spend": round(spend, 4),
             "win_rate": round(wins / bids * 100, 2) if bids else 0,
             "ctr": round(clicks / imps * 100, 3) if imps else 0,
             "ecpm": round(spend / imps * 1000, 2) if imps else 0,
+            "viewability": round(viewable / imps * 100, 1) if imps else 0,
         })
     return out
 
@@ -434,6 +446,7 @@ async def report(body: ReportRequest, user: dict = Depends(current_user)):
                    count(*) FILTER (WHERE e.event_type = 'win')        AS wins,
                    count(*) FILTER (WHERE e.event_type = 'impression') AS impressions,
                    count(*) FILTER (WHERE e.event_type = 'click')      AS clicks,
+                   count(*) FILTER (WHERE e.event_type = 'viewable')   AS viewable_imps,
                    COALESCE(sum(e.clear_price) FILTER (WHERE e.event_type = 'impression'), 0) / 1000.0 AS spend,
                    0::bigint AS conversions
             FROM bid_events e
@@ -452,6 +465,7 @@ async def report(body: ReportRequest, user: dict = Depends(current_user)):
                    COALESCE(sum(s.wins), 0)        AS wins,
                    COALESCE(sum(s.impressions), 0) AS impressions,
                    COALESCE(sum(s.clicks), 0)      AS clicks,
+                   COALESCE(sum(s.viewable_imps), 0) AS viewable_imps,
                    COALESCE(sum(s.spend), 0)       AS spend,
                    COALESCE(sum(s.conversions), 0) AS conversions
             FROM stats_hourly s
@@ -472,7 +486,7 @@ async def report(body: ReportRequest, user: dict = Depends(current_user)):
                 name_maps[kind] = {str(r["id"]): r["name"] for r in nrows}
 
     out_rows = []
-    tot = {"bids": 0, "wins": 0, "impressions": 0, "clicks": 0, "spend": 0.0, "conversions": 0}
+    tot = {"bids": 0, "wins": 0, "impressions": 0, "clicks": 0, "viewable_imps": 0, "spend": 0.0, "conversions": 0}
     for r in recs:
         row: dict = {}
         for i, g in enumerate(groupings):
@@ -487,6 +501,7 @@ async def report(body: ReportRequest, user: dict = Depends(current_user)):
         m = {
             "bids": int(r["bids"]), "wins": int(r["wins"]),
             "impressions": int(r["impressions"]), "clicks": int(r["clicks"]),
+            "viewable_imps": int(r["viewable_imps"] or 0),
             "spend": float(r["spend"]), "conversions": int(r["conversions"]),
         }
         m["win_rate"] = round(m["wins"] / m["bids"] * 100, 2) if m["bids"] else 0.0
@@ -494,6 +509,7 @@ async def report(body: ReportRequest, user: dict = Depends(current_user)):
         m["cpm"] = round(m["spend"] / m["impressions"] * 1000, 4) if m["impressions"] else 0.0
         m["cpc"] = round(m["spend"] / m["clicks"], 4) if m["clicks"] else 0.0
         m["cpa"] = round(m["spend"] / m["conversions"], 4) if m["conversions"] else 0.0
+        m["viewability"] = round(m["viewable_imps"] / m["impressions"] * 100, 1) if m["impressions"] else 0.0
         row.update(m)
         out_rows.append(row)
         for k in tot:
@@ -505,5 +521,6 @@ async def report(body: ReportRequest, user: dict = Depends(current_user)):
     totals["cpm"] = round(totals["spend"] / totals["impressions"] * 1000, 4) if totals["impressions"] else 0.0
     totals["cpc"] = round(totals["spend"] / totals["clicks"], 4) if totals["clicks"] else 0.0
     totals["cpa"] = round(totals["spend"] / totals["conversions"], 4) if totals["conversions"] else 0.0
+    totals["viewability"] = round(totals["viewable_imps"] / totals["impressions"] * 100, 1) if totals["impressions"] else 0.0
     totals["spend"] = round(totals["spend"], 4)
     return {"rows": out_rows, "totals": totals}

@@ -215,10 +215,12 @@ export interface BreakdownRow {
   wins: number
   impressions: number
   clicks: number
+  viewable_imps?: number
   spend: number
   win_rate: number
   ctr: number
   ecpm: number
+  viewability?: number
 }
 
 // H7: единый формат денег по ТЗ — «12 500,50 ₽», разряды пробелами

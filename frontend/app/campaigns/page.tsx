@@ -27,6 +27,7 @@ type BreakdownRow = {
   clicks: number
   ctr: number
   spend: number
+  viewability?: number
 }
 type CampaignExt = Campaign & { group_id?: string | null }
 
@@ -57,7 +58,7 @@ const ALL_COLUMNS: ColumnDef[] = [
   {
     key: "win_rate",
     label: "Win rate",
-    render: (_c, s) => <span className="font-mono text-xs">{s && s.bids > 0 ? fmtPct(s.wins / s.bids) : "—"}</span>,
+    render: (_c, s) => <span className="font-mono text-xs">{s && s.bids > 0 ? fmtPct((s.wins / s.bids) * 100) : "—"}</span>,
   },
   {
     key: "cpm",
@@ -70,6 +71,13 @@ const ALL_COLUMNS: ColumnDef[] = [
     key: "cpc",
     label: "CPC",
     render: (_c, s) => <span className="font-mono text-xs">{s && s.clicks > 0 ? fmtMoney(s.spend / s.clicks) : "—"}</span>,
+  },
+  {
+    key: "viewability",
+    label: "Viewability",
+    render: (_c, s) => (
+      <span className="font-mono text-xs">{s && s.impressions > 0 && s.viewability != null ? fmtPct(s.viewability) : "—"}</span>
+    ),
   },
 ]
 

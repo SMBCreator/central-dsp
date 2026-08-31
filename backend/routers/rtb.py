@@ -422,17 +422,30 @@ def _build_adm(creative: dict, base: str, bid_id: str) -> str:
     erid_label = _build_ad_info_badge(creative)
     click_url = f"{base}/api/rtb/click?bid={bid_id}&r={creative.get('click_url') or ''}"
     imp_pixel = f"{base}/api/rtb/imp?bid={bid_id}"
+    view_url = f"{base}/api/rtb/view?bid={bid_id}"
     if creative["type"] == "banner":
         click_js = (
             f' onclick="(new Image()).src=\'{third_click}\'"' if third_click else ""
         )
+        # MRC viewability: >=50% площади в зоне видимости непрерывно >=1 сек.
+        # IntersectionObserver с фолбэком «страница видима» для старых webview.
+        wrap_id = f"cdsp_{bid_id[:24]}"
+        view_script = (
+            f'<script>(function(){{var f=0,t=null,el=document.getElementById("{wrap_id}");'
+            f'function fire(){{if(f)return;f=1;(new Image()).src="{view_url}";}}'
+            f'if(el&&"IntersectionObserver"in window){{'
+            f'var o=new IntersectionObserver(function(es){{es.forEach(function(e){{'
+            f'if(e.intersectionRatio>=0.5){{if(!t)t=setTimeout(function(){{fire();o.disconnect();}},1000);}}'
+            f'else if(t){{clearTimeout(t);t=null;}}}});}},{{threshold:[0,0.5]}});o.observe(el);}}'
+            f'else{{setTimeout(fire,1000);}}}})();</script>'
+        )
         if creative.get("html_snippet"):
-            return (creative["html_snippet"] + erid_label
-                    + f'<img src="{imp_pixel}" width="1" height="1" style="display:none"/>' + third_imp_px)
+            return (f'<div id="{wrap_id}">' + creative["html_snippet"] + erid_label + "</div>"
+                    + f'<img src="{imp_pixel}" width="1" height="1" style="display:none"/>' + third_imp_px + view_script)
         return (
-            f'<a href="{click_url}" target="_blank"{click_js}>'
+            f'<div id="{wrap_id}"><a href="{click_url}" target="_blank"{click_js}>'
             f'<img src="{creative.get("asset_url") or ""}" width="{creative.get("width")}" height="{creative.get("height")}" alt=""/></a>'
-            f'{erid_label}<img src="{imp_pixel}" width="1" height="1" style="display:none"/>' + third_imp_px
+            f'{erid_label}</div><img src="{imp_pixel}" width="1" height="1" style="display:none"/>' + third_imp_px + view_script
         )
     if creative["type"] in ("native", "push"):
         # push over RTB is native markup: title + body + icon + main image.
@@ -441,6 +454,9 @@ def _build_adm(creative: dict, base: str, bid_id: str) -> str:
                 "link": {"url": click_url,
                          **({"clicktrackers": [third_click]} if third_click else {})},
                 "imptrackers": [imp_pixel] + ([third_imp] if third_imp else []),
+                # OpenRTB Native 1.2: event=2 (viewable MRC 50%), method=1 (img-пиксель).
+                # Площадка дёргает URL, когда карточка проходит порог видимости.
+                "eventtrackers": [{"event": 2, "methods": [1], "url": view_url}],
                 "assets": [
                     {"id": 1, "title": {"text": creative.get("native_title") or ""}},
                     {"id": 2, "data": {"type": 2, "value": creative.get("native_description") or ""}},
@@ -1095,6 +1111,36 @@ async def impression(bid: str):
 
 _PIXEL = bytes.fromhex("47494638396101000100800000ffffff00000021f90401000000002c00000000010001000002024401003b")
 
+
+@router.get("/view")
+async def viewable_impression(bid: str):
+    """Viewability-маячок (MRC: >=50% площади в зоне видимости >=1 сек).
+
+    Дёргается скриптом-замером из разметки баннера (IntersectionObserver),
+    eventtrackers-пикселем натива/пуша или событием start видео. Идемпотентен
+    через mark_once — повторные срабатывания не задваивают статистику.
+    """
+    bid = verify_event_token(bid)
+    if not bid:
+        return Response(content=_PIXEL, media_type="image/gif")
+    pool = await get_pool()
+    if not await mark_once("view", bid):
+        return Response(content=_PIXEL, media_type="image/gif")
+    row = await _find_bid(pool, bid)
+    if row:
+        obs_metrics.inc("rtb_viewable_imps_total")
+        await _log_event(
+            pool, "viewable", bid_id=bid, imp_id=row["imp_id"], campaign_id=row["campaign_id"],
+            line_item_id=row["line_item_id"], creative_id=row["creative_id"],
+            supply_partner_id=row["supply_partner_id"], device_type=row["device_type"],
+            geo_country=row["geo_country"], ad_type=row["ad_type"], domain=row["domain"],
+            os=row["os"], browser=row["browser"],
+        )
+        await _bump_domain_stats(pool, row, "viewable_imps")
+        await _bump_stats(pool, "viewable_imps", 0, row["campaign_id"], row["line_item_id"], row["creative_id"], row["supply_partner_id"])
+    return Response(content=_PIXEL, media_type="image/gif")
+
+
 _VIDEO_EVENTS = {"start", "firstQuartile", "midpoint", "thirdQuartile", "complete", "skip"}
 
 
@@ -1120,6 +1166,11 @@ async def video_event(bid: str, e: str):
         )
         if e == "start":
             await _bump_stats(pool, "video_starts", 0, row["campaign_id"], row["line_item_id"], row["creative_id"], row["supply_partner_id"])
+            # Видео-viewability: старт плеера = объявление в зоне видимости.
+            # Идемпотентно через mark_once("view") — не задвоится с /rtb/view.
+            if await mark_once("view", bid):
+                await _bump_domain_stats(pool, row, "viewable_imps")
+                await _bump_stats(pool, "viewable_imps", 0, row["campaign_id"], row["line_item_id"], row["creative_id"], row["supply_partner_id"])
         elif e == "complete":
             await _bump_stats(pool, "video_completes", 0, row["campaign_id"], row["line_item_id"], row["creative_id"], row["supply_partner_id"])
     return Response(content=_PIXEL, media_type="image/gif")

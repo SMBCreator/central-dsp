@@ -30,6 +30,7 @@ _COUNTER_HELP = {
     "rtb_wins_total": "Win notifications accepted and billed.",
     "rtb_win_spend_rub_sum": "Billed spend from win notices (RUB).",
     "rtb_imps_total": "Impression events accepted.",
+    "rtb_viewable_imps_total": "Viewable impression events (MRC 50%/1s) accepted.",
     "rtb_clicks_total": "Click events accepted.",
     "rtb_event_token_rejects_total": "Event notifications rejected (bad/expired token).",
 }

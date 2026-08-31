@@ -588,6 +588,7 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
       const clk = Math.round(imp * (0.011 + 0.002 * Math.sin(i)))
       const spend = Math.round(imp * 0.14 * 100) / 100
       const conv = Math.round(clk * 0.06)
+      const viewable = Math.round(imp * (0.62 + 0.08 * Math.sin(i * 2.1)))
       return {
         day: d.toISOString().slice(0, 10),
         impressions: imp,
@@ -601,6 +602,8 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
         cpm: imp ? (spend / imp) * 1000 : 0,
         cpc: clk ? spend / clk : 0,
         cpa: conv ? spend / conv : 0,
+        viewable_imps: viewable,
+        viewability: imp ? Math.round((viewable / imp) * 100 * 10) / 10 : 0,
       }
     })
     const totals = rows.reduce(
@@ -611,15 +614,22 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
         acc.conversions += r.conversions
         acc.bids += r.bids
         acc.wins += r.wins
+        acc.viewable_imps += r.viewable_imps
         return acc
       },
-      { impressions: 0, clicks: 0, spend: 0, conversions: 0, bids: 0, wins: 0 } as Record<string, number>,
+      { impressions: 0, clicks: 0, spend: 0, conversions: 0, bids: 0, wins: 0, viewable_imps: 0 } as Record<
+        string,
+        number
+      >,
     )
     totals.ctr = totals.impressions ? Math.round((totals.clicks / totals.impressions) * 100 * 1000) / 1000 : 0
     totals.win_rate = totals.bids ? Math.round((totals.wins / totals.bids) * 100 * 100) / 100 : 0
     totals.cpm = totals.impressions ? (totals.spend / totals.impressions) * 1000 : 0
     totals.cpc = totals.clicks ? totals.spend / totals.clicks : 0
     totals.cpa = totals.conversions ? totals.spend / totals.conversions : 0
+    totals.viewability = totals.impressions
+      ? Math.round((totals.viewable_imps / totals.impressions) * 100 * 10) / 10
+      : 0
     return { rows, totals }
   }
   if (path.startsWith("/stats/breakdown")) return []

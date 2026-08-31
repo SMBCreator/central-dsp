@@ -46,6 +46,7 @@ const METRICS: { key: string; label: string; fmt: (v: number) => string }[] = [
   { key: "cpc", label: "CPC", fmt: fmtMoney },
   { key: "conversions", label: "Конверсии", fmt: fmtNum },
   { key: "cpa", label: "CPA", fmt: fmtMoney },
+  { key: "viewability", label: "Viewability", fmt: fmtPct },
 ]
 
 const DEFAULT_METRICS = ["impressions", "clicks", "ctr", "spend", "cpm", "win_rate"]
