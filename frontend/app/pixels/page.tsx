@@ -31,6 +31,9 @@ interface PixelStats {
   avg_session_sec: number
   ad_sessions: number
   conversions: number
+  avg_depth?: number
+  bounce_rate?: number
+  avg_scroll_pct?: number
   by_source: { source: string; conversions: number; value: number }[]
 }
 
@@ -188,7 +191,113 @@ export default function PixelsPage() {
       </Modal>
 
       {selected ? <PixelDetail pixel={selected} onClose={() => setSelected(null)} /> : null}
+
+      <SetupGuide />
     </div>
+  )
+}
+
+function SetupGuide() {
+  const [openStep, setOpenStep] = useState<number | null>(null)
+  const steps = [
+    {
+      title: "1. Установите сниппет на сайт",
+      body: (
+        <div className="space-y-2 text-sm text-muted">
+          <p>
+            Скопируйте сниппет пикселя (кнопка «Копировать» на карточке) и вставьте его в HTML сайта — в конец блока{" "}
+            <code className="rounded bg-panel px-1 font-mono text-xs">{"<head>"}</code> или перед закрывающим{" "}
+            <code className="rounded bg-panel px-1 font-mono text-xs">{"</body>"}</code> на всех страницах. В Tilda,
+            WordPress и Bitrix — через раздел «Вставка HTML-кода» / «Счётчики».
+          </p>
+          <p>
+            Скрипт лёгкий и асинхронный: он не блокирует загрузку страницы. Сразу после установки пиксель начинает
+            считать сессии, время на сайте, глубину просмотра и прокрутки.
+          </p>
+        </div>
+      ),
+    },
+    {
+      title: "2. Свяжите рекламу с сайтом (клик → визит)",
+      body: (
+        <div className="space-y-2 text-sm text-muted">
+          <p>
+            К клику по вашему объявлению платформа автоматически добавляет метку{" "}
+            <code className="rounded bg-panel px-1 font-mono text-xs">?cdsp_clid=…</code> в URL посадочной страницы.
+            Пиксель сам считывает метку и привязывает все дальнейшие действия посетителя к конкретному показу: кампании,
+            креативу, площадке и SSP.
+          </p>
+          <p>Ничего настраивать не нужно — важно лишь не обрезать параметры URL на посадочной странице (редиректы, чистка UTM).</p>
+        </div>
+      ),
+    },
+    {
+      title: "3. Настройте цели",
+      body: (
+        <div className="space-y-2 text-sm text-muted">
+          <p>Откройте «Цели и статистика» на карточке пикселя и добавьте цели. Три типа:</p>
+          <ul className="list-inside list-disc space-y-1.5">
+            <li>
+              <span className="font-medium text-foreground">Событие</span> — вызовите{" "}
+              <code className="rounded bg-panel px-1 font-mono text-xs">{'window.cdsp.track("purchase")'}</code> в коде
+              сайта в момент действия (оформление заказа, отправка формы, клик по кнопке). В условии цели укажите то же
+              имя: <code className="rounded bg-panel px-1 font-mono text-xs">purchase</code>.
+            </li>
+            <li>
+              <span className="font-medium text-foreground">Посещение URL</span> — цель засчитывается, когда посетитель
+              открывает страницу, содержащую подстроку. Например{" "}
+              <code className="rounded bg-panel px-1 font-mono text-xs">/thank-you</code> — страница «Спасибо за заказ».
+              Кода не требуется.
+            </li>
+            <li>
+              <span className="font-medium text-foreground">Время на сайте</span> — цель засчитывается, когда посетитель
+              проводит на сайте суммарно больше N секунд (например, 60). Кода не требуется.
+            </li>
+          </ul>
+          <p>
+            Укажите «Ценность конверсии» — и в статистике появится доход и ROI. Одна цель засчитывается один раз за
+            сессию.
+          </p>
+        </div>
+      ),
+    },
+    {
+      title: "4. Что дальше: оптимизация и аудитории",
+      body: (
+        <div className="space-y-2 text-sm text-muted">
+          <p>
+            Конверсии из пикселя попадают в статистику кампаний (CPA, CVR), в автоправила (например, «снизить ставку при
+            дорогом CPA») и в скоринг качества площадок. В «Аудиториях» можно собрать сегменты посетителей (все, по URL,
+            по событию, по цели) для ретаргетинга и исключений.
+          </p>
+          <p>
+            Выберите пиксель и цель в настройках кампании — оптимизатор будет автоматически блокировать площадки, которые
+            тратят бюджет без конверсий.
+          </p>
+        </div>
+      ),
+    },
+  ]
+  return (
+    <Card>
+      <CardHeader title="Как установить и настроить" subtitle="Пошаговая инструкция: сниппет, привязка кликов, цели" />
+      <div className="divide-y divide-border">
+        {steps.map((s, i) => (
+          <div key={s.title}>
+            <button
+              type="button"
+              onClick={() => setOpenStep(openStep === i ? null : i)}
+              className="flex w-full items-center justify-between p-4 text-left transition-colors hover:bg-surface"
+              aria-expanded={openStep === i}
+            >
+              <span className="text-sm font-medium text-foreground">{s.title}</span>
+              <span className="font-mono text-xs text-muted">{openStep === i ? "−" : "+"}</span>
+            </button>
+            {openStep === i ? <div className="px-4 pb-4">{s.body}</div> : null}
+          </div>
+        ))}
+      </div>
+    </Card>
   )
 }
 
@@ -234,13 +343,16 @@ function PixelDetail({ pixel, onClose }: { pixel: Pixel; onClose: () => void }) 
     <Modal open onClose={onClose} title={`${pixel.name} — цели и статистика`}>
       <div className="max-h-[70vh] space-y-5 overflow-y-auto pr-1">
         {stats ? (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             {[
               { label: "Сессии 7д", value: String(stats.sessions) },
               { label: "Просмотры", value: String(stats.pageviews) },
               { label: "Ср. время", value: `${stats.avg_session_sec}с` },
               { label: "С рекламы", value: String(stats.ad_sessions) },
               { label: "Конверсии", value: String(stats.conversions) },
+              { label: "Глубина", value: stats.avg_depth != null ? `${stats.avg_depth} стр.` : "—" },
+              { label: "Отказы", value: stats.bounce_rate != null ? `${stats.bounce_rate}%` : "—" },
+              { label: "Скролл", value: stats.avg_scroll_pct != null ? `${stats.avg_scroll_pct}%` : "—" },
             ].map((s) => (
               <div key={s.label} className="rounded-xl bg-panel p-3">
                 <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted">{s.label}</p>
@@ -262,7 +374,7 @@ function PixelDetail({ pixel, onClose }: { pixel: Pixel; onClose: () => void }) 
                 <div key={s.source} className="flex items-center justify-between rounded-lg bg-panel px-3 py-2">
                   <span className="font-mono text-xs text-foreground">{s.source}</span>
                   <span className="font-mono text-xs text-muted">
-                    {s.conversions} конв. / ${Number(s.value).toFixed(2)}
+                    {s.conversions} конв. / {Number(s.value).toLocaleString("ru-RU")} ₽
                   </span>
                 </div>
               ))}
@@ -284,7 +396,7 @@ function PixelDetail({ pixel, onClose }: { pixel: Pixel; onClose: () => void }) 
                     <span className="text-sm font-medium text-foreground">{g.name}</span>
                     <span className="ml-2 font-mono text-[11px] text-muted">
                       {g.goal_type === "event" ? `событие: ${g.match_value}` : g.goal_type === "url" ? `url: ${g.match_value}` : `${g.match_value} сек на сайте`}
-                      {Number(g.value) > 0 ? ` · $${Number(g.value).toFixed(2)}` : ""}
+                      {Number(g.value) > 0 ? ` · ${Number(g.value).toLocaleString("ru-RU")} ₽` : ""}
                     </span>
                   </div>
                   <div className="flex items-center gap-3">
@@ -317,7 +429,7 @@ function PixelDetail({ pixel, onClose }: { pixel: Pixel; onClose: () => void }) 
               <Field label="Условие" hint={activeType?.hint}>
                 <input className={inputCls} value={gMatch} onChange={(e) => setGMatch(e.target.value)} placeholder={activeType?.hint} />
               </Field>
-              <Field label="Ценность конверсии, $" hint="Для расчёта ROI">
+              <Field label="Ценность конверсии, ₽" hint="Для расчёта ROI">
                 <input type="number" min={0} className={inputCls} value={gValue} onChange={(e) => setGValue(e.target.value)} placeholder="0" />
               </Field>
             </div>

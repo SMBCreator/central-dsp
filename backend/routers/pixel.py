@@ -33,20 +33,31 @@ _SCRIPT_TEMPLATE = """(function(){
   // capture click id from landing URL (?cdsp_clid=...)
   try { var m = location.search.match(/[?&]cdsp_clid=([^&]+)/);
     if(m) localStorage.setItem(CKEY, decodeURIComponent(m[1])); } catch(e){}
+  var maxScroll = 0;
+  function measureScroll(){
+    try {
+      var doc = document.documentElement;
+      var total = Math.max(doc.scrollHeight - doc.clientHeight, 1);
+      var pct = Math.min(Math.round((window.scrollY || doc.scrollTop || 0) / total * 100), 100);
+      if(pct > maxScroll) maxScroll = pct;
+    } catch(e){}
+  }
+  window.addEventListener("scroll", measureScroll, { passive: true });
   function send(type, name, dur){
     try { navigator.sendBeacon(API, JSON.stringify({
       pid: PID, sid: sid(), type: type, name: name || null,
       url: location.href, ref: document.referrer || null,
-      dur: dur || 0, clid: localStorage.getItem(CKEY) || null,
+      dur: dur || 0, sp: maxScroll, clid: localStorage.getItem(CKEY) || null,
       sw: screen.width, ua: navigator.userAgent, lang: navigator.language
     })); } catch(e){}
   }
   send("pageview");
   var t0 = Date.now(), hb = 15;
   var iv = setInterval(function(){
-    if(document.visibilityState === "visible") send("heartbeat", null, hb);
+    if(document.visibilityState === "visible"){ measureScroll(); send("heartbeat", null, hb); }
   }, hb * 1000);
   window.addEventListener("pagehide", function(){
+    measureScroll();
     send("heartbeat", null, Math.min(Math.round((Date.now()-t0)/1000) % hb, hb));
   });
   window.cdsp = { track: function(name){ send("event", name); } };
@@ -169,14 +180,18 @@ async def collect(request: Request):
     url = (str(body.get("url"))[:500] if body.get("url") else None)
     clid = (str(body.get("clid"))[:64] if body.get("clid") else None)
     dur = min(max(int(body.get("dur") or 0), 0), 60)
+    try:
+        scroll_pct = min(max(int(body.get("sp") or 0), 0), 100)
+    except (ValueError, TypeError):
+        scroll_pct = 0
 
     await pool.execute(
         """INSERT INTO pixel_events (pixel_id, session_id, event_type, event_name, url, referrer,
-                                     device_type, browser, os, duration_sec, clid)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)""",
+                                     device_type, browser, os, duration_sec, scroll_pct, clid)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)""",
         pixel_id, session_id, event_type, event_name, url,
         (str(body.get("ref"))[:500] if body.get("ref") else None),
-        device, browser, os_name, dur, clid,
+        device, browser, os_name, dur, scroll_pct, clid,
     )
     await _match_goals(pool, pixel_id, session_id, event_type, event_name, url, clid)
     await process_pixel_event(pool, pixel_id, clid, event_type, event_name, url)
@@ -295,9 +310,24 @@ async def pixel_stats(pixel_id: str, hours: int = 168, user: dict = Depends(curr
         """SELECT count(DISTINCT session_id) AS sessions,
                   count(*) FILTER (WHERE event_type = 'pageview') AS pageviews,
                   COALESCE(SUM(duration_sec),0) AS total_time,
-                  count(DISTINCT session_id) FILTER (WHERE clid IS NOT NULL) AS ad_sessions
+                  count(DISTINCT session_id) FILTER (WHERE clid IS NOT NULL) AS ad_sessions,
+                  COALESCE(AVG(scroll_pct) FILTER (WHERE event_type = 'heartbeat'), 0) AS avg_scroll
            FROM pixel_events
            WHERE pixel_id = $1 AND created_at >= now() - ($2 || ' hours')::interval""",
+        pixel_id, str(hours),
+    )
+    # Отказы: сессии с одним pageview, без событий и суммарным временем < 10 сек
+    behavior = await pool.fetchrow(
+        """SELECT count(*) FILTER (WHERE pv = 1 AND ev = 0 AND dur < 10) AS bounces, count(*) AS total
+           FROM (
+             SELECT session_id,
+                    count(*) FILTER (WHERE event_type = 'pageview') AS pv,
+                    count(*) FILTER (WHERE event_type = 'event') AS ev,
+                    COALESCE(SUM(duration_sec),0) AS dur
+             FROM pixel_events
+             WHERE pixel_id = $1 AND created_at >= now() - ($2 || ' hours')::interval
+             GROUP BY session_id
+           ) s""",
         pixel_id, str(hours),
     )
     conv = await pool.fetchval(
@@ -314,11 +344,17 @@ async def pixel_stats(pixel_id: str, hours: int = 168, user: dict = Depends(curr
         pixel_id, str(hours),
     )
     sessions = int(totals["sessions"] or 0)
+    pageviews = int(totals["pageviews"] or 0)
+    total_b = int(behavior["total"] or 0)
     return {
         "sessions": sessions,
-        "pageviews": int(totals["pageviews"] or 0),
+        "pageviews": pageviews,
         "avg_session_sec": round(float(totals["total_time"] or 0) / sessions, 1) if sessions else 0,
         "ad_sessions": int(totals["ad_sessions"] or 0),
         "conversions": int(conv or 0),
+        # Поведенческие метрики (фундамент скоринга качества площадок)
+        "avg_depth": round(pageviews / sessions, 2) if sessions else 0,
+        "bounce_rate": round(int(behavior["bounces"] or 0) / total_b * 100, 1) if total_b else 0,
+        "avg_scroll_pct": round(float(totals["avg_scroll"] or 0), 1),
         "by_source": [dict(r) for r in by_source],
     }

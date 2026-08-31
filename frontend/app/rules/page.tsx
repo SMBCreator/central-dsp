@@ -38,10 +38,24 @@ const ACTIONS = [
   { value: "notify", label: "Только зафиксировать срабатывание" },
 ]
 
+interface RuleTemplate {
+  key: string
+  name: string
+  description: string
+  metric: string
+  operator: string
+  threshold: number
+  action: string
+  action_value: number | null
+  window_hours: number
+}
+
 export default function RulesPage() {
   const { data: rules } = useSWR<Rule[]>("/rules", fetcher)
   const { data: campaigns } = useSWR<Campaign[]>("/campaigns", fetcher)
+  const { data: templates } = useSWR<RuleTemplate[]>("/rules/templates", fetcher)
   const [open, setOpen] = useState(false)
+  const [templatesOpen, setTemplatesOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [running, setRunning] = useState(false)
@@ -104,7 +118,7 @@ export default function RulesPage() {
     setRunning(true)
     setRunResult(null)
     try {
-      const res = await api<{ evaluated: number; triggered: number }>("/rules/run", { method: "POST" })
+      const res = await api<{ evaluated: number; triggered: number }>("/rules/evaluate", { method: "POST" })
       setRunResult(`Проверено правил: ${res.evaluated}, сработало: ${res.triggered}`)
       await mutate("/rules")
       await mutate("/campaigns")
@@ -132,6 +146,9 @@ export default function RulesPage() {
         <div className="flex gap-2">
           <Button variant="secondary" onClick={runNow} disabled={running}>
             {running ? "Проверка…" : "Проверить сейчас"}
+          </Button>
+          <Button variant="secondary" onClick={() => setTemplatesOpen(true)}>
+            Из шаблона
           </Button>
           <Button onClick={openCreate}>Создать правило</Button>
         </div>
@@ -184,6 +201,45 @@ export default function RulesPage() {
           <Spinner />
         )}
       </Card>
+
+      <Modal open={templatesOpen} onClose={() => setTemplatesOpen(false)} title="Готовые правила" wide>
+        <div className="space-y-2">
+          <p className="text-sm text-muted">
+            Выберите шаблон — форма создания откроется с заполненными условиями, их можно скорректировать.
+          </p>
+          {(templates || []).map((t) => (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => {
+                setForm({
+                  name: t.name,
+                  campaign_id: "",
+                  metric: t.metric,
+                  operator: t.operator,
+                  threshold: String(t.threshold),
+                  action: t.action,
+                  action_value: t.action_value != null ? String(t.action_value) : "10",
+                  window_hours: String(t.window_hours),
+                })
+                setError(null)
+                setTemplatesOpen(false)
+                setOpen(true)
+              }}
+              className="flex w-full items-start justify-between gap-3 rounded-xl border border-border p-3 text-left transition-colors hover:bg-surface"
+            >
+              <div>
+                <p className="text-sm font-medium text-foreground">{t.name}</p>
+                <p className="mt-0.5 text-xs text-muted">{t.description}</p>
+              </div>
+              <span className="shrink-0 rounded-md bg-panel px-2 py-1 font-mono text-[10px] text-muted">
+                {t.window_hours} ч
+              </span>
+            </button>
+          ))}
+          {!templates ? <Spinner /> : null}
+        </div>
+      </Modal>
 
       <Modal open={open} onClose={() => setOpen(false)} title="Новое правило" wide>
         <form onSubmit={save} className="space-y-4">

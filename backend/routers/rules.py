@@ -8,6 +8,73 @@ from schemas import RuleIn, RulePatch
 
 router = APIRouter(prefix="/rules", tags=["rules"])
 
+# Библиотека готовых шаблонов правил. Статичный каталог — единый источник
+# для фронта, чтобы шаблоны не расходились между интерфейсами.
+RULE_TEMPLATES = [
+    {
+        "key": "pause_low_ctr",
+        "name": "Пауза при низком CTR",
+        "description": "Кампания тратит, но не кликается — остановить и разобраться.",
+        "metric": "ctr", "operator": "lt", "threshold": 0.05,
+        "action": "pause_campaign", "action_value": None, "window_hours": 24,
+    },
+    {
+        "key": "pause_budget_burn",
+        "name": "Стоп при израсходовании 95% бюджета",
+        "description": "Страховка от перерасхода: пауза, когда бюджет почти исчерпан.",
+        "metric": "budget_spent_pct", "operator": "gte", "threshold": 95,
+        "action": "pause_campaign", "action_value": None, "window_hours": 24,
+    },
+    {
+        "key": "cpa_guard",
+        "name": "Снизить ставку при дорогом CPA",
+        "description": "Конверсия дороже 1500 ₽ — снижаем ставку на 15%, охлаждаем закупку.",
+        "metric": "cpa", "operator": "gt", "threshold": 1500,
+        "action": "decrease_bid", "action_value": 15, "window_hours": 48,
+    },
+    {
+        "key": "cpc_guard",
+        "name": "Снизить ставку при дорогом клике",
+        "description": "CPC выше 50 ₽ за сутки — снижаем ставку на 10%.",
+        "metric": "cpc", "operator": "gt", "threshold": 50,
+        "action": "decrease_bid", "action_value": 10, "window_hours": 24,
+    },
+    {
+        "key": "scale_high_cvr",
+        "name": "Масштабировать при высоком CVR",
+        "description": "Конверсия из клика выше 5% — повышаем дневной бюджет на 20%.",
+        "metric": "cvr", "operator": "gt", "threshold": 5,
+        "action": "increase_daily_budget", "action_value": 20, "window_hours": 72,
+    },
+    {
+        "key": "auto_blacklist",
+        "name": "Автоблэклист площадок без кликов",
+        "description": "Домены с 500+ показов и нулём кликов за 3 дня — в чёрный список.",
+        "metric": "impressions", "operator": "gt", "threshold": 500,
+        "action": "blacklist_domains", "action_value": 500, "window_hours": 72,
+    },
+    {
+        "key": "low_win_rate",
+        "name": "Поднять ставку при низком Win Rate",
+        "description": "Выигрываем меньше 5% аукционов — ставка неконкурентна, поднимаем на 10%.",
+        "metric": "win_rate", "operator": "lt", "threshold": 5,
+        "action": "increase_bid", "action_value": 10, "window_hours": 24,
+    },
+    {
+        "key": "notify_spend_spike",
+        "name": "Уведомление о всплеске расхода",
+        "description": "Расход за сутки превысил 50 000 ₽ — зафиксировать срабатывание.",
+        "metric": "spend", "operator": "gt", "threshold": 50000,
+        "action": "notify", "action_value": None, "window_hours": 24,
+    },
+]
+
+
+@router.get("/templates")
+async def list_templates(user: dict = Depends(current_user)):
+    """Каталог готовых шаблонов правил."""
+    return RULE_TEMPLATES
+
 
 def _serialize(row) -> dict:
     d = dict(row)
@@ -80,6 +147,14 @@ async def delete_rule(rule_id: str, user: dict = Depends(require_platform_write)
 
 @router.post("/evaluate")
 async def evaluate_now(user: dict = Depends(require_platform_write)):
-    """Run all active rules for the current user immediately."""
+    """Run all active rules for the current user immediately.
+
+    Форма ответа согласована с фронтом (кнопка «Проверить сейчас»):
+    evaluated — сколько активных правил проверено, triggered — сколько сработало.
+    """
+    pool = await get_pool()
+    evaluated = await pool.fetchval(
+        "SELECT count(*) FROM rules WHERE user_id = $1 AND status = 'active'", user["id"]
+    )
     triggered = await evaluate_rules_for_user(str(user["id"]))
-    return {"triggered": triggered}
+    return {"evaluated": int(evaluated or 0), "triggered": len(triggered), "details": triggered}

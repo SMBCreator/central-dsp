@@ -713,7 +713,51 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
     }
   if (path === "/settings") return { timezone: "Europe/Moscow", currency: "RUB" }
   if (path === "/audiences") return []
-  if (path === "/pixels" || path === "/pixel") return []
+  if (path === "/pixels" || path === "/pixel")
+    return [
+      {
+        id: "px-demo-1",
+        name: "Сайт магазина курток",
+        domain: "jackets-store.ru",
+        goals_count: 2,
+        sessions_24h: 412,
+        conversions_24h: 9,
+        created_at: iso(20 * 24 * 36e5),
+      },
+    ]
+  if (/^\/pixels\/[^/]+\/goals$/.test(path))
+    return [
+      { id: "g-1", name: "Покупка", goal_type: "event", match_value: "purchase", value: 1200, conversions_total: 87 },
+      { id: "g-2", name: "Страница «Спасибо»", goal_type: "url", match_value: "/thank-you", value: 0, conversions_total: 102 },
+    ]
+  if (/^\/pixels\/[^/]+\/stats$/.test(path))
+    return {
+      sessions: 2840,
+      pageviews: 7120,
+      avg_session_sec: 74.5,
+      ad_sessions: 1130,
+      conversions: 96,
+      avg_depth: 2.51,
+      bounce_rate: 38.2,
+      avg_scroll_pct: 54.7,
+      by_source: [
+        { source: "news-portal.ru", conversions: 41, value: 49200 },
+        { source: "auto-catalog.ru", conversions: 22, value: 26400 },
+        { source: "organic", conversions: 33, value: 0 },
+      ],
+    }
+  if (path === "/rules/evaluate" && method === "POST") return { evaluated: 0, triggered: 0, details: [] }
+  if (path === "/rules/templates")
+    return [
+      { key: "pause_low_ctr", name: "Пауза при низком CTR", description: "Кампания тратит, но не кликается — остановить и разобраться.", metric: "ctr", operator: "lt", threshold: 0.05, action: "pause_campaign", action_value: null, window_hours: 24 },
+      { key: "pause_budget_burn", name: "Стоп при израсходовании 95% бюджета", description: "Страховка от перерасхода: пауза, когда бюджет почти исчерпан.", metric: "budget_spent_pct", operator: "gte", threshold: 95, action: "pause_campaign", action_value: null, window_hours: 24 },
+      { key: "cpa_guard", name: "Снизить ставку при дорогом CPA", description: "Конверсия дороже 1500 ₽ — снижаем ставку на 15%, охлаждаем закупку.", metric: "cpa", operator: "gt", threshold: 1500, action: "decrease_bid", action_value: 15, window_hours: 48 },
+      { key: "cpc_guard", name: "Снизить ставку при дорогом клике", description: "CPC выше 50 ₽ за сутки — снижаем ставку на 10%.", metric: "cpc", operator: "gt", threshold: 50, action: "decrease_bid", action_value: 10, window_hours: 24 },
+      { key: "scale_high_cvr", name: "Масштабировать при высоком CVR", description: "Конверсия из клика выше 5% — повышаем дневной бюджет на 20%.", metric: "cvr", operator: "gt", threshold: 5, action: "increase_daily_budget", action_value: 20, window_hours: 72 },
+      { key: "auto_blacklist", name: "Автоблэклист площадок без кликов", description: "Домены с 500+ показов и нулём кликов за 3 дня — в чёрный список.", metric: "impressions", operator: "gt", threshold: 500, action: "blacklist_domains", action_value: 500, window_hours: 72 },
+      { key: "low_win_rate", name: "Поднять ставку при низком Win Rate", description: "Выигрываем меньше 5% аукционов — ставка неконкурентна, поднимаем на 10%.", metric: "win_rate", operator: "lt", threshold: 5, action: "increase_bid", action_value: 10, window_hours: 24 },
+      { key: "notify_spend_spike", name: "Уведомление о всплеске расхода", description: "Расход за сутки превысил 50 000 ₽ — зафиксировать срабатывание.", metric: "spend", operator: "gt", threshold: 50000, action: "notify", action_value: null, window_hours: 24 },
+    ]
   if (path === "/rules") return []
   if (path === "/supply-partners") return []
   if (path === "/share/links" || path === "/share/guests") return []
