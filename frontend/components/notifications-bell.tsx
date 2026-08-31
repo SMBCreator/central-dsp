@@ -37,7 +37,10 @@ export function NotificationsBell() {
     return () => document.removeEventListener("mousedown", onClick)
   }, [open])
 
-  const unread = data?.unread ?? 0
+  // Защита от неожиданной формы ответа (например, массив вместо объекта):
+  // колокольчик не должен ронять весь shell.
+  const items: Notification[] = Array.isArray(data?.items) ? data.items : []
+  const unread = typeof data?.unread === "number" ? data.unread : 0
 
   const openItem = async (n: Notification) => {
     if (!n.read_at) {
@@ -83,8 +86,8 @@ export function NotificationsBell() {
             ) : null}
           </div>
           <div className="max-h-96 overflow-y-auto">
-            {data && data.items.length > 0 ? (
-              data.items.map((n) => (
+            {items.length > 0 ? (
+              items.map((n) => (
                 <button
                   key={n.id}
                   type="button"

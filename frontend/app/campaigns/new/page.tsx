@@ -177,119 +177,138 @@ export default function NewCampaignPage() {
       {step === 1 ? (
         <Card>
           <CardHeader title="Основные настройки" subtitle={`Формат: ${FORMAT_LABELS[format] || format}`} />
-          <div className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2 lg:grid-cols-3">
-            <Field label="Название кампании">
-              <input value={name} onChange={(e) => setName(e.target.value)} className={inputCls} placeholder="Осенняя распродажа" />
-            </Field>
-            <Field label="Рекламодатель">
-              <select value={advertiserId} onChange={(e) => setAdvertiserId(e.target.value)} className={inputCls}>
-                <option value="">Выберите…</option>
-                {(advertisers || []).map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.name}
-                  </option>
-                ))}
-              </select>
-            </Field>
-
-            <Field label="Цель">
-              <select value={objective} onChange={(e) => setObjective(e.target.value)} className={inputCls}>
-                {OBJECTIVES.map((o) => (
-                  <option key={o.key} value={o.key}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Группа объявлений" hint="Объединяет несколько кампаний для сводной статистики">
-              <select value={groupId} onChange={(e) => setGroupId(e.target.value)} className={inputCls}>
-                <option value="">Без группы</option>
-                {(groups || []).map((g) => (
-                  <option key={g.id} value={g.id}>
-                    {g.name}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            {!groupId ? (
-              <Field label="…или создать новую группу">
-                <input value={newGroupName} onChange={(e) => setNewGroupName(e.target.value)} className={inputCls} placeholder="Название группы" />
-              </Field>
-            ) : null}
-            <Field label="Дата старта" hint="Пусто — сразу после запуска">
-              <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className={inputCls} />
-            </Field>
-            <Field label="Дата окончания" hint="Пусто — без ограничения">
-              <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className={inputCls} />
-            </Field>
-            <Field label="Темп расходования (pacing)">
-              <select value={pacing} onChange={(e) => setPacing(e.target.value)} className={inputCls}>
-                <option value="even">Равномерно в течение дня</option>
-                <option value="asap">Как можно быстрее (ASAP)</option>
-              </select>
-            </Field>
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="flex items-center gap-1.5 text-sm font-medium text-foreground">
-                  Частотные капы
-                  <HelpTip text="Ограничение показов одному пользователю. До 3 окон — например, 3 показа в день и 10 в неделю. Пусто — без лимита." />
-                </span>
-                {freqCaps.length < 3 ? (
-                  <button
-                    type="button"
-                    onClick={() => setFreqCaps([...freqCaps, { imps: "", hours: freqCaps.length === 0 ? "24" : "168" }])}
-                    className="text-xs font-medium text-primary hover:underline"
-                  >
-                    + Добавить окно
-                  </button>
+          <div className="divide-y divide-border">
+            {/* Секция 1: о кампании */}
+            <section className="space-y-4 p-4">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted">О кампании</h3>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <Field label="Название кампании">
+                  <input value={name} onChange={(e) => setName(e.target.value)} className={inputCls} placeholder="Осенняя распродажа" />
+                </Field>
+                <Field label="Рекламодатель">
+                  <select value={advertiserId} onChange={(e) => setAdvertiserId(e.target.value)} className={inputCls}>
+                    <option value="">Выберите…</option>
+                    {(advertisers || []).map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="Цель">
+                  <select value={objective} onChange={(e) => setObjective(e.target.value)} className={inputCls}>
+                    {OBJECTIVES.map((o) => (
+                      <option key={o.key} value={o.key}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="Группа объявлений" hint="Объединяет несколько кампаний для сводной статистики">
+                  <select value={groupId} onChange={(e) => setGroupId(e.target.value)} className={inputCls}>
+                    <option value="">Без группы</option>
+                    {(groups || []).map((g) => (
+                      <option key={g.id} value={g.id}>
+                        {g.name}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                {!groupId ? (
+                  <Field label="…или создать новую группу">
+                    <input value={newGroupName} onChange={(e) => setNewGroupName(e.target.value)} className={inputCls} placeholder="Название группы" />
+                  </Field>
                 ) : null}
               </div>
-              {freqCaps.length === 0 ? <p className="text-xs text-muted-foreground">Без лимита</p> : null}
-              {freqCaps.map((w, i) => (
-                <div key={i} className="flex items-end gap-2">
-                  <div className="flex-1">
-                    <label className="mb-1 block text-xs text-muted-foreground">Показов</label>
-                    <input
-                      type="number"
-                      min="1"
-                      max="1000"
-                      value={w.imps}
-                      onChange={(e) => setFreqCaps(freqCaps.map((x, j) => (j === i ? { ...x, imps: e.target.value } : x)))}
-                      className={inputCls}
-                      placeholder="3"
-                    />
-                  </div>
-                  <div className="flex-1">
-                    <label className="mb-1 block text-xs text-muted-foreground">Период</label>
-                    <select
-                      value={w.hours}
-                      onChange={(e) => setFreqCaps(freqCaps.map((x, j) => (j === i ? { ...x, hours: e.target.value } : x)))}
-                      className={inputCls}
-                    >
-                      <option value="1">Час</option>
-                      <option value="24">Сутки</option>
-                      <option value="168">Неделя</option>
-                      <option value="720">Месяц</option>
-                    </select>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setFreqCaps(freqCaps.filter((_, j) => j !== i))}
-                    className="h-8 rounded-lg border border-border px-2 text-xs text-muted-foreground hover:bg-accent"
-                    aria-label="Удалить окно"
-                  >
-                    Удалить
-                  </button>
+            </section>
+
+            {/* Секция 2: период и темп — даты в одной строке */}
+            <section className="space-y-4 p-4">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted">Период и темп открутки</h3>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                <div className="grid grid-cols-2 gap-3 sm:col-span-2">
+                  <Field label="Дата старта" hint="Пусто — сразу после запуска">
+                    <input type="date" value={startDate} max={endDate || undefined} onChange={(e) => setStartDate(e.target.value)} className={inputCls} />
+                  </Field>
+                  <Field label="Дата окончания" hint="Пусто — без ограничения">
+                    <input type="date" value={endDate} min={startDate || undefined} onChange={(e) => setEndDate(e.target.value)} className={inputCls} />
+                  </Field>
                 </div>
-              ))}
-            </div>
-            <label className="flex items-start gap-2 text-sm text-foreground">
-              <input type="checkbox" checked={bidShading} onChange={(e) => setBidShading(e.target.checked)} className="mt-0.5 h-4 w-4 rounded border-border" />
-              <span className="flex items-center gap-1.5">
-                Bid-шейдинг
-                <HelpTip text="Автоматически снижает ставку ближе к реальной цене клиринга (first-price). Экономия 15–30% без потери объёма — факторы пересчитываются ежечасно по каждой SSP." />
-              </span>
-            </label>
+                <Field label="Темп расходования (pacing)">
+                  <select value={pacing} onChange={(e) => setPacing(e.target.value)} className={inputCls}>
+                    <option value="even">Равномерно в течение дня</option>
+                    <option value="asap">Как можно быстрее (ASAP)</option>
+                  </select>
+                </Field>
+              </div>
+            </section>
+
+            {/* Секция 3: ограничения показов */}
+            <section className="space-y-4 p-4">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted">Ограничения показов</h3>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="flex items-center gap-1.5 text-sm font-medium text-foreground">
+                    Частотные капы
+                    <HelpTip text="Ограничение показов одному пользователю. До 3 окон — например, 3 показа в день и 10 в неделю. Пусто — без лимита." />
+                  </span>
+                  {freqCaps.length < 3 ? (
+                    <button
+                      type="button"
+                      onClick={() => setFreqCaps([...freqCaps, { imps: "", hours: freqCaps.length === 0 ? "24" : "168" }])}
+                      className="text-xs font-medium text-primary hover:underline"
+                    >
+                      + Добавить окно
+                    </button>
+                  ) : null}
+                </div>
+                {freqCaps.length === 0 ? <p className="text-xs text-muted-foreground">Без лимита</p> : null}
+                {freqCaps.map((w, i) => (
+                  <div key={i} className="flex items-end gap-2 sm:max-w-md">
+                    <div className="flex-1">
+                      <label className="mb-1 block text-xs text-muted-foreground">Показов</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="1000"
+                        value={w.imps}
+                        onChange={(e) => setFreqCaps(freqCaps.map((x, j) => (j === i ? { ...x, imps: e.target.value } : x)))}
+                        className={inputCls}
+                        placeholder="3"
+                      />
+                    </div>
+                    <div className="flex-1">
+                      <label className="mb-1 block text-xs text-muted-foreground">Период</label>
+                      <select
+                        value={w.hours}
+                        onChange={(e) => setFreqCaps(freqCaps.map((x, j) => (j === i ? { ...x, hours: e.target.value } : x)))}
+                        className={inputCls}
+                      >
+                        <option value="1">Час</option>
+                        <option value="24">Сутки</option>
+                        <option value="168">Неделя</option>
+                        <option value="720">Месяц</option>
+                      </select>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setFreqCaps(freqCaps.filter((_, j) => j !== i))}
+                      className="h-8 rounded-lg border border-border px-2 text-xs text-muted-foreground hover:bg-accent"
+                      aria-label="Удалить окно"
+                    >
+                      Удалить
+                    </button>
+                  </div>
+                ))}
+                <label className="flex items-start gap-2 pt-2 text-sm text-foreground">
+                  <input type="checkbox" checked={bidShading} onChange={(e) => setBidShading(e.target.checked)} className="mt-0.5 h-4 w-4 rounded border-border" />
+                  <span className="flex items-center gap-1.5">
+                    Bid-шейдинг
+                    <HelpTip text="Автоматически снижает ставку ближе к реальной цене клиринга (first-price). Экономия 15–30% без потери объёма — факторы пересчитываются ежечасно по каждой SSP." />
+                  </span>
+                </label>
+              </div>
+            </section>
           </div>
         </Card>
       ) : null}

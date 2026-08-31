@@ -10,7 +10,7 @@ import { CreativePreview } from "@/components/creative-preview"
 interface QueueItem {
   id: string
   name: string
-  type: "banner" | "native" | "video"
+  type: "banner" | "native" | "video" | "push"
   status: string
   width: number | null
   height: number | null
@@ -173,6 +173,7 @@ export default function ModerationPage() {
             <option value="banner">Баннеры</option>
             <option value="native">Нативные</option>
             <option value="video">Видео</option>
+            <option value="push">Push</option>
           </select>
         </div>
         <div className="w-40">

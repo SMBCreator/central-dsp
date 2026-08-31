@@ -414,7 +414,7 @@ export function mockDiagnostics(campaignId: string) {
         liActive.length > 0
           ? `Активных групп со ставкой > 0: ${liActive.length}`
           : lis.length === 0
-            ? "Нет ни одной группы объявлений — создайте группу с таргетингом и ставкой."
+            ? "Нет ни одной группы объявлений — соз��айте группу с таргетингом и ставкой."
             : "Все группы на паузе или со ставкой 0 ₽. Активируйте группу и задайте ставку.",
     },
     {
@@ -644,7 +644,40 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
 
   // --- Прочее ---
   if (path === "/users") return [mockUser]
-  if (path === "/notifications") return []
+  // Компонент колокольчика ждёт форму { items, unread } — как отдаёт бэкенд.
+  if (path === "/notifications")
+    return {
+      unread: 2,
+      items: [
+        {
+          id: "n-1",
+          kind: "moderation",
+          title: "Креатив одобрен",
+          body: "«Куртки 970×250» прошёл модерацию и зарегистрирован в ОРД.",
+          link: "/creatives",
+          read_at: null,
+          created_at: iso(2 * 36e5),
+        },
+        {
+          id: "n-2",
+          kind: "budget",
+          title: "Бюджет почти израсходован",
+          body: "Кампания «Осень-2026 — куртки и пальто» израсходовала 85% дневного бюджета.",
+          link: "/campaigns",
+          read_at: null,
+          created_at: iso(5 * 36e5),
+        },
+        {
+          id: "n-3",
+          kind: "system",
+          title: "Отчёт готов",
+          body: "Еженедельный отчёт по кампаниям сформирован и доступен в «Аналитике».",
+          link: "/analytics",
+          read_at: iso(20 * 36e5),
+          created_at: iso(26 * 36e5),
+        },
+      ],
+    }
   if (path === "/settings") return { timezone: "Europe/Moscow", currency: "RUB" }
   if (path === "/audiences") return []
   if (path === "/pixels" || path === "/pixel") return []

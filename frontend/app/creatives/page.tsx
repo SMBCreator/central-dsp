@@ -25,7 +25,7 @@ export default function CreativesPage() {
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [uploading, setUploading] = useState<string | null>(null)
-  const [type, setType] = useState<"banner" | "native" | "video">("banner")
+  const [type, setType] = useState<"banner" | "native" | "video" | "push">("banner")
   const [form, setForm] = useState({
     campaign_id: "",
     counterparty_id: "",
@@ -181,7 +181,7 @@ export default function CreativesPage() {
         body.width = w
         body.height = h
         body.asset_url = form.asset_url || null
-      } else if (type === "native") {
+      } else if (type === "native" || type === "push") {
         body.native_title = form.native_title
         body.native_description = form.native_description || null
         body.native_cta = form.native_cta || null
@@ -305,7 +305,7 @@ export default function CreativesPage() {
       <Modal open={open} onClose={() => setOpen(false)} title="Новый креатив" wide>
         <form onSubmit={save} className="space-y-4">
           <div className="flex gap-1 rounded-md border border-border bg-surface p-0.5">
-            {(Object.entries(AD_TYPE_LABELS) as ["banner" | "native" | "video", string][]).map(([value, label]) => (
+            {(Object.entries(AD_TYPE_LABELS) as ["banner" | "native" | "video" | "push", string][]).map(([value, label]) => (
               <button
                 key={value}
                 type="button"
@@ -348,7 +348,7 @@ export default function CreativesPage() {
             <Field label="Сторонний трекер показа" hint="Опционально: пиксель аудита (adriver, weborama...)">
               <input type="url" value={form.imp_tracker_url} onChange={(e) => setForm({ ...form, imp_tracker_url: e.target.value })} className={inputCls} placeholder="https://tracker.ru/imp?..." />
             </Field>
-            <Field label="Сторонний трекер клика" hint="Опционально: клик-редирект трекера">
+            <Field label="Сторонний трекер клика" hint="Опц��онально: клик-редирект трекера">
               <input type="url" value={form.click_tracker_url} onChange={(e) => setForm({ ...form, click_tracker_url: e.target.value })} className={inputCls} placeholder="https://tracker.ru/click?..." />
             </Field>
           </div>
@@ -420,17 +420,19 @@ export default function CreativesPage() {
               </>
             ) : null}
 
-            {type === "native" ? (
+            {type === "native" || type === "push" ? (
               <>
-                <Field label="Заголовок">
-                  <input required maxLength={90} value={form.native_title} onChange={(e) => setForm({ ...form, native_title: e.target.value })} className={inputCls} placeholder="Скидки до 50% на всё" />
+                <Field label={type === "push" ? "Заголовок push" : "Заголовок"}>
+                  <input required maxLength={90} value={form.native_title} onChange={(e) => setForm({ ...form, native_title: e.target.value })} className={inputCls} placeholder={type === "push" ? "Ваш заказ ждёт вас" : "Скидки до 50% на всё"} />
                 </Field>
-                <Field label="Описание">
+                <Field label={type === "push" ? "Текст уведомления" : "Описание"}>
                   <input maxLength={140} value={form.native_description} onChange={(e) => setForm({ ...form, native_description: e.target.value })} className={inputCls} placeholder="Только до конца недели" />
                 </Field>
-                <Field label="Кнопка (CTA)">
-                  <input value={form.native_cta} onChange={(e) => setForm({ ...form, native_cta: e.target.value })} className={inputCls} />
-                </Field>
+                {type === "native" ? (
+                  <Field label="Кнопка (CTA)">
+                    <input value={form.native_cta} onChange={(e) => setForm({ ...form, native_cta: e.target.value })} className={inputCls} />
+                  </Field>
+                ) : null}
                 <Field label="Изображение" hint="Файл или URL">
                   <div className="flex items-center gap-2">
                     <input type="url" value={form.asset_url} onChange={(e) => setForm({ ...form, asset_url: e.target.value })} className={inputCls} placeholder="https://cdn.site.ru/native.png" />

@@ -150,12 +150,14 @@ function SettingsCard({ campaign }: { campaign: CampaignExt }) {
               <option value="asap">Как можно быстрее (ASAP)</option>
             </select>
           </Field>
-          <Field label="Дата старта" hint="Пусто — сразу">
-            <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className={inputCls} />
-          </Field>
-          <Field label="Дата окончания" hint="Пусто — без ограничения">
-            <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className={inputCls} />
-          </Field>
+          <div className="grid grid-cols-2 gap-3 sm:col-span-2">
+            <Field label="Дата старта" hint="Пусто — сразу">
+              <input type="date" value={startDate} max={endDate || undefined} onChange={(e) => setStartDate(e.target.value)} className={inputCls} />
+            </Field>
+            <Field label="Дата окончания" hint="Пусто — без ограничения">
+              <input type="date" value={endDate} min={startDate || undefined} onChange={(e) => setEndDate(e.target.value)} className={inputCls} />
+            </Field>
+          </div>
         </div>
 
         <div className="space-y-2">
@@ -898,7 +900,7 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
       <Card>
         <CardHeader
           title="Строки закупки (Line Items)"
-          subtitle="Ставки и таргетинг внутри кампании"
+          subtitle="Ставки и таргетинг внутри ка��пании"
           action={<Button onClick={openCreate}>Добавить строку</Button>}
         />
         {lineItems ? (

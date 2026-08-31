@@ -18,7 +18,7 @@ export interface AdvertiserInfo {
 }
 
 interface CreativePreviewProps {
-  type: "banner" | "native" | "video"
+  type: "banner" | "native" | "video" | "push"
   assetUrl?: string | null
   width?: number | null
   height?: number | null
@@ -105,6 +105,33 @@ export function CreativePreview({ type, assetUrl, width, height, nativeTitle, na
           <img src={assetUrl || "/placeholder.svg"} alt="" className="mt-2 max-h-36 w-full rounded object-cover" />
         ) : null}
         <span className="mt-2 inline-block rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white">{nativeCta || "Подробнее"}</span>
+      </div>
+    )
+  }
+
+  if (type === "push") {
+    // Имитация системного push-уведомления: иконка + заголовок + текст,
+    // ниже — большая картинка (big image), как в push-сетях.
+    return (
+      <div className="relative w-80 overflow-hidden rounded-lg border border-border bg-white shadow-sm">
+        <InfoBadge advertiser={advertiser} />
+        <div className="flex items-start gap-2.5 p-3">
+          {nativeIconUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={nativeIconUrl || "/placeholder.svg"} alt="" className="h-10 w-10 shrink-0 rounded-lg object-cover" />
+          ) : (
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-surface text-[10px] text-muted">icon</div>
+          )}
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold text-neutral-900">{nativeTitle || "Заголовок push-уведомления"}</p>
+            {nativeDescription ? <p className="mt-0.5 line-clamp-2 text-xs text-neutral-600">{nativeDescription}</p> : null}
+            <p className="mt-1 text-[10px] text-neutral-400">Сейчас · push-уведомление</p>
+          </div>
+        </div>
+        {assetUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={assetUrl || "/placeholder.svg"} alt="" className="max-h-40 w-full object-cover" />
+        ) : null}
       </div>
     )
   }

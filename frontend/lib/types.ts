@@ -135,7 +135,7 @@ export interface Creative {
   campaign_id: string
   line_item_id: string | null
   name: string
-  type: "banner" | "native" | "video"
+  type: "banner" | "native" | "video" | "push"
   status: string
   width: number | null
   height: number | null
@@ -245,6 +245,7 @@ export const AD_TYPE_LABELS: Record<string, string> = {
   banner: "Баннер",
   native: "Натив",
   video: "Видео",
+  push: "Push",
 }
 
 
