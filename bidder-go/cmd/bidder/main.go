@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/feed"
+	"github.com/SMBCreator/central-dsp/bidder-go/internal/metrics"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/redisx"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/rtb"
 )
@@ -58,12 +59,30 @@ func main() {
 
 	h := rtb.NewHandler(store, rc)
 
+	// Prometheus-метрики: счётчики hot path + gauges состояния (GAP-011).
+	reg := metrics.New()
+	h.SetMetrics(reg)
+	reg.RegisterGauge("bidder_feed_age_seconds", func() float64 { return store.Age().Seconds() })
+	reg.RegisterGauge("bidder_feed_campaigns", func() float64 { return float64(store.Len()) })
+	reg.RegisterGauge("bidder_redis_up", func() float64 {
+		if rc == nil {
+			return 0
+		}
+		pingCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+		if rc.Ping(pingCtx) == nil {
+			return 1
+		}
+		return 0
+	})
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /rtb/bid/{endpointKey}", h.Bid)
 	mux.HandleFunc("POST /rtb/win", h.Win)
 	mux.HandleFunc("POST /rtb/loss", h.Loss)
 	mux.HandleFunc("POST /rtb/imp", h.Imp)
 	mux.HandleFunc("GET /healthz", h.Healthz)
+	mux.Handle("GET /metrics", reg.Handler())
 
 	srv := &http.Server{
 		Addr:              addr,

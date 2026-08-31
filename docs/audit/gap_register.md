@@ -13,13 +13,13 @@ Severity: `blocker` > `critical` > `high` > `medium` > `low`.
 | GAP-003 | critical | backend/security | `tokens.py` молча падал на dev-секрет при отсутствии `SECRET_KEY` — в проде подписи токенов предсказуемы | `80005b1`: `ENVIRONMENT=production` без секрета => RuntimeError на старте, +тест |
 | GAP-004 | critical | infra | docker-compose с дефолтными паролями Postgres/Flower и пустым RTB-токеном — деплой «как есть» открывал БД и админку | `c2fe99e`: обязательные env через `${VAR:?required}`, `.env.example` дополнен |
 | GAP-005 | critical | backend/rtb | Bid shading применялся при `at=2` (second price) — систематический недоплат/проигрыш аукционов, искажение обучения фактора | `d6f72d8`: `should_shade()` — только явный `at=1` + флаг кампании, +5 тестов |
+| GAP-011 | high | observability | Нет алертинга на деньги: расход бюджета, win rate, разница bid/win цен, ошибки биллинга | Часть D: `bidder-go/internal/metrics` (запросы, no-bid по причинам, латентность-гистограмма, feed staleness, redis up, gate rejects) + `backend/obs_metrics.py` (bid/win/imp/click, спенд, token rejects) + `ops/prometheus/alerts.yml` (11 правил) + runbook `docs/runbooks/rtb_alerts.md` |
 
 ## Открытые гэпы (приоритезированы)
 
 | ID | Sev | Компонент | Описание | Рекомендация |
 |----|-----|-----------|----------|--------------|
 | GAP-010 | high | bidder-go | Скелет без имплементации budget/freq/shading/audiences — паритет не достигнут | Фаза 2 `go_bidder_plan.md`: перенос Lua-скриптов 1:1, contract-тесты |
-| GAP-011 | high | observability | Нет алертинга на деньги: расход бюджета, win rate, разница bid/win цен, ошибки биллинга | Prometheus-метрики в Go-биддере с 1-го дня + alert rules (spend rate, no-bid spike, feed staleness) |
 | GAP-012 | high | ОРД | Ошибки отправки в ОРД не ретраятся управляемо; нет DLQ/отчёта о непереданных креативах | Celery-ретраи с backoff + таблица `ord_outbox` со статусами |
 | GAP-013 | high | infra | Нет задокументированной стратегии backup/restore Postgres | pg_dump-крон + восстановление на stage раз в месяц (runbook) |
 | GAP-014 | medium | backend | 7 интеграционных тестов скипаются без live Postgres — money-path частично не покрыт CI | CI-job с сервисным Postgres (docker) на GitHub Actions |

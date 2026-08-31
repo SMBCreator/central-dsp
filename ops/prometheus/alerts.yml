@@ -1,0 +1,133 @@
+# CentralDSP — Prometheus alert rules (Часть D, GAP-011).
+#
+# Источники метрик:
+#   - Go-биддер:      GET :8090/metrics (bidder_* серии)
+#   - Python backend: GET /metrics       (rtb_* серии)
+#
+# Пороги стартовые — калибровать после первой недели наблюдений.
+# Каждый алерт ссылается на runbook: docs/runbooks/rtb_alerts.md
+
+groups:
+  - name: centraldsp-bidder-go
+    rules:
+      # --- Доступность и свежесть конфигурации -------------------------------
+      - alert: BidderFeedStale
+        expr: bidder_feed_age_seconds > 120
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Фид биддера устарел ({{ $value | printf \"%.0f\" }}s)"
+          description: >-
+            Go-биддер не получал свежий снапшот кампаний дольше 2 минут.
+            Биддинг продолжается на устаревшей конфигурации: возможен спенд
+            по остановленным кампаниям. Runbook: rtb_alerts.md#feed-stale
+
+      - alert: BidderRedisDown
+        expr: bidder_redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Биддер потерял Redis"
+          description: >-
+            Budget/frequency-гейт недоступен: биддер отвечает no-bid
+            (консервативное поведение). Доставка остановлена.
+            Runbook: rtb_alerts.md#redis-down
+
+      - alert: BidderNoTraffic
+        expr: rate(bidder_bid_requests_total[10m]) == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Нет входящих bid-запросов 10+ минут"
+          description: >-
+            Ни одного запроса от SSP. Проверить эндпоинты партнёров, сеть,
+            QPS-лимиты. Runbook: rtb_alerts.md#no-traffic
+
+      # --- Латентность --------------------------------------------------------
+      - alert: BidderLatencyP99High
+        expr: |
+          histogram_quantile(0.99, rate(bidder_bid_latency_seconds_bucket[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p99 латентность биддера > 50ms"
+          description: >-
+            SSP таймаутят медленные ответы — фактический win-rate падает раньше,
+            чем это видно по метрикам. Runbook: rtb_alerts.md#latency
+
+      # --- No-bid всплеск -----------------------------------------------------
+      - alert: BidderNoBidSpike
+        expr: |
+          (sum(rate(bidder_no_bid_total[10m])) / clamp_min(rate(bidder_bid_requests_total[10m]), 0.001)) > 0.98
+          and rate(bidder_bid_requests_total[10m]) > 1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No-bid rate > 98% при живом трафике"
+          description: >-
+            Смотреть разбивку bidder_no_bid_total по reason: feed_not_loaded /
+            currency / no_candidates / gate_reject указывают на разные причины.
+            Runbook: rtb_alerts.md#no-bid-spike
+
+      # --- Экономика: bid/win gap ---------------------------------------------
+      - alert: BidderWinGapAnomaly
+        expr: |
+          (rate(rtb_wins_total[30m]) / clamp_min(rate(bidder_bids_total[30m]), 0.001)) < 0.001
+          and rate(bidder_bids_total[30m]) > 1
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Win rate < 0.1% при активном биддинге"
+          description: >-
+            Биддер ставит, но win-notice не приходят: либо цена ниже клиринга,
+            либо сломан nurl/каналы уведомлений, либо SSP не засчитывает победы.
+            Runbook: rtb_alerts.md#win-gap
+
+  - name: centraldsp-backend-python
+    rules:
+      # --- Аномалия спенда ------------------------------------------------------
+      - alert: SpendRateAnomaly
+        expr: |
+          rate(rtb_win_spend_rub_sum[15m]) > 4 * (rate(rtb_win_spend_rub_sum[3h]) + 0.01)
+          and rate(rtb_win_spend_rub_sum[15m]) > 0.1
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Скорость списания в 4+ раза выше 3-часового базлайна"
+          description: >-
+            Возможен runaway spend: сломанный пейсинг, дубли win-notice или
+            фрод. Проверить кампании с наибольшим спендом и приостановить
+            при необходимости. Runbook: rtb_alerts.md#spend-anomaly
+
+      - alert: EventTokenRejectsSpike
+        expr: rate(rtb_event_token_rejects_total[10m]) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Всплеск отклонённых event-токенов"
+          description: >-
+            Кто-то шлёт win/imp/click с невалидными токенами: replay-атака,
+            рассинхрон секретов или сломанные макросы у SSP.
+            Runbook: rtb_alerts.md#token-rejects
+
+      - alert: ImpWithoutWinAnomaly
+        expr: |
+          rate(rtb_imps_total[30m]) > 3 * (rate(rtb_wins_total[30m]) + 0.01)
+          and rate(rtb_imps_total[30m]) > 0.1
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Импрессий в 3+ раза больше, чем win-ов"
+          description: >-
+            События показа приходят без соответствующих побед — дубли пикселя,
+            replay или потеря win-notice. Сверить с bid_events.
+            Runbook: rtb_alerts.md#imp-win-mismatch

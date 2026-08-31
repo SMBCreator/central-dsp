@@ -99,7 +99,7 @@ async def viewer_readonly_guard(request: Request, call_next):
 # --- Глобальный rate limiting (GAP: все ручки, не только логин) ---------------
 # Redis fixed-window. Ключ: user_id (по сессионной cookie) либо client IP.
 # RTB hot path и health исключены: у бидера свой QPS-контроль per-SSP.
-_RL_EXEMPT_PREFIXES = ("/rtb", "/rtb-feed", "/health", "/uploads", "/pixel")
+_RL_EXEMPT_PREFIXES = ("/rtb", "/rtb-feed", "/health", "/metrics", "/uploads", "/pixel")
 _RL_LIMIT = int(os.getenv("API_RATE_LIMIT", "300"))          # запросов
 _RL_WINDOW = int(os.getenv("API_RATE_WINDOW", "60"))         # за окно, сек
 
@@ -128,6 +128,16 @@ async def global_rate_limiter(request: Request, call_next):
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "centraldsp"}
+
+
+@app.get("/metrics", include_in_schema=False)
+async def metrics_endpoint():
+    """Prometheus text exposition (GAP-011). Процессные счётчики, без PII/ID в лейблах."""
+    from fastapi.responses import PlainTextResponse
+
+    import obs_metrics
+
+    return PlainTextResponse(obs_metrics.render_prometheus(), media_type="text/plain; version=0.0.4")
 
 
 class ApiPrefixStripper:

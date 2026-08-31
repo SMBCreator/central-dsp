@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/feed"
+	"github.com/SMBCreator/central-dsp/bidder-go/internal/metrics"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/redisx"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/shading"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/targeting"
@@ -29,6 +30,17 @@ type Handler struct {
 	shading *shading.Store
 	base    string // базовый URL backend'а для nurl/imp/click
 	seat    string
+	metrics *metrics.Registry // nil-safe: без реестра метрики не пишутся
+}
+
+// SetMetrics подключает реестр метрик (вызывается из main до старта сервера).
+func (h *Handler) SetMetrics(r *metrics.Registry) { h.metrics = r }
+
+// m*-хелперы nil-safe: hot path не проверяет наличие реестра в каждом месте.
+func (h *Handler) mNoBid(reason metrics.NoBidReason) {
+	if h.metrics != nil {
+		h.metrics.IncNoBid(reason)
+	}
 }
 
 // NewHandler создаёт handler со всеми зависимостями hot path.
@@ -64,19 +76,26 @@ type scoredCandidate struct {
 func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	ctx := r.Context()
+	if h.metrics != nil {
+		h.metrics.IncBidRequest()
+		defer func() { h.metrics.ObserveLatency(time.Since(start).Seconds()) }()
+	}
 
 	// 1. Auth: endpointKey -> supply partner (+ опциональный X-SSP-Token).
 	snap := h.store.Snapshot()
 	if snap == nil {
+		h.mNoBid(metrics.ReasonFeedNotLoaded)
 		http.Error(w, "feed not loaded", http.StatusServiceUnavailable)
 		return
 	}
 	partner := snap.Partners[r.PathValue("endpointKey")]
 	if partner == nil || partner.Status != "active" {
+		h.mNoBid(metrics.ReasonUnknownEndpoint)
 		http.Error(w, "unknown endpoint", http.StatusNotFound)
 		return
 	}
 	if partner.AuthToken != "" && r.Header.Get("X-SSP-Token") != partner.AuthToken {
+		h.mNoBid(metrics.ReasonBadAuth)
 		http.Error(w, "invalid ssp token", http.StatusForbidden)
 		return
 	}
@@ -85,6 +104,7 @@ func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 	if h.redis != nil && partner.QPSLimit > 0 {
 		ok, err := h.redis.CheckQPS(ctx, partner.ID, int64(partner.QPSLimit), time.Now().Unix())
 		if err == nil && !ok {
+			h.mNoBid(metrics.ReasonQPSExceeded)
 			w.WriteHeader(http.StatusTooManyRequests)
 			return
 		}
@@ -93,10 +113,12 @@ func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 	// 3. Parse/validate.
 	var req BidRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.mNoBid(metrics.ReasonParseError)
 		http.Error(w, "invalid bid request", http.StatusBadRequest)
 		return
 	}
 	if req.ID == "" || len(req.Imp) == 0 {
+		h.mNoBid(metrics.ReasonEmptyRequest)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -107,6 +129,7 @@ func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 
 	// Central DSP биддит только в RUB.
 	if len(req.Cur) > 0 && !containsStr(req.Cur, "RUB") {
+		h.mNoBid(metrics.ReasonCurrency)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -123,8 +146,16 @@ func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(bids) == 0 {
+		h.mNoBid(metrics.ReasonNoCandidates)
 		w.WriteHeader(http.StatusNoContent)
 		return
+	}
+	if h.metrics != nil {
+		var sum float64
+		for i := range bids {
+			sum += bids[i].Price
+		}
+		h.metrics.IncBidResponse(len(bids), sum)
 	}
 	resp := BidResponse{
 		ID:      req.ID,
@@ -201,10 +232,16 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 			}
 			okRes, err := h.redis.GateAndReserve(rctx, c.CampaignID, c.LiID, cost, c.CampBudget, liBudget, deviceID, capsList)
 			if err != nil {
+				if h.metrics != nil {
+					h.metrics.IncGateError()
+				}
 				slog.Error("gate_and_reserve", "err", err)
 				continue
 			}
 			if !okRes {
+				if h.metrics != nil {
+					h.metrics.IncGateReject()
+				}
 				continue
 			}
 		}
@@ -236,7 +273,7 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 	return nil
 }
 
-// matchCandidate — таргетинг line item + SSP allowlist + глобальные домен-листы.
+// matchCandidate — таргетинг line item + SSP allowlist + глобальные домен-л��сты.
 func (h *Handler) matchCandidate(c *feed.Candidate, req *BidRequest, view *targeting.RequestView, partner *feed.Partner, snap *feed.Snapshot) bool {
 	// badv: домен рекламодателя не должен быть заблокирован SSP.
 	if len(req.BAdv) > 0 && c.AdvDomain != "" {
@@ -360,6 +397,9 @@ func (h *Handler) Loss(w http.ResponseWriter, r *http.Request) {
 			}
 			if json.Unmarshal([]byte(raw), &meta) == nil && meta.CampaignID != "" {
 				_ = h.redis.ReleaseGate(r.Context(), meta.CampaignID, meta.LineItemID, meta.Price/1000.0)
+				if h.metrics != nil {
+					h.metrics.IncLossRelease()
+				}
 			}
 		}
 	}

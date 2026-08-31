@@ -16,6 +16,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 
 import hmac as _hmac
 
+import obs_metrics
 from billing_core import bill_win
 from audiences import check_audiences, store_clid_bridge
 from shading import get_factor as shading_get_factor, should_shade
@@ -569,17 +570,29 @@ def _parse_freq_caps(c) -> list[tuple[int, int]]:
 
 @router.post("/bid/{endpoint_key}")
 async def bid(endpoint_key: str, request: Request):
+    obs_metrics.inc("rtb_bid_requests_total")
+    started = time.monotonic()
     if not _RTB_PYTHON_SERVING:
         # 204 no-bid: SSP-совместимый ответ, не ломает партнёрские интеграции
+        obs_metrics.inc_no_bid("python_serving_off")
         return Response(status_code=204)
     try:
         req = await request.json()
     except Exception:
+        obs_metrics.inc_no_bid("parse_error")
         raise HTTPException(status_code=400, detail="Invalid BidRequest JSON")
     ssp_token = request.headers.get("x-centraldsp-token")
-    result = await process_bid_request(endpoint_key, req, ssp_token=ssp_token)
+    try:
+        result = await process_bid_request(endpoint_key, req, ssp_token=ssp_token)
+    finally:
+        obs_metrics.observe_bid_latency(time.monotonic() - started)
     if result is None:
+        obs_metrics.inc_no_bid("no_candidates")
         return Response(status_code=204)
+    bids = [b for sb in result.get("seatbid", []) for b in sb.get("bid", [])]
+    obs_metrics.inc("rtb_bid_responses_total")
+    obs_metrics.inc("rtb_bids_total", len(bids))
+    obs_metrics.inc("rtb_bid_price_cpm_rub_sum", sum(float(b.get("price") or 0) for b in bids))
     return result
 
 
@@ -970,6 +983,7 @@ async def win_notice(bid: str, price: str | None = None):
     `bid` is an HMAC-signed event token (see tokens.py)."""
     bid = verify_event_token(bid)
     if not bid:
+        obs_metrics.inc("rtb_event_token_rejects_total")
         raise HTTPException(status_code=403, detail="Invalid event token")
     pool = await get_pool()
     row = await _find_bid(pool, bid)
@@ -989,6 +1003,8 @@ async def win_notice(bid: str, price: str | None = None):
     if not result.billed:
         return {"ok": True, "duplicate": True}
 
+    obs_metrics.inc("rtb_wins_total")
+    obs_metrics.inc("rtb_win_spend_rub_sum", float(cost))
     await _log_event(
         pool, "win", bid_id=bid, imp_id=row["imp_id"], campaign_id=row["campaign_id"],
         line_item_id=row["line_item_id"], creative_id=row["creative_id"],
@@ -1012,6 +1028,7 @@ async def impression(bid: str):
         return Response(content=_PIXEL, media_type="image/gif")
     row = await _find_bid(pool, bid)
     if row:
+        obs_metrics.inc("rtb_imps_total")
         await _log_event(
             pool, "impression", bid_id=bid, imp_id=row["imp_id"], campaign_id=row["campaign_id"],
             line_item_id=row["line_item_id"], creative_id=row["creative_id"],
@@ -1077,6 +1094,7 @@ async def click(bid: str, r: str = ""):
     if await mark_once("click", bid):
         row = await _find_bid(pool, bid)
         if row:
+            obs_metrics.inc("rtb_clicks_total")
             await _log_event(
                 pool, "click", bid_id=bid, imp_id=row["imp_id"], campaign_id=row["campaign_id"],
                 line_item_id=row["line_item_id"], creative_id=row["creative_id"],
