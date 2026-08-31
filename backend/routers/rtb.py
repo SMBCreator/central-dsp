@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 import hmac as _hmac
 
 import obs_metrics
+import prefilter
 from billing_core import bill_win
 from audiences import check_audiences, store_clid_bridge
 from shading import get_factor as shading_get_factor, should_shade
@@ -581,6 +582,12 @@ async def bid(endpoint_key: str, request: Request):
     except Exception:
         obs_metrics.inc_no_bid("parse_error")
         raise HTTPException(status_code=400, detail="Invalid BidRequest JSON")
+    # Throttling-предфильтр (Часть C): O(1)-отсев ботов/чужого гео/datacenter-IP
+    # ДО полного цикла (Redis/Postgres). Отдельная метрика — это не no-bid.
+    drop_reason = prefilter.check(req)
+    if drop_reason is not None:
+        obs_metrics.inc_prefilter(drop_reason)
+        return Response(status_code=204)
     ssp_token = request.headers.get("x-centraldsp-token")
     try:
         result = await process_bid_request(endpoint_key, req, ssp_token=ssp_token)

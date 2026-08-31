@@ -197,3 +197,59 @@ async def test_ord_connection(user: dict = Depends(_require_superadmin)):
         return {"ok": True, "provider": "ozon"}
     except OrdError as e:
         raise HTTPException(502, str(e))
+
+
+# ------------------------------------------- Throttling: datacenter-подсети --
+# Платформенный список CIDR (/16, /24), которые предфильтр отсекает до полного
+# цикла (prefilter.py, Часть C). Хранится в Redis SET; управление — admin+.
+_require_platform_admin = _require_roles("superadmin", "admin")
+
+
+class SubnetIn(BaseModel):
+    cidr: str = Field(min_length=9, max_length=18, description="CIDR /16 или /24, напр. 45.155.204.0/24")
+
+
+@router.get("/throttle/subnets")
+async def list_dc_subnets(user: dict = Depends(_require_platform_admin)):
+    import prefilter
+    from cache import get_redis
+
+    try:
+        r = get_redis()
+        members = sorted(await r.smembers(prefilter.DC_SUBNETS_KEY))
+    except Exception:
+        raise HTTPException(503, "Redis недоступен — список подсетей временно нечитаем")
+    return {"prefixes": members, "count": len(members)}
+
+
+@router.post("/throttle/subnets", status_code=201)
+async def add_dc_subnet(body: SubnetIn, user: dict = Depends(_require_platform_admin)):
+    import prefilter
+    from cache import get_redis
+
+    prefix = prefilter.cidr_to_prefix(body.cidr)
+    if prefix is None:
+        raise HTTPException(422, "Ожидается IPv4 CIDR с маской /16 или /24, напр. 45.155.204.0/24")
+    try:
+        r = get_redis()
+        await r.sadd(prefilter.DC_SUBNETS_KEY, prefix)
+    except Exception:
+        raise HTTPException(503, "Redis недоступен — попробуйте позже")
+    return {"ok": True, "prefix": prefix}
+
+
+@router.delete("/throttle/subnets", status_code=204)
+async def remove_dc_subnet(body: SubnetIn, user: dict = Depends(_require_platform_admin)):
+    import prefilter
+    from cache import get_redis
+
+    prefix = prefilter.cidr_to_prefix(body.cidr)
+    if prefix is None:
+        raise HTTPException(422, "Ожидается IPv4 CIDR с маской /16 или /24")
+    try:
+        r = get_redis()
+        removed = await r.srem(prefilter.DC_SUBNETS_KEY, prefix)
+    except Exception:
+        raise HTTPException(503, "Redis недоступен — попробуйте позже")
+    if not removed:
+        raise HTTPException(404, "Подсеть не найдена в списке")

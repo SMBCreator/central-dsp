@@ -36,11 +36,22 @@ _COUNTER_HELP = {
 
 _LATENCY_BUCKETS = (0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 1.0)
 
+# Таксономия причин throttling-предфильтра (Часть C). ОТДЕЛЬНО от no-bid:
+# prefilter-дропы не доходят до полного цикла — метрика измеряет экономию инфраструктуры.
+PREFILTER_REASONS = (
+    "bot_ua",
+    "geo_unserved",
+    "no_device_id",
+    "datacenter_ip",
+    "other",
+)
+
 _lock = threading.Lock()
 _started_at = time.time()
 
 _counters: dict[str, float] = {name: 0.0 for name in _COUNTER_HELP}
 _no_bid: dict[str, int] = {r: 0 for r in NO_BID_REASONS}
+_prefilter: dict[str, int] = {r: 0 for r in PREFILTER_REASONS}
 _lat_counts = [0] * (len(_LATENCY_BUCKETS) + 1)
 _lat_sum = 0.0
 _lat_total = 0
@@ -59,6 +70,13 @@ def inc_no_bid(reason: str) -> None:
     key = reason if reason in _no_bid else "other"
     with _lock:
         _no_bid[key] += 1
+
+
+def inc_prefilter(reason: str) -> None:
+    """Запрос отсечён throttling-слоем до полного цикла (Часть C)."""
+    key = reason if reason in _prefilter else "other"
+    with _lock:
+        _prefilter[key] += 1
 
 
 def observe_bid_latency(sec: float) -> None:
@@ -85,6 +103,7 @@ def snapshot() -> dict:
         return {
             "counters": dict(_counters),
             "no_bid": dict(_no_bid),
+            "prefilter": dict(_prefilter),
             "bid_latency": {"count": _lat_total, "sum": _lat_sum, "buckets": buckets},
         }
 
@@ -102,6 +121,11 @@ def render_prometheus() -> str:
         lines.append("# TYPE rtb_no_bid_total counter")
         for reason in NO_BID_REASONS:
             lines.append(f'rtb_no_bid_total{{reason="{reason}"}} {_no_bid[reason]}')
+
+        lines.append("# HELP rtb_prefilter_drops_total Requests dropped by throttling pre-filter (before full cycle).")
+        lines.append("# TYPE rtb_prefilter_drops_total counter")
+        for reason in PREFILTER_REASONS:
+            lines.append(f'rtb_prefilter_drops_total{{reason="{reason}"}} {_prefilter[reason]}')
 
         lines.append("# HELP rtb_bid_latency_seconds Bid request handling latency.")
         lines.append("# TYPE rtb_bid_latency_seconds histogram")
@@ -132,6 +156,8 @@ def reset_for_tests() -> None:
             _counters[name] = 0.0
         for r in _no_bid:
             _no_bid[r] = 0
+        for r in _prefilter:
+            _prefilter[r] = 0
         for i in range(len(_lat_counts)):
             _lat_counts[i] = 0
         _lat_sum = 0.0

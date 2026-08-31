@@ -131,3 +131,19 @@ groups:
             События показа приходят без соответствующих побед — дубли пикселя,
             replay или потеря win-notice. Сверить с bid_events.
             Runbook: rtb_alerts.md#imp-win-mismatch
+
+      - alert: PrefilterDropRateHigh
+        expr: |
+          sum(rate(rtb_prefilter_drops_total[15m]))
+            / (sum(rate(rtb_bid_requests_total[15m])) + 0.001) > 0.5
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Предфильтр отсекает более 50% входящего трафика"
+          description: >-
+            Либо SSP шлёт мусор (боты, чужое гео, datacenter-IP) — обсудить
+            с партнёром, либо предфильтр переусердствовал (проверить
+            THROTTLE_COUNTRIES и список подсетей после недавних изменений).
+            Разбивка по причинам: rtb_prefilter_drops_total{reason=...}.
+            Runbook: rtb_alerts.md#prefilter-drops
