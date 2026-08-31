@@ -93,6 +93,8 @@ class CampaignPatch(BaseModel):
     kktu_code: str | None = Field(default=None, max_length=20)
     kktu_label: str | None = Field(default=None, max_length=300)
     bid_shading: bool | None = None
+    # Clean-traffic (Часть B): закупать только домены с quality score >= порога
+    clean_traffic_only: bool | None = None
 
 
 # --- Line items ---------------------------------------------------------------

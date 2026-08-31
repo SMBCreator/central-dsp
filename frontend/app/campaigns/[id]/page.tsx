@@ -36,6 +36,7 @@ type CampaignExt = Campaign & {
   group_id?: string | null
   pacing?: string
   bid_shading?: boolean
+  clean_traffic_only?: boolean
   frequency_caps?: { impressions: number; period_hours: number }[] | null
   start_date?: string | null
   end_date?: string | null
@@ -61,6 +62,7 @@ function SettingsCard({ campaign }: { campaign: CampaignExt }) {
   const [endDate, setEndDate] = useState(campaign.end_date || "")
   const [pacing, setPacing] = useState(campaign.pacing || "even")
   const [bidShading, setBidShading] = useState(campaign.bid_shading !== false)
+  const [cleanTraffic, setCleanTraffic] = useState(!!campaign.clean_traffic_only)
   const [freqCaps, setFreqCaps] = useState<{ imps: string; hours: string }[]>(
     (campaign.frequency_caps || []).map((w) => ({ imps: String(w.impressions), hours: String(w.period_hours) })),
   )
@@ -95,6 +97,7 @@ function SettingsCard({ campaign }: { campaign: CampaignExt }) {
           end_date: endDate || null,
           pacing,
           bid_shading: bidShading,
+          clean_traffic_only: cleanTraffic,
           frequency_caps: caps,
         },
       })
@@ -216,6 +219,19 @@ function SettingsCard({ campaign }: { campaign: CampaignExt }) {
           <span className="flex items-center gap-1.5 text-sm text-foreground">
             Bid-шейдинг
             <HelpTip text="Автоматически снижает ставку ближе к цене клиринга (first-price). Экономия 15–30% без потери объёма." />
+          </span>
+        </label>
+
+        <label className="flex cursor-pointer items-start gap-2.5">
+          <input
+            type="checkbox"
+            checked={cleanTraffic}
+            onChange={(e) => setCleanTraffic(e.target.checked)}
+            className="mt-0.5 h-4 w-4 rounded border-border accent-current"
+          />
+          <span className="flex items-center gap-1.5 text-sm text-foreground">
+            Только чистый трафик
+            <HelpTip text="Не закупать домены с низким скорингом качества (скликивание, нулевая вовлечённость, аномальный CTR). Скоринг пересчитывается ежедневно; охват может снизиться." />
           </span>
         </label>
 

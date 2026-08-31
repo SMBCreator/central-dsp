@@ -114,6 +114,7 @@ export const mockCampaigns = [
     end_date: null,
     pacing: "smooth",
     bid_shading: true,
+    clean_traffic_only: true,
     frequency_cap_impressions: 2,
     frequency_cap_period_hours: 12,
     frequency_caps: [{ impressions: 2, period_hours: 12 }],
@@ -612,6 +613,34 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
   // --- Финансы ---
   if (path === "/billing/summary") return mockBillingSummary
   if (path.startsWith("/billing/transactions")) return mockTransactions
+
+  // --- ML-слой (Часть B) ---
+  if (path === "/stats/domain-quality")
+    return {
+      threshold: 0.5,
+      domains: [
+        { domain: "news-portal.ru", score: 0.91, imps: 48200, clicks: 610, wins: 50100, reasons: [], flagged: false, updated_at: iso(4 * 36e5) },
+        { domain: "auto-catalog.ru", score: 0.84, imps: 21500, clicks: 240, wins: 22800, reasons: [], flagged: false, updated_at: iso(4 * 36e5) },
+        { domain: "recipe-hub.ru", score: 0.6, imps: 9800, clicks: 30, wins: 3100, reasons: ["imp_no_win"], flagged: false, updated_at: iso(4 * 36e5) },
+        { domain: "empty-widget.ru", score: 0.3, imps: 12100, clicks: 0, wins: 3500, reasons: ["zero_engage", "imp_no_win"], flagged: true, updated_at: iso(4 * 36e5) },
+        { domain: "click-farm-blog.ru", score: 0.21, imps: 15400, clicks: 2900, wins: 15600, reasons: ["ctr_anomaly"], flagged: true, updated_at: iso(4 * 36e5) },
+      ],
+    }
+  if (path === "/settings/ml/status")
+    return {
+      pctr_model: {
+        version: 3,
+        trained_at: iso(11 * 36e5),
+        window_from: iso(14 * 24 * 36e5),
+        window_to: iso(11 * 36e5),
+        sample_events: 182_400,
+        metrics: { auc_like: 0.71, segments: 412, global_ctr: 0.0124 },
+        params: { window_days: 14, min_events: 200 },
+      },
+      domain_quality: { domains_scored: 128, flagged: 9, last_update: iso(4 * 36e5) },
+      clean_traffic_campaigns: 2,
+    }
+  if (path === "/settings/throttle/subnets") return { prefixes: ["45.155.204", "193.169"], count: 2 }
 
   // --- Прочее ---
   if (path === "/users") return [mockUser]

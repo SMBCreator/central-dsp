@@ -202,6 +202,46 @@ async def domain_breakdown(hours: int = 168, limit: int = 100, user: dict = Depe
     ]
 
 
+@router.get("/domain-quality")
+async def domain_quality_panel(limit: int = 100, user: dict = Depends(current_user)):
+    """Панель качества доменов (Часть B): скоринг платформенного ML-слоя.
+
+    Скоринг платформенный (по всему трафику), но список показываем только
+    для доменов, где у пользователя была активность — без утечки чужих площадок.
+    """
+    from ml.quality import CLEAN_SCORE_THRESHOLD
+
+    uid, _adv, _mult = await _resolve_scope(user)
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """
+        SELECT dq.domain, dq.score, dq.imps, dq.clicks, dq.wins, dq.reasons, dq.updated_at
+        FROM domain_quality dq
+        WHERE EXISTS (
+            SELECT 1 FROM domain_stats_hourly d
+            JOIN campaigns c ON c.id = d.campaign_id
+            WHERE c.user_id = ANY($1::uuid[]) AND lower(d.domain) = dq.domain
+        )
+        ORDER BY dq.score ASC, dq.imps DESC
+        LIMIT $2
+        """,
+        uid, limit,
+    )
+    import json as _json
+    out = []
+    for r in rows:
+        reasons = r["reasons"]
+        if isinstance(reasons, str):
+            reasons = _json.loads(reasons or "[]")
+        out.append({
+            "domain": r["domain"], "score": round(float(r["score"]), 3),
+            "imps": int(r["imps"]), "clicks": int(r["clicks"]), "wins": int(r["wins"]),
+            "reasons": reasons, "flagged": float(r["score"]) < CLEAN_SCORE_THRESHOLD,
+            "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
+        })
+    return {"threshold": CLEAN_SCORE_THRESHOLD, "domains": out}
+
+
 @router.get("/breakdown")
 async def breakdown(hours: int = 168, dimension: str = "campaign", user: dict = Depends(current_user)):
     """Aggregated stats grouped by campaign, partner, or creative."""

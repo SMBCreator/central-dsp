@@ -77,6 +77,33 @@ async def shading_recompute(request: Request):
     return {"ok": True, **result}
 
 
+@router.get("/ml-train")
+async def ml_train(request: Request):
+    """Переобучение pCTR-модели по окну bid_events (Часть B).
+
+    Идемпотентно по смыслу: каждая тренировка создаёт новую версию в
+    ml_models, прежняя переводится в retired. При недостатке данных — no-op
+    с явной причиной (модель не создаётся, биддер работает по базовой цене).
+    """
+    _check_secret(request)
+    from ml import pctr
+
+    pool = await get_pool()
+    result = await pctr.train(pool)
+    return {"ok": True, **result}
+
+
+@router.get("/domain-quality")
+async def domain_quality_recompute(request: Request):
+    """Пересчёт скоринга качества доменов для clean-traffic режима (Часть B)."""
+    _check_secret(request)
+    from ml import quality
+
+    pool = await get_pool()
+    result = await quality.recompute(pool)
+    return {"ok": True, **result}
+
+
 @router.get("/ord-export")
 async def ord_monthly_export(request: Request, period: str | None = None):
     """Месячная выгрузка статистики показов в ОРД (ФЗ-347).

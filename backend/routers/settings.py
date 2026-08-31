@@ -253,3 +253,52 @@ async def remove_dc_subnet(body: SubnetIn, user: dict = Depends(_require_platfor
         raise HTTPException(503, "Redis недоступен — попробуйте позже")
     if not removed:
         raise HTTPException(404, "Подсеть не найдена в списке")
+
+
+# ----------------------------------------------------------- ML: статус слоя --
+@router.get("/ml/status")
+async def ml_status(user: dict = Depends(_require_platform_admin)):
+    """Статус ML-слоя (Часть B): активная pCTR-модель и покрытие domain quality."""
+    import json as _json
+
+    pool = await get_pool()
+    model = await pool.fetchrow(
+        "SELECT version, trained_at, window_from, window_to, sample_events, metrics, params "
+        "FROM ml_models WHERE model_type = 'pctr' AND status = 'active' "
+        "ORDER BY version DESC LIMIT 1"
+    )
+    quality_agg = await pool.fetchrow(
+        "SELECT count(*) AS domains, "
+        "       count(*) FILTER (WHERE score < 0.5) AS flagged, "
+        "       max(updated_at) AS last_update "
+        "FROM domain_quality"
+    )
+    clean_campaigns = await pool.fetchval(
+        "SELECT count(*) FROM campaigns WHERE clean_traffic_only AND status = 'active'"
+    )
+    out: dict = {
+        "pctr_model": None,
+        "domain_quality": {
+            "domains_scored": int(quality_agg["domains"] or 0),
+            "flagged": int(quality_agg["flagged"] or 0),
+            "last_update": quality_agg["last_update"].isoformat() if quality_agg["last_update"] else None,
+        },
+        "clean_traffic_campaigns": int(clean_campaigns or 0),
+    }
+    if model:
+        metrics = model["metrics"]
+        if isinstance(metrics, str):
+            metrics = _json.loads(metrics or "{}")
+        params = model["params"]
+        if isinstance(params, str):
+            params = _json.loads(params or "{}")
+        out["pctr_model"] = {
+            "version": int(model["version"]),
+            "trained_at": model["trained_at"].isoformat() if model["trained_at"] else None,
+            "window_from": model["window_from"].isoformat() if model["window_from"] else None,
+            "window_to": model["window_to"].isoformat() if model["window_to"] else None,
+            "sample_events": int(model["sample_events"] or 0),
+            "metrics": metrics,
+            "params": params,
+        }
+    return out

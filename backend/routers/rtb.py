@@ -508,14 +508,14 @@ async def _log_event(pool, event_type: str, **kw: Any) -> None:
     await pool.execute(
         """
         INSERT INTO bid_events (event_type, bid_id, imp_id, campaign_id, line_item_id, creative_id,
-                                supply_partner_id, price, clear_price, device_type, geo_country, ad_type, domain, os, browser)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+                                supply_partner_id, price, clear_price, device_type, geo_country, ad_type, domain, os, browser, pctr)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
         """,
         event_type, kw.get("bid_id", ""), kw.get("imp_id"), kw.get("campaign_id"),
         kw.get("line_item_id"), kw.get("creative_id"), kw.get("supply_partner_id"),
         kw.get("price"), kw.get("clear_price"), kw.get("device_type"),
         kw.get("geo_country"), kw.get("ad_type"), kw.get("domain"),
-        kw.get("os"), kw.get("browser"),
+        kw.get("os"), kw.get("browser"), kw.get("pctr"),
     )
 
 
@@ -708,7 +708,8 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
         SELECT li.id AS li_id, li.bid_price, li.bid_type, li.max_bid, li.daily_budget AS li_budget,
                li.targeting, li.campaign_id, li.user_id AS owner_id,
                c.daily_budget AS camp_budget, c.frequency_cap_impressions, c.frequency_cap_period_hours, c.frequency_caps,
-               c.pacing, c.advertiser_id, c.bid_shading, adv.domain AS adv_domain,
+               c.pacing, c.advertiser_id, c.bid_shading, c.objective, c.clean_traffic_only,
+               adv.domain AS adv_domain,
                cr.id AS creative_id, cr.type, cr.width, cr.height, cr.asset_url, cr.click_url,
                cr.html_snippet, cr.native_title, cr.native_description, cr.native_cta,
                cr.native_icon_url, cr.video_url, cr.video_duration, cr.vast_xml, cr.name,
@@ -762,8 +763,17 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
         target.setdefault(str(r["user_id"]), set()).add(r["domain"].lower())
 
     from datetime import datetime, timezone as _tz
+
+    from ml import pctr as ml_pctr
+    from ml import quality as ml_quality
+
     req_domain = ((req.get("site") or req.get("app") or {}).get("domain")
                   or (req.get("app") or {}).get("bundle") or "").lower()
+    # Clean-traffic (Часть B): set фродовых доменов из in-process кэша.
+    # Fail-open: нет данных -> пустой set, закупка не останавливается.
+    _dirty_domains: frozenset = frozenset()
+    if req_domain and any(c["clean_traffic_only"] for c in candidates):
+        _dirty_domains = await ml_quality.get_blocked_domains(pool)
     req_device = DEVICE_TYPES.get((req.get("device") or {}).get("devicetype", 0), "unknown")
     req_geo = (geo.get("country") or "").lower()
     req_os = _device_os(device)
@@ -822,6 +832,10 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
                 owner_white = g_white.get(owner)
                 if owner_white and req_domain not in owner_white:
                     continue
+            # Clean-traffic (Часть B): кампания с тумблером не биддит на домены
+            # с низким quality score. Только opt-in, только известные домены.
+            if c["clean_traffic_only"] and req_domain and req_domain in _dirty_domains:
+                continue
             if not _match_targeting(targeting, req):
                 continue
             if not _match_imp_targeting(targeting, imp):
@@ -837,6 +851,26 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
                 price = min(price, float(c["max_bid"]))
             if price < floor:
                 continue
+            # Value-based биддинг (Часть B): для performance-целей корректируем
+            # бид множителем pctr/baseline с жёсткими guardrails:
+            #   * только objective clicks/conversions и bid_type CPM;
+            #   * множитель зажат в [0.7, 1.3] — модель тюнингует, не управляет;
+            #   * пол floor и потолок max_bid соблюдаются всегда;
+            #   * модель недоступна -> базовая цена (fail-safe).
+            c["_pctr"] = None
+            if (c.get("objective") in ("traffic", "conversions")
+                    and (c.get("bid_type") or "cpm") == "cpm"):
+                _pred = await ml_pctr.predict(
+                    pool, domain=req_domain or None,
+                    creative_id=str(c["creative_id"]),
+                    device_type=req_device, hour=int(req_hour),
+                )
+                if _pred is not None and _pred["matched"] > 0 and _pred["baseline"] > 0:
+                    _mult = min(1.3, max(0.7, _pred["pctr"] / _pred["baseline"]))
+                    price = max(floor, price * _mult)
+                    if c["max_bid"]:
+                        price = min(price, float(c["max_bid"]))
+                    c["_pctr"] = _pred["pctr"]
             # Bid shading (opt-in, first-price only): pay closer to the
             # clearing price, never below floor. Second-price auctions are
             # excluded: shading there cuts win rate without saving money.
@@ -917,7 +951,7 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
             supply_partner_id=partner["id"], price=price,
             device_type=DEVICE_TYPES.get(device.get("devicetype", 0), "unknown"),
             geo_country=geo.get("country"), ad_type=ad_type, domain=site.get("domain"),
-            os=req_os, browser=req_browser,
+            os=req_os, browser=req_browser, pctr=c.get("_pctr"),
         ))
         _fire_and_forget(_bump_stats(pool, "bids", 0, c["campaign_id"], c["li_id"], c["creative_id"], partner["id"]))
 

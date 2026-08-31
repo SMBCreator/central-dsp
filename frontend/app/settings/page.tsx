@@ -4,6 +4,7 @@ import { useState } from "react"
 import useSWR from "swr"
 import { api, fetcher } from "@/lib/api"
 import { Button, Card, CardHeader, EmptyState, Field, PillTabs, Spinner, Table } from "@/components/ui"
+import { MlStatusCard } from "@/components/ml-status-card"
 
 type AppSettings = {
   currency: string
@@ -259,6 +260,8 @@ export default function SettingsPage() {
       </Card>
 
       <OrdCard />
+
+      <MlStatusCard />
 
       <Card>
         <CardHeader
