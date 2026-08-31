@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import useSWR from "swr"
 import Link from "next/link"
 import { fetcher } from "@/lib/api"
@@ -12,8 +12,8 @@ import {
   type StatsSummary,
   type TimeseriesPoint,
 } from "@/lib/types"
-import { Card, CardHeader, ChartCard, KpiCard, PillTabs, Spinner, StatusBadge, Table, EmptyState, Button } from "@/components/ui"
-import { TimeseriesChart } from "@/components/timeseries-chart"
+import { Card, CardHeader, ChartCard, KpiCard, PillTabs, Spinner, StatusBadge, Table, EmptyState, Button, inputCls } from "@/components/ui"
+import { TimeseriesChart, METRIC_COLORS, type MetricKey } from "@/components/timeseries-chart"
 
 const METRICS = [
   { key: "impressions", label: "Показы" },
@@ -26,21 +26,84 @@ const PERIODS = [
   { key: "24", label: "24 часа" },
   { key: "72", label: "3 дня" },
   { key: "168", label: "7 дней" },
+  { key: "720", label: "30 дней" },
+  { key: "custom", label: "Свои даты" },
 ] as const
 
+const GRANULARITIES = [
+  { key: "hour", label: "По часам" },
+  { key: "day", label: "По дням" },
+  { key: "week", label: "По неделям" },
+] as const
+
+type Granularity = (typeof GRANULARITIES)[number]["key"]
+
+/** Дефолтная гранулярность под период: сутки — часы, до месяца — дни, дальше — недели. */
+function defaultGranularity(hours: number): Granularity {
+  if (hours <= 72) return "hour"
+  if (hours <= 720) return "day"
+  return "week"
+}
+
+function isoDaysAgo(days: number): string {
+  const d = new Date(Date.now() - days * 864e5)
+  return d.toISOString().slice(0, 10)
+}
+
 export default function DashboardPage() {
-  const [hours, setHours] = useState(24)
-  const [metric, setMetric] = useState<(typeof METRICS)[number]["key"]>("impressions")
+  const [period, setPeriod] = useState<(typeof PERIODS)[number]["key"]>("24")
+  const [dateFrom, setDateFrom] = useState(isoDaysAgo(7))
+  const [dateTo, setDateTo] = useState(isoDaysAgo(0))
+  // null = «авто» (подбирается под период), явный выбор пользователя сохраняется
+  const [granularityOverride, setGranularityOverride] = useState<Granularity | null>(null)
+  const [activeMetrics, setActiveMetrics] = useState<MetricKey[]>(["impressions"])
   // H6: автообновление — байер держит вкладку открытой весь день
   const [autoRefresh, setAutoRefresh] = useState(true)
   const refreshInterval = autoRefresh ? 30000 : 0
 
-  const { data: summary } = useSWR<StatsSummary>(`/stats/summary?hours=${hours}`, fetcher, { refreshInterval })
-  const { data: series } = useSWR<TimeseriesPoint[]>(`/stats/timeseries?hours=${hours}`, fetcher, { refreshInterval })
+  const isCustom = period === "custom"
+  const hours = isCustom ? 168 : Number(period)
+  const customDays = useMemo(() => {
+    const from = new Date(dateFrom).getTime()
+    const to = new Date(dateTo).getTime()
+    return Number.isFinite(from) && Number.isFinite(to) ? Math.max(1, Math.round((to - from) / 864e5) + 1) : 7
+  }, [dateFrom, dateTo])
+  const granularity: Granularity =
+    granularityOverride ?? defaultGranularity(isCustom ? customDays * 24 : hours)
+
+  const customValid = isCustom ? Boolean(dateFrom && dateTo && dateFrom <= dateTo) : true
+  const seriesQuery = isCustom
+    ? `/stats/timeseries?date_from=${dateFrom}&date_to=${dateTo}&granularity=${granularity}`
+    : `/stats/timeseries?hours=${hours}&granularity=${granularity}`
+  const summaryQuery = isCustom
+    ? `/stats/summary?hours=${customDays * 24}`
+    : `/stats/summary?hours=${hours}`
+
+  const { data: summary } = useSWR<StatsSummary>(summaryQuery, fetcher, { refreshInterval })
+  const { data: series } = useSWR<TimeseriesPoint[]>(customValid ? seriesQuery : null, fetcher, { refreshInterval })
   const { data: campaigns } = useSWR<Campaign[]>("/campaigns", fetcher, { refreshInterval })
 
-  const activeMetric = METRICS.find((m) => m.key === metric)!
   const topCampaigns = (campaigns || []).slice(0, 5)
+
+  const toggleMetric = (key: MetricKey) => {
+    setActiveMetrics((prev) => {
+      if (prev.includes(key)) {
+        // Последнюю метрику не снимаем — график не должен остаться пустым
+        return prev.length > 1 ? prev.filter((m) => m !== key) : prev
+      }
+      return [...prev, key]
+    })
+  }
+
+  const periodLabel = isCustom
+    ? `${customDays} дн.`
+    : hours === 24
+      ? "за сутки"
+      : hours === 72
+        ? "за 3 дня"
+        : hours === 168
+          ? "за неделю"
+          : "за 30 дней"
 
   return (
     <div className="space-y-6">
@@ -59,13 +122,41 @@ export default function DashboardPage() {
             />
             Автообновление 30 сек
           </label>
-          <PillTabs
-            value={String(hours) as (typeof PERIODS)[number]["key"]}
-            onChange={(v) => setHours(Number(v))}
-            options={PERIODS}
-          />
+          <PillTabs value={period} onChange={setPeriod} options={PERIODS} />
         </div>
       </div>
+
+      {isCustom ? (
+        <div className="flex flex-wrap items-end gap-3 rounded-xl border border-border bg-card p-3">
+          <div>
+            <label htmlFor="dash-from" className="mb-1 block text-xs text-muted">
+              С даты
+            </label>
+            <input
+              id="dash-from"
+              type="date"
+              value={dateFrom}
+              max={dateTo || undefined}
+              onChange={(e) => setDateFrom(e.target.value)}
+              className={inputCls}
+            />
+          </div>
+          <div>
+            <label htmlFor="dash-to" className="mb-1 block text-xs text-muted">
+              По дату
+            </label>
+            <input
+              id="dash-to"
+              type="date"
+              value={dateTo}
+              min={dateFrom || undefined}
+              onChange={(e) => setDateTo(e.target.value)}
+              className={inputCls}
+            />
+          </div>
+          {!customValid ? <p className="pb-2 text-xs text-danger">Дата начала не может быть позже даты конца</p> : null}
+        </div>
+      ) : null}
 
       {summary ? (
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
@@ -80,24 +171,53 @@ export default function DashboardPage() {
 
       <ChartCard
         label="Динамика"
-        badge={activeMetric.label}
+        badge={activeMetrics.map((m) => METRICS.find((x) => x.key === m)?.label).join(" + ")}
         metric={
-          summary
-            ? metric === "spend"
+          summary && activeMetrics.length === 1
+            ? activeMetrics[0] === "spend"
               ? fmtMoney(summary.spend)
-              : fmtNum(summary[metric as keyof StatsSummary] as number)
+              : fmtNum(summary[activeMetrics[0] as keyof StatsSummary] as number)
             : undefined
         }
-        metricUnit={`за ${hours === 24 ? "сутки" : hours === 72 ? "3 дня" : "неделю"}`}
+        metricUnit={periodLabel}
         footerLeft={`${series?.length || 0} точек данных`}
         footerRight="Central DSP"
       >
-        <div className="mb-3 flex justify-end px-2 pt-2">
-          <PillTabs value={metric} onChange={setMetric} options={METRICS} />
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2 px-2 pt-2">
+          <PillTabs
+            value={granularity}
+            onChange={(v) => setGranularityOverride(v)}
+            options={GRANULARITIES}
+          />
+          <div className="flex flex-wrap gap-1.5" role="group" aria-label="Метрики графика">
+            {METRICS.map((m) => {
+              const active = activeMetrics.includes(m.key)
+              return (
+                <button
+                  key={m.key}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() => toggleMetric(m.key)}
+                  className={`flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                    active
+                      ? "border-transparent bg-foreground text-background"
+                      : "border-border bg-transparent text-muted hover:text-foreground"
+                  }`}
+                >
+                  <span
+                    aria-hidden
+                    className="h-2 w-2 rounded-full"
+                    style={{ background: METRIC_COLORS[m.key] }}
+                  />
+                  {m.label}
+                </button>
+              )
+            })}
+          </div>
         </div>
         {series ? (
           series.length > 0 ? (
-            <TimeseriesChart data={series} metric={metric} label={activeMetric.label} />
+            <TimeseriesChart data={series} metrics={activeMetrics} granularity={granularity} />
           ) : (
             <EmptyState
               title="Пока нет данных"

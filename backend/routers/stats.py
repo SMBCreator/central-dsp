@@ -89,33 +89,77 @@ async def summary(hours: int = 24, campaign_id: str | None = None, user: dict = 
     }
 
 
+_GRANULARITIES = {"hour": "hour", "day": "day", "week": "week"}
+
+
 @router.get("/timeseries")
-async def timeseries(hours: int = 24, campaign_id: str | None = None, user: dict = Depends(current_user)):
+async def timeseries(
+    hours: int = 24,
+    campaign_id: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    granularity: str = "hour",
+    user: dict = Depends(current_user),
+):
+    """Временной ряд для графика дашборда.
+
+    Два режима периода:
+    - hours (пресеты 24ч/3д/7д/30д) — по умолчанию;
+    - date_from/date_to (YYYY-MM-DD, произвольный диапазон) — приоритетнее hours.
+    granularity: hour | day | week — агрегация date_trunc на стороне БД.
+    """
+    from datetime import date as _date
+
+    trunc = _GRANULARITIES.get(granularity)
+    if trunc is None:
+        raise HTTPException(422, "granularity должен быть hour, day или week")
+
     uid, adv_scope, mult = await _resolve_scope(user)
     pool = await get_pool()
-    extra = []
+
+    # Валидация дат: строго ISO YYYY-MM-DD, from <= to, диапазон <= 366 дней
+    period_filter = ""
+    params: list = [uid]
+    if date_from or date_to:
+        if not (date_from and date_to):
+            raise HTTPException(422, "Нужны обе даты: date_from и date_to")
+        try:
+            d_from, d_to = _date.fromisoformat(date_from), _date.fromisoformat(date_to)
+        except ValueError:
+            raise HTTPException(422, "Даты в формате YYYY-MM-DD")
+        if d_from > d_to:
+            raise HTTPException(422, "date_from позже date_to")
+        if (d_to - d_from).days > 366:
+            raise HTTPException(422, "Диапазон не больше года")
+        params.extend([d_from, d_to])
+        period_filter = " AND s.ts_hour >= $2::date AND s.ts_hour < ($3::date + interval '1 day')"
+    else:
+        params.append(str(max(1, min(hours, 8784))))
+        period_filter = " AND s.ts_hour >= now() - ($2 || ' hours')::interval"
+
     filters = ""
     if campaign_id:
-        extra.append(campaign_id)
-        filters += f" AND s.campaign_id = ${2 + len(extra)}"
+        params.append(campaign_id)
+        filters += f" AND s.campaign_id = ${len(params)}"
     if adv_scope:
-        extra.append(adv_scope)
-        filters += f" AND c.advertiser_id = ${2 + len(extra)}"
+        params.append(adv_scope)
+        filters += f" AND c.advertiser_id = ${len(params)}"
+
     rows = await pool.fetch(
         f"""
-        SELECT s.ts_hour,
+        SELECT date_trunc('{trunc}', s.ts_hour) AS bucket,
                SUM(s.bids) AS bids, SUM(s.wins) AS wins,
                SUM(s.impressions) AS impressions, SUM(s.clicks) AS clicks, SUM(s.spend) AS spend
         FROM stats_hourly s
         JOIN campaigns c ON c.id = s.campaign_id
-        WHERE c.user_id = ANY($1::uuid[]) AND s.ts_hour >= now() - ($2 || ' hours')::interval {filters}
-        GROUP BY s.ts_hour ORDER BY s.ts_hour
+        WHERE c.user_id = ANY($1::uuid[]) {period_filter} {filters}
+        GROUP BY bucket ORDER BY bucket
         """,
-        uid, str(hours), *extra,
+        *params,
     )
     return [
         {
-            "ts": r["ts_hour"].isoformat(),
+            "ts": r["bucket"].isoformat(),
             "bids": int(r["bids"]),
             "wins": int(r["wins"]),
             "impressions": int(r["impressions"]),

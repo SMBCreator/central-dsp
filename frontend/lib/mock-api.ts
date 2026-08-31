@@ -314,10 +314,33 @@ function seriesPoint(i: number, hours: number) {
   return { ts: iso((hours - i) * 36e5), bids, wins, impressions, clicks, spend }
 }
 
-export function mockTimeseries(hours: number) {
+export function mockTimeseries(hours: number, granularity: "hour" | "day" | "week" = "hour") {
   const pts = []
   for (let i = 1; i <= hours; i++) pts.push(seriesPoint(i, hours))
-  return pts
+  if (granularity === "hour") return pts
+  // Агрегация как date_trunc на бэке: по началу дня / ISO-недели
+  const buckets = new Map<string, (typeof pts)[number]>()
+  for (const p of pts) {
+    const d = new Date(p.ts)
+    d.setMinutes(0, 0, 0)
+    d.setHours(0)
+    if (granularity === "week") {
+      const dow = (d.getDay() + 6) % 7 // понедельник = 0
+      d.setDate(d.getDate() - dow)
+    }
+    const key = d.toISOString()
+    const acc = buckets.get(key)
+    if (acc) {
+      acc.bids += p.bids
+      acc.wins += p.wins
+      acc.impressions += p.impressions
+      acc.clicks += p.clicks
+      acc.spend = Math.round((acc.spend + p.spend) * 100) / 100
+    } else {
+      buckets.set(key, { ...p, ts: key })
+    }
+  }
+  return Array.from(buckets.values()).sort((a, b) => a.ts.localeCompare(b.ts))
 }
 
 export function mockSummary(hours: number, campaignId?: string | null) {
@@ -365,7 +388,7 @@ export function mockDiagnostics(campaignId: string) {
       code: "schedule",
       ok: true,
       severity: "blocker",
-      title: "Период открутки",
+      title: "Период откр��тки",
       detail: "Сегодня входит в период кампании",
     },
     {
@@ -544,7 +567,17 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
   // --- Статистика ---
   if (path === "/stats/summary")
     return mockSummary(Number(search.get("hours") || 24), search.get("campaign_id"))
-  if (path === "/stats/timeseries") return mockTimeseries(Math.min(Number(search.get("hours") || 24), 168))
+  if (path === "/stats/timeseries") {
+    const gran = (search.get("granularity") || "hour") as "hour" | "day" | "week"
+    const dFrom = search.get("date_from")
+    const dTo = search.get("date_to")
+    let h = Math.min(Number(search.get("hours") || 24), 720)
+    if (dFrom && dTo) {
+      const days = Math.round((new Date(dTo).getTime() - new Date(dFrom).getTime()) / 864e5) + 1
+      h = Math.min(Math.max(days, 1) * 24, 720)
+    }
+    return mockTimeseries(h, gran)
+  }
   if (path === "/stats/report") {
     // Демо-отчёт по дням: форма ответа совпадает с бэком ({rows, totals})
     const days = 7
