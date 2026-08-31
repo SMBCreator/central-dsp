@@ -1,9 +1,9 @@
 "use client"
 
+import { useMemo } from "react"
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
-import type { TimeseriesPoint } from "@/lib/types"
 
-export type MetricKey = keyof Omit<TimeseriesPoint, "ts">
+export type MetricKey = string
 
 /**
  * Цвета метрик: показы — акцентный, клики — зелёный, расход — янтарный,
@@ -15,6 +15,7 @@ export const METRIC_COLORS: Record<string, string> = {
   spend: "var(--color-warning)",
   bids: "var(--chart-2)",
   wins: "var(--chart-1)",
+  ctr: "var(--chart-3)",
 }
 
 const METRIC_LABELS: Record<string, string> = {
@@ -23,7 +24,12 @@ const METRIC_LABELS: Record<string, string> = {
   spend: "Расход",
   bids: "Ставки",
   wins: "Выигрыши",
+  ctr: "CTR",
 }
+
+/** Метрики в деньгах (₽) и в процентах — для форматирования осей и тултипа. */
+const MONEY_METRICS = new Set(["spend", "cpm", "cpc", "cpa"])
+const PCT_METRICS = new Set(["ctr", "win_rate", "viewability"])
 
 function formatTick(ts: string, granularity: "hour" | "day" | "week"): string {
   const d = new Date(ts)
@@ -38,6 +44,7 @@ function formatTick(ts: string, granularity: "hour" | "day" | "week"): string {
 
 function formatTooltipTs(ts: string, granularity: "hour" | "day" | "week"): string {
   const d = new Date(ts)
+  if (isNaN(d.getTime())) return ts
   if (granularity === "hour")
     return d.toLocaleString("ru-RU", { day: "2-digit", month: "long", hour: "2-digit", minute: "2-digit" })
   if (granularity === "week") {
@@ -50,29 +57,74 @@ function formatTooltipTs(ts: string, granularity: "hour" | "day" | "week"): stri
 const nfRu = new Intl.NumberFormat("ru-RU")
 const nfCompact = new Intl.NumberFormat("ru-RU", { notation: "compact", maximumFractionDigits: 1 })
 
+function fmtAxisValue(metric: string, v: number): string {
+  if (MONEY_METRICS.has(metric)) return `${nfCompact.format(v)} ₽`
+  if (PCT_METRICS.has(metric)) return `${nfCompact.format(v)}%`
+  return nfCompact.format(v)
+}
+
+function fmtTooltipValue(metric: string, v: number): string {
+  if (MONEY_METRICS.has(metric)) return `${nfRu.format(Math.round(v * 100) / 100)} ₽`
+  if (PCT_METRICS.has(metric)) return `${nfRu.format(Math.round(v * 1000) / 1000)}%`
+  return nfRu.format(v)
+}
+
+type AxisSlot = { orientation: "left" | "right"; hide: boolean }
+
+/**
+ * Раскладка осей как в Google Ads: каждая метрика живёт на СВОЕЙ оси
+ * (собственный масштаб — линии всегда читабельны), но видимых осей максимум две.
+ * Правила:
+ *  - клики — всегда левая ось, показы — всегда правая;
+ *  - если кликов/показов нет, свободные стороны занимают остальные метрики по порядку;
+ *  - все прочие метрики (расход, ставки, CTR) рисуются линией и видны в тултипе,
+ *    но собственную шкалу не показывают — оси не конфликтуют.
+ */
+function buildAxisPlan(metrics: string[]): Map<string, AxisSlot> {
+  const plan = new Map<string, AxisSlot>()
+  const used = new Set<"left" | "right">()
+
+  if (metrics.includes("clicks")) {
+    plan.set("clicks", { orientation: "left", hide: false })
+    used.add("left")
+  }
+  if (metrics.includes("impressions")) {
+    plan.set("impressions", { orientation: "right", hide: false })
+    used.add("right")
+  }
+  for (const m of metrics) {
+    if (plan.has(m)) continue
+    if (used.size >= 2) {
+      plan.set(m, { orientation: "left", hide: true })
+      continue
+    }
+    const side: "left" | "right" = used.has("left") ? "right" : "left"
+    plan.set(m, { orientation: side, hide: false })
+    used.add(side)
+  }
+  return plan
+}
+
 /**
  * График с поддержкой нескольких метрик одновременно.
- * Расход (деньги) идёт на правую ось Y, счётчики — на левую,
- * чтобы линии с разными порядками величин были читабельны.
+ * Оси распределяются по buildAxisPlan: клики слева, показы справа,
+ * деньги и проценты — на скрытых осях (значения видны при наведении).
  */
-export function TimeseriesChart({
+export function TimeseriesChart<T extends { ts: string }>({
   data,
   metrics,
   granularity = "hour",
 }: {
-  data: TimeseriesPoint[]
+  data: T[]
   metrics: MetricKey[]
   granularity?: "hour" | "day" | "week"
 }) {
-  const hasSpend = metrics.includes("spend")
-  const hasCounts = metrics.some((m) => m !== "spend")
-
-  // Прореживание подписей X: не больше ~8 подписей независимо от числа точек
-  const tickInterval = Math.max(0, Math.ceil(data.length / 8) - 1)
+  const axisPlan = useMemo(() => buildAxisPlan(metrics), [metrics])
+  const rightVisible = Array.from(axisPlan.values()).some((a) => !a.hide && a.orientation === "right")
 
   return (
     <ResponsiveContainer width="100%" height={260}>
-      <AreaChart data={data} margin={{ top: 8, right: hasSpend ? 8 : 16, bottom: 0, left: 0 }}>
+      <AreaChart data={data} margin={{ top: 8, right: rightVisible ? 8 : 16, bottom: 0, left: 0 }}>
         <defs>
           {metrics.map((m) => (
             <linearGradient key={m} id={`grad-${m}`} x1="0" y1="0" x2="0" y2="1">
@@ -84,34 +136,30 @@ export function TimeseriesChart({
         <CartesianGrid strokeDasharray="2 4" stroke="var(--color-border)" vertical={false} />
         <XAxis
           dataKey="ts"
-          interval={tickInterval}
+          interval="preserveStartEnd"
           tickFormatter={(ts: string) => formatTick(ts, granularity)}
           tick={{ fontSize: 10, fill: "var(--color-muted)", fontFamily: "var(--font-mono)" }}
           tickLine={false}
           axisLine={false}
-          minTickGap={24}
+          minTickGap={32}
         />
-        {hasCounts ? (
-          <YAxis
-            yAxisId="counts"
-            tickFormatter={(v: number) => nfCompact.format(v)}
-            tick={{ fontSize: 10, fill: "var(--color-muted)", fontFamily: "var(--font-mono)" }}
-            tickLine={false}
-            axisLine={false}
-            width={62}
-          />
-        ) : null}
-        {hasSpend ? (
-          <YAxis
-            yAxisId="money"
-            orientation={hasCounts ? "right" : "left"}
-            tickFormatter={(v: number) => `${nfCompact.format(v)} ₽`}
-            tick={{ fontSize: 10, fill: "var(--color-warning)", fontFamily: "var(--font-mono)" }}
-            tickLine={false}
-            axisLine={false}
-            width={56}
-          />
-        ) : null}
+        {metrics.map((m) => {
+          const slot = axisPlan.get(m)
+          if (!slot) return null
+          return (
+            <YAxis
+              key={`axis-${m}`}
+              yAxisId={m}
+              orientation={slot.orientation}
+              hide={slot.hide}
+              tickFormatter={(v: number) => fmtAxisValue(m, v)}
+              tick={{ fontSize: 10, fill: METRIC_COLORS[m] || "var(--color-muted)", fontFamily: "var(--font-mono)" }}
+              tickLine={false}
+              axisLine={false}
+              width={slot.hide ? 0 : 62}
+            />
+          )
+        })}
         <Tooltip
           labelFormatter={(ts: string) => formatTooltipTs(ts, granularity)}
           contentStyle={{
@@ -122,15 +170,12 @@ export function TimeseriesChart({
             fontFamily: "var(--font-mono)",
             color: "var(--color-foreground)",
           }}
-          formatter={(value: number, name: string) => [
-            name === "spend" ? `${nfRu.format(Math.round(value * 100) / 100)} ₽` : nfRu.format(value),
-            METRIC_LABELS[name] || name,
-          ]}
+          formatter={(value: number, name: string) => [fmtTooltipValue(name, value), METRIC_LABELS[name] || name]}
         />
         {metrics.map((m) => (
           <Area
             key={m}
-            yAxisId={m === "spend" ? "money" : "counts"}
+            yAxisId={m}
             type="monotone"
             dataKey={m}
             stroke={METRIC_COLORS[m]}

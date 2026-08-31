@@ -54,6 +54,8 @@ export default function DashboardPage() {
   const [period, setPeriod] = useState<(typeof PERIODS)[number]["key"]>("24")
   const [dateFrom, setDateFrom] = useState(isoDaysAgo(7))
   const [dateTo, setDateTo] = useState(isoDaysAgo(0))
+  // Поповер выбора своего периода — открывается при клике на «Свои даты»
+  const [customOpen, setCustomOpen] = useState(false)
   // null = «авто» (подбирается под период), явный выбор пользователя сохраняется
   const [granularityOverride, setGranularityOverride] = useState<Granularity | null>(null)
   const [activeMetrics, setActiveMetrics] = useState<MetricKey[]>(["impressions"])
@@ -122,41 +124,56 @@ export default function DashboardPage() {
             />
             Автообновление 30 сек
           </label>
-          <PillTabs value={period} onChange={setPeriod} options={PERIODS} />
+          <div className="relative">
+            <PillTabs
+              value={period}
+              onChange={(v) => {
+                setPeriod(v)
+                setCustomOpen(v === "custom")
+              }}
+              options={PERIODS}
+            />
+            {isCustom && customOpen ? (
+              <div className="absolute right-0 top-full z-30 mt-2 w-64 space-y-2.5 rounded-xl border border-border bg-card p-3 shadow-lg">
+                <div>
+                  <label htmlFor="dash-from" className="mb-1 block text-xs text-muted">
+                    С даты
+                  </label>
+                  <input
+                    id="dash-from"
+                    type="date"
+                    value={dateFrom}
+                    max={dateTo || undefined}
+                    onChange={(e) => setDateFrom(e.target.value)}
+                    className={inputCls}
+                  />
+                </div>
+                <div>
+                  <label htmlFor="dash-to" className="mb-1 block text-xs text-muted">
+                    По дату
+                  </label>
+                  <input
+                    id="dash-to"
+                    type="date"
+                    value={dateTo}
+                    min={dateFrom || undefined}
+                    onChange={(e) => setDateTo(e.target.value)}
+                    className={inputCls}
+                  />
+                </div>
+                {!customValid ? (
+                  <p className="text-xs text-danger">Дата начала не может быть позже даты конца</p>
+                ) : null}
+                <div className="flex justify-end">
+                  <Button variant="secondary" onClick={() => setCustomOpen(false)} disabled={!customValid}>
+                    Готово
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+          </div>
         </div>
       </div>
-
-      {isCustom ? (
-        <div className="flex flex-wrap items-end gap-3 rounded-xl border border-border bg-card p-3">
-          <div>
-            <label htmlFor="dash-from" className="mb-1 block text-xs text-muted">
-              С даты
-            </label>
-            <input
-              id="dash-from"
-              type="date"
-              value={dateFrom}
-              max={dateTo || undefined}
-              onChange={(e) => setDateFrom(e.target.value)}
-              className={inputCls}
-            />
-          </div>
-          <div>
-            <label htmlFor="dash-to" className="mb-1 block text-xs text-muted">
-              По дату
-            </label>
-            <input
-              id="dash-to"
-              type="date"
-              value={dateTo}
-              min={dateFrom || undefined}
-              onChange={(e) => setDateTo(e.target.value)}
-              className={inputCls}
-            />
-          </div>
-          {!customValid ? <p className="pb-2 text-xs text-danger">Дата начала не может быть позже даты конца</p> : null}
-        </div>
-      ) : null}
 
       {summary ? (
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">

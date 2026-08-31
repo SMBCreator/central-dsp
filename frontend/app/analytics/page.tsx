@@ -5,9 +5,10 @@ import { useSearchParams } from "next/navigation"
 import useSWR from "swr"
 import { api, fetcher } from "@/lib/api"
 import { fmtMoney, fmtNum, fmtPct } from "@/lib/types"
-import { Button, Card, CardHeader, EmptyState, Spinner, inputCls } from "@/components/ui"
+import { Button, Card, CardHeader, EmptyState, Field, Spinner, inputCls } from "@/components/ui"
 import { DomainQualityCard } from "@/components/domain-quality-card"
 import { ColumnsButton, ColumnsModal, useTableColumns } from "@/components/table-columns"
+import { TimeseriesChart, METRIC_COLORS } from "@/components/timeseries-chart"
 
 type Campaign = { id: string; name: string }
 type Group = { id: string; name: string }
@@ -102,8 +103,8 @@ function ChipPicker({
 
   return (
     <div>
-      <div className="mb-1.5 flex items-baseline gap-2">
-        <span className="text-xs font-semibold uppercase tracking-wide text-muted">{title}</span>
+      <div className="mb-2 flex items-baseline gap-2">
+        <span className="text-sm font-medium text-foreground">{title}</span>
         {hint ? <span className="text-xs text-muted">{hint}</span> : null}
       </div>
       <div className="space-y-2">
@@ -160,6 +161,40 @@ function AnalyticsInner() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [ranOnce, setRanOnce] = useState(false)
+  // Метрики графика динамики (клики/показы/CTR) — график строится по временной группировке
+  const [chartMetrics, setChartMetrics] = useState<string[]>(["impressions", "clicks"])
+
+  // Первая временная группировка отчёта — ось X графика
+  const timeKey = useMemo(() => groupings.find((g) => ["hour", "day", "week", "month"].includes(g)), [groupings])
+
+  /**
+   * Точки графика: строки отчёта суммируются по времени (если есть другие
+   * группировки — например день + кампания, — точки складываются в одну),
+   * CTR пересчитывается из агрегатов.
+   */
+  const chartData = useMemo(() => {
+    if (!timeKey || !report?.rows?.length) return []
+    const byTs = new Map<string, { ts: string; impressions: number; clicks: number; ctr: number }>()
+    for (const row of report.rows) {
+      const ts = String(row[timeKey] ?? "")
+      if (!ts) continue
+      const p = byTs.get(ts) || { ts, impressions: 0, clicks: 0, ctr: 0 }
+      p.impressions += Number(row.impressions ?? 0)
+      p.clicks += Number(row.clicks ?? 0)
+      byTs.set(ts, p)
+    }
+    const points = Array.from(byTs.values()).sort((a, b) => (a.ts < b.ts ? -1 : 1))
+    for (const p of points) p.ctr = p.impressions ? Math.round((p.clicks / p.impressions) * 100 * 1000) / 1000 : 0
+    return points
+  }, [timeKey, report])
+
+  const chartGranularity: "hour" | "day" | "week" = timeKey === "hour" ? "hour" : timeKey === "week" ? "week" : "day"
+
+  const CHART_METRIC_OPTIONS = [
+    { key: "impressions", label: "Показы" },
+    { key: "clicks", label: "Клики" },
+    { key: "ctr", label: "CTR" },
+  ]
 
   async function run() {
     setLoading(true)
@@ -244,79 +279,55 @@ function AnalyticsInner() {
 
       <Card>
         <CardHeader title="Параметры отчёта" subtitle="Период, фильтры и группировки" />
-        <div className="space-y-5 px-4 pb-4">
-          {/* Period */}
-          <div className="flex flex-wrap items-center gap-2">
-            {PRESETS.map((p) => (
-              <button
-                key={p.key}
-                type="button"
-                onClick={() => applyPreset(p.key)}
-                className={`rounded-lg border px-3 py-1.5 text-sm transition-colors ${
-                  preset === p.key
-                    ? "border-accent bg-accent/10 font-medium text-accent"
-                    : "border-border bg-surface text-muted hover:text-foreground"
-                }`}
+        <div className="space-y-4 p-4">
+          {/* Период и фильтры — единая сетка полей, как в настройках кампании */}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <Field label="Период">
+              <select
+                className={inputCls}
+                value={preset || "custom"}
+                onChange={(e) => {
+                  const key = e.target.value
+                  if (key === "custom") {
+                    setPreset("")
+                  } else {
+                    applyPreset(key)
+                  }
+                }}
               >
-                {p.label}
-              </button>
-            ))}
-            <div className="flex items-center gap-2">
+                {PRESETS.map((p) => (
+                  <option key={p.key} value={p.key}>
+                    {p.label}
+                  </option>
+                ))}
+                <option value="custom">Свой период</option>
+              </select>
+            </Field>
+            <Field label="С даты">
               <input
                 type="date"
-                className={inputCls + " w-auto"}
+                className={inputCls}
                 value={dateFrom}
+                max={dateTo || undefined}
                 onChange={(e) => {
                   setDateFrom(e.target.value)
                   setPreset("")
                 }}
               />
-              <span className="text-sm text-muted">—</span>
+            </Field>
+            <Field label="По дату">
               <input
                 type="date"
-                className={inputCls + " w-auto"}
+                className={inputCls}
                 value={dateTo}
+                min={dateFrom || undefined}
                 onChange={(e) => {
                   setDateTo(e.target.value)
                   setPreset("")
                 }}
               />
-            </div>
-          </div>
-
-          {/* Filters */}
-          <div className="grid gap-4 md:grid-cols-2">
-            <div>
-              <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-muted">
-                Кампании (пусто = все)
-              </label>
-              <div className="flex max-h-36 flex-wrap gap-1.5 overflow-y-auto rounded-lg border border-border bg-surface p-2">
-                {(campaigns || []).map((c) => {
-                  const active = campaignIds.includes(c.id)
-                  return (
-                    <button
-                      key={c.id}
-                      type="button"
-                      onClick={() => toggle(campaignIds, setCampaignIds, c.id)}
-                      className={`rounded-full border px-2.5 py-1 text-xs transition-colors ${
-                        active
-                          ? "border-accent bg-accent/10 font-medium text-accent"
-                          : "border-border bg-background text-muted hover:text-foreground"
-                      }`}
-                    >
-                      {c.name}
-                    </button>
-                  )
-                })}
-                {campaigns && campaigns.length === 0 ? (
-                  <span className="px-1 py-0.5 text-xs text-muted">Нет кампаний</span>
-                ) : null}
-              </div>
-            </div>
-            <div>
-              <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-muted">
-                Группа кампаний
-              </label>
+            </Field>
+            <Field label="Группа кампаний">
               <select className={inputCls} value={groupId} onChange={(e) => setGroupId(e.target.value)}>
                 <option value="">Все группы</option>
                 {(groups || []).map((g) => (
@@ -325,10 +336,39 @@ function AnalyticsInner() {
                   </option>
                 ))}
               </select>
+            </Field>
+          </div>
+
+          {/* Кампании */}
+          <div className="space-y-2">
+            <span className="text-sm font-medium text-foreground">
+              Кампании <span className="font-normal text-muted">(пусто — все)</span>
+            </span>
+            <div className="flex max-h-36 flex-wrap gap-1.5 overflow-y-auto rounded-lg border border-border bg-surface p-2">
+              {(campaigns || []).map((c) => {
+                const active = campaignIds.includes(c.id)
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    onClick={() => toggle(campaignIds, setCampaignIds, c.id)}
+                    className={`rounded-full border px-2.5 py-1 text-xs transition-colors ${
+                      active
+                        ? "border-accent bg-accent/10 font-medium text-accent"
+                        : "border-border bg-background text-muted hover:text-foreground"
+                    }`}
+                  >
+                    {c.name}
+                  </button>
+                )
+              })}
+              {campaigns && campaigns.length === 0 ? (
+                <span className="px-1 py-0.5 text-xs text-muted">Нет кампаний</span>
+              ) : null}
             </div>
           </div>
 
-          {/* Groupings */}
+          {/* Группировки */}
           <ChipPicker
             title="Группировки"
             hint="до 4 одновременно"
@@ -339,12 +379,52 @@ function AnalyticsInner() {
               toggle(groupings, setGroupings, k, 1)
             }}
           />
-
         </div>
       </Card>
 
       {error ? (
         <div className="rounded-lg border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger">{error}</div>
+      ) : null}
+
+      {/* График динамики: строится по временной группировке отчёта */}
+      {ranOnce && timeKey && chartData.length > 0 ? (
+        <Card>
+          <CardHeader
+            title="Динамика"
+            subtitle={`По группировке «${GROUPINGS.find((g) => g.key === timeKey)?.label || timeKey}»`}
+            action={
+              <div className="flex flex-wrap gap-1.5" role="group" aria-label="Метрики графика">
+                {CHART_METRIC_OPTIONS.map((m) => {
+                  const active = chartMetrics.includes(m.key)
+                  return (
+                    <button
+                      key={m.key}
+                      type="button"
+                      aria-pressed={active}
+                      onClick={() =>
+                        setChartMetrics((prev) => {
+                          if (prev.includes(m.key)) return prev.length > 1 ? prev.filter((k) => k !== m.key) : prev
+                          return [...prev, m.key]
+                        })
+                      }
+                      className={`flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                        active
+                          ? "border-transparent bg-foreground text-background"
+                          : "border-border bg-transparent text-muted hover:text-foreground"
+                      }`}
+                    >
+                      <span aria-hidden className="h-2 w-2 rounded-full" style={{ background: METRIC_COLORS[m.key] }} />
+                      {m.label}
+                    </button>
+                  )
+                })}
+              </div>
+            }
+          />
+          <div className="px-2 pb-2">
+            <TimeseriesChart data={chartData} metrics={chartMetrics} granularity={chartGranularity} />
+          </div>
+        </Card>
       ) : null}
 
       <Card>
