@@ -7,6 +7,7 @@ from pydantic import BaseModel, EmailStr, Field
 
 from auth import current_user, hash_password
 from db import get_pool
+from rbac import require_share_manager
 
 router = APIRouter(prefix="/share", tags=["share"])
 
@@ -23,7 +24,7 @@ class ShareLinkIn(BaseModel):
 
 
 @router.post("/links", status_code=201)
-async def create_link(body: ShareLinkIn, user: dict = Depends(current_user)):
+async def create_link(body: ShareLinkIn, user: dict = Depends(require_share_manager)):
     pool = await get_pool()
     if body.advertiser_id:
         owns = await pool.fetchval(
@@ -62,7 +63,7 @@ async def list_links(user: dict = Depends(current_user)):
 
 
 @router.delete("/links/{link_id}", status_code=204)
-async def revoke_link(link_id: str, user: dict = Depends(current_user)):
+async def revoke_link(link_id: str, user: dict = Depends(require_share_manager)):
     pool = await get_pool()
     result = await pool.execute(
         "UPDATE share_links SET revoked = true WHERE id = $1 AND user_id = $2", link_id, user["id"]
@@ -195,7 +196,7 @@ class GuestIn(BaseModel):
 
 
 @router.post("/guests", status_code=201)
-async def create_guest(body: GuestIn, user: dict = Depends(current_user)):
+async def create_guest(body: GuestIn, user: dict = Depends(require_share_manager)):
     pool = await get_pool()
     if body.advertiser_id:
         owns = await pool.fetchval(
@@ -250,7 +251,7 @@ async def list_guests(user: dict = Depends(current_user)):
 
 
 @router.delete("/guests/{guest_id}", status_code=204)
-async def delete_guest(guest_id: str, user: dict = Depends(current_user)):
+async def delete_guest(guest_id: str, user: dict = Depends(require_share_manager)):
     pool = await get_pool()
     result = await pool.execute(
         """

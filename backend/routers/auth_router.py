@@ -90,7 +90,16 @@ async def logout(response: Response, cdsp_session: str | None = Cookie(default=N
 
 @router.get("/me")
 async def me(user: dict = Depends(current_user)):
-    return {"id": str(user["id"]), "email": user["email"], "name": user["name"], "role": user["role"]}
+    from rbac import PERMISSION_FLAGS, has_permission
+
+    return {
+        "id": str(user["id"]),
+        "email": user["email"],
+        "name": user["name"],
+        "role": user["role"],
+        # эффективные права (для client — по флагам из БД, для admin-ролей — True)
+        "permissions": {flag: has_permission(user, flag) for flag in PERMISSION_FLAGS},
+    }
 
 
 @router.patch("/me")

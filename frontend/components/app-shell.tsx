@@ -2,9 +2,8 @@
 
 import { useEffect, useState, type ReactNode } from "react"
 import { usePathname, useRouter } from "next/navigation"
-import useSWR from "swr"
-import { fetcher } from "@/lib/api"
-import { isAdminRole, isAdminRoute } from "@/lib/roles"
+import { canAccessRoute, homeRoute } from "@/lib/roles"
+import { useMe } from "@/lib/use-me"
 import { Sidebar } from "@/components/sidebar"
 import { FadeIn } from "@/components/amicro/fade-in"
 import { NotificationsBell } from "@/components/notifications-bell"
@@ -36,13 +35,13 @@ export function AppShell({ children }: { children: ReactNode }) {
     setReady(true)
   }, [isAuthPage, pathname, router])
 
-  // Блокировка админских страниц для рядовых пользователей:
-  // по прямой ссылке — редирект на дашборд
-  const { data: me } = useSWR<{ role: string }>(isAuthPage ? null : "/auth/me", fetcher)
-  const blocked = !!me && !isAdminRole(me.role) && isAdminRoute(pathname)
+  // Блокировка недоступных разделов по матрице ролей (зеркалит серверный RBAC):
+  // по прямой ссылке — редирект на домашнюю страницу роли
+  const { me } = useMe(isAuthPage)
+  const blocked = !!me && !canAccessRoute(me.role, pathname, me.permissions)
   useEffect(() => {
-    if (blocked) router.replace("/")
-  }, [blocked, router])
+    if (blocked && me) router.replace(homeRoute(me.role))
+  }, [blocked, me, router])
 
   if (isAuthPage)
     return (

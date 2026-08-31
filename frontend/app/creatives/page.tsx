@@ -8,6 +8,8 @@ import { KktuSelect } from "@/components/kktu-select"
 import { AD_TYPE_LABELS, type Campaign, type Counterparty, type Creative } from "@/lib/types"
 import { Button, Card, CardHeader, EmptyState, Field, inputCls, Modal, Spinner, StatusBadge, Table } from "@/components/ui"
 import { CreativePreview } from "@/components/creative-preview"
+import { canWrite } from "@/lib/roles"
+import { useMe } from "@/lib/use-me"
 
 const SIZES = ["300x250", "728x90", "320x50", "160x600", "300x600", "970x250"]
 
@@ -15,6 +17,9 @@ export default function CreativesPage() {
   const { data: creatives } = useSWR<Creative[]>("/creatives", fetcher)
   const { data: campaigns } = useSWR<Campaign[]>("/campaigns", fetcher)
   const { data: counterparties } = useSWR<Counterparty[]>("/ord/counterparties", fetcher)
+  // analyst/viewer и client без can_manage_creatives — раздел read-only (сервер тоже вернёт 403)
+  const { me } = useMe()
+  const writable = !me || canWrite(me.role, "creatives", me.permissions)
   
   const [open, setOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -210,9 +215,11 @@ export default function CreativesPage() {
           <h1 className="text-xl font-semibold text-foreground">Креативы</h1>
           <p className="mt-0.5 text-sm text-muted">Баннеры, нативные и видеообъявления</p>
         </div>
-        <Button onClick={openCreate} disabled={!campaigns || campaigns.length === 0}>
-          Загрузить креатив
-        </Button>
+        {writable ? (
+          <Button onClick={openCreate} disabled={!campaigns || campaigns.length === 0}>
+            Загрузить креатив
+          </Button>
+        ) : null}
       </div>
 
       <Card>
@@ -264,7 +271,7 @@ export default function CreativesPage() {
                             </svg>
                           </a>
                         ) : null}
-                        {c.status === "pending" ? (
+                        {writable && c.status === "pending" ? (
                           <>
                             <Button variant="ghost" onClick={() => moderate(c, "approved")}>
                               Одобрить
@@ -273,7 +280,7 @@ export default function CreativesPage() {
                               Отклонить
                             </Button>
                           </>
-                        ) : c.status === "rejected" ? (
+                        ) : writable && c.status === "rejected" ? (
                           <Button variant="ghost" onClick={() => moderate(c, "pending")}>
                             На модерацию
                           </Button>

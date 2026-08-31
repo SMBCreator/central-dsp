@@ -15,8 +15,10 @@ from rbac import ADMIN_ROLES, effective_markup_pct, visible_user_ids
 
 router = APIRouter(prefix="/users", tags=["users"])
 
-CREATABLE_BY_ADMIN = ("admin", "manager", "advertiser", "analyst", "finance", "agency", "client")
-ALLOWED_PERMISSIONS = ("can_edit_campaigns", "can_edit_settings", "can_manage_billing")
+CREATABLE_BY_ADMIN = ("admin", "manager", "advertiser", "analyst", "finance", "agency", "client", "viewer")
+# 4 пофлаговых права (роль client). can_manage_billing — легаси-ключ, читается как can_view_billing.
+ALLOWED_PERMISSIONS = ("can_edit_campaigns", "can_manage_creatives", "can_view_billing", "can_share_stats")
+_LEGACY_PERMISSION_ALIASES = {"can_manage_billing": "can_view_billing"}
 
 
 def _user_out(row: dict) -> dict:
@@ -28,9 +30,10 @@ def _user_out(row: dict) -> dict:
     perms = d.get("permissions")
     if isinstance(perms, str):
         try:
-            d["permissions"] = json.loads(perms)
+            perms = json.loads(perms)
         except Exception:
-            d["permissions"] = {}
+            perms = {}
+    d["permissions"] = _clean_permissions(perms or {})
     d["markup_pct"] = float(d.get("markup_pct") or 0)
     return d
 
@@ -54,7 +57,13 @@ class UserPatch(BaseModel):
 
 
 def _clean_permissions(perms: dict) -> dict:
-    return {k: bool(v) for k, v in perms.items() if k in ALLOWED_PERMISSIONS}
+    """Оставляем только известные флаги; легаси-ключи переименовываем в актуальные."""
+    out: dict = {}
+    for k, v in perms.items():
+        key = _LEGACY_PERMISSION_ALIASES.get(k, k)
+        if key in ALLOWED_PERMISSIONS:
+            out[key] = out.get(key, False) or bool(v)
+    return out
 
 
 @router.get("")

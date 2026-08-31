@@ -4,6 +4,7 @@ import { useEffect, useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { api, setToken } from "@/lib/api"
+import { homeRoute } from "@/lib/roles"
 import { Button, Field, inputCls } from "@/components/ui"
 
 export default function LoginPage() {
@@ -27,12 +28,13 @@ export default function LoginPage() {
     setError(null)
     setLoading(true)
     try {
-      const res = await api<{ token: string }>("/auth/login", {
+      const res = await api<{ token: string; role?: string }>("/auth/login", {
         method: "POST",
         body: { email, password },
       })
       setToken(res.token)
-      router.push("/")
+      // viewer попадает на /report, finance — на /billing, остальные — на дашборд
+      router.push(homeRoute(res.role))
     } catch (err) {
       setError(err instanceof Error ? err.message : "Ошибка входа")
     } finally {

@@ -27,14 +27,17 @@ const ROLE_LABELS: Record<string, string> = {
   client: "Клиент",
   analyst: "Аналитик",
   finance: "Финансы",
+  viewer: "Наблюдатель (отчёт)",
 }
 
-const CREATABLE_ROLES = ["manager", "agency", "client", "advertiser", "analyst", "finance", "admin"]
+const CREATABLE_ROLES = ["manager", "agency", "client", "advertiser", "analyst", "finance", "admin", "viewer"]
 
+// 4 пофлаговых права роли client — зеркалят PERMISSION_FLAGS бэкенда (rbac.py)
 const PERMISSION_LABELS: Record<string, string> = {
   can_edit_campaigns: "Может редактировать кампании (self-serve)",
-  can_edit_settings: "Может менять настройки",
-  can_manage_billing: "Может управлять биллингом",
+  can_manage_creatives: "Может управлять креативами",
+  can_view_billing: "Видит биллинг",
+  can_share_stats: "Может делиться статистикой (ссылки и гости)",
 }
 
 function RoleBadge({ role }: { role: string }) {
@@ -199,11 +202,20 @@ export default function UsersPage() {
                     </td>
                     <td className="px-3 py-2.5">
                       {u.role === "client" ? (
-                        u.permissions?.can_edit_campaigns ? (
-                          <span className="text-xs">Самостоятельный запуск</span>
-                        ) : (
-                          <span className="text-xs text-muted">Только статистика</span>
-                        )
+                        (() => {
+                          const active = Object.keys(PERMISSION_LABELS).filter((k) => u.permissions?.[k])
+                          return active.length > 0 ? (
+                            <span className="text-xs">
+                              {active.length === Object.keys(PERMISSION_LABELS).length
+                                ? "Все права self-serve"
+                                : `Права: ${active.length} из ${Object.keys(PERMISSION_LABELS).length}`}
+                            </span>
+                          ) : (
+                            <span className="text-xs text-muted">Только статистика</span>
+                          )
+                        })()
+                      ) : u.role === "viewer" ? (
+                        <span className="text-xs text-muted">Только страница отчёта</span>
                       ) : (
                         <span className="text-xs text-muted">Полные для роли</span>
                       )}

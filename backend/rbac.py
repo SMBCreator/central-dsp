@@ -1,4 +1,4 @@
-"""RBAC: матрица 6 ролей + tenant scoping.
+"""RBAC: матрица 9 ролей + tenant scoping + пофлаговые permissions.
 
 Роли (ТЗ):
   superadmin — всё, включая управление пользователями и системными настройками
@@ -7,12 +7,21 @@
   advertiser — только свои кампании/креативы/статистика (tenant isolation)
   analyst    — read-only повсюду
   finance    — read-only + биллинговые операции (deposit/adjust)
+  agency     — иерархия: создаёт клиентов, наценки
+  client     — read-only по умолчанию; self-serve по флагам permissions
+  viewer     — гостевой отчётный доступ (страница /report, scope из guest_access)
+
+Пофлаговые permissions (только для роли client, admin-роли всегда True):
+  can_edit_campaigns  — создание/правка кампаний, line items
+  can_manage_creatives — создание/правка креативов
+  can_view_billing    — просмотр биллинга (транзакции/summary)
+  can_share_stats     — создание share-ссылок и гостевых аккаунтов
 """
 from fastapi import Depends, HTTPException
 
 from auth import current_user
 
-ALL_ROLES = ("superadmin", "admin", "manager", "advertiser", "analyst", "finance", "agency", "client")
+ALL_ROLES = ("superadmin", "admin", "manager", "advertiser", "analyst", "finance", "agency", "client", "viewer")
 ADMIN_ROLES = ("superadmin", "admin")
 # кто может создавать/менять кампании, креативы, line items и т.п.
 CAMPAIGN_WRITE = ("superadmin", "admin", "manager", "advertiser", "agency")
@@ -20,6 +29,35 @@ CAMPAIGN_WRITE = ("superadmin", "admin", "manager", "advertiser", "agency")
 PLATFORM_WRITE = ("superadmin", "admin", "manager")
 # кто проводит деньги
 FINANCE_WRITE = ("superadmin", "admin", "finance")
+
+# Пофлаговые permissions. Задаются на роль client; admin-роли/менеджеры имеют их неявно.
+PERMISSION_FLAGS = ("can_edit_campaigns", "can_manage_creatives", "can_view_billing", "can_share_stats")
+
+# admin-подобные роли, у которых все флаги неявно True (не читаем permissions из БД).
+_FLAG_IMPLICIT_ROLES = ("superadmin", "admin", "manager", "advertiser", "agency")
+
+
+def _normalized_permissions(user: dict) -> dict:
+    """permissions из БД с обратной совместимостью старого ключа can_manage_billing -> can_view_billing."""
+    perms = dict(user.get("permissions") or {})
+    if "can_view_billing" not in perms and "can_manage_billing" in perms:
+        perms["can_view_billing"] = bool(perms["can_manage_billing"])
+    return perms
+
+
+def has_permission(user: dict, flag: str) -> bool:
+    """Есть ли у пользователя пофлаговое право.
+
+    - admin-подобные роли: всегда True;
+    - client: по флагу из users.permissions (с бэк-совместимым чтением can_manage_billing);
+    - analyst/finance/viewer и прочие: False (write-права выдаются отдельными require_*).
+    """
+    role = user.get("role")
+    if role in _FLAG_IMPLICIT_ROLES:
+        return True
+    if role == "client":
+        return bool(_normalized_permissions(user).get(flag))
+    return False
 
 
 def require_roles(*roles: str):
@@ -109,3 +147,43 @@ def require_campaign_edit():
 
 
 require_campaign_editor = require_campaign_edit()
+
+
+def _require_flag(flag: str, extra_roles: tuple[str, ...] = ()):
+    """Dependency: admin-подобные роли + client с указанным флагом (+ extra_roles)."""
+    async def checker(user: dict = Depends(current_user)) -> dict:
+        if user["role"] in extra_roles or has_permission(user, flag):
+            return user
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+    return checker
+
+
+# Создание/отзыв share-ссылок и гостевых аккаунтов:
+# superadmin/admin/manager/agency/advertiser — всегда; client — по can_share_stats; остальные 403.
+require_share_manager = _require_flag("can_share_stats")
+
+# Управление креативами: те же write-роли + client с can_manage_creatives.
+require_creative_manager = _require_flag("can_manage_creatives")
+
+# Настройки аккаунта (fx-наценка, domain-lists): read-only роли (analyst/finance/viewer) — 403;
+# client — только с can_edit_campaigns (настройки влияют на закупку).
+require_settings_write = _require_flag("can_edit_campaigns")
+
+
+def can_view_billing(user: dict) -> bool:
+    """Просмотр биллинга: finance/analyst видят всё (read-only роли аналитики денег),
+    admin-подобные — всегда, client — по флагу can_view_billing, viewer — нет."""
+    if user["role"] in ("analyst", "finance"):
+        return True
+    return has_permission(user, "can_view_billing")
+
+
+def require_billing_view():
+    async def checker(user: dict = Depends(current_user)) -> dict:
+        if can_view_billing(user):
+            return user
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+    return checker
+
+
+require_billing_viewer = require_billing_view()

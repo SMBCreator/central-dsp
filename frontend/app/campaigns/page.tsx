@@ -8,6 +8,8 @@ import { fmtMoney, fmtNum, fmtPct, type Advertiser, type Campaign } from "@/lib/
 import { Button, Card, CardHeader, EmptyState, Field, inputCls, Modal, Spinner, StatusBadge } from "@/components/ui"
 import { ConfirmDialog } from "@/components/confirm-dialog"
 import { ColumnsButton, ColumnsModal, useTableColumns } from "@/components/table-columns"
+import { canWrite } from "@/lib/roles"
+import { useMe } from "@/lib/use-me"
 
 const OBJECTIVES = [
   { value: "awareness", label: "Охват" },
@@ -290,7 +292,7 @@ function GroupsTab({
         ) : (
           <EmptyState
             title="Нет групп"
-            description="Создайте группу, чтобы объедин��ть кампании: например, по продукту или заказчику."
+            description="Создайте группу, чтобы об��един��ть кампании: например, по продукту или заказчику."
             action={<Button onClick={openCreate}>Создать группу</Button>}
           />
         )
@@ -323,6 +325,9 @@ function GroupsTab({
 export default function CampaignsPage() {
   const { data: campaigns, error: campaignsError } = useSWR<CampaignExt[]>("/campaigns", fetcher)
   const { data: advertisers } = useSWR<Advertiser[]>("/advertisers", fetcher)
+  // analyst и client без can_edit_campaigns видят раздел read-only (сервер тоже вернёт 403)
+  const { me } = useMe()
+  const writable = !me || canWrite(me.role, "campaigns", me.permissions)
   const { data: groups } = useSWR<Group[]>("/groups", fetcher)
   const { data: breakdown } = useSWR<BreakdownRow[]>("/stats/breakdown?hours=720&dimension=campaign", fetcher)
 
@@ -387,9 +392,11 @@ export default function CampaignsPage() {
           <h1 className="text-xl font-semibold text-foreground">Кампании</h1>
           <p className="mt-0.5 text-sm text-muted">Управление рекламными кампаниями и группами</p>
         </div>
-        <Link href="/campaigns/new">
-          <Button disabled={!advertisers || advertisers.length === 0}>Создать кампанию</Button>
-        </Link>
+        {writable ? (
+          <Link href="/campaigns/new">
+            <Button disabled={!advertisers || advertisers.length === 0}>Создать кампанию</Button>
+          </Link>
+        ) : null}
       </div>
 
       <div className="flex items-center gap-1 border-b border-border" role="tablist" aria-label="Разделы">

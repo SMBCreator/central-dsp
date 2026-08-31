@@ -58,7 +58,7 @@ def test_can_see_all():
 def test_all_roles_covered():
     assert set(rbac.ALL_ROLES) == {
         "superadmin", "admin", "manager", "advertiser", "analyst", "finance",
-        "agency", "client",
+        "agency", "client", "viewer",
     }
 
 

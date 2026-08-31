@@ -3,7 +3,7 @@ import json
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 
 from auth import current_user
-from rbac import require_campaign_editor, is_admin
+from rbac import require_creative_manager, is_admin
 from notify import notify_admins
 from db import get_pool
 from schemas import CreativeIn, CreativePatch
@@ -56,7 +56,7 @@ async def list_creatives(campaign_id: str | None = None, user: dict = Depends(cu
 
 
 @router.post("", status_code=201)
-async def create_creative(body: CreativeIn, user: dict = Depends(require_campaign_editor)):
+async def create_creative(body: CreativeIn, user: dict = Depends(require_creative_manager)):
     _validate_type_fields(body)
     pool = await get_pool()
     camp = await pool.fetchval(
@@ -93,7 +93,7 @@ async def create_creative(body: CreativeIn, user: dict = Depends(require_campaig
 
 
 @router.patch("/{creative_id}")
-async def update_creative(creative_id: str, body: CreativePatch, user: dict = Depends(require_campaign_editor)):
+async def update_creative(creative_id: str, body: CreativePatch, user: dict = Depends(require_creative_manager)):
     updates = body.model_dump(exclude_none=True)
     if not updates:
         raise HTTPException(status_code=400, detail="Нет полей для обновления")
@@ -112,7 +112,7 @@ async def update_creative(creative_id: str, body: CreativePatch, user: dict = De
 
 
 @router.delete("/{creative_id}", status_code=204)
-async def delete_creative(creative_id: str, user: dict = Depends(require_campaign_editor)):
+async def delete_creative(creative_id: str, user: dict = Depends(require_creative_manager)):
     pool = await get_pool()
     result = await pool.execute(
         "DELETE FROM creatives WHERE id = $1 AND user_id = $2", creative_id, user["id"]
@@ -140,7 +140,7 @@ _MAX_UPLOAD_BYTES = 30 * 1024 * 1024  # 30 MB
 async def upload_creative_asset(
     request: Request,
     file: UploadFile,
-    user: dict = Depends(require_campaign_editor),
+    user: dict = Depends(require_creative_manager),
 ):
     """Upload a creative asset file; returns a URL usable as asset_url/video_url."""
     import os

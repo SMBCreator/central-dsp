@@ -2,8 +2,8 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from auth import current_user
-from rbac import require_finance_write
+from auth import current_user  # noqa: F401 — оставлен для совместимости импортов
+from rbac import require_billing_viewer, require_finance_write
 from db import get_pool
 
 router = APIRouter(prefix="/billing", tags=["billing"])
@@ -71,7 +71,7 @@ async def adjust(body: AdjustmentIn, user: dict = Depends(require_finance_write)
 
 
 @router.get("/transactions")
-async def transactions(advertiser_id: str | None = None, limit: int = 100, user: dict = Depends(current_user)):
+async def transactions(advertiser_id: str | None = None, limit: int = 100, user: dict = Depends(require_billing_viewer)):
     pool = await get_pool()
     limit = min(max(limit, 1), 500)
     if advertiser_id:
@@ -110,7 +110,7 @@ async def transactions(advertiser_id: str | None = None, limit: int = 100, user:
 
 
 @router.get("/summary")
-async def billing_summary(user: dict = Depends(current_user)):
+async def billing_summary(user: dict = Depends(require_billing_viewer)):
     """Balances of all advertisers plus total spend from the ledger."""
     pool = await get_pool()
     advertisers = await pool.fetch(

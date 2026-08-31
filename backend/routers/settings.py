@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 import fx as fx_mod
 from auth import current_user
 from db import get_pool
+from rbac import require_settings_write
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -41,7 +42,7 @@ class SettingsPatch(BaseModel):
 
 
 @router.patch("")
-async def patch_settings(body: SettingsPatch, user: dict = Depends(current_user)):
+async def patch_settings(body: SettingsPatch, user: dict = Depends(require_settings_write)):
     updates = body.model_dump(exclude_none=True)
     if not updates:
         raise HTTPException(400, "Нет полей для обновления")
@@ -97,7 +98,7 @@ async def list_domains(list_type: str | None = None, user: dict = Depends(curren
 
 
 @router.post("/domain-lists", status_code=201)
-async def add_domain(body: DomainIn, user: dict = Depends(current_user)):
+async def add_domain(body: DomainIn, user: dict = Depends(require_settings_write)):
     domain = body.domain.strip().lower()
     if "/" in domain or " " in domain:
         raise HTTPException(422, "Укажите домен без протокола и пути, например example.com")
@@ -114,7 +115,7 @@ async def add_domain(body: DomainIn, user: dict = Depends(current_user)):
 
 
 @router.delete("/domain-lists/{item_id}", status_code=204)
-async def remove_domain(item_id: str, user: dict = Depends(current_user)):
+async def remove_domain(item_id: str, user: dict = Depends(require_settings_write)):
     pool = await get_pool()
     result = await pool.execute(
         "DELETE FROM domain_lists WHERE id = $1 AND user_id = $2", item_id, user["id"]

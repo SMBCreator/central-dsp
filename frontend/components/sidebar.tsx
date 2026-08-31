@@ -3,9 +3,9 @@
 import { useEffect, useState } from "react"
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
-import useSWR from "swr"
-import { fetcher, setToken } from "@/lib/api"
-import { isAdminRole, isAdminRoute } from "@/lib/roles"
+import { setToken } from "@/lib/api"
+import { canAccessRoute } from "@/lib/roles"
+import { useMe } from "@/lib/use-me"
 import { ThemeToggle } from "@/components/theme-toggle"
 
 const NAV_SECTIONS = [
@@ -69,12 +69,12 @@ export function Sidebar() {
   const router = useRouter()
   const [openSection, setOpenSection] = useState<string>(() => sectionOfPath(pathname))
 
-  // Кабинет рядового пользователя: админские разделы видны только admin/manager
-  const { data: me } = useSWR<{ role: string }>("/auth/me", fetcher)
-  const admin = isAdminRole(me?.role)
+  // Навигация фильтруется по матрице ролей ROUTE_ACCESS (зеркалит серверный RBAC).
+  // Пока /auth/me не загрузился — показываем всё, редирект в app-shell защитит от прямых переходов.
+  const { me } = useMe()
   const sections = NAV_SECTIONS.map((s) => ({
     ...s,
-    items: admin ? s.items : s.items.filter((i) => !isAdminRoute(i.href)),
+    items: me ? s.items.filter((i) => canAccessRoute(me.role, i.href, me.permissions)) : s.items,
   })).filter((s) => s.items.length > 0)
 
   // При переходе на страницу из другой секции — раскрыть её секцию
