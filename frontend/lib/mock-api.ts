@@ -772,5 +772,76 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
   if (path === "/supply-partners") return []
   if (path === "/share/links" || path === "/share/guests") return []
 
+  // --- Скоринг качества площадок (Часть 3b) ---
+  if (path === "/scoring/profiles" && method === "GET") return mockScoringProfiles
+  if (path === "/scoring/profiles" && method === "POST")
+    return { ...mockScoringProfiles[0], id: `sp-${Date.now()}`, name: "Новый профиль" }
+  if (path.startsWith("/scoring/profiles/") && (method === "PATCH" || method === "DELETE"))
+    return method === "DELETE" ? { ok: true } : mockScoringProfiles[0]
+  if (path === "/scoring/report") {
+    const dim = search.get("dimension") || "domain"
+    const profile = mockScoringProfiles.find((p) => p.id === search.get("profile_id")) || mockScoringProfiles[0]
+    return { profile, dimension: dim, rows: dim === "ssp" ? mockScoringSsp : mockScoringDomains }
+  }
+  if (path === "/scoring/recompute" && method === "POST") return { ok: true, scored: 42, blocked: 6 }
+
   return undefined
 }
+
+// Демо-данные скоринга
+export const mockScoringProfiles = [
+  {
+    id: "sp-brand",
+    name: "Бренд-безопасность (жёсткий)",
+    description: "Только премиальный инвентарь: высокий viewability, живое поведение.",
+    window_days: 14,
+    min_impressions: 300,
+    min_clicks: 0,
+    min_ctr: 0.08,
+    min_viewability: 60,
+    max_bounce_rate: 65,
+    min_avg_depth: 1.8,
+    min_time_on_site: 25,
+    max_cpa: null,
+    goal_id: null,
+    pixel_id: "px-demo-1",
+    block_threshold: 0.5,
+    enforce: true,
+    created_at: iso(72 * 36e5),
+    updated_at: iso(2 * 36e5),
+  },
+  {
+    id: "sp-perf",
+    name: "Перформанс по CPA",
+    description: "Отсекаем площадки с дорогой конверсией по цели «Покупка».",
+    window_days: 7,
+    min_impressions: 200,
+    min_clicks: 5,
+    min_ctr: 0.05,
+    min_viewability: null,
+    max_bounce_rate: null,
+    min_avg_depth: null,
+    min_time_on_site: null,
+    max_cpa: 1500,
+    goal_id: "goal-demo-1",
+    pixel_id: "px-demo-1",
+    block_threshold: 0.5,
+    enforce: false,
+    created_at: iso(120 * 36e5),
+    updated_at: iso(30 * 36e5),
+  },
+]
+
+const mockScoringDomains = [
+  { domain: "clickfarm-xyz.ru", impressions: 18400, clicks: 2210, viewable_imps: 6100, spend: 2576, conversions: 0, ctr: 12.01, viewability: 33.2, avg_depth: 1.02, avg_time: 4.1, avg_scroll: 8, bounce_rate: 92, cpa: null, score: 0.0, reasons: ["low_ctr", "low_viewability", "high_bounce"], flagged: true },
+  { domain: "cheap-traffic.net", impressions: 9200, clicks: 41, viewable_imps: 3100, spend: 1288, conversions: 1, ctr: 0.45, viewability: 33.7, avg_depth: 1.1, avg_time: 6, bounce_rate: 88, cpa: 1288, score: 0.1, reasons: ["low_viewability", "high_bounce", "high_cpa"], flagged: true },
+  { domain: "news-portal.ru", impressions: 42100, clicks: 512, viewable_imps: 30200, spend: 5894, conversions: 8, ctr: 1.22, viewability: 71.7, avg_depth: 3.4, avg_time: 62, bounce_rate: 41, cpa: 736, score: 1.0, reasons: [], flagged: false },
+  { domain: "sport-live.com", impressions: 31500, clicks: 388, viewable_imps: 21400, spend: 4410, conversions: 6, ctr: 1.23, viewability: 67.9, avg_depth: 2.9, avg_time: 54, bounce_rate: 48, cpa: 735, score: 1.0, reasons: [], flagged: false },
+  { domain: "weather-widget.io", impressions: 5400, clicks: 12, viewable_imps: 1900, spend: 756, conversions: 0, ctr: 0.22, viewability: 35.2, avg_depth: 1.3, avg_time: 9, bounce_rate: 79, cpa: null, score: 0.5, reasons: ["low_viewability"], flagged: false },
+]
+
+const mockScoringSsp = [
+  { id: "ssp-1", name: "Yandex ADFOX", impressions: 128000, clicks: 1840, viewable_imps: 92000, spend: 17920, ctr: 1.44, viewability: 71.9, avg_depth: null, avg_time: null, bounce_rate: null, cpa: null, score: 1.0, reasons: [], flagged: false },
+  { id: "ssp-2", name: "Between Exchange", impressions: 64000, clicks: 410, viewable_imps: 28000, spend: 8960, ctr: 0.64, viewability: 43.8, avg_depth: null, avg_time: null, bounce_rate: null, cpa: null, score: 1.0, reasons: [], flagged: false },
+  { id: "ssp-3", name: "GetIntent (тест)", impressions: 21000, clicks: 2510, viewable_imps: 7100, spend: 2940, ctr: 11.95, viewability: 33.8, avg_depth: null, avg_time: null, bounce_rate: null, cpa: null, score: 0.0, reasons: ["low_ctr", "low_viewability"], flagged: true },
+]

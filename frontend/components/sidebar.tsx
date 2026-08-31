@@ -22,6 +22,7 @@ const NAV_SECTIONS = [
       { href: "/campaigns", label: "Кампании", icon: "M3 11l18-8-6 18-4-7-8-3z" },
       { href: "/creatives", label: "Креативы", icon: "M4 5h16v14H4V5zm2 10l3-4 3 3 3-4 3 5H6z" },
       { href: "/moderation", label: "Модерация", icon: "M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" },
+      { href: "/scoring", label: "Скоринг", icon: "M3 3v18h18M7 15l3-3 3 2 5-6" },
       { href: "/advertisers", label: "Рекламодатели", icon: "M12 3a4 4 0 110 8 4 4 0 010-8zm-7 18a7 7 0 0114 0H5z" },
     ],
   },

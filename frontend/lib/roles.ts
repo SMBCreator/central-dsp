@@ -58,6 +58,7 @@ export const ROUTE_ACCESS: Array<{ prefix: string; roles: Role[] }> = [
   { prefix: "/campaigns", roles: BUYERS_RO },
   { prefix: "/creatives", roles: BUYERS_RO },
   { prefix: "/moderation", roles: ADMINS },
+  { prefix: "/scoring", roles: BUYERS_RO },
   { prefix: "/advertisers", roles: PLATFORM },
   { prefix: "/supply", roles: PLATFORM },
   { prefix: "/rtb-test", roles: PLATFORM },

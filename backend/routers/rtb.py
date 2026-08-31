@@ -790,6 +790,15 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
     _dirty_domains: frozenset = frozenset()
     if req_domain and any(c["clean_traffic_only"] for c in candidates):
         _dirty_domains = await ml_quality.get_blocked_domains(pool)
+    # Scoring-профили (Часть 3b): per-campaign блок-лист доменов, рассчитанный
+    # пользовательским профилем в enforce-режиме. Fail-open через кэш.
+    _scoring_blocks: dict[str, frozenset] = {}
+    if req_domain:
+        import scoring as _scoring
+        for _cid in {str(c["campaign_id"]) for c in candidates}:
+            blocked = await _scoring.get_scoring_blocks(pool, _cid)
+            if blocked:
+                _scoring_blocks[_cid] = blocked
     req_device = DEVICE_TYPES.get((req.get("device") or {}).get("devicetype", 0), "unknown")
     req_geo = (geo.get("country") or "").lower()
     req_os = _device_os(device)
@@ -852,6 +861,11 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
             # с низким quality score. Только opt-in, только известные домены.
             if c["clean_traffic_only"] and req_domain and req_domain in _dirty_domains:
                 continue
+            # Scoring-профиль кампании (enforce): домен ниже порога качества — не биддим.
+            if req_domain:
+                _sb = _scoring_blocks.get(str(c["campaign_id"]))
+                if _sb and req_domain in _sb:
+                    continue
             if not _match_targeting(targeting, req):
                 continue
             if not _match_imp_targeting(targeting, imp):

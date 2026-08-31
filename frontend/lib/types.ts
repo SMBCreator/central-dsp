@@ -261,3 +261,51 @@ export interface Counterparty {
   role: string | null
   created_at: string
 }
+
+// --- Скоринг качества площадок (Часть 3b) ---
+export interface ScoringProfile {
+  id: string | null
+  name: string
+  description: string | null
+  window_days: number
+  min_impressions: number
+  min_clicks: number
+  min_ctr: number | null
+  min_viewability: number | null
+  max_bounce_rate: number | null
+  min_avg_depth: number | null
+  min_time_on_site: number | null
+  max_cpa: number | null
+  goal_id: string | null
+  pixel_id: string | null
+  block_threshold: number
+  enforce: boolean
+  created_at?: string
+  updated_at?: string
+}
+
+export interface ScoringRow {
+  domain?: string
+  id?: string
+  name?: string
+  impressions: number
+  clicks: number
+  viewable_imps: number
+  spend: number
+  conversions?: number
+  ctr: number
+  viewability: number
+  avg_depth: number | null
+  avg_time: number | null
+  bounce_rate: number | null
+  cpa: number | null
+  score: number | null
+  reasons: string[]
+  flagged: boolean
+}
+
+export interface ScoringReport {
+  profile: ScoringProfile
+  dimension: "domain" | "ssp"
+  rows: ScoringRow[]
+}

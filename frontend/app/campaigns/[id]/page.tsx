@@ -37,6 +37,7 @@ type CampaignExt = Campaign & {
   pacing?: string
   bid_shading?: boolean
   clean_traffic_only?: boolean
+  scoring_profile_id?: string | null
   frequency_caps?: { impressions: number; period_hours: number }[] | null
   start_date?: string | null
   end_date?: string | null
@@ -53,6 +54,8 @@ const OBJECTIVES = [
 
 function SettingsCard({ campaign }: { campaign: CampaignExt }) {
   const { data: groups } = useSWR<Group[]>("/groups", fetcher)
+  const { data: scoringProfiles } = useSWR<{ id: string; name: string; enforce: boolean }[]>("/scoring/profiles", fetcher)
+  const [scoringProfileId, setScoringProfileId] = useState(campaign.scoring_profile_id || "")
   const [name, setName] = useState(campaign.name)
   const [objective, setObjective] = useState(campaign.objective)
   const [groupId, setGroupId] = useState(campaign.group_id || "")
@@ -98,6 +101,7 @@ function SettingsCard({ campaign }: { campaign: CampaignExt }) {
           pacing,
           bid_shading: bidShading,
           clean_traffic_only: cleanTraffic,
+          scoring_profile_id: scoringProfileId || null,
           frequency_caps: caps,
         },
       })
@@ -176,7 +180,7 @@ function SettingsCard({ campaign }: { campaign: CampaignExt }) {
               </button>
             ) : null}
           </div>
-          {freqCaps.length === 0 ? <p className="text-xs text-muted">Без лимита</p> : null}
+          {freqCaps.length === 0 ? <p className="text-xs text-muted">Без л��мита</p> : null}
           {freqCaps.map((w, i) => (
             <div key={i} className="flex max-w-md items-end gap-2">
               <div className="flex-1">
@@ -236,6 +240,21 @@ function SettingsCard({ campaign }: { campaign: CampaignExt }) {
             <HelpTip text="Не закупать домены с низким скорингом качества (скликивание, нулевая вовлечённость, аномальный CTR). Скоринг пересчитывается ежедневно; охват может снизиться." />
           </span>
         </label>
+
+        <Field
+          label="Профиль скоринга площадок"
+          hint="Пользовательские пороги качества (CTR, viewability, поведение, CPA). В режиме «Блокировать» исключает слабый инвентарь."
+        >
+          <select value={scoringProfileId} onChange={(e) => setScoringProfileId(e.target.value)} className={inputCls}>
+            <option value="">Без профиля</option>
+            {(scoringProfiles || []).map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+                {p.enforce ? " (блокировка)" : " (наблюдение)"}
+              </option>
+            ))}
+          </select>
+        </Field>
 
         {error ? <p className="text-xs text-danger">{error}</p> : null}
         <div className="flex items-center gap-3">

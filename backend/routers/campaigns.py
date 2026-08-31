@@ -23,7 +23,7 @@ def _serialize(row) -> dict:
             d["frequency_caps"] = None
     for k in ("id", "advertiser_id", "user_id"):
         d[k] = str(d[k])
-    for k in ("group_id", "pixel_id", "goal_id"):
+    for k in ("group_id", "pixel_id", "goal_id", "scoring_profile_id"):
         if d.get(k) is not None:
             d[k] = str(d[k])
     for k in _NUMERIC:

@@ -95,6 +95,8 @@ class CampaignPatch(BaseModel):
     bid_shading: bool | None = None
     # Clean-traffic (Часть B): закупать только домены с quality score >= порога
     clean_traffic_only: bool | None = None
+    # Профиль скоринга качества площадок (Часть 3b)
+    scoring_profile_id: str | None = None
 
 
 # --- Line items ---------------------------------------------------------------
@@ -216,3 +218,40 @@ class RulePatch(BaseModel):
     action: str | None = Field(default=None, pattern="^(pause_campaign|pause_line_item|decrease_bid|increase_bid|decrease_daily_budget|increase_daily_budget|blacklist_domains|notify)$")
     action_value: float | None = None
     window_hours: int | None = Field(default=None, ge=1, le=168)
+
+
+# --- Scoring profiles -------------------------------------------------------
+class ScoringProfileIn(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=500)
+    window_days: int = Field(default=7, ge=1, le=90)
+    min_impressions: int = Field(default=200, ge=0)
+    min_clicks: int = Field(default=0, ge=0)
+    min_ctr: float | None = Field(default=None, ge=0, le=100)
+    min_viewability: float | None = Field(default=None, ge=0, le=100)
+    max_bounce_rate: float | None = Field(default=None, ge=0, le=100)
+    min_avg_depth: float | None = Field(default=None, ge=0)
+    min_time_on_site: int | None = Field(default=None, ge=0)
+    max_cpa: float | None = Field(default=None, ge=0)
+    goal_id: str | None = None
+    pixel_id: str | None = None
+    block_threshold: float = Field(default=0.5, ge=0, le=1)
+    enforce: bool = False
+
+
+class ScoringProfilePatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=500)
+    window_days: int | None = Field(default=None, ge=1, le=90)
+    min_impressions: int | None = Field(default=None, ge=0)
+    min_clicks: int | None = Field(default=None, ge=0)
+    min_ctr: float | None = Field(default=None, ge=0, le=100)
+    min_viewability: float | None = Field(default=None, ge=0, le=100)
+    max_bounce_rate: float | None = Field(default=None, ge=0, le=100)
+    min_avg_depth: float | None = Field(default=None, ge=0)
+    min_time_on_site: int | None = Field(default=None, ge=0)
+    max_cpa: float | None = Field(default=None, ge=0)
+    goal_id: str | None = None
+    pixel_id: str | None = None
+    block_threshold: float | None = Field(default=None, ge=0, le=1)
+    enforce: bool | None = None
