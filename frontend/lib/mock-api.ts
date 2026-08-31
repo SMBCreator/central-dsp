@@ -769,8 +769,17 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
       { key: "notify_spend_spike", name: "Уведомление о всплеске расхода", description: "Расход за сутки превысил 50 000 ₽ — зафиксировать срабатывание.", metric: "spend", operator: "gt", threshold: 50000, action: "notify", action_value: null, window_hours: 24 },
     ]
   if (path === "/rules") return []
-  if (path === "/supply-partners") return []
   if (path === "/share/links" || path === "/share/guests") return []
+
+  // --- Онбординг SSP (Часть SSP) ---
+  if (path === "/supply-partners" && method === "GET") return mockSupplyPartners
+  if (path === "/supply-partners" && method === "POST")
+    return { ...mockSupplyPartners[0], id: `ssp-${Date.now()}`, status: "draft", name: "Новый SSP", last_check: null }
+  if (path.match(/^\/supply-partners\/[^/]+\/check$/) && method === "POST") return mockSspCheck
+  if (path.match(/^\/supply-partners\/[^/]+\/rotate-token$/) && method === "POST")
+    return { token: "csp_demo_token_4f8a1b2c3d4e5f60718293a4b5c6d7e8" }
+  if (path.startsWith("/supply-partners/") && method === "PATCH") return mockSupplyPartners[0]
+  if (path.startsWith("/supply-partners/") && method === "DELETE") return { ok: true }
 
   // --- Скоринг качества площадок (Часть 3b) ---
   if (path === "/scoring/profiles" && method === "GET") return mockScoringProfiles
@@ -787,6 +796,105 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
 
   return undefined
 }
+
+// Демо-данные онбординга SSP
+const mockSspCheck = {
+  ran_at: iso(0),
+  passed: true,
+  checks: [
+    { key: "endpoint", label: "Bid-эндпоинт отвечает", ok: true, detail: "POST /rtb/bid/{key} — 200/204" },
+    { key: "auth", label: "Аутентификация настроена", ok: true, detail: "Секретный токен задан, заголовок проверяется" },
+    { key: "parse", label: "BidRequest парсится", ok: true, detail: "OpenRTB 2.5, banner 300x250 — запрос принят" },
+    { key: "response", label: "BidResponse валиден", ok: true, detail: "seatbid, price, adm, nurl присутствуют" },
+    { key: "macros", label: "Макросы аукциона", ok: true, detail: "${AUCTION_PRICE} в nurl, win-notice принимается" },
+    { key: "tmax", label: "Ответ в пределах tmax", ok: true, detail: "38 мс < 200 мс" },
+    { key: "nobid", label: "Корректный no-bid", ok: true, detail: "204 No Content при пустом таргетинге" },
+  ],
+}
+
+const mockSupplyPartners = [
+  {
+    id: "ssp-demo-1",
+    display_id: 1,
+    name: "Yandex ADFOX",
+    endpoint_key: "adfx_9f2e1a7b",
+    status: "active",
+    protocol: "openrtb",
+    protocol_version: "2.5",
+    auction_type: 2,
+    bid_floor: 5,
+    qps_limit: 2000,
+    allowed_ad_types: ["banner", "native", "video"],
+    currency: "RUB",
+    tmax_ms: 200,
+    ip_whitelist: ["77.88.0.0/18", "5.255.192.0/18"],
+    seat_id: "seat-cdsp-041",
+    contact_email: "rtb@adfox.example",
+    notes: "Основной источник. Прод с 12.08.",
+    has_auth_token: true,
+    auth_token_hint: "csp_...d7e8",
+    last_check: mockSspCheck,
+    created_at: iso(240 * 36e5),
+  },
+  {
+    id: "ssp-demo-2",
+    display_id: 2,
+    name: "Between Exchange",
+    endpoint_key: "btwn_3c8d4e5f",
+    status: "testing",
+    protocol: "openrtb",
+    protocol_version: "2.5",
+    auction_type: 1,
+    bid_floor: 12,
+    qps_limit: 500,
+    allowed_ad_types: ["banner", "video"],
+    currency: "RUB",
+    tmax_ms: 300,
+    ip_whitelist: [],
+    seat_id: null,
+    contact_email: "partners@betweenx.example",
+    notes: "Тестовый трафик, ждём seat ID.",
+    has_auth_token: true,
+    auth_token_hint: "csp_...91af",
+    last_check: {
+      ran_at: iso(5 * 36e5),
+      passed: false,
+      checks: [
+        { key: "endpoint", label: "Bid-эндпоинт отвечает", ok: true, detail: "POST /rtb/bid/{key} — 200/204" },
+        { key: "auth", label: "Аутентификация настроена", ok: true, detail: "Секретный токен задан" },
+        { key: "parse", label: "BidRequest парсится", ok: true, detail: "OpenRTB 2.5, banner — запрос принят" },
+        { key: "response", label: "BidResponse валиден", ok: false, detail: "Нет активных кампаний под тип video — нечем ответить" },
+        { key: "macros", label: "Макросы аукциона", ok: true, detail: "${AUCTION_PRICE} в nurl" },
+        { key: "tmax", label: "Ответ в пределах tmax", ok: true, detail: "41 мс < 300 мс" },
+        { key: "nobid", label: "Корректный no-bid", ok: true, detail: "204 No Content" },
+      ],
+    },
+    created_at: iso(48 * 36e5),
+  },
+  {
+    id: "ssp-demo-3",
+    display_id: 3,
+    name: "MoevideoX (черновик)",
+    endpoint_key: "mvx_1a2b3c4d",
+    status: "draft",
+    protocol: "openrtb",
+    protocol_version: "2.6",
+    auction_type: 2,
+    bid_floor: 0,
+    qps_limit: 100,
+    allowed_ad_types: ["video"],
+    currency: "USD",
+    tmax_ms: 250,
+    ip_whitelist: [],
+    seat_id: null,
+    contact_email: null,
+    notes: null,
+    has_auth_token: false,
+    auth_token_hint: null,
+    last_check: null,
+    created_at: iso(2 * 36e5),
+  },
+]
 
 // Демо-данные скоринга
 export const mockScoringProfiles = [

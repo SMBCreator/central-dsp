@@ -101,6 +101,7 @@ export function StatusBadge({ status }: { status: string }) {
     approved: "bg-success/10 text-success",
     paused: "bg-warning/10 text-warning",
     pending: "bg-warning/10 text-warning",
+    testing: "bg-warning/10 text-warning",
     draft: "bg-muted/10 text-muted",
     archived: "bg-muted/10 text-muted",
     completed: "bg-accent/10 text-accent",

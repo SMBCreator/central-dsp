@@ -185,16 +185,29 @@ class SupplyPartnerIn(BaseModel):
     qps_limit: int = Field(default=100, ge=1, le=100000)
     allowed_ad_types: list[str] = Field(default_factory=lambda: ["banner", "native", "video", "push"])
     notes: str | None = None
+    # Онбординг-анкета SSP (миграция 030)
+    protocol_version: str = Field(default="2.5", pattern="^(2\\.5|2\\.6)$")
+    currency: str = Field(default="RUB", pattern="^(RUB|USD|EUR)$")
+    tmax_ms: int = Field(default=200, ge=50, le=1000)
+    ip_whitelist: list[str] = Field(default_factory=list, max_length=64)
+    seat_id: str | None = Field(default=None, max_length=100)
+    contact_email: str | None = Field(default=None, max_length=200)
 
 
 class SupplyPartnerPatch(BaseModel):
     name: str | None = None
-    status: str | None = Field(default=None, pattern="^(active|paused|archived)$")
+    status: str | None = Field(default=None, pattern="^(draft|testing|active|paused|archived)$")
     auction_type: int | None = Field(default=None, ge=1, le=2)
     bid_floor: float | None = Field(default=None, ge=0)
     qps_limit: int | None = Field(default=None, ge=1, le=100000)
     allowed_ad_types: list[str] | None = None
     notes: str | None = None
+    protocol_version: str | None = Field(default=None, pattern="^(2\\.5|2\\.6)$")
+    currency: str | None = Field(default=None, pattern="^(RUB|USD|EUR)$")
+    tmax_ms: int | None = Field(default=None, ge=50, le=1000)
+    ip_whitelist: list[str] | None = Field(default=None, max_length=64)
+    seat_id: str | None = Field(default=None, max_length=100)
+    contact_email: str | None = Field(default=None, max_length=200)
 
 
 # --- Rules ---------------------------------------------------------------------

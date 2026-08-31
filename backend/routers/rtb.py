@@ -18,6 +18,7 @@ import hmac as _hmac
 
 import obs_metrics
 import prefilter
+import ssp_check
 from billing_core import bill_win
 from audiences import check_audiences, store_clid_bridge
 from shading import get_factor as shading_get_factor, should_shade
@@ -605,8 +606,9 @@ async def bid(endpoint_key: str, request: Request):
         obs_metrics.inc_prefilter(drop_reason)
         return Response(status_code=204)
     ssp_token = request.headers.get("x-centraldsp-token")
+    client_ip = request.client.host if request.client else None
     try:
-        result = await process_bid_request(endpoint_key, req, ssp_token=ssp_token)
+        result = await process_bid_request(endpoint_key, req, ssp_token=ssp_token, client_ip=client_ip)
     finally:
         obs_metrics.observe_bid_latency(time.monotonic() - started)
     if result is None:
@@ -670,16 +672,18 @@ def _claim_refresh(key: str) -> bool:
     return True
 
 
-async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | None = None):
+async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | None = None, client_ip: str | None = None):
     """Core bid logic. Returns a BidResponse dict or None (no-bid).
-    Raises 404 for unknown endpoint keys, 403 for a bad SSP token,
-    429 when the partner exceeds its QPS limit."""
+    Raises 404 for unknown endpoint keys, 403 for a bad SSP token or
+    IP outside the partner whitelist, 429 when the partner exceeds QPS.
+    Partners in 'testing' status are served: this is the SSP onboarding
+    test phase (Часть SSP-онбординга)."""
     pool = await get_pool()
     _pkey = f"partner:{endpoint_key}"
     partner, _fresh = _cache_get(_pkey)
     if partner is None or (not _fresh and _claim_refresh(_pkey)):
         partner = await pool.fetchrow(
-            "SELECT * FROM supply_partners WHERE endpoint_key = $1 AND status = 'active'", endpoint_key
+            "SELECT * FROM supply_partners WHERE endpoint_key = $1 AND status IN ('active','testing')", endpoint_key
         )
         if partner is not None:
             _cache_put(_pkey, partner)
@@ -693,6 +697,15 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
     expected_token = partner["auth_token"] if "auth_token" in partner.keys() else None
     if expected_token and not _hmac.compare_digest(ssp_token or "", expected_token):
         raise HTTPException(status_code=403, detail="Invalid SSP token")
+
+    # IP whitelist партнёра (миграция 030): непустой список = только эти IP/CIDR.
+    # client_ip=None (симулятор/автопроверка) — внутренний вызов, проверка не нужна.
+    if client_ip is not None and "ip_whitelist" in partner.keys():
+        _wl = partner["ip_whitelist"]
+        if isinstance(_wl, str):
+            _wl = json.loads(_wl)
+        if _wl and not ssp_check.ip_allowed(client_ip, _wl):
+            raise HTTPException(status_code=403, detail="IP not in partner whitelist")
 
     # Per-partner QPS limit, enforced across all replicas via Redis.
     if not await check_qps(str(partner["id"]), partner["qps_limit"] or 0):
@@ -999,15 +1012,19 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
         }
         if c.get("_deal_id"):
             bid_obj["dealid"] = c["_deal_id"]
-        seatbids.append({"bid": [bid_obj], "seat": "centraldsp"})
+        # seat: ID, который этот SSP присвоил нам как байеру (миграция 030)
+        _seat = (partner["seat_id"] if "seat_id" in partner.keys() else None) or "centraldsp"
+        seatbids.append({"bid": [bid_obj], "seat": _seat})
 
     if not seatbids:
         return None
 
+    # cur: валюта из онбординг-анкеты партнёра (миграция 030), иначе платформенная
+    _cur = (partner["currency"] if "currency" in partner.keys() else None) or CURRENCY
     return {
         "id": req_id,
         "bidid": str(uuid.uuid4()),
-        "cur": CURRENCY,
+        "cur": _cur,
         "seatbid": seatbids,
     }
 

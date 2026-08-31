@@ -157,6 +157,19 @@ export interface Creative {
   created_at: string
 }
 
+export interface SspCheckItem {
+  key: string
+  label: string
+  ok: boolean
+  detail: string
+}
+
+export interface SspCheckResult {
+  ran_at: string
+  passed: boolean
+  checks: SspCheckItem[]
+}
+
 export interface SupplyPartner {
   id: string
   display_id: number
@@ -170,6 +183,16 @@ export interface SupplyPartner {
   allowed_ad_types: string[]
   notes: string | null
   created_at: string
+  // Онбординг SSP (миграция 030)
+  protocol_version?: string
+  currency?: string
+  tmax_ms?: number
+  ip_whitelist?: string[]
+  seat_id?: string | null
+  contact_email?: string | null
+  has_auth_token?: boolean
+  auth_token_hint?: string | null
+  last_check?: SspCheckResult | null
 }
 
 export interface Rule {
@@ -241,6 +264,7 @@ export const STATUS_LABELS: Record<string, string> = {
   approved: "Одобрен",
   rejected: "Отклонён",
   completed: "Завершена",
+  testing: "Тестирование",
 }
 
 export const AD_TYPE_LABELS: Record<string, string> = {
