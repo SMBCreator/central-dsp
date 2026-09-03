@@ -175,6 +175,24 @@ export default function OrdPage() {
         </div>
       ) : null}
 
+      <ol className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted" aria-label="Порядок регистрации в ОРД">
+        <li className="flex items-center gap-1.5">
+          <span className="font-mono text-foreground">1</span> Контрагенты (ИНН/ОГРН) → «В ОРД»
+        </li>
+        <li aria-hidden className="text-border">/</li>
+        <li className="flex items-center gap-1.5">
+          <span className="font-mono text-foreground">2</span> Договор между зарегистрированными сторонами → «В ОРД»
+        </li>
+        <li aria-hidden className="text-border">/</li>
+        <li className="flex items-center gap-1.5">
+          <span className="font-mono text-foreground">3</span> Креатив с ККТУ → erid
+        </li>
+        <li aria-hidden className="text-border">/</li>
+        <li className="flex items-center gap-1.5">
+          <span className="font-mono text-foreground">4</span> Статистика уходит автоматически 2-го числа за прошлый месяц
+        </li>
+      </ol>
+
       {tab === "counterparties" ? (
         <Card>
           <CardHeader
@@ -316,11 +334,14 @@ export default function OrdPage() {
 
       {tab === "exports" ? (
         <Card>
-          <CardHeader title="Выгрузки в ОРД" subtitle="Месячная передача статистики показов (cron)" />
+          <CardHeader
+            title="Выгрузки в ОРД"
+            subtitle="Показы и клики по erid за прошлый месяц — cron 2-го числа в 06:00 МСК. Статус «failed» — повторить можно вызовом /cron/ord-export?period=YYYY-MM (см. DEPLOYMENT.md), повтор за уже выгруженный период безопасен."
+          />
           {!exports ? (
             <Spinner />
           ) : exports.length === 0 ? (
-            <EmptyState title="Выгрузок ещё не было" description="Первая выгрузка запускается автоматически в начале месяца" />
+            <EmptyState title="Выгрузок ещё не было" description="Первая выгрузка запустится автоматически 2-го числа следующего месяца. В отчёт попадают только креативы с erid." />
           ) : (
             <Table headers={["Период", "Статус", "Строк", "Запущена", "Ошибка"]}>
               {exports.map((ex) => (
