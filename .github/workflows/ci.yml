@@ -57,9 +57,19 @@ jobs:
           node-version: 20
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: No broken UTF-8 (U+FFFD) in source
+        run: |
+          set -o pipefail
+          if grep -rIn $'\xEF\xBF\xBD' frontend/app frontend/components frontend/lib backend/routers backend/*.py backend/migrations --include='*.ts' --include='*.tsx' --include='*.py' --include='*.sql'; then
+            echo "::error::Found U+FFFD replacement characters (broken encoding) in source files above"
+            exit 1
+          fi
       - name: Install frontend dependencies
         working-directory: frontend
         run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        working-directory: frontend
+        run: pnpm exec tsc --noEmit
       - name: Build
         working-directory: frontend
         run: pnpm run build

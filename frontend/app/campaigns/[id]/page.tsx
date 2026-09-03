@@ -180,7 +180,7 @@ function SettingsCard({ campaign }: { campaign: CampaignExt }) {
               </button>
             ) : null}
           </div>
-          {freqCaps.length === 0 ? <p className="text-xs text-muted">Без л��мита</p> : null}
+          {freqCaps.length === 0 ? <p className="text-xs text-muted">Без лимита</p> : null}
           {freqCaps.map((w, i) => (
             <div key={i} className="flex max-w-md items-end gap-2">
               <div className="flex-1">

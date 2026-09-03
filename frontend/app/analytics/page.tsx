@@ -249,7 +249,7 @@ function AnalyticsInner() {
   const activeGroupings = GROUPINGS.filter((g) => groupings.includes(g.key))
 
   function fmtDim(key: string, value: string): string {
-    if (!value || value === "��") return "—"
+    if (!value || value === "—") return "—"
     if (key === "hour") {
       const d = new Date(value)
       return isNaN(d.getTime()) ? value : d.toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })

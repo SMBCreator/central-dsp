@@ -348,7 +348,7 @@ export default function CreativesPage() {
             <Field label="Сторонний трекер показа" hint="Опционально: пиксель аудита (adriver, weborama...)">
               <input type="url" value={form.imp_tracker_url} onChange={(e) => setForm({ ...form, imp_tracker_url: e.target.value })} className={inputCls} placeholder="https://tracker.ru/imp?..." />
             </Field>
-            <Field label="Сторонний трекер клика" hint="Опц��онально: клик-редирект трекера">
+            <Field label="Сторонний трекер клика" hint="Опционально: клик-редирект трекера">
               <input type="url" value={form.click_tracker_url} onChange={(e) => setForm({ ...form, click_tracker_url: e.target.value })} className={inputCls} placeholder="https://tracker.ru/click?..." />
             </Field>
           </div>

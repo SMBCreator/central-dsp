@@ -388,7 +388,7 @@ export function mockDiagnostics(campaignId: string) {
       code: "schedule",
       ok: true,
       severity: "blocker",
-      title: "Период откр��тки",
+      title: "Период открутки",
       detail: "Сегодня входит в период кампании",
     },
     {
@@ -437,7 +437,7 @@ export function mockDiagnostics(campaignId: string) {
         liActive.length > 0
           ? `Активных групп со ставкой > 0: ${liActive.length}`
           : lis.length === 0
-            ? "Нет ни одной группы объявлений — соз��айте группу с таргетингом и ставкой."
+            ? "Нет ни одной группы объявлений — создайте группу с таргетингом и ставкой."
             : "Все группы на паузе или со ставкой 0 ₽. Активируйте группу и задайте ставку.",
     },
     {
