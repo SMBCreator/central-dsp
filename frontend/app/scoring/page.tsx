@@ -65,6 +65,10 @@ export default function ScoringPage() {
   const [saving, setSaving] = useState(false)
 
   const activeProfileId = selected ?? profiles?.[0]?.id ?? null
+  const activeProfile = useMemo(
+    () => (profiles || []).find((p) => p.id === activeProfileId) ?? null,
+    [profiles, activeProfileId],
+  )
 
   const enforcedCount = useMemo(() => (profiles || []).filter((p) => p.enforce).length, [profiles])
 
@@ -133,12 +137,24 @@ export default function ScoringPage() {
         <Button onClick={openCreate}>Создать профиль</Button>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,340px)_1fr]">
+      <div className="flex flex-col gap-6">
         <Card>
           <CardHeader
             title="Профили скоринга"
             subtitle={
               profiles?.length ? `${profiles.length} профилей · ${enforcedCount} блокируют трафик` : "Наборы правил качества"
+            }
+            action={
+              activeProfile ? (
+                <div className="flex gap-2">
+                  <Button variant="secondary" onClick={() => openEdit(activeProfile)}>
+                    Изменить
+                  </Button>
+                  <Button variant="danger" onClick={() => remove(activeProfile)}>
+                    Удалить
+                  </Button>
+                </div>
+              ) : undefined
             }
           />
           {isLoading ? (
@@ -150,24 +166,30 @@ export default function ScoringPage() {
               action={<Button onClick={openCreate}>Создать профиль</Button>}
             />
           ) : (
-            <ul className="divide-y divide-border">
+            <ul className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-3" role="radiogroup" aria-label="Выбор профиля">
               {profiles.map((p) => {
                 const active = p.id === activeProfileId
                 return (
                   <li key={p.id}>
                     <button
                       type="button"
+                      role="radio"
+                      aria-checked={active}
                       onClick={() => setSelected(p.id)}
-                      className={`flex w-full flex-col gap-1 px-4 py-3 text-left transition-colors ${
-                        active ? "bg-accent/5" : "hover:bg-panel/60"
+                      className={`flex h-full w-full flex-col gap-1.5 rounded-lg border px-3.5 py-3 text-left transition-colors ${
+                        active
+                          ? "border-accent bg-accent/5 ring-1 ring-accent/40"
+                          : "border-border bg-card hover:bg-panel/60"
                       }`}
                     >
                       <span className="flex items-center justify-between gap-2">
-                        <span className="text-sm font-medium text-foreground">{p.name}</span>
+                        <span className="truncate text-sm font-medium text-foreground">{p.name}</span>
                         <StatusBadge status={p.enforce ? "active" : "paused"} />
                       </span>
-                      {p.description ? <span className="text-xs text-muted text-pretty">{p.description}</span> : null}
-                      <span className="mt-0.5 flex flex-wrap gap-1 text-[10px] text-muted">
+                      {p.description ? (
+                        <span className="line-clamp-2 text-xs text-muted text-pretty">{p.description}</span>
+                      ) : null}
+                      <span className="mt-auto flex flex-wrap gap-1 pt-0.5 text-[10px] text-muted">
                         <span className="rounded bg-panel px-1.5 py-0.5">окно {p.window_days} дн</span>
                         {p.min_ctr !== null ? <span className="rounded bg-panel px-1.5 py-0.5">CTR ≥ {p.min_ctr}%</span> : null}
                         {p.min_viewability !== null ? (
@@ -176,16 +198,6 @@ export default function ScoringPage() {
                         {p.max_cpa !== null ? <span className="rounded bg-panel px-1.5 py-0.5">CPA ≤ {p.max_cpa}₽</span> : null}
                       </span>
                     </button>
-                    {active ? (
-                      <div className="flex gap-2 px-4 pb-3">
-                        <Button variant="secondary" onClick={() => openEdit(p)}>
-                          Изменить
-                        </Button>
-                        <Button variant="danger" onClick={() => remove(p)}>
-                          Удалить
-                        </Button>
-                      </div>
-                    ) : null}
                   </li>
                 )
               })}
