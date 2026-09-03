@@ -198,13 +198,38 @@ docker compose logs backend --tail 10   # миграции применилис�
 
 ## 9. Бэкапы (обязательно с первого дня)
 
-```bash
-# Ежедневный дамп БД (добавьте в crontab)
-docker compose exec -T postgres pg_dump -U centraldsp centraldsp | gzip > /backup/dsp-$(date +%F).sql.gz
+Целевые показатели: **RPO ≤ 24 ч** (ежедневный полный дамп), **RTO ≤ 1 ч**
+(восстановление скриптом в новую базу и переключение `DATABASE_URL`).
+Redis не бэкапится: счётчики бюджетов/капов пересчитываются из Postgres при старте.
 
-# Redis (снапшот RDB) — счётчики бюджетов/капов
-docker compose exec -T redis redis-cli BGSAVE
+Скрипты в `ops/`:
+
+| Скрипт | Что делает |
+|---|---|
+| `ops/backup.sh` | `pg_dump -Fc` + `uploads/` → `/var/backups/centraldsp/<ts>/`, `manifest.json` с sha256, ротация (`KEEP_DAYS`, по умолчанию 14), опционально `pg_restore --list` как проверка целостности и `rclone` в S3 (`BACKUP_REMOTE`) |
+| `ops/restore.sh` | восстанавливает дамп в **новую** базу `centraldsp_restore_<ts>`, печатает контрольные счётчики, распаковывает `uploads` рядом; в существующую базу — только `--target-db NAME --yes` |
+
+```bash
+# /etc/cron.d/centraldsp-backup  (03:30 UTC, до месячной выгрузки ОРД)
+30 3 * * *  root  cd /opt/central-dsp && ops/backup.sh >> /var/log/centraldsp-backup.log 2>&1
 ```
+
+Переменные (`.env` или окружение cron): `PG_CONTAINER`, `PG_USER`, `PG_DB`,
+`UPLOADS_DIR`, `BACKUP_ROOT`, `KEEP_DAYS`, `BACKUP_REMOTE` (например `s3:centraldsp-backups`).
+Хотя бы одна копия должна лежать **вне** VPS — иначе бэкап не защищает от потери сервера.
+
+Учения по восстановлению — раз в месяц (запишите дату в журнал):
+
+```bash
+ops/restore.sh /var/backups/centraldsp/<последний>   # в новую БД, боевую не трогает
+docker compose exec -T postgres psql -U centraldsp -d centraldsp_restore_<ts> -c "select count(*) from campaigns"
+docker compose exec -T postgres dropdb -U centraldsp centraldsp_restore_<ts>
+```
+
+Реальное восстановление после потери базы: `ops/restore.sh <бэкап>` → остановить
+`backend`/`bidder` → сменить `DATABASE_URL` на новую базу (или `ALTER DATABASE ... RENAME`)
+→ поднять сервисы → `redis-cli FLUSHDB` (счётчики пересчитаются) → проверить
+`GET /health` и фид биддера `/internal/bidder/feed`.
 
 ## 9.1. Планировщик `/cron/*` на VPS
 
