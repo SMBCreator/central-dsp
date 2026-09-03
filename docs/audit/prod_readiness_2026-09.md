@@ -9,7 +9,23 @@
 
 ---
 
-## Сводная таблица рисков
+## Статус исправлений (обновлено 03.09.2026, ветка `feat/avito-ui-kktu`)
+
+| # | Статус | Что сделано | Коммит |
+|---|---|---|---|
+| R1 | Закрыт | `032_ssp_token_hash.sql`: `auth_token_hash` (sha256) + `auth_token_hint`; `ssp_tokens.py` с `compare_digest`; Go `partner_auth.go` — `subtle.ConstantTimeCompare`, заголовок `X-CentralDSP-Token` (+legacy `X-SSP-Token`); токен показывается один раз при выдаче | `5d8aab3` |
+| R3 | Закрыт | Go: метрика `gate_error`, `tmax` → `context.WithTimeout` (`bidDeadline`: резерв 20 мс, min/default бюджет) | `5efe61f` |
+| R4 | Закрыт (код) | `033_bid_events_partitioned.sql`: RANGE по дням + DEFAULT, функции `ensure_partitions` / `drop_old_partitions`; `/cron/retention` (02:30 UTC, `BID_EVENTS_RETENTION_DAYS`=90); `migrate.py --stamp <file>`; накатка на большой таблице — DEPLOYMENT §9.2. **На проде выполнять в окне низкого трафика** | `634731c` |
+| R5 | Закрыт | `ops/backup.sh` (pg_dump custom + Redis RDB + uploads, ротация, restore-check в temp-БД), `ops/restore.sh`, RPO 24 ч / RTO 2 ч, ежемесячный drill — DEPLOYMENT §9 | `23f9373`, `bb1202c` |
+| R6 | Закрыт | `next.config.ts`: CSP report-only, `X-Frame-Options SAMEORIGIN`, nosniff, Referrer-Policy, HSTS; снят `ignoreBuildErrors` (tsc чист). Enforce CSP — после 2 недель без репортов | `1ca6a38` |
+| R9 | Закрыт | Go: `http.MaxBytesReader` 256 KiB → 413 до парсинга; тесты `guard_test.go`. **Прогнать `go test ./...` на сервере** — в песочнице нет тулчейна | `5efe61f` |
+| R10 | Закрыт | `pixel_guard.py`: дедуп (visitor, event, минута) через `SET NX`, лимит на сессию и IP, fail-open при недоступном Redis; тест на fakeredis | `23ef447` |
+| R12 | Закрыт | Оси и подписи дашборда/аналитики — UTC с явной пометкой «время UTC» | `bb1202c` |
+| R2, R7, R8, R11, R13 | Открыты | См. дорожную карту; R11 (152-ФЗ) требует решения по механизму согласия | — |
+
+Нагрузка: прежние прогоны Go-биддера (≈35k QPS, p99 ≈ 28 мс) в репо как артефакт не сохранены. После деплоя R3/R9 — повторный прогон `backend/loadtest/rtb_load.py` против Go-биддера с сохранением отчёта в `docs/audit/loadtest/`.
+
+## Сводная таблица рисков (исходная, на момент аудита)
 
 | # | Раздел | Находка | Статус | Оценка |
 |---|--------|---------|--------|--------|
@@ -63,7 +79,7 @@
 | Fail-open/close | Prefilter (`prefilter.py`) fail-open по документу; блок-листы/скоринг — fail-open при отсутствии в кэше; деньги — fail-close | OK (осознанно) |
 | Body size SSP | Нет `http.MaxBytesReader`; `json.NewDecoder(r.Body)` без лимита | Риск (R9) |
 | Rate limit per partner | Нет; авторизация партнёра — по `auth_token` (см. 6.3) | Риск, S |
-| Нагрузочный тест | `backend/loadtest/rtb_load.py` есть; в песочнице запустить нельзя (нет go/docker). p50/95/99 при 1k/5k QPS — **не проверено** | — |
+| Нагрузочный тест | `backend/loadtest/rtb_load.py` есть; в песочнице запустить нельзя (нет go/docker). p50/95/99 при 1k/5k QPS �� **не проверено** | — |
 
 **Воспроизведение:** `grep -n "MaxBytesReader" -r bidder-go` → пусто; `grep -n "GateAndReserve" -A 8 bidder-go/internal/rtb/handler.go`.
 
@@ -117,7 +133,7 @@
 | Миграции и откат | Прямые SQL-файлы, идемпотентные, применяются скриптом; down-миграций нет (по практике — forward-only с бэкапом перед деплоем) | OK при наличии R5 |
 | Blue/green биддера | Compose — один инстанс; `go_bidder_plan.md` описывает канареечный процент через SSP-конфиг; не реализовано | Риск, M |
 | Падение Redis | Login fail-open; RTB деньги fail-close; `mark_once` бросит исключение → 500 на трекерах (потеря учёта показов) | Риск, S |
-| Падение Postgres | FastAPI отдаёт 500; Go-биддер продолжает бидить по кэшированному фиду до `feed staleness` алерта | OK |
+| Падение Postgres | FastAPI отдаёт 500; Go-биддер продолжает бидить по кэшированному фиду до `feed staleness` ал��рта | OK |
 | UTC/Москва | Все `timestamptz`, агрегация по UTC-часам, в UI не подписан пояс; отчёты ОРД сдаются по MSK-суткам | Риск (R12) |
 
 **Рекомендации:** R5 — `ops/backup.sh` (pg_dump + uploads → S3-совместимое хранилище, ежедневно, хранение 30 дней), ежемесячный `restore-drill` на staging с записью RTO; целевые RPO 24 ч / RTO 2 ч — S; трекеры — оборачивать `mark_once` в try/except с fail-open и метрикой `redis_errors_total` — S; R12 — вывести пояс в UI («по МСК»), агрегировать ОРД-выгрузки по `Europe/Moscow` — S.

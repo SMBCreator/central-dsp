@@ -31,20 +31,29 @@ Severity: `blocker` > `critical` > `high` > `medium` > `low`.
 | GAP-018 | low | repo | Java-биддер остаётся в репо (deprecated) — риск случайных правок | Удалить каталог `bidder/` после cutover Go |
 | GAP-019 | low | docs | README репо описывает Java как основной биддер | Обновить при merge этой ветки |
 
-## Открытые гэпы по аудиту 2026-09 (`prod_readiness_2026-09.md`)
+## Исправлено по аудиту 2026-09 (`prod_readiness_2026-09.md`, 03.09.2026)
+
+| ID | Sev | Компонент | Описание | Фикс |
+|----|-----|-----------|----------|------|
+| GAP-024 | critical | backend/security | `supply_partners.auth_token` хранился в открытом виде, сравнение `==`, партнёры с `NULL` без авторизации (R1) | `5d8aab3`: миграция `032_ssp_token_hash.sql` (`auth_token_hash` sha256 + `auth_token_hint`, plaintext обнулён), `ssp_tokens.py` с `compare_digest`, Go `partner_auth.go` `ConstantTimeCompare`, заголовок `X-CentralDSP-Token` (+legacy `X-SSP-Token`), токен показывается один раз |
+| GAP-025 | critical | data | `bid_events` без партиционирования и ретенции (R4) | `634731c`: миграция `033_bid_events_partitioned.sql` (RANGE по дням + DEFAULT, `ensure_partitions`/`drop_old_partitions`), `/cron/retention` 02:30 UTC (`BID_EVENTS_RETENTION_DAYS`=90), `migrate.py --stamp`, инструкция для большой таблицы — DEPLOYMENT §9.2. Reconcile-алерт сырые ↔ hourly — остаётся, см. GAP-037 |
+| GAP-026 | critical | ops | Бэкап без расписания, оффсайта, restore-drill, RPO/RTO (R5) | `23f9373`, `bb1202c`: `ops/backup.sh` (pg_dump custom + Redis + uploads, ротация, restore-check), `ops/restore.sh`, RPO 24 ч / RTO 2 ч, ежемесячный drill — DEPLOYMENT §9 |
+| GAP-027 | high | frontend/security | Нет CSP; `ignoreBuildErrors: true` (R6) | `1ca6a38`: CSP report-only, XFO SAMEORIGIN, nosniff, Referrer-Policy, HSTS; `ignoreBuildErrors` снят. Enforce CSP — после 2 недель без репортов |
+| GAP-028 | high | bidder-go | Нет лимита тела запроса; `tmax` не в контексте (R9) | `5efe61f`: `MaxBytesReader` 256 KiB → 413, `bidDeadline(tmax)` → `context.WithTimeout`; `guard_test.go`. Per-partner token bucket — не сделан (QPS-гейт есть в Redis) |
+| GAP-029 | high | observability | Ошибки Redis-гейта не видны (R3) | `5efe61f`: метрика `gate_error` в Go. Правило алерта в `alerts.yml` и fail-open `mark_once` — см. GAP-038 |
+| GAP-031a | medium | pixel | Нет дедупа событий и rate-limit на `/collect` (R10) | `23ef447`: `pixel_guard.py` — дедуп (visitor, event, минута) `SET NX`, лимит на сессию и IP, fail-open; тест на fakeredis |
+| GAP-033 | medium | ops | Пояс не подписан в UI (R12) | `bb1202c`: оси и подписи дашборда/аналитики в UTC с пометкой «время UTC». Переход ОРД-выгрузок на MSK-сутки — по решению бизнеса |
+
+## Открытые гэпы по аудиту 2026-09
 
 | ID | Sev | Компонент | Описание | Рекомендация |
 |----|-----|-----------|----------|--------------|
-| GAP-024 | critical | backend/security | `supply_partners.auth_token` хранится в открытом виде, сравнение `==` (не constant-time), партнёры с `NULL` без авторизации (R1) | Миграция `032_ssp_token_hash.sql`: `sha256(token)` + `hmac.compare_digest`, показ токена один раз при генерации |
-| GAP-025 | critical | data | `bid_events` без партиционирования и ретенции; ≈ 86M строк/сутки при 1k QPS (R4) | `RANGE (ts)` по дню, cron drop > 14 d, агрегаты 13 мес., reconcile-алерт сырые ↔ hourly |
-| GAP-026 | critical | ops | Бэкап — одна строка `pg_dump` в DEPLOYMENT.md; нет расписания, оффсайта, restore-drill, RPO/RTO (R5) | `ops/backup.sh` (pg_dump + uploads → S3-совместимое, 30 дней), ежемесячный restore на staging, RPO 24 ч / RTO 2 ч |
-| GAP-027 | high | frontend/security | Нет CSP; `ignoreBuildErrors: true` при чистом tsc (R6) | `Content-Security-Policy-Report-Only` → enforce через 2 недели; убрать `ignoreBuildErrors` |
-| GAP-028 | high | bidder-go | SSP-эндпоинт без лимита тела запроса и per-partner rate limit; `tmax` не пробрасывается в контекст (R9) | `http.MaxBytesReader` 64 KiB, token bucket per partner, `context.WithTimeout(tmax-20ms)` |
-| GAP-029 | high | observability | Ошибки Redis в `GateAndReserve` (fail-close по деньгам) не алертятся — тихая потеря трафика; `mark_once` на трекерах бросает 500 при падении Redis (R3) | Правило `rate(gate_errors_total[5m]) > 0`; трекеры — fail-open + `redis_errors_total` |
 | GAP-030 | medium | moderation | `html_snippet` HTML5-креативов уходит в `adm` без проверки внешних `<script src>` (R2) | Автопометка на модерации при скриптах не из whitelist CDN |
-| GAP-031 | medium | pixel/legal | Пиксель: нет дедупа событий и rate-limit (накрутка целей); сбор `visitor_id` без согласия, нет срока хранения — 152-ФЗ (R10, R11) | Параметр `consent=1`, дедуп (visitor, event, минута), per-site лимит; политика хранения 14 дней |
+| GAP-031 | medium | legal | Пиксель: сбор `visitor_id` без согласия, нет срока хранения — 152-ФЗ (R11) | Параметр `consent=1`, без него не писать `visitor_id`; политика хранения 14 дней |
 | GAP-032 | medium | tests | 6 бэкенд-тестов требуют живой Redis без маркера; нет e2e; покрытие Go `handler.go` частичное (R8) | `@pytest.mark.integration`; Playwright-скелет на 3 сценария; coverage-гейт Go ≥ 70% на `internal/rtb` |
-| GAP-033 | medium | ops/ord | Вся агрегация в UTC, пояс не подписан в UI; ОРД-акты сдаются по MSK-суткам (R12) | Пояс «по МСК» в UI, выгрузки ОРД по `Europe/Moscow` |
+| GAP-037 | medium | data | Нет reconcile сырые `bid_events` ↔ `stats_hourly` за вчера — расхождения не будут замечены | Cron-сверка с алертом при расхождении > 0.5% |
+| GAP-038 | medium | observability | Нет правила алерта на `gate_error`; `mark_once` на трекерах бросает 500 при падении Redis | `rate(rtb_gate_errors_total[5m]) > 0` в `alerts.yml`; трекеры — fail-open + `redis_errors_total` |
+| GAP-039 | low | ops | Результаты нагрузочных прогонов Go-биддера (≈35k QPS, p99 ≈ 28 мс) не сохранены как артефакт | Прогнать `rtb_load.py` после деплоя R3/R9, сохранить в `docs/audit/loadtest/` |
 | GAP-034 | medium | legal | Запрещённые к рекламе категории ККТУ блокируются только вручную на модерации | Таблица `kktu_restricted` + жёсткий стоп на сохранении креатива |
 | GAP-035 | low | code | 355 TODO/FIXME; `mypy` объявлен, не в CI; `lib/types.ts` поддерживается вручную (R13) | `mypy` на `tokens/auth/rbac/billing_core`; `openapi-typescript` с diff-check в CI |
 | GAP-036 | low | architecture | Дубли логики Python↔Go (shading, prefilter, targeting), `rtb.py` 1240 строк (R7) | Реестр владельцев функций в `parity_matrix.md`, удаление мёртвых веток |
