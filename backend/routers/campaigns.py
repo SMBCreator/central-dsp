@@ -112,33 +112,32 @@ async def update_campaign(campaign_id: str, body: CampaignPatch, user: dict = De
     for i, (k, v) in enumerate(updates.items(), start=3):
         sets.append(f"{k} = ${i}")
         values.append(v)
-    # Launch guard (ФЗ-347): кампания не активируется, пока у всех её
-    # креативов нет erid (маркировка через ОРД). ORD_LAUNCH_GUARD=off — только dev.
+    # Launch gate: перевод в active проходит только если нет блокеров готовности
+    # (те же проверки, что и в /diagnostics и в фиде биддера): активный
+    # рекламодатель с балансом, период, бюджет, ≥1 активная группа со ставкой,
+    # ≥1 одобренный креатив, маркировка ОРД (erid, ФЗ-347) для РФ-трафика.
+    # LAUNCH_GATE=off (или устаревший ORD_LAUNCH_GUARD=off) — только dev.
     import os as _os
-    if updates.get("status") == "active" and _os.getenv("ORD_LAUNCH_GUARD", "on") != "off":
-        # Гуард действует только для РФ-трафика: Россия явно выбрана в гео
-        # хотя бы одного line item, или гео не ограничено (весь мир включает РФ).
-        targets_ru = await pool.fetchval(
-            """SELECT bool_or(
-                     COALESCE(jsonb_array_length(targeting->'geo_countries'), 0) = 0
-                     OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(targeting->'geo_countries') g
-                                WHERE upper(g) IN ('RU','RUS'))
-                   )
-               FROM line_items WHERE campaign_id = $1""",
-            campaign_id,
+    gate_on = _os.getenv("LAUNCH_GATE", _os.getenv("ORD_LAUNCH_GUARD", "on")) != "off"
+    if updates.get("status") == "active" and gate_on:
+        camp = await pool.fetchrow(
+            "SELECT * FROM campaigns WHERE id = $1 AND user_id = $2", campaign_id, user["id"]
         )
-        unmarked = 0
-        if targets_ru is None or targets_ru:  # нет line items = считаем, что РФ возможна
-            unmarked = await pool.fetchval(
-                """SELECT count(*) FROM creatives
-                   WHERE campaign_id = $1 AND (erid IS NULL OR erid = '')""",
-                campaign_id,
-            )
-        if unmarked:
+        if not camp:
+            raise HTTPException(status_code=404, detail="Кампания не найдена")
+        # Учитываем поля, которые меняются этим же PATCH (например, даты/бюджет).
+        merged = dict(camp)
+        for k, v in updates.items():
+            if k != "status" and k in merged:
+                merged[k] = v
+        diag = await compute_diagnostics(pool, merged, assume_active=True)
+        if diag["launch_blockers"]:
             raise HTTPException(
                 status_code=409,
-                detail=f"Нельзя активировать: {unmarked} креатив(ов) без erid. "
-                       "Зарегистрируйте креативы в ОРД (раздел Маркировка).",
+                detail={
+                    "message": "Нельзя запустить кампанию: устраните блокирующие проблемы.",
+                    "blockers": diag["launch_blockers"],
+                },
             )
     row = await pool.fetchrow(
         f"UPDATE campaigns SET {', '.join(sets)}, updated_at = now() WHERE id = $1 AND user_id = $2 RETURNING *",
@@ -230,22 +229,19 @@ async def duplicate_campaign(campaign_id: str, user: dict = Depends(require_camp
     return _serialize(new_camp)
 
 
-@router.get("/{campaign_id}/diagnostics")
-async def campaign_diagnostics(campaign_id: str, user: dict = Depends(current_user)):
-    """Почему кампания не откручивается: пошаговая проверка условий участия в торгах.
+async def compute_diagnostics(pool, camp, *, assume_active: bool = False) -> dict:
+    """Пошаговая проверка условий участия кампании в торгах.
 
     Зеркалит JOIN-условия фида для биддера (routers/bidder_feed.campaigns_feed),
     поэтому диагностика совпадает с реальной логикой отбора кандидатов. Каждый
     пункт — {code, ok, severity, title, detail}. severity: 'blocker' полностью
     останавливает показы, 'warning' — сужает охват.
-    """
-    pool = await get_pool()
-    camp = await pool.fetchrow(
-        "SELECT * FROM campaigns WHERE id = $1 AND user_id = $2", campaign_id, user["id"]
-    )
-    if not camp:
-        raise HTTPException(status_code=404, detail="Кампания не найдена")
 
+    assume_active=True — режим «готовность к запуску»: проверка статуса кампании
+    считается пройденной (используется как гейт при переводе в active), остальные
+    блокеры возвращаются в ``launch_blockers`` — их и показывает кабинет до запуска.
+    """
+    campaign_id = str(camp["id"])
     checks: list[dict] = []
 
     def add(code, ok, severity, title, detail):
@@ -254,13 +250,17 @@ async def campaign_diagnostics(campaign_id: str, user: dict = Depends(current_us
         )
 
     # 1. Статус кампании
+    status_ok = assume_active or camp["status"] == "active"
     add(
         "campaign_status",
-        camp["status"] == "active",
+        status_ok,
         "blocker",
         "Статус кампании",
         "Кампания активна" if camp["status"] == "active"
-        else f"Кампания в статусе «{camp['status']}». Запустите её, чтобы участвовать в торгах.",
+        else (
+            "Статус проверяется на момент запуска" if assume_active
+            else f"Кампания в статусе «{camp['status']}». Запустите её, чтобы участвовать в торгах."
+        ),
     )
 
     # 2. Даты открутки
@@ -411,8 +411,15 @@ async def campaign_diagnostics(campaign_id: str, user: dict = Depends(current_us
 
     blockers = [c for c in checks if not c["ok"] and c["severity"] == "blocker"]
     warnings = [c for c in checks if not c["ok"] and c["severity"] == "warning"]
+    # Блокеры запуска — всё, кроме статуса самой кампании: показываем их до
+    # активации и ими же гейтим PATCH status=active.
+    launch_blockers = [c for c in blockers if c["code"] != "campaign_status"]
     if blockers:
-        summary = "Кампания не откручивается: устраните блокирующие проблемы ниже."
+        summary = (
+            "Кампания не готова к запуску: устраните блокирующие проблемы ниже."
+            if camp["status"] != "active"
+            else "Кампания не откручивается: устраните блокирующие проблемы ниже."
+        )
         eligible = False
     elif warnings:
         summary = "Кампания участвует в торгах, но охват ограничен — см. предупреждения."
@@ -423,11 +430,26 @@ async def campaign_diagnostics(campaign_id: str, user: dict = Depends(current_us
 
     return {
         "eligible": eligible,
+        "ready_to_launch": len(launch_blockers) == 0,
         "summary": summary,
         "blocker_count": len(blockers),
+        "launch_blocker_count": len(launch_blockers),
         "warning_count": len(warnings),
         "checks": checks,
+        "launch_blockers": launch_blockers,
     }
+
+
+@router.get("/{campaign_id}/diagnostics")
+async def campaign_diagnostics(campaign_id: str, user: dict = Depends(current_user)):
+    """Почему кампания не откручивается / готова ли к запуску — см. compute_diagnostics."""
+    pool = await get_pool()
+    camp = await pool.fetchrow(
+        "SELECT * FROM campaigns WHERE id = $1 AND user_id = $2", campaign_id, user["id"]
+    )
+    if not camp:
+        raise HTTPException(status_code=404, detail="Кампания не найдена")
+    return await compute_diagnostics(pool, camp)
 
 
 @router.get("/{campaign_id}/blocks")
