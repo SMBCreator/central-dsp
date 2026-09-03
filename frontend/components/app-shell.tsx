@@ -55,20 +55,21 @@ export function AppShell({ children }: { children: ReactNode }) {
   return (
     <div className="flex h-screen overflow-hidden bg-background">
       <Toaster />
-      {/* Десктоп: сайдбар всегда виден. Мобильные: скрыт, открывается бургером */}
+      {/* Десктоп: сайдбар expanded/collapsed (состояние в localStorage dsp.sidebar, хоткей Ctrl/Cmd+B).
+          Мобильные (<md): hidden — off-canvas по бургеру, всегда развёрнутый. */}
       <div className="hidden md:block">
         <Sidebar />
       </div>
       {menuOpen ? (
-        <div className="fixed inset-0 z-50 md:hidden">
+        <div className="fixed inset-0 z-50 md:hidden" role="dialog" aria-modal="true" aria-label="Меню">
           <button
             type="button"
             aria-label="Закрыть меню"
             onClick={() => setMenuOpen(false)}
             className="absolute inset-0 bg-foreground/40"
           />
-          <div className="relative h-full w-60">
-            <Sidebar />
+          <div className="relative h-full w-60 shadow-xl">
+            <Sidebar forceExpanded onNavigate={() => setMenuOpen(false)} />
           </div>
         </div>
       ) : null}

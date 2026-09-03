@@ -2,27 +2,10 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
+import { ROUTE_LABELS } from "@/lib/nav"
 
-// F: хлебные крошки — человекочитаемые названия разделов
-const LABELS: Record<string, string> = {
-  campaigns: "Кампании",
-  new: "Новая кампания",
-  creatives: "Креативы",
-  moderation: "Модерация",
-  billing: "Финансы",
-  ord: "ОРД",
-  supply: "Supply",
-  settings: "Настройки",
-  audiences: "Аудитории",
-  analytics: "Аналитика",
-  users: "Пользователи",
-  advertisers: "Рекламодатели",
-  access: "Доступы",
-  pixels: "Пиксели",
-  rules: "Правила",
-  "rtb-test": "RTB-тест",
-  profile: "Профиль",
-}
+// Хлебные крошки — лейблы берутся из lib/nav.ts (тот же источник, что и сайдбар)
+const LABELS = ROUTE_LABELS
 
 export function Breadcrumbs() {
   const pathname = usePathname()

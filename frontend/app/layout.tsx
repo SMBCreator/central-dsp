@@ -21,7 +21,8 @@ export const viewport: Viewport = {
   ],
 }
 
-const themeInit = `(function(){try{var t=localStorage.getItem('theme');if(t==='dark'||(!t&&window.matchMedia('(prefers-color-scheme: dark)').matches)){document.documentElement.classList.add('dark')}}catch(e){}})()`
+// Тема и состояние сайдбара (dsp.sidebar) применяются до гидратации, чтобы не было мерцания.
+const themeInit = `(function(){try{var t=localStorage.getItem('theme');if(t==='dark'||(!t&&window.matchMedia('(prefers-color-scheme: dark)').matches)){document.documentElement.classList.add('dark')}if(localStorage.getItem('dsp.sidebar')==='collapsed'){document.documentElement.classList.add('sidebar-collapsed')}}catch(e){}})()`
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
