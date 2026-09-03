@@ -101,19 +101,31 @@ func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. QPS-гейт партнёра.
+	// 2. QPS-гейт партнёра. Ошибка Redis — fail-open (биддим), но считаем
+	//    gate_errors, чтобы деградация Redis была видна в /metrics.
 	if h.redis != nil && partner.QPSLimit > 0 {
 		ok, err := h.redis.CheckQPS(ctx, partner.ID, int64(partner.QPSLimit), time.Now().Unix())
-		if err == nil && !ok {
+		if err != nil {
+			h.mGateError()
+		} else if !ok {
 			h.mNoBid(metrics.ReasonQPSExceeded)
 			w.WriteHeader(http.StatusTooManyRequests)
 			return
 		}
 	}
 
-	// 3. Parse/validate.
+	// 3. Parse/validate. Тело ограничено MaxBidRequestBytes: OpenRTB-запрос
+	//    редко больше 30-50 КиБ, а без лимита партнёр (или атакующий) может
+	//    заставить биддер аллоцировать произвольный объём.
+	r.Body = http.MaxBytesReader(w, r.Body, MaxBidRequestBytes)
 	var req BidRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			h.mNoBid(metrics.ReasonParseError)
+			http.Error(w, "bid request too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		h.mNoBid(metrics.ReasonParseError)
 		http.Error(w, "invalid bid request", http.StatusBadRequest)
 		return
@@ -122,6 +134,15 @@ func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 		h.mNoBid(metrics.ReasonEmptyRequest)
 		w.WriteHeader(http.StatusNoContent)
 		return
+	}
+
+	// tmax SSP -> дедлайн контекста для Redis-вызовов (freq/budget/shading).
+	// Оставляем запас на сеть до SSP и сериализацию ответа; если tmax не задан
+	// или неразумно мал, работаем с дефолтным бюджетом.
+	if budget := bidDeadline(req.TMax); budget > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, budget)
+		defer cancel()
 	}
 	auctionType := req.At
 	if auctionType == 0 {
