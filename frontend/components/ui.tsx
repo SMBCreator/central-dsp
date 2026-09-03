@@ -245,16 +245,23 @@ export function Modal({
   open,
   onClose,
   title,
+  subtitle,
   children,
   wide,
+  size,
 }: {
   open: boolean
   onClose: () => void
   title: string
+  subtitle?: string
   children: ReactNode
+  /** Эквивалент size="lg" (обратная совместимость) */
   wide?: boolean
+  /** md — 28rem, lg — 42rem, xl — 64rem (двухколоночные редакторы) */
+  size?: "md" | "lg" | "xl"
 }) {
   if (!open) return null
+  const widthCls = size === "xl" ? "max-w-5xl" : size === "lg" || wide ? "max-w-2xl" : "max-w-md"
   return (
     <div
       className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-4 pt-12"
@@ -264,11 +271,14 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className={`w-full ${wide ? "max-w-2xl" : "max-w-md"} rounded-xl border border-border bg-card shadow-lg`}
+        className={`w-full ${widthCls} rounded-xl border border-border bg-card shadow-lg`}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-6 pb-2 pt-5">
-          <h2 className="text-sm font-semibold text-foreground">{title}</h2>
+        <div className="flex items-start justify-between gap-4 px-6 pb-2 pt-5">
+          <div className="min-w-0">
+            <h2 className="text-sm font-semibold text-foreground">{title}</h2>
+            {subtitle ? <p className="mt-0.5 text-xs text-muted">{subtitle}</p> : null}
+          </div>
           <button
             type="button"
             onClick={onClose}

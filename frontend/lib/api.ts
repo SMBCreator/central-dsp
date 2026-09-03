@@ -127,26 +127,82 @@ export function assetUrl(raw?: string | null): string {
   return v
 }
 
-/** Multipart upload helper (creative assets). Returns backend JSON. */
-export async function apiUpload<T = unknown>(path: string, file: File): Promise<T> {
-  const headers: Record<string, string> = {}
-  const token = getToken()
-  if (token) headers["Authorization"] = `Bearer ${token}`
-  const fd = new FormData()
-  fd.append("file", file)
-  const res = await fetch(`${BASE}${path}`, { method: "POST", headers, body: fd })
-  if (!res.ok) {
-    let detail = `Ошибка ${res.status}`
-    try {
-      const data = await res.json()
-      if (typeof data.detail === "string") detail = data.detail
-    } catch {
-      // ignore
+export interface UploadOptions {
+  /** 0..1 — прогресс отправки тела (только upload-часть, без обработки на сервере) */
+  onProgress?: (fraction: number) => void
+  /** Таймаут в мс; по умолчанию 60 с для картинок и 5 мин для видео */
+  timeoutMs?: number
+  signal?: AbortSignal
+}
+
+export interface UploadResult {
+  url: string
+  path: string
+  size: number
+  mime?: string
+  width?: number | null
+  height?: number | null
+}
+
+/**
+ * Multipart upload (файлы креативов) через XMLHttpRequest — fetch не даёт
+ * прогресс отправки. Ошибки бэкенда ({detail}) пробрасываются как ApiError.
+ */
+export function apiUpload<T = UploadResult>(path: string, file: File, opts: UploadOptions = {}): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    const isVideo = file.type.startsWith("video/")
+    xhr.timeout = opts.timeoutMs ?? (isVideo ? 5 * 60_000 : 60_000)
+    xhr.open("POST", `${BASE}${path}`)
+    const token = getToken()
+    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`)
+
+    const fail = (status: number, detail: string) => {
+      if (typeof window !== "undefined") {
+        import("@/components/toaster").then(({ toastError }) => toastError(detail)).catch(() => {})
+      }
+      reject(new ApiError(status, detail))
     }
-    if (typeof window !== "undefined") {
-      import("@/components/toaster").then(({ toastError }) => toastError(detail)).catch(() => {})
+
+    xhr.upload.onprogress = (e) => {
+      if (opts.onProgress && e.lengthComputable) opts.onProgress(e.loaded / e.total)
     }
-    throw new ApiError(res.status, detail)
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          opts.onProgress?.(1)
+          resolve(JSON.parse(xhr.responseText) as T)
+        } catch {
+          fail(xhr.status, "Некорректный ответ сервера")
+        }
+        return
+      }
+      let detail = xhr.status === 413 ? "Файл слишком большой для сервера" : `Ошибка ${xhr.status}`
+      try {
+        detail = extractErrorDetail(xhr.status, JSON.parse(xhr.responseText))
+      } catch {
+        // ignore
+      }
+      fail(xhr.status, detail)
+    }
+    xhr.onerror = () => fail(0, "Сетевая ошибка при загрузке файла")
+    xhr.ontimeout = () => fail(0, "Превышено время ожидания загрузки")
+    xhr.onabort = () => reject(new ApiError(0, "Загрузка отменена"))
+    opts.signal?.addEventListener("abort", () => xhr.abort(), { once: true })
+
+    const fd = new FormData()
+    fd.append("file", file)
+    xhr.send(fd)
+  })
+}
+
+/** Удалить «висящий» загруженный файл (если создание креатива не состоялось). Ошибки глушим. */
+export async function apiDeleteUpload(path: string | null | undefined): Promise<void> {
+  const m = (path || "").match(/\/uploads\/([0-9a-f]{32}\.[a-z0-9]+)/)
+  if (!m) return
+  try {
+    await api(`/creatives/upload/${m[1]}`, { method: "DELETE" })
+  } catch {
+    // best effort
   }
-  return (await res.json()) as T
 }

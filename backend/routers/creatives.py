@@ -1,4 +1,8 @@
 import json
+import os
+import re
+import struct
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 
@@ -133,7 +137,91 @@ _ALLOWED_UPLOAD_TYPES = {
     "video/mp4": ".mp4",
     "video/webm": ".webm",
 }
-_MAX_UPLOAD_BYTES = 30 * 1024 * 1024  # 30 MB
+
+# Лимиты по типу файла (байты). Настраиваются через env, чтобы прод на VPS мог
+# поднять потолок для видео без правки кода (см. docs/DEPLOYMENT.md, nginx
+# client_max_body_size должен быть >= MAX_VIDEO_UPLOAD_BYTES).
+_MAX_IMAGE_BYTES = int(os.environ.get("MAX_IMAGE_UPLOAD_BYTES", str(2 * 1024 * 1024)))   # 2 МБ
+_MAX_VIDEO_BYTES = int(os.environ.get("MAX_VIDEO_UPLOAD_BYTES", str(50 * 1024 * 1024)))  # 50 МБ
+_CHUNK = 1024 * 1024
+_UPLOAD_NAME_RE = re.compile(r"^[0-9a-f]{32}\.(png|jpg|gif|webp|mp4|webm)$")
+
+
+def _fmt_size(n: int) -> str:
+    if n < 1024:
+        return f"{n} Б"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.0f} КБ"
+    return f"{n / 1024 / 1024:.1f} МБ".replace(".", ",")
+
+
+def sniff_upload(head: bytes) -> str | None:
+    """Определяет реальный MIME по сигнатуре файла (первые байты).
+
+    Не доверяем Content-Type из multipart: браузер/клиент может подставить что угодно,
+    а отдавать чужой HTML/SVG с нашего origin под видом картинки — XSS-риск.
+    Возвращает MIME из _ALLOWED_UPLOAD_TYPES или None.
+    """
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if head.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if head.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    # ISO BMFF (mp4/m4v/mov): размер атома (4 байта) + 'ftyp'
+    if len(head) >= 12 and head[4:8] == b"ftyp":
+        brand = head[8:12]
+        if brand[:3] in (b"isc", b"iso", b"mp4", b"M4V", b"avc", b"dash", b"qt ") or brand in (b"mmp4", b"MSNV"):
+            return "video/mp4"
+        return "video/mp4"
+    # Matroska/WebM EBML header
+    if head.startswith(b"\x1a\x45\xdf\xa3"):
+        return "video/webm"
+    return None
+
+
+def image_dimensions(head: bytes) -> tuple[int, int] | None:
+    """Ширина/высота для PNG/GIF/JPEG(SOF)/WebP(VP8/VP8L/VP8X) из первых ~64 КБ без Pillow."""
+    try:
+        if head.startswith(b"\x89PNG\r\n\x1a\n") and head[12:16] == b"IHDR":
+            return struct.unpack(">II", head[16:24])
+        if head.startswith((b"GIF87a", b"GIF89a")):
+            return struct.unpack("<HH", head[6:10])
+        if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+            chunk = head[12:16]
+            if chunk == b"VP8X":
+                w = 1 + int.from_bytes(head[24:27], "little")
+                h = 1 + int.from_bytes(head[27:30], "little")
+                return w, h
+            if chunk == b"VP8L":
+                b = head[21:25]
+                w = 1 + (((b[1] & 0x3F) << 8) | b[0])
+                h = 1 + (((b[3] & 0x0F) << 10) | (b[2] << 2) | ((b[1] & 0xC0) >> 6))
+                return w, h
+            if chunk == b"VP8 ":
+                w, h = struct.unpack("<HH", head[26:30])
+                return w & 0x3FFF, h & 0x3FFF
+        if head.startswith(b"\xff\xd8"):
+            i = 2
+            n = len(head)
+            while i + 9 < n:
+                if head[i] != 0xFF:
+                    i += 1
+                    continue
+                marker = head[i + 1]
+                if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
+                    i += 2
+                    continue
+                seg_len = struct.unpack(">H", head[i + 2 : i + 4])[0]
+                if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                    h, w = struct.unpack(">HH", head[i + 5 : i + 9])
+                    return w, h
+                i += 2 + seg_len
+    except (struct.error, IndexError):
+        return None
+    return None
 
 
 @router.post("/upload")
@@ -142,27 +230,94 @@ async def upload_creative_asset(
     file: UploadFile,
     user: dict = Depends(require_creative_manager),
 ):
-    """Upload a creative asset file; returns a URL usable as asset_url/video_url."""
-    import os
-    import uuid
+    """Загрузка файла креатива; возвращает путь для asset_url/video_url + размеры.
 
-    ext = _ALLOWED_UPLOAD_TYPES.get(file.content_type or "")
-    if not ext:
-        raise HTTPException(415, "Допустимы PNG, JPEG, GIF, WebP, MP4, WebM")
-
-    data = await file.read()
-    if len(data) > _MAX_UPLOAD_BYTES:
-        raise HTTPException(413, "Файл больше 30 МБ")
-    if not data:
+    Валидация: MIME по сигнатуре (не по заголовку клиента), лимит по типу,
+    стриминговая запись на диск (не держим видео целиком в памяти).
+    При превышении лимита файл удаляется, ответ 413 с понятным текстом.
+    """
+    head = await file.read(64 * 1024)
+    if not head:
         raise HTTPException(400, "Пустой файл")
+    mime = sniff_upload(head)
+    if not mime:
+        raise HTTPException(415, "Допустимы PNG, JPEG, GIF, WebP, MP4, WebM. Файл не распознан по содержимому.")
+    ext = _ALLOWED_UPLOAD_TYPES[mime]
+    is_video = mime.startswith("video/")
+    limit = _MAX_VIDEO_BYTES if is_video else _MAX_IMAGE_BYTES
+    too_big = HTTPException(
+        413,
+        f"Файл больше {_fmt_size(limit)} — лимит для {'видео' if is_video else 'изображений'}.",
+    )
+    if len(head) > limit:
+        raise too_big
 
     from main import UPLOAD_DIR
 
     name = f"{uuid.uuid4().hex}{ext}"
     os.makedirs(UPLOAD_DIR, exist_ok=True)
-    with open(os.path.join(UPLOAD_DIR, name), "wb") as fh:
-        fh.write(data)
+    dest = os.path.join(UPLOAD_DIR, name)
+    size = 0
+    try:
+        with open(dest, "wb") as fh:
+            fh.write(head)
+            size = len(head)
+            while True:
+                chunk = await file.read(_CHUNK)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > limit:
+                    raise HTTPException(
+                        413,
+                        f"Файл больше {_fmt_size(limit)} — лимит для {'видео' if is_video else 'изображений'}.",
+                    )
+                fh.write(chunk)
+    except HTTPException:
+        try:
+            os.remove(dest)
+        except OSError:
+            pass
+        raise
 
+    dims = None if is_video else image_dimensions(head)
     public_base = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
     base = public_base or str(request.base_url).rstrip("/")
-    return {"url": f"{base}/uploads/{name}", "path": f"/uploads/{name}", "size": len(data)}
+    return {
+        "url": f"{base}/uploads/{name}",
+        "path": f"/uploads/{name}",
+        "size": size,
+        "mime": mime,
+        "width": dims[0] if dims else None,
+        "height": dims[1] if dims else None,
+    }
+
+
+@router.delete("/upload/{name}", status_code=204)
+async def delete_upload(name: str, user: dict = Depends(require_creative_manager)):
+    """Удаление «висящего» файла, если создание креатива не состоялось.
+
+    Имя строго по маске uuid.ext (защита от path traversal). Файл, на который уже
+    ссылается креатив, не удаляем — иначе сломаем открутку.
+    """
+    if not _UPLOAD_NAME_RE.match(name):
+        raise HTTPException(400, "Некорректное имя файла")
+    pool = await get_pool()
+    rel = f"/uploads/{name}"
+    used = await pool.fetchval(
+        """
+        SELECT 1 FROM creatives
+        WHERE asset_url LIKE '%' || $1 OR video_url LIKE '%' || $1 OR native_icon_url LIKE '%' || $1
+        LIMIT 1
+        """,
+        rel,
+    )
+    if used:
+        raise HTTPException(409, "Файл уже используется креативом")
+    from main import UPLOAD_DIR
+
+    try:
+        os.remove(os.path.join(UPLOAD_DIR, name))
+    except FileNotFoundError:
+        pass
+    return None
