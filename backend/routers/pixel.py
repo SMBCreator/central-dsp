@@ -12,12 +12,26 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
+import pixel_guard
 from audiences import process_pixel_event
 from auth import current_user
 from rbac import require_campaign_write
 from db import get_pool
 
 router = APIRouter(prefix="/pixel", tags=["pixel"])
+
+
+def _client_ip(request: Request) -> str | None:
+    """IP клиента за nginx/Vercel: первый адрес из X-Forwarded-For, иначе peer."""
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        first = xff.split(",")[0].strip()
+        if first:
+            return first[:64]
+    real = request.headers.get("x-real-ip")
+    if real:
+        return real.strip()[:64]
+    return request.client.host if request.client else None
 
 # ---------------------------------------------------------------------------
 # Tracking script (served to client sites)
@@ -179,6 +193,15 @@ async def collect(request: Request):
     event_name = (str(body.get("name"))[:120] if body.get("name") else None)
     url = (str(body.get("url"))[:500] if body.get("url") else None)
     clid = (str(body.get("clid"))[:64] if body.get("clid") else None)
+
+    # Дедуп/антифлуд (R10): дубли sendBeacon, зациклившийся track(), боты с новыми sid.
+    # Отвечаем всё равно 204 — скрипту на сайте клиента знать причину не нужно.
+    drop = await pixel_guard.should_accept(
+        pixel_id=pixel_id, session_id=session_id, event_type=event_type,
+        event_name=event_name, url=url, client_ip=_client_ip(request),
+    )
+    if drop:
+        return Response(status_code=204, headers={"Access-Control-Allow-Origin": "*", "X-Pixel-Drop": drop})
     dur = min(max(int(body.get("dur") or 0), 0), 60)
     try:
         scroll_pct = min(max(int(body.get("sp") or 0), 0), 100)
