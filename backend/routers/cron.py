@@ -179,3 +179,45 @@ async def ord_monthly_export(request: Request, period: str | None = None):
             log_id, str(e),
         )
         raise HTTPException(status_code=502, detail=f"ОРД выгрузка не удалась: {e}")
+
+
+@router.get("/retention")
+async def bid_events_retention(request: Request):
+    """Ретенция сырого лога bid_events (миграция 033, партиции по дням).
+
+    1. Создаёт дневные партиции на 7 дней вперёд (чтобы события никогда не
+       падали в DEFAULT-партицию).
+    2. DROP партиций старше BID_EVENTS_RETENTION_DAYS (по умолчанию 90).
+       Агрегаты stats_hourly/domain_stats не затрагиваются — отчёты за
+       длинные периоды строятся по ним, сырой лог нужен для ML/скоринга/аудита
+       в пределах окна.
+
+    Если таблица ещё не партиционирована (миграция 033 не накатана) — no-op
+    с пометкой, а не ошибка: cron не должен «краснеть» из-за порядка деплоя.
+    """
+    _check_secret(request)
+    keep_days = int(os.environ.get("BID_EVENTS_RETENTION_DAYS", "90"))
+    if keep_days < 7:
+        raise HTTPException(status_code=400, detail="BID_EVENTS_RETENTION_DAYS must be >= 7")
+
+    pool = await get_pool()
+    partitioned = await pool.fetchval(
+        """SELECT EXISTS (
+               SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+               WHERE n.nspname = 'public' AND c.relname = 'bid_events' AND c.relkind = 'p')"""
+    )
+    if not partitioned:
+        return {"skipped": "bid_events is not partitioned (apply migration 033)"}
+
+    created = await pool.fetchval(
+        "SELECT bid_events_ensure_partitions(current_date, current_date + 7)"
+    )
+    dropped = await pool.fetchval("SELECT bid_events_drop_old_partitions($1)", keep_days)
+    # Строки в DEFAULT-партиции — признак, что cron создания партиций отставал.
+    in_default = await pool.fetchval("SELECT count(*) FROM bid_events_default")
+    return {
+        "keep_days": keep_days,
+        "partitions_created": created,
+        "partitions_dropped": list(dropped or []),
+        "rows_in_default_partition": in_default,
+    }

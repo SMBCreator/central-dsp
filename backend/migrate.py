@@ -6,6 +6,9 @@ Usage:
     python migrate.py --stamp-all     # mark every migration as applied WITHOUT
                                       # executing (one-time bootstrap for the
                                       # existing production database)
+    python migrate.py --stamp 033_x.sql   # mark ONE pending migration as applied
+                                          # (after running it manually, e.g. a
+                                          # heavy partitioning migration)
 
 Rules:
   - Migrations live in backend/migrations/NNN_name.sql, applied in filename order.
@@ -50,6 +53,13 @@ async def main() -> int:
         return 2
     dry_run = "--dry-run" in sys.argv
     stamp_all = "--stamp-all" in sys.argv
+    stamp_one: str | None = None
+    if "--stamp" in sys.argv:
+        idx = sys.argv.index("--stamp")
+        if idx + 1 >= len(sys.argv):
+            print("ERROR: --stamp requires a migration filename", file=sys.stderr)
+            return 2
+        stamp_one = Path(sys.argv[idx + 1]).name
 
     conn = await asyncpg.connect(dsn=dsn)
     try:
@@ -79,6 +89,15 @@ async def main() -> int:
         if not pending:
             print("Nothing to do: all migrations applied.")
             return 0
+
+        if stamp_one is not None:
+            match = [(p, d) for p, d in pending if p.name == stamp_one]
+            if not match:
+                print(f"ERROR: {stamp_one} is not a pending migration "
+                      "(already applied or file not found)", file=sys.stderr)
+                return 5
+            pending = match
+            stamp_all = True  # переиспользуем ветку stamp ниже только для этого файла
 
         for path, digest in pending:
             if stamp_all:

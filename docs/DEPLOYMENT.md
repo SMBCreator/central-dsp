@@ -249,6 +249,8 @@ API=https://api.example.com
 # ОРД: месячная статистика за предыдущий месяц — 2-е число, 06:00 МСК.
 # Идемпотентно: повтор за уже выгруженный период — no-op (ord_export_log).
 0 3 2 * *   root curl -fsS -H "Authorization: Bearer $CRON_SECRET" $API/cron/ord-export   >/dev/null
+# Ретенция bid_events: партиции на неделю вперёд + DROP старше BID_EVENTS_RETENTION_DAYS (90).
+30 2 * * *  root curl -fsS -H "Authorization: Bearer $CRON_SECRET" $API/cron/retention    >/dev/null
 ```
 
 Проверка вручную (например, после `failed` в разделе «Маркировка (ОРД) → Выгрузки»):
@@ -256,6 +258,41 @@ API=https://api.example.com
 ```bash
 curl -fsS -H "Authorization: Bearer $CRON_SECRET" "$API/cron/ord-export?period=2026-08"
 ```
+
+## 9.2. Партиционирование `bid_events` (миграция 033)
+
+`bid_events` — сырой RTB-лог, при 35k QPS растёт на сотни миллионов строк в месяц.
+Миграция 033 переводит его на RANGE-партиции по дням; ретенция = `DROP TABLE` партиции
+(мгновенно, без bloat). Агрегаты `stats_hourly` / `domain_stats` не затрагиваются.
+
+**Таблица маленькая (< ~50M строк, свежая установка):** просто `python migrate.py` —
+перенос выполняется внутри миграции одной транзакцией.
+
+**Таблица большая (прод с историей):** миграция в одну транзакцию заблокирует запись
+на время копирования. Делайте вручную в окне низкого трафика:
+
+```bash
+# 1. Остановить приём событий (биддер продолжит торговать, события уйдут в Redis-очередь / потеряются
+#    только записи лога, не деньги). Проще всего — на время remap'а поставить бэкенд в maintenance.
+docker compose stop backend
+
+# 2. Выполнить SQL из migrations/033_bid_events_partitioned.sql через psql —
+#    он идемпотентен, но перенос данных (шаг 4 в DO-блоке) лучше сделать батчами:
+#    закомментируйте INSERT ... SELECT и после swap'а перелейте bid_events_legacy -> bid_events
+#    порциями по дню:  INSERT INTO bid_events (...) OVERRIDING SYSTEM VALUE SELECT ... FROM bid_events_legacy
+#    WHERE created_at >= '2026-08-01' AND created_at < '2026-08-02';
+psql "$DATABASE_URL" -f backend/migrations/033_bid_events_partitioned.sql
+
+# 3. Пометить миграцию применённой без повторного выполнения
+cd backend && python migrate.py --stamp 033_bid_events_partitioned.sql
+
+docker compose start backend
+```
+
+После проверки отчётов удалить старую таблицу: `DROP TABLE bid_events_legacy;`.
+Контроль: `/cron/retention` возвращает `rows_in_default_partition` — если > 0, партиции
+создавались с опозданием (cron не отработал); строки в DEFAULT не теряются, но не удаляются
+ретенцией — перелейте их в дневные партиции тем же `INSERT ... SELECT`.
 
 ## 10. Что мониторить (минимум)
 
