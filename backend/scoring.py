@@ -172,6 +172,29 @@ async def domain_metrics(pool, user_id: str, profile: dict, campaign_id: str | N
     else:
         conv_by_domain = {}
 
+    # Текущее состояние блок-листа: авто (по профилю) и ручные блоки оператора.
+    # Без campaign_id блок-лист не привязан к одной кампании — показываем факт
+    # блокировки хотя бы в одной кампании пользователя.
+    blocks: dict[str, dict] = {}
+    if campaign_id:
+        b_rows = await pool.fetch(
+            "SELECT domain, source, note, updated_at FROM scoring_blocklist WHERE campaign_id = $1",
+            campaign_id,
+        )
+    else:
+        b_rows = await pool.fetch(
+            """SELECT b.domain, min(b.source) AS source, NULL::text AS note, max(b.updated_at) AS updated_at
+               FROM scoring_blocklist b JOIN campaigns c ON c.id = b.campaign_id
+               WHERE c.user_id = $1 GROUP BY b.domain""",
+            user_id,
+        )
+    for r in b_rows:
+        blocks[r["domain"]] = {
+            "source": r["source"],
+            "note": r["note"],
+            "at": r["updated_at"].isoformat() if r["updated_at"] else None,
+        }
+
     min_imps = int(profile.get("min_impressions") or 0)
     min_clicks = int(profile.get("min_clicks") or 0)
     out = []
@@ -183,6 +206,7 @@ async def domain_metrics(pool, user_id: str, profile: dict, campaign_id: str | N
         beh = behavior.get(dom, {})
         conv = conv_by_domain.get(dom, 0)
         cpa = round(spend / conv, 2) if conv > 0 else None
+        blk = blocks.get(dom)
         m = {
             "domain": dom,
             "impressions": imps,
@@ -197,6 +221,10 @@ async def domain_metrics(pool, user_id: str, profile: dict, campaign_id: str | N
             "avg_scroll": beh.get("avg_scroll"),
             "bounce_rate": beh.get("bounce_rate"),
             "cpa": cpa,
+            "blocked": blk is not None,
+            "block_source": blk["source"] if blk else None,
+            "block_note": blk["note"] if blk else None,
+            "blocked_at": blk["at"] if blk else None,
         }
         # Активируем скоринг только при достаточных данных (иначе score=None: не блокируем).
         if imps >= min_imps and clicks >= min_clicks:
@@ -217,13 +245,17 @@ async def recompute_blocklist(pool, campaign_id: str, user_id: str, profile: dic
     """Пересчёт scoring_blocklist кампании по профилю (для enforce=true)."""
     rows = await domain_metrics(pool, user_id, profile, campaign_id=campaign_id)
     blocked = [r for r in rows if r["flagged"] and r["score"] is not None]
-    await pool.execute("DELETE FROM scoring_blocklist WHERE campaign_id = $1", campaign_id)
+    # Пересчёт трогает только авто-блоки; ручные блоки оператора не сносим.
+    await pool.execute(
+        "DELETE FROM scoring_blocklist WHERE campaign_id = $1 AND source = 'auto'", campaign_id
+    )
     for r in blocked:
         await pool.execute(
-            """INSERT INTO scoring_blocklist (campaign_id, domain, score, reasons, updated_at)
-               VALUES ($1, $2, $3, $4, now())
+            """INSERT INTO scoring_blocklist (campaign_id, domain, score, reasons, source, updated_at)
+               VALUES ($1, $2, $3, $4, 'auto', now())
                ON CONFLICT (campaign_id, domain) DO UPDATE
-                 SET score = EXCLUDED.score, reasons = EXCLUDED.reasons, updated_at = now()""",
+                 SET score = EXCLUDED.score, reasons = EXCLUDED.reasons, updated_at = now()
+               WHERE scoring_blocklist.source = 'auto'""",
             campaign_id, r["domain"], r["score"], json.dumps(r["reasons"]),
         )
     reset_cache_for_tests()

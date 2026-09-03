@@ -104,30 +104,322 @@ async def delete_profile(profile_id: str, user: dict = Depends(require_platform_
     return {"ok": True}
 
 
+# Whitelist сортировки: ключ из query -> поле строки отчёта. ORDER BY только через словарь.
+_SORT_KEYS = {
+    "score", "impressions", "clicks", "ctr", "viewability", "cpa", "bounce_rate",
+    "avg_depth", "avg_time", "spend", "domain", "name",
+}
+_PAGE_SIZES = (15, 25, 50, 100)
+_CSV_MAX_ROWS = 50_000
+_REPORT_CACHE_TTL = 300.0
+# Кэш полного (до пагинации) отчёта: ключ = user + все фильтры. Пагинация/сортировка —
+# поверх кэша, поэтому листание страниц не дергает БД.
+_report_cache: dict[str, tuple[float, dict, list[dict]]] = {}
+
+
+def _cache_key(user_id, dimension, profile_id, campaign_id, group_id) -> str:
+    return "|".join(str(x or "") for x in (user_id, dimension, profile_id, campaign_id, group_id))
+
+
+def invalidate_report_cache(user_id=None) -> None:
+    """Сброс кэша отчёта (после recompute / ручного блока)."""
+    if user_id is None:
+        _report_cache.clear()
+        return
+    prefix = f"{user_id}|"
+    for k in [k for k in _report_cache if k.startswith(prefix)]:
+        _report_cache.pop(k, None)
+
+
+def _sort_rows(rows: list[dict], sort: str, order: str) -> list[dict]:
+    desc = order == "desc"
+    if sort in ("domain", "name"):
+        return sorted(rows, key=lambda r: (r.get("domain") or r.get("name") or ""), reverse=desc)
+
+    def key(r):
+        v = r.get(sort)
+        # None всегда в конце независимо от направления.
+        return (v is None, (-(v or 0) if desc else (v or 0)))
+
+    return sorted(rows, key=key)
+
+
+def _apply_filters(rows: list[dict], q: str | None, only_blocked: bool, only_flagged: bool) -> list[dict]:
+    if q:
+        needle = q.strip().lower()
+        rows = [r for r in rows if needle in (r.get("domain") or r.get("name") or "").lower()]
+    if only_blocked:
+        rows = [r for r in rows if r.get("blocked")]
+    if only_flagged:
+        rows = [r for r in rows if r.get("flagged")]
+    return rows
+
+
+async def _campaign_ids_in_group(pool, user_id, group_id: str) -> list[str]:
+    rows = await pool.fetch(
+        "SELECT id FROM campaigns WHERE user_id = $1 AND group_id = $2", user_id, group_id
+    )
+    return [str(r["id"]) for r in rows]
+
+
+async def _full_report(pool, user, dimension, profile_id, campaign_id, group_id, *, force=False) -> tuple[dict, list[dict]]:
+    """Полный отчёт (без пагинации) с кэшем 5 мин."""
+    import time as _time
+
+    key = _cache_key(user["id"], dimension, profile_id, campaign_id, group_id)
+    hit = _report_cache.get(key)
+    if hit and not force and _time.monotonic() - hit[0] < _REPORT_CACHE_TTL:
+        return hit[1], hit[2]
+
+    if campaign_id:
+        owned = await pool.fetchval(
+            "SELECT 1 FROM campaigns WHERE id = $1 AND user_id = $2", campaign_id, user["id"]
+        )
+        if not owned:
+            raise HTTPException(404, "Кампания не найдена")
+
+    profile = await _resolve_profile(pool, user["id"], profile_id, campaign_id, group_id)
+
+    if dimension == "domain":
+        if group_id and not campaign_id:
+            # Папка кампаний: объединяем отчёты по всем кампаниям папки.
+            rows_by_dom: dict[str, dict] = {}
+            for cid in await _campaign_ids_in_group(pool, user["id"], group_id):
+                for r in await scoring.domain_metrics(pool, str(user["id"]), profile, campaign_id=cid):
+                    acc = rows_by_dom.get(r["domain"])
+                    if not acc:
+                        rows_by_dom[r["domain"]] = dict(r)
+                        continue
+                    for k in ("impressions", "clicks", "viewable_imps", "conversions"):
+                        acc[k] = (acc.get(k) or 0) + (r.get(k) or 0)
+                    acc["spend"] = round((acc.get("spend") or 0) + (r.get("spend") or 0), 2)
+                    acc["blocked"] = acc["blocked"] or r["blocked"]
+                    acc["flagged"] = acc["flagged"] or r["flagged"]
+            rows = list(rows_by_dom.values())
+            for m in rows:
+                imps = m["impressions"]
+                m["ctr"] = round(m["clicks"] / imps * 100, 3) if imps else 0.0
+                m["viewability"] = round(m["viewable_imps"] / imps * 100, 1) if imps else 0.0
+        else:
+            rows = await scoring.domain_metrics(pool, str(user["id"]), profile, campaign_id=campaign_id)
+    else:
+        rows = await _ssp_rows(pool, user, profile, campaign_id)
+
+    _report_cache[key] = (_time.monotonic(), profile, rows)
+    return profile, rows
+
+
 @router.get("/report")
 async def scoring_report(
     profile_id: str | None = None,
     campaign_id: str | None = None,
     group_id: str | None = None,
     dimension: str = "domain",
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25),
+    sort: str = "score",
+    order: str = "asc",
+    q: str | None = Query(None, max_length=200),
+    only_blocked: bool = False,
+    only_flagged: bool = False,
+    refresh: bool = False,
     user: dict = Depends(current_user),
 ):
-    """Отчёт скоринга по площадкам (domain) или SSP (ssp).
+    """Отчёт скоринга по площадкам (domain) или SSP (ssp) с серверной пагинацией.
 
-    Профиль берётся явно (profile_id) либо разрешается по кампании/группе.
+    Профиль берётся явно (profile_id) либо разрешается по кампании/папке.
     Без профиля используется дефолт-набор порогов (только отчёт, без enforce).
+    Ответ: {profile, dimension, rows, total, page, page_size, sort, order, generated_at, window_days}.
     """
     if dimension not in ("domain", "ssp"):
         raise HTTPException(422, "dimension: domain или ssp")
+    if page_size not in _PAGE_SIZES:
+        raise HTTPException(422, f"page_size: одно из {list(_PAGE_SIZES)}")
+    if sort not in _SORT_KEYS:
+        raise HTTPException(422, f"sort: одно из {sorted(_SORT_KEYS)}")
+    if order not in ("asc", "desc"):
+        raise HTTPException(422, "order: asc или desc")
     pool = await get_pool()
 
-    profile = await _resolve_profile(pool, user["id"], profile_id, campaign_id, group_id)
+    profile, all_rows = await _full_report(pool, user, dimension, profile_id, campaign_id, group_id, force=refresh)
+    rows = _apply_filters(all_rows, q, only_blocked, only_flagged)
+    rows = _sort_rows(rows, sort, order)
+    total = len(rows)
+    start = (page - 1) * page_size
+    page_rows = rows[start : start + page_size]
+    generated_at = datetime.fromtimestamp(
+        _report_cache[_cache_key(user["id"], dimension, profile_id, campaign_id, group_id)][0]
+        - time.monotonic() + time.time(),
+        tz=timezone.utc,
+    ).isoformat()
+    return {
+        "profile": profile,
+        "dimension": dimension,
+        "rows": page_rows,
+        "total": total,
+        "total_flagged": sum(1 for r in all_rows if r.get("flagged")),
+        "total_blocked": sum(1 for r in all_rows if r.get("blocked")),
+        "page": page,
+        "page_size": page_size,
+        "sort": sort,
+        "order": order,
+        "window_days": int(profile.get("window_days") or 7),
+        "generated_at": generated_at,
+    }
 
-    if dimension == "domain":
-        rows = await scoring.domain_metrics(pool, str(user["id"]), profile, campaign_id=campaign_id)
-        return {"profile": profile, "dimension": "domain", "rows": rows}
 
-    # SSP-разрез: агрегируем bid_events по supply_partner за окно профиля.
+_CSV_COLUMNS = [
+    ("domain", "Площадка/SSP"), ("score", "Скоринг"), ("impressions", "Показы"), ("clicks", "Клики"),
+    ("ctr", "CTR, %"), ("viewability", "Viewability, %"), ("bounce_rate", "Отказы, %"),
+    ("avg_depth", "Глубина"), ("avg_time", "Время, с"), ("conversions", "Конверсии"),
+    ("cpa", "CPA"), ("spend", "Расход"), ("flagged", "Ниже порога"), ("blocked", "Заблокирован"),
+    ("block_source", "Источник блока"), ("reasons", "Сигналы"),
+]
+
+
+@router.get("/report.csv")
+async def scoring_report_csv(
+    profile_id: str | None = None,
+    campaign_id: str | None = None,
+    group_id: str | None = None,
+    dimension: str = "domain",
+    sort: str = "score",
+    order: str = "asc",
+    q: str | None = Query(None, max_length=200),
+    only_blocked: bool = False,
+    only_flagged: bool = False,
+    user: dict = Depends(current_user),
+):
+    """CSV-выгрузка отчёта с теми же фильтрами, без пагинации (лимит 50 000 строк).
+
+    UTF-8 с BOM и разделитель ';' — чтобы Excel в русской локали открывал сразу.
+    """
+    if dimension not in ("domain", "ssp"):
+        raise HTTPException(422, "dimension: domain или ssp")
+    if sort not in _SORT_KEYS or order not in ("asc", "desc"):
+        raise HTTPException(422, "Некорректная сортировка")
+    pool = await get_pool()
+    profile, all_rows = await _full_report(pool, user, dimension, profile_id, campaign_id, group_id)
+    rows = _sort_rows(_apply_filters(all_rows, q, only_blocked, only_flagged), sort, order)[:_CSV_MAX_ROWS]
+
+    def gen():
+        buf = io.StringIO()
+        w = csv.writer(buf, delimiter=";", lineterminator="\r\n")
+        yield "\ufeff"
+        w.writerow([label for _, label in _CSV_COLUMNS])
+        yield buf.getvalue(); buf.seek(0); buf.truncate(0)
+        for r in rows:
+            out = []
+            for key, _ in _CSV_COLUMNS:
+                v = r.get("domain") if key == "domain" and r.get("domain") else r.get("name") if key == "domain" else r.get(key)
+                if key == "reasons":
+                    v = ", ".join(scoring.REASON_LABELS.get(c, c) for c in (v or []))
+                elif isinstance(v, bool):
+                    v = "да" if v else "нет"
+                elif isinstance(v, float):
+                    v = f"{v:.3f}".rstrip("0").rstrip(".").replace(".", ",")
+                elif v is None:
+                    v = ""
+                out.append(v)
+            w.writerow(out)
+            yield buf.getvalue(); buf.seek(0); buf.truncate(0)
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
+    fname = f"scoring-{dimension}-{stamp}.csv"
+    return StreamingResponse(
+        gen(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+class ManualBlockIn(BaseModel):
+    campaign_id: str
+    domain: str = Field(min_length=1, max_length=253)
+    note: str | None = Field(default=None, max_length=500)
+
+
+def _norm_domain(raw: str) -> str:
+    d = raw.strip().lower()
+    d = re.sub(r"^https?://", "", d).split("/")[0].split(":")[0]
+    if d.startswith("www."):
+        d = d[4:]
+    if not re.fullmatch(r"[a-z0-9.-]+\.[a-z0-9-]{2,}", d):
+        raise HTTPException(422, "Некорректный домен")
+    return d
+
+
+@router.post("/blocks")
+async def manual_block(body: ManualBlockIn, user: dict = Depends(require_platform_write)):
+    """Ручная блокировка площадки в кампании. Живёт до снятия; пересчёт её не трогает."""
+    pool = await get_pool()
+    owned = await pool.fetchval(
+        "SELECT 1 FROM campaigns WHERE id = $1 AND user_id = $2", body.campaign_id, user["id"]
+    )
+    if not owned:
+        raise HTTPException(404, "Кампания не найдена")
+    domain = _norm_domain(body.domain)
+    reasons = json.dumps([{"type": "manual", "by": str(user["id"]), "note": body.note}])
+    await pool.execute(
+        """INSERT INTO scoring_blocklist (campaign_id, domain, score, reasons, source, created_by, note, updated_at)
+           VALUES ($1, $2, 0, $3, 'manual', $4, $5, now())
+           ON CONFLICT (campaign_id, domain) DO UPDATE
+             SET source = 'manual', created_by = EXCLUDED.created_by, note = EXCLUDED.note,
+                 reasons = EXCLUDED.reasons, updated_at = now()""",
+        body.campaign_id, domain, reasons, user["id"], body.note,
+    )
+    scoring.reset_cache_for_tests()
+    invalidate_report_cache(user["id"])
+    return {"ok": True, "campaign_id": body.campaign_id, "domain": domain, "source": "manual"}
+
+
+@router.delete("/blocks/{campaign_id}/{domain}")
+async def manual_unblock(campaign_id: str, domain: str, user: dict = Depends(require_platform_write)):
+    """Снятие блокировки (ручной или авто) площадки в кампании.
+
+    Авто-блок вернётся при следующем пересчёте, если площадка всё ещё ниже порога.
+    """
+    pool = await get_pool()
+    owned = await pool.fetchval(
+        "SELECT 1 FROM campaigns WHERE id = $1 AND user_id = $2", campaign_id, user["id"]
+    )
+    if not owned:
+        raise HTTPException(404, "Кампания не найдена")
+    dom = _norm_domain(domain)
+    res = await pool.execute(
+        "DELETE FROM scoring_blocklist WHERE campaign_id = $1 AND domain = $2", campaign_id, dom
+    )
+    scoring.reset_cache_for_tests()
+    invalidate_report_cache(user["id"])
+    return {"ok": True, "removed": res.endswith("1") if isinstance(res, str) else True}
+
+
+@router.get("/blocks")
+async def list_blocks(campaign_id: str, user: dict = Depends(current_user)):
+    """Текущий блок-лист кампании (авто + ручные)."""
+    pool = await get_pool()
+    owned = await pool.fetchval(
+        "SELECT 1 FROM campaigns WHERE id = $1 AND user_id = $2", campaign_id, user["id"]
+    )
+    if not owned:
+        raise HTTPException(404, "Кампания не найдена")
+    rows = await pool.fetch(
+        """SELECT domain, score, reasons, source, note, updated_at
+           FROM scoring_blocklist WHERE campaign_id = $1 ORDER BY updated_at DESC""",
+        campaign_id,
+    )
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["score"] = float(d["score"]) if d["score"] is not None else None
+        d["reasons"] = d["reasons"] if isinstance(d["reasons"], list) else json.loads(d["reasons"] or "[]")
+        d["updated_at"] = d["updated_at"].isoformat() if d["updated_at"] else None
+        out.append(d)
+    return out
+
+
+async def _ssp_rows(pool, user, profile, campaign_id) -> list[dict]:
+    """SSP-разрез: агрегируем bid_events по supply_partner за окно профиля."""
     window_days = int(profile.get("window_days") or 7)
     params: list = [user["id"], window_days]
     camp_filter = ""
