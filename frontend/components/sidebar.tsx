@@ -6,82 +6,95 @@ import { usePathname, useRouter } from "next/navigation"
 import { setToken } from "@/lib/api"
 import { canAccessRoute } from "@/lib/roles"
 import { useMe } from "@/lib/use-me"
+import { NAV_SECTIONS, PROFILE_ITEM, isItemActive, sectionOfPath, type NavItem } from "@/lib/nav"
+import { isEditableTarget, useSidebar } from "@/lib/use-sidebar"
 import { ThemeToggle } from "@/components/theme-toggle"
 
-const NAV_SECTIONS = [
-  {
-    title: "Обзор",
-    items: [
-      { href: "/", label: "Дашборд", icon: "M3 13h4v8H3v-8zm7-6h4v14h-4V7zm7-4h4v18h-4V3z" },
-      { href: "/analytics", label: "Статистика", icon: "M4 19h16M6 16V9m4 7V5m4 11v-5m4 5V8" },
-    ],
-  },
-  {
-    title: "Реклама",
-    items: [
-      { href: "/campaigns", label: "Кампании", icon: "M3 11l18-8-6 18-4-7-8-3z" },
-      { href: "/creatives", label: "Креативы", icon: "M4 5h16v14H4V5zm2 10l3-4 3 3 3-4 3 5H6z" },
-      { href: "/moderation", label: "Модерация", icon: "M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" },
-      { href: "/scoring", label: "Скоринг", icon: "M3 3v18h18M7 15l3-3 3 2 5-6" },
-      { href: "/advertisers", label: "Рекламодатели", icon: "M12 3a4 4 0 110 8 4 4 0 010-8zm-7 18a7 7 0 0114 0H5z" },
-    ],
-  },
-  {
-    title: "Трафик",
-    items: [
-      { href: "/supply", label: "SSP-партнёры", icon: "M4 4h7v7H4V4zm9 0h7v7h-7V4zM4 13h7v7H4v-7zm9 0h7v7h-7v-7z" },
-      { href: "/rtb-test", label: "RTB-тестер", icon: "M13 2L4 14h6l-1 8 9-12h-6l1-8z" },
-    ],
-  },
-  {
-    title: "Финансы и учёт",
-    items: [
-      { href: "/billing", label: "Биллинг", icon: "M3 7h18v10H3V7zm0 3h18M7 14h4" },
-      { href: "/ord", label: "Маркировка (ОРД)", icon: "M9 12l2 2 4-4m5 2a9 9 0 11-18 0 9 9 0 0118 0z" },
-    ],
-  },
-  {
-    title: "Инструменты",
-    items: [
-      { href: "/pixels", label: "Пиксель и цели", icon: "M12 8a4 4 0 110 8 4 4 0 010-8zm0-6v4m0 12v4M2 12h4m12 0h4" },
-      { href: "/audiences", label: "Аудитории", icon: "M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" },
-      { href: "/rules", label: "Правила", icon: "M12 3l7 4v5c0 4.5-3 8-7 9-4-1-7-4.5-7-9V7l7-4z" },
-      { href: "/ai", label: "AI-инструменты", icon: "M12 2l2.4 7.2L22 12l-7.6 2.8L12 22l-2.4-7.2L2 12l7.6-2.8L12 2z" },
-      { href: "/users", label: "Пользователи и доступы", icon: "M17 20h5v-2a4 4 0 00-3-3.87M9 20H4v-2a4 4 0 013-3.87m6-1.13a4 4 0 10-4-4 4 4 0 004 4zm6-8a3 3 0 11-3-3" },
-      { href: "/access", label: "Доступ клиентов", icon: "M16 8a4 4 0 11-8 0 4 4 0 018 0zM4 21a8 8 0 0116 0M19 8v4m2-2h-4" },
-      { href: "/settings", label: "Настройки", icon: "M12 9a3 3 0 100 6 3 3 0 000-6zm7.5 3a7.5 7.5 0 01-.1 1.2l2 1.6-2 3.4-2.4-1a7.6 7.6 0 01-2 1.2L14.6 21H9.4l-.4-2.6a7.6 7.6 0 01-2-1.2l-2.4 1-2-3.4 2-1.6a7.7 7.7 0 010-2.4l-2-1.6 2-3.4 2.4 1a7.6 7.6 0 012-1.2L9.4 3h5.2l.4 2.6a7.6 7.6 0 012 1.2l2.4-1 2 3.4-2 1.6c.06.4.1.8.1 1.2z" },
-    ],
-  },
-]
-
-function isItemActive(href: string, pathname: string): boolean {
-  return href === "/" ? pathname === "/" : pathname.startsWith(href)
+function Icon({ d, size = 16 }: { d: string; size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true" className="shrink-0">
+      <path d={d} stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" strokeLinecap="round" />
+    </svg>
+  )
 }
 
-function sectionOfPath(pathname: string): string {
-  for (const s of NAV_SECTIONS) {
-    if (s.items.some((i) => isItemActive(i.href, pathname))) return s.title
-  }
-  return NAV_SECTIONS[0].title
+/** Пункт меню. В свёрнутом режиме — иконка 20px по центру + тултип справа (group-hover). */
+function NavLink({
+  item,
+  active,
+  collapsed,
+  onClick,
+}: {
+  item: NavItem
+  active: boolean
+  collapsed: boolean
+  onClick?: () => void
+}) {
+  const base = "group relative flex items-center rounded-md text-sm transition-colors"
+  const tone = active
+    ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
+    : "text-muted hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
+  return (
+    <Link
+      href={item.href}
+      onClick={onClick}
+      aria-current={active ? "page" : undefined}
+      title={collapsed ? item.label : undefined}
+      className={`${base} ${tone} ${collapsed ? "h-10 w-10 justify-center" : "gap-2.5 px-3 py-2"}`}
+    >
+      <Icon d={item.icon} size={collapsed ? 20 : 16} />
+      {collapsed ? (
+        <span
+          role="tooltip"
+          className="pointer-events-none absolute left-full top-1/2 z-50 ml-2 -translate-y-1/2 whitespace-nowrap rounded-md border border-border bg-popover px-2 py-1 text-xs text-popover-foreground opacity-0 shadow-md transition-opacity duration-100 group-hover:opacity-100 group-focus-visible:opacity-100"
+        >
+          {item.label}
+        </span>
+      ) : (
+        <span className="truncate">{item.label}</span>
+      )}
+    </Link>
+  )
 }
 
-export function Sidebar() {
+export function Sidebar({
+  /** Принудительно развёрнутый вид (мобильный off-canvas). */
+  forceExpanded = false,
+  onNavigate,
+}: {
+  forceExpanded?: boolean
+  onNavigate?: () => void
+}) {
   const pathname = usePathname()
   const router = useRouter()
+  const { collapsed: stored, toggle } = useSidebar()
+  const collapsed = forceExpanded ? false : stored
   const [openSection, setOpenSection] = useState<string>(() => sectionOfPath(pathname))
 
   // Навигация фильтруется по матрице ролей ROUTE_ACCESS (зеркалит серверный RBAC).
-  // Пока /auth/me не загрузился — показываем всё, редирект в app-shell защитит от прямых переходов.
   const { me } = useMe()
   const sections = NAV_SECTIONS.map((s) => ({
     ...s,
     items: me ? s.items.filter((i) => canAccessRoute(me.role, i.href, me.permissions)) : s.items,
   })).filter((s) => s.items.length > 0)
 
-  // При переходе на страницу из другой секции — раскрыть её секцию
   useEffect(() => {
     setOpenSection(sectionOfPath(pathname))
   }, [pathname])
+
+  // Хоткей Cmd/Ctrl+B — только для десктопного сайдбара, не в полях ввода.
+  useEffect(() => {
+    if (forceExpanded) return
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "b") {
+        if (isEditableTarget(e.target)) return
+        e.preventDefault()
+        toggle()
+      }
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [forceExpanded, toggle])
 
   const logout = () => {
     setToken(null)
@@ -89,24 +102,44 @@ export function Sidebar() {
   }
 
   return (
-    <aside className="flex h-screen w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar">
-      <div className="flex items-center justify-between px-4 py-4">
-        <div className="flex items-center gap-2.5">
+    <aside
+      data-collapsed={collapsed || undefined}
+      className={`flex h-screen shrink-0 flex-col border-r border-sidebar-border bg-sidebar transition-[width] duration-200 ease-out ${
+        collapsed ? "w-16" : "w-60"
+      }`}
+    >
+      <div className={`flex items-center py-4 ${collapsed ? "flex-col gap-3 px-2" : "justify-between px-4"}`}>
+        <Link href="/" className="flex items-center gap-2.5" aria-label="CentralDSP — на дашборд">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-sidebar-primary">
             <span className="font-mono text-sm font-bold text-sidebar-primary-foreground">C</span>
           </div>
-          <div>
-            <p className="text-sm font-semibold leading-tight text-sidebar-foreground">CentralDSP</p>
-            <p className="text-[10px] leading-tight text-muted">Programmatic-платформа</p>
-          </div>
-        </div>
+          {!collapsed ? (
+            <div>
+              <p className="text-sm font-semibold leading-tight text-sidebar-foreground">CentralDSP</p>
+              <p className="text-[10px] leading-tight text-muted">Programmatic-платформа</p>
+            </div>
+          ) : null}
+        </Link>
         <ThemeToggle />
       </div>
 
-      <nav className="flex-1 overflow-y-auto px-3 py-2" aria-label="Основная навигация">
-        {sections.map((section) => {
+      <nav className={`flex-1 overflow-y-auto py-2 ${collapsed ? "px-3" : "px-3"}`} aria-label="Основная навигация">
+        {sections.map((section, idx) => {
           const open = openSection === section.title
           const hasActive = section.items.some((i) => isItemActive(i.href, pathname))
+
+          if (collapsed) {
+            // Свёрнутый режим: заголовки секций → тонкий разделитель, все пункты видны.
+            return (
+              <div key={section.title} className="flex flex-col items-center gap-0.5">
+                {idx > 0 ? <div className="my-2 h-px w-6 bg-sidebar-border" aria-hidden /> : null}
+                {section.items.map((item) => (
+                  <NavLink key={item.href} item={item} active={isItemActive(item.href, pathname)} collapsed onClick={onNavigate} />
+                ))}
+              </div>
+            )
+          }
+
           return (
             <div key={section.title} className="mb-1">
               <button
@@ -119,9 +152,7 @@ export function Sidebar() {
               >
                 <span className="flex items-center gap-1.5">
                   {section.title}
-                  {hasActive && !open ? (
-                    <span className="h-1.5 w-1.5 rounded-full bg-sidebar-primary" aria-hidden />
-                  ) : null}
+                  {hasActive && !open ? <span className="h-1.5 w-1.5 rounded-full bg-sidebar-primary" aria-hidden /> : null}
                 </span>
                 <svg
                   width="12"
@@ -134,30 +165,12 @@ export function Sidebar() {
                   <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
               </button>
-              <div
-                className={`grid transition-[grid-template-rows] duration-200 ease-out ${open ? "grid-rows-[1fr]" : "grid-rows-[0fr]"}`}
-              >
+              <div className={`grid transition-[grid-template-rows] duration-200 ease-out ${open ? "grid-rows-[1fr]" : "grid-rows-[0fr]"}`}>
                 <div className="overflow-hidden">
-                  <div className="space-y-0.5 pb-1 pt-0.5">
-                    {section.items.map((item) => {
-                      const active = isItemActive(item.href, pathname)
-                      return (
-                        <Link
-                          key={item.href}
-                          href={item.href}
-                          className={`flex items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors ${
-                            active
-                              ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
-                              : "text-muted hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
-                          }`}
-                        >
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                            <path d={item.icon} stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" strokeLinecap="round" />
-                          </svg>
-                          {item.label}
-                        </Link>
-                      )
-                    })}
+                  <div className="flex flex-col gap-0.5 pb-1 pt-0.5">
+                    {section.items.map((item) => (
+                      <NavLink key={item.href} item={item} active={isItemActive(item.href, pathname)} collapsed={false} onClick={onNavigate} />
+                    ))}
                   </div>
                 </div>
               </div>
@@ -166,30 +179,58 @@ export function Sidebar() {
         })}
       </nav>
 
-      <div className="border-t border-sidebar-border px-3 py-3">
-        <Link
-          href="/profile"
-          className={`flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors ${
-            pathname.startsWith("/profile")
-              ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
-              : "text-muted hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
-          }`}
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path d="M12 3a4 4 0 110 8 4 4 0 010-8zm-7 18a7 7 0 0114 0" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-          Профиль
-        </Link>
+      <div className={`flex flex-col gap-0.5 border-t border-sidebar-border py-3 ${collapsed ? "items-center px-3" : "px-3"}`}>
+        <NavLink item={PROFILE_ITEM} active={isItemActive(PROFILE_ITEM.href, pathname)} collapsed={collapsed} onClick={onNavigate} />
         <button
           type="button"
           onClick={logout}
-          className="flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm text-muted transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
+          title={collapsed ? "Выйти" : undefined}
+          className={`group relative flex items-center rounded-md text-sm text-muted transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-foreground ${
+            collapsed ? "h-10 w-10 justify-center" : "w-full gap-2.5 px-3 py-2"
+          }`}
         >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4m7 14l5-5-5-5m5 5H9" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-          Выйти
+          <Icon d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4m7 14l5-5-5-5m5 5H9" size={collapsed ? 20 : 16} />
+          {collapsed ? (
+            <span
+              role="tooltip"
+              className="pointer-events-none absolute left-full top-1/2 z-50 ml-2 -translate-y-1/2 whitespace-nowrap rounded-md border border-border bg-popover px-2 py-1 text-xs text-popover-foreground opacity-0 shadow-md transition-opacity duration-100 group-hover:opacity-100"
+            >
+              Выйти
+            </span>
+          ) : (
+            "Выйти"
+          )}
         </button>
+
+        {!forceExpanded ? (
+          <button
+            type="button"
+            onClick={toggle}
+            aria-expanded={!collapsed}
+            aria-label={collapsed ? "Развернуть меню" : "Свернуть меню"}
+            title={`${collapsed ? "Развернуть" : "Свернуть"} (Ctrl/Cmd+B)`}
+            className={`mt-1 flex items-center rounded-md text-xs text-muted transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-foreground ${
+              collapsed ? "h-10 w-10 justify-center" : "w-full gap-2.5 px-3 py-2"
+            }`}
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              aria-hidden="true"
+              className={`shrink-0 transition-transform duration-200 ${collapsed ? "rotate-180" : ""}`}
+            >
+              <path d="M15 6l-6 6 6 6" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            {!collapsed ? (
+              <span className="flex flex-1 items-center justify-between">
+                Свернуть
+                <kbd className="rounded border border-border px-1 font-mono text-[10px]">⌘B</kbd>
+              </span>
+            ) : null}
+          </button>
+        ) : null}
       </div>
     </aside>
   )
