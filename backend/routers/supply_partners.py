@@ -15,6 +15,7 @@ from rbac import require_admin
 from db import get_pool
 from schemas import SupplyPartnerIn, SupplyPartnerPatch
 import ssp_check
+import ssp_tokens
 
 router = APIRouter(prefix="/supply-partners", tags=["supply-partners"])
 
@@ -29,10 +30,12 @@ def _serialize(row) -> dict:
     for k in ("allowed_ad_types", "ip_whitelist", "last_check"):
         if isinstance(d.get(k), str):
             d[k] = json.loads(d[k])
-    # Токен наружу не отдаём целиком — только признак и хвост для сверки
-    token = d.pop("auth_token", None)
-    d["has_auth_token"] = bool(token)
-    d["auth_token_hint"] = f"…{token[-4:]}" if token else None
+    # В БД только хэш (миграция 032); наружу — признак и хвост для сверки
+    token_hash = d.pop("auth_token_hash", None)
+    hint = d.pop("auth_token_hint", None)
+    d.pop("auth_token", None)  # на случай прогона до миграции 032
+    d["has_auth_token"] = bool(token_hash)
+    d["auth_token_hint"] = f"…{hint}" if token_hash and hint else None
     return d
 
 
@@ -108,21 +111,25 @@ async def rotate_token(partner_id: str, user: dict = Depends(require_admin)):
     и передайте SSP. Дальше API отдаёт только хвост (auth_token_hint).
     """
     pool = await get_pool()
-    token = secrets.token_urlsafe(24)
+    token = ssp_tokens.generate_token()
     row = await pool.fetchrow(
-        "UPDATE supply_partners SET auth_token = $3, updated_at = now() WHERE id = $1 AND user_id = $2 RETURNING id",
-        partner_id, user["id"], token,
+        """UPDATE supply_partners
+              SET auth_token_hash = $3, auth_token_hint = $4, updated_at = now()
+            WHERE id = $1 AND user_id = $2 RETURNING id""",
+        partner_id, user["id"], ssp_tokens.hash_token(token), ssp_tokens.token_hint(token),
     )
     if not row:
         raise HTTPException(status_code=404, detail="SSP-партнёр не найден")
-    return {"token": token, "header": "X-CentralDSP-Token"}
+    return {"token": token, "header": ssp_tokens.HEADER_NAME}
 
 
 @router.delete("/{partner_id}/token", status_code=204)
 async def revoke_token(partner_id: str, user: dict = Depends(require_admin)):
     pool = await get_pool()
     result = await pool.execute(
-        "UPDATE supply_partners SET auth_token = NULL, updated_at = now() WHERE id = $1 AND user_id = $2",
+        """UPDATE supply_partners
+              SET auth_token_hash = NULL, auth_token_hint = NULL, updated_at = now()
+            WHERE id = $1 AND user_id = $2""",
         partner_id, user["id"],
     )
     if result.endswith("0"):

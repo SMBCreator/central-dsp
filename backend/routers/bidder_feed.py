@@ -32,7 +32,7 @@ async def partners_feed(authorization: str | None = Header(default=None)):
     _check(authorization)
     pool = await get_pool()
     rows = await pool.fetch(
-        """SELECT id, endpoint_key, auth_token, qps_limit, bid_floor, status,
+        """SELECT id, endpoint_key, auth_token_hash, qps_limit, bid_floor, status,
                   allowed_ad_types
            FROM supply_partners WHERE status = 'active'"""
     )

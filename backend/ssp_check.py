@@ -144,7 +144,10 @@ async def run_connection_check(partner: dict, process_bid_request) -> dict:
     bid_floor = float(partner.get("bid_floor") or 0)
     allowed = partner.get("allowed_ad_types") or ["banner"]
     tmax_ms = int(partner.get("tmax_ms") or 200)
-    auth_token = partner.get("auth_token")
+    # Открытый токен в БД не хранится (миграция 032) — есть только хэш.
+    # Формат-проверки идут с verify_token=False, негативный тест ниже
+    # проверяет, что неверный токен действительно отклоняется.
+    token_configured = bool(partner.get("auth_token_hash"))
 
     def add(key: str, label: str, ok: bool, detail: str = "") -> None:
         checks.append({"key": key, "label": label, "ok": ok, "detail": detail})
@@ -154,7 +157,7 @@ async def run_connection_check(partner: dict, process_bid_request) -> dict:
         req = make_test_bid_request(ad_type, request_id=f"check-{ad_type}", bid_floor=bid_floor)
         started = time.monotonic()
         try:
-            resp = await process_bid_request(endpoint_key, req, ssp_token=auth_token)
+            resp = await process_bid_request(endpoint_key, req, verify_token=False)
             elapsed_ms = (time.monotonic() - started) * 1000
         except HTTPException as e:
             add(f"bid_{ad_type}", f"BidRequest ({ad_type})", False, f"HTTP {e.status_code}: {e.detail}")
@@ -180,7 +183,7 @@ async def run_connection_check(partner: dict, process_bid_request) -> dict:
         )
 
     # 2) Auth: неверный токен должен отклоняться (только если токен настроен)
-    if auth_token:
+    if token_configured:
         req = make_test_bid_request("banner", request_id="check-auth", bid_floor=bid_floor)
         try:
             await process_bid_request(endpoint_key, req, ssp_token="invalid-token-check")

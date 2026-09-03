@@ -68,7 +68,7 @@ fly scale count 2            # min 2 реплики, одна зона с Upstas
 - Health: `GET /health` (liveness), `GET /ready` (DB+Redis, для деплой-гейта).
 - Регион: тот же, что Upstash Redis (RTT < 1ms — иначе p99-бюджет не сходится).
 - SSP получают URL: `https://bidder.<domain>/rtb/bid/{endpoint_key}`
-  + заголовок `x-centraldsp-token: <auth_token партнёра>`.
+  + заголовок `X-CentralDSP-Token: <токен партнёра>` (выдаётся один раз при генерации; в БД хранится только sha256-хэш, миграция 032).
 
 ## 4. Мониторинг и алерты
 - Liveness/readiness выше; Fly.io checks или UptimeRobot на оба URL.
@@ -88,7 +88,7 @@ fly scale count 2            # min 2 реплики, одна зона с Upstas
 
 ## 6. Smoke-чеклист прода (после каждого деплоя)
 1. `GET /ready` bid-сервиса → 200, database=ok, redis=ok.
-2. Создать SSP-партнёра в UI → получить `endpoint_key` + `auth_token`.
+2. Создать SSP-партнёра в UI → получить `endpoint_key` + сгенерировать токен (показывается один раз — сохранить).
 3. Тестовый bid (валидный токен) → 200 с adm; без токена → 401; чужой → 403.
 4. В adm присутствует erid (кампания с зарегистрированным креативом).
 5. Win notice по подписанному nurl → списание появилось в ledger ровно один раз

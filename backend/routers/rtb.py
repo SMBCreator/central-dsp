@@ -14,11 +14,10 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response
 
-import hmac as _hmac
-
 import obs_metrics
 import prefilter
 import ssp_check
+import ssp_tokens
 from billing_core import bill_win
 from audiences import check_audiences, store_clid_bridge
 from shading import get_factor as shading_get_factor, should_shade
@@ -672,12 +671,23 @@ def _claim_refresh(key: str) -> bool:
     return True
 
 
-async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | None = None, client_ip: str | None = None):
+async def process_bid_request(
+    endpoint_key: str,
+    req: dict,
+    ssp_token: str | None = None,
+    client_ip: str | None = None,
+    *,
+    verify_token: bool = True,
+):
     """Core bid logic. Returns a BidResponse dict or None (no-bid).
     Raises 404 for unknown endpoint keys, 403 for a bad SSP token or
     IP outside the partner whitelist, 429 when the partner exceeds QPS.
     Partners in 'testing' status are served: this is the SSP onboarding
-    test phase (Часть SSP-онбординга)."""
+    test phase (Часть SSP-онбординга).
+
+    verify_token=False — только для внутренней автопроверки (ssp_check):
+    открытый токен в БД не хранится (миграция 032), поэтому сервер сам
+    предъявить его не может. Публичный HTTP-роут всегда проверяет."""
     pool = await get_pool()
     _pkey = f"partner:{endpoint_key}"
     partner, _fresh = _cache_get(_pkey)
@@ -692,10 +702,11 @@ async def process_bid_request(endpoint_key: str, req: dict, ssp_token: str | Non
     if not partner:
         raise HTTPException(status_code=404, detail="Unknown endpoint")
 
-    # Optional per-partner shared secret (migration 011). NULL = legacy
-    # key-in-URL only; set = header must match, compared in constant time.
-    expected_token = partner["auth_token"] if "auth_token" in partner.keys() else None
-    if expected_token and not _hmac.compare_digest(ssp_token or "", expected_token):
+    # Optional per-partner shared secret. В БД только sha256-хэш (миграция 032):
+    # NULL = legacy key-in-URL only; set = sha256(header) должен совпасть
+    # (сравнение в константное время, см. ssp_tokens.verify_token).
+    expected_hash = partner["auth_token_hash"] if "auth_token_hash" in partner.keys() else None
+    if verify_token and not ssp_tokens.verify_token(ssp_token, expected_hash):
         raise HTTPException(status_code=403, detail="Invalid SSP token")
 
     # IP whitelist партнёра (миграция 030): непустой список = только эти IP/CIDR.

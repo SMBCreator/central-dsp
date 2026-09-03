@@ -124,7 +124,7 @@ type Targeting struct {
 type Partner struct {
 	ID             string          `json:"id"`
 	EndpointKey    string          `json:"endpoint_key"`
-	AuthToken      string          `json:"auth_token"`
+	AuthTokenHash  string          `json:"auth_token_hash"` // hex(sha256(token)), миграция 032; "" = токен не выдан
 	QPSLimit       int             `json:"qps_limit"`
 	BidFloor       float64         `json:"bid_floor"`
 	Status         string          `json:"status"`

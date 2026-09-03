@@ -81,7 +81,8 @@ func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 		defer func() { h.metrics.ObserveLatency(time.Since(start).Seconds()) }()
 	}
 
-	// 1. Auth: endpointKey -> supply partner (+ опциональный X-SSP-Token).
+	// 1. Auth: endpointKey -> supply partner (+ опциональный X-CentralDSP-Token,
+	//    сверяется по sha256-хэшу из фида, см. partner_auth.go).
 	snap := h.store.Snapshot()
 	if snap == nil {
 		h.mNoBid(metrics.ReasonFeedNotLoaded)
@@ -94,7 +95,7 @@ func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown endpoint", http.StatusNotFound)
 		return
 	}
-	if partner.AuthToken != "" && r.Header.Get("X-SSP-Token") != partner.AuthToken {
+	if !partnerTokenOK(partner, r) {
 		h.mNoBid(metrics.ReasonBadAuth)
 		http.Error(w, "invalid ssp token", http.StatusForbidden)
 		return
