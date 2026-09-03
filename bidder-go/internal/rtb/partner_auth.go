@@ -34,7 +34,12 @@ func partnerTokenOK(p *feed.Partner, r *http.Request) bool {
 	if given == "" {
 		return false
 	}
-	sum := sha256.Sum256([]byte(given))
-	got := hex.EncodeToString(sum[:])
+	got := sha256Hex(given)
 	return subtle.ConstantTimeCompare([]byte(got), []byte(p.AuthTokenHash)) == 1
+}
+
+// sha256Hex — hex(sha256(s)); формат идентичен backend/ssp_tokens.py::hash_token.
+func sha256Hex(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
 }

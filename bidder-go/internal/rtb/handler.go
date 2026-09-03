@@ -5,7 +5,9 @@ package rtb
 // бид, выигранный Go-биддером, биллится Python-бэкендом через bidmeta:{bid_id}.
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -36,10 +38,48 @@ type Handler struct {
 // SetMetrics подключает реестр метрик (вызывается из main до старта сервера).
 func (h *Handler) SetMetrics(r *metrics.Registry) { h.metrics = r }
 
+// MaxBidRequestBytes — верхняя граница тела OpenRTB-запроса. Типичный запрос
+// с несколькими imp, device, user.eids и ext — 5-50 КиБ; 256 КиБ покрывает
+// самые «жирные» SSP и при этом не даёт одному партнёру раздувать память.
+const MaxBidRequestBytes = 256 << 10
+
+// Бюджет времени на Redis-вызовы внутри одного бид-запроса.
+//   - defaultBidBudget используется, когда SSP не прислал tmax;
+//   - tmaxNetworkReserve вычитается из tmax SSP (сеть + сериализация ответа);
+//   - minBidBudget — нижняя граница: при tmax ниже её продолжаем работать
+//     с минимальным бюджетом, а не с нулевым (иначе каждый вызов — таймаут).
+const (
+	defaultBidBudget   = 80 * time.Millisecond
+	tmaxNetworkReserve = 20 * time.Millisecond
+	minBidBudget       = 15 * time.Millisecond
+)
+
+// bidDeadline переводит tmax (мс, OpenRTB 2.x) в бюджет контекста.
+func bidDeadline(tmaxMs int) time.Duration {
+	if tmaxMs <= 0 {
+		return defaultBidBudget
+	}
+	budget := time.Duration(tmaxMs)*time.Millisecond - tmaxNetworkReserve
+	if budget < minBidBudget {
+		return minBidBudget
+	}
+	if budget > defaultBidBudget {
+		// Больше дефолта не берём: SLA биддера — p99 < 80 мс независимо от tmax.
+		return defaultBidBudget
+	}
+	return budget
+}
+
 // m*-хелперы nil-safe: hot path не проверяет наличие реестра в каждом месте.
 func (h *Handler) mNoBid(reason metrics.NoBidReason) {
 	if h.metrics != nil {
 		h.metrics.IncNoBid(reason)
+	}
+}
+
+func (h *Handler) mGateError() {
+	if h.metrics != nil {
+		h.metrics.IncGateError()
 	}
 }
 
