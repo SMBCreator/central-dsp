@@ -16,6 +16,8 @@ async function proxyOrMock(req: Request, params: Promise<{ path: string[] }>) {
   const { path: segments } = await params
   const url = new URL(req.url)
   const path = `/${segments.join("/")}`
+  // Тело читаем один раз: оно нужно и прокси, и mock-fallback.
+  const rawBody = req.method === "GET" || req.method === "HEAD" ? undefined : await req.arrayBuffer()
 
   // 1) Пробуем реальный бэкенд
   try {
@@ -27,7 +29,7 @@ async function proxyOrMock(req: Request, params: Promise<{ path: string[] }>) {
     const backendRes = await fetch(`${BACKEND}${path}${url.search}`, {
       method: req.method,
       headers: filterHeaders(req.headers),
-      body: req.method === "GET" || req.method === "HEAD" ? undefined : await req.arrayBuffer(),
+      body: rawBody,
       signal: controller.signal,
       // @ts-expect-error duplex обязателен в Node для стриминга тела
       duplex: "half",
@@ -42,8 +44,26 @@ async function proxyOrMock(req: Request, params: Promise<{ path: string[] }>) {
   }
 
   // 2) Mock-fallback (демо-режим превью)
-  const mock = resolveMock(req.method, path, url.searchParams)
+  let parsedBody: unknown
+  if (rawBody && rawBody.byteLength) {
+    try {
+      parsedBody = JSON.parse(new TextDecoder().decode(rawBody))
+    } catch {
+      // multipart/бинарь — мок без тела
+    }
+  }
+  const mock = resolveMock(req.method, path, url.searchParams, parsedBody)
   if (mock !== undefined) {
+    const csv = mock as { __csv?: string; __filename?: string }
+    if (csv && typeof csv.__csv === "string") {
+      return new Response(csv.__csv, {
+        headers: {
+          "x-dsp-mock": "1",
+          "Content-Type": "text/csv; charset=utf-8",
+          "Content-Disposition": `attachment; filename="${csv.__filename || "export.csv"}"`,
+        },
+      })
+    }
     return Response.json(mock, { headers: { "x-dsp-mock": "1" } })
   }
   // Неизвестные мутации в демо-режиме "принимаем", чтобы UI не падал

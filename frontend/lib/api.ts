@@ -99,6 +99,33 @@ export async function api<T = unknown>(
 export const fetcher = <T = unknown>(path: string) => api<T>(path)
 
 /**
+ * Скачивание файла (CSV-экспорт) с авторизацией: обычная ссылка `<a href>`
+ * не передаёт Bearer-токен, поэтому качаем через fetch и отдаём как blob.
+ */
+export async function downloadCsv(path: string, filename: string): Promise<void> {
+  const headers: Record<string, string> = {}
+  const token = getToken()
+  if (token) headers["Authorization"] = `Bearer ${token}`
+  const res = await fetch(`${BASE}${path}`, { headers })
+  if (!res.ok) {
+    const detail = `Не удалось выгрузить файл (${res.status})`
+    if (typeof window !== "undefined") {
+      import("@/components/toaster").then(({ toastError }) => toastError(detail)).catch(() => {})
+    }
+    throw new ApiError(res.status, detail)
+  }
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
+/**
  * Приводит любое сохранённое значение ассета (asset_url / video_url / icon)
  * к URL, который реально открывается из браузера на том же origin.
  *

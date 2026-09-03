@@ -326,10 +326,25 @@ export interface ScoringRow {
   score: number | null
   reasons: string[]
   flagged: boolean
+  blocked?: boolean
+  block_source?: "auto" | "manual" | null
 }
+
+export type ScoringSortKey =
+  | "score" | "impressions" | "clicks" | "ctr" | "viewability" | "cpa"
+  | "bounce_rate" | "avg_depth" | "avg_time" | "spend" | "domain" | "name"
 
 export interface ScoringReport {
   profile: ScoringProfile
   dimension: "domain" | "ssp"
   rows: ScoringRow[]
+  total: number
+  total_flagged: number
+  total_blocked: number
+  page: number
+  page_size: number
+  sort: ScoringSortKey
+  order: "asc" | "desc"
+  window_days: number
+  generated_at: string
 }

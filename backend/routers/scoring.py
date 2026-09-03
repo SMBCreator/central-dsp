@@ -7,7 +7,16 @@
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+import csv
+import io
+import json
+import re
+import time
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
 import scoring
 from auth import current_user
@@ -457,8 +466,11 @@ async def _ssp_rows(pool, user, profile, campaign_id) -> list[dict]:
         else:
             m["score"], m["reasons"], m["flagged"] = None, [], False
         out.append(m)
-    out.sort(key=lambda x: (x["score"] if x["score"] is not None else 1.0, -x["impressions"]))
-    return {"profile": profile, "dimension": "ssp", "rows": out}
+    for m in out:
+        # SSP не блокируются построчно — только наблюдение.
+        m["blocked"] = False
+        m["block_source"] = None
+    return out
 
 
 async def _resolve_profile(pool, user_id, profile_id, campaign_id, group_id) -> dict:
@@ -508,4 +520,5 @@ async def recompute(campaign_id: str, user: dict = Depends(require_platform_writ
     if not profile.get("enforce"):
         raise HTTPException(400, "Профиль в режиме наблюдения (enforce выключен) — блокировка не применяется")
     result = await scoring.recompute_blocklist(pool, campaign_id, str(user["id"]), profile)
+    invalidate_report_cache(user["id"])
     return {"ok": True, **result}

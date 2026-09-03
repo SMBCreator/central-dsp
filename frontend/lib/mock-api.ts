@@ -527,7 +527,7 @@ export const mockTransactions = [
     type: "spend",
     amount: -187_450.75,
     balance_after: 124_500,
-    description: "Открутка кампании «Осень-2026»",
+    description: "Открутка кампа��ии «Осень-2026»",
     created_at: iso(1 * 864e5),
   },
 ]
@@ -538,7 +538,10 @@ export const mockUser = { id: "u-1", email: "demo@central-dsp.ru", name: "Дем
  * Разбирает запрос и возвращает mock-ответ.
  * Возвращает undefined, если путь неизвестен (обработчик отдаст пустой ответ по методу).
  */
-export function resolveMock(method: string, path: string, search: URLSearchParams): unknown {
+// Ручные блоки площадок в мок-режиме — живут в памяти процесса (сбрасываются при рестарте).
+const mockManualBlocks = new Set<string>()
+
+export function resolveMock(method: string, path: string, search: URLSearchParams, body?: unknown): unknown {
   // --- Auth ---
   if (path === "/auth/login" || path === "/auth/register") return { token: "demo-token" }
   if (path === "/auth/me" || path === "/users/me") return mockUser
@@ -787,10 +790,73 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
     return { ...mockScoringProfiles[0], id: `sp-${Date.now()}`, name: "Новый профиль" }
   if (path.startsWith("/scoring/profiles/") && (method === "PATCH" || method === "DELETE"))
     return method === "DELETE" ? { ok: true } : mockScoringProfiles[0]
-  if (path === "/scoring/report") {
+  if (path === "/scoring/report" || path === "/scoring/report.csv") {
     const dim = search.get("dimension") || "domain"
     const profile = mockScoringProfiles.find((p) => p.id === search.get("profile_id")) || mockScoringProfiles[0]
-    return { profile, dimension: dim, rows: dim === "ssp" ? mockScoringSsp : mockScoringDomains }
+    const sort = search.get("sort") || "score"
+    const order = search.get("order") || "asc"
+    const q = (search.get("q") || "").toLowerCase()
+    const truthy = (v: string | null) => v === "1" || v === "true"
+    const onlyBlocked = truthy(search.get("blocked")) || truthy(search.get("only_blocked"))
+    const onlyFlagged = truthy(search.get("flagged")) || truthy(search.get("only_flagged"))
+    const page = Number(search.get("page") || 1)
+    const pageSize = Number(search.get("page_size") || 25)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let rows: any[] = (dim === "ssp" ? mockScoringSsp : mockScoringDomains).map((r) => ({
+      blocked: false,
+      block_source: null,
+      ...r,
+    }))
+    rows = rows.map((r) =>
+      mockManualBlocks.has(r.domain) ? { ...r, blocked: true, block_source: "manual" } : r,
+    )
+    if (q) rows = rows.filter((r) => (r.domain || r.name || "").toLowerCase().includes(q))
+    if (onlyBlocked) rows = rows.filter((r) => r.blocked)
+    if (onlyFlagged) rows = rows.filter((r) => r.flagged)
+    rows.sort((a, b) => {
+      if (sort === "domain" || sort === "name") {
+        const c = (a.domain || a.name || "").localeCompare(b.domain || b.name || "", "ru")
+        return order === "desc" ? -c : c
+      }
+      const av = a[sort], bv = b[sort]
+      if (av == null && bv == null) return 0
+      if (av == null) return 1
+      if (bv == null) return -1
+      return order === "desc" ? bv - av : av - bv
+    })
+    const total = rows.length
+    if (path === "/scoring/report.csv") {
+      const cols = ["domain", "score", "impressions", "clicks", "ctr", "viewability", "cpa", "spend", "blocked", "reasons"]
+      const esc = (v: unknown) => {
+        const s = v == null ? "" : Array.isArray(v) ? v.join("|") : String(v)
+        return /[";\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+      }
+      const lines = [cols.join(";"), ...rows.map((r) => cols.map((c) => esc(c === "domain" ? r.domain || r.name : r[c])).join(";"))]
+      return { __csv: "\uFEFF" + lines.join("\n"), __filename: `scoring-${dim}.csv` }
+    }
+    return {
+      profile,
+      dimension: dim,
+      rows: rows.slice((page - 1) * pageSize, page * pageSize),
+      total,
+      total_flagged: rows.filter((r) => r.flagged).length,
+      total_blocked: rows.filter((r) => r.blocked).length,
+      page,
+      page_size: pageSize,
+      sort,
+      order,
+      window_days: profile.window_days ?? 7,
+      generated_at: new Date().toISOString(),
+    }
+  }
+  if (path === "/scoring/blocks" && method === "POST") {
+    const d = String((body as { domain?: string })?.domain || "").toLowerCase()
+    mockManualBlocks.add(d)
+    return { ok: true, domain: d, source: "manual" }
+  }
+  if (path.startsWith("/scoring/blocks/") && method === "DELETE") {
+    mockManualBlocks.delete(decodeURIComponent(path.split("/").pop() || ""))
+    return { ok: true, removed: true }
   }
   if (path === "/scoring/recompute" && method === "POST") return { ok: true, scored: 42, blocked: 6 }
 
