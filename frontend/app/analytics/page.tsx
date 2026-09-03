@@ -8,7 +8,7 @@ import { fmtMoney, fmtNum, fmtPct } from "@/lib/types"
 import { Button, Card, CardHeader, EmptyState, Field, Spinner, inputCls } from "@/components/ui"
 import { DomainQualityCard } from "@/components/domain-quality-card"
 import { ColumnsButton, ColumnsModal, useTableColumns } from "@/components/table-columns"
-import { TimeseriesChart, METRIC_COLORS } from "@/components/timeseries-chart"
+import { TimeseriesChart, METRIC_COLORS, CHART_TZ, TZ_NOTE } from "@/components/timeseries-chart"
 
 type Campaign = { id: string; name: string }
 type Group = { id: string; name: string }
@@ -248,17 +248,21 @@ function AnalyticsInner() {
     .filter(Boolean) as typeof METRICS
   const activeGroupings = GROUPINGS.filter((g) => groupings.includes(g.key))
 
+  // Бакеты времени приходят в UTC (date_trunc в БД) — форматируем в UTC, чтобы
+  // «день» не сдвигался на дату браузера.
   function fmtDim(key: string, value: string): string {
     if (!value || value === "—") return "—"
     if (key === "hour") {
       const d = new Date(value)
-      return isNaN(d.getTime()) ? value : d.toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })
+      return isNaN(d.getTime())
+        ? value
+        : d.toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: CHART_TZ })
     }
     if (key === "day" || key === "week" || key === "month") {
       const d = new Date(value)
       if (isNaN(d.getTime())) return value
-      if (key === "month") return d.toLocaleDateString("ru-RU", { month: "long", year: "numeric" })
-      return d.toLocaleDateString("ru-RU")
+      if (key === "month") return d.toLocaleDateString("ru-RU", { month: "long", year: "numeric", timeZone: CHART_TZ })
+      return d.toLocaleDateString("ru-RU", { timeZone: CHART_TZ })
     }
     return value
   }
@@ -391,7 +395,7 @@ function AnalyticsInner() {
         <Card>
           <CardHeader
             title="Динамика"
-            subtitle={`По группировке «${GROUPINGS.find((g) => g.key === timeKey)?.label || timeKey}»`}
+            subtitle={`По группировке «${GROUPINGS.find((g) => g.key === timeKey)?.label || timeKey}» · ${TZ_NOTE}`}
             action={
               <div className="flex flex-wrap gap-1.5" role="group" aria-label="Метрики графика">
                 {CHART_METRIC_OPTIONS.map((m) => {

@@ -13,7 +13,7 @@ import {
   type TimeseriesPoint,
 } from "@/lib/types"
 import { Card, CardHeader, ChartCard, KpiCard, PillTabs, Spinner, StatusBadge, Table, EmptyState, Button, inputCls } from "@/components/ui"
-import { TimeseriesChart, METRIC_COLORS, type MetricKey } from "@/components/timeseries-chart"
+import { TimeseriesChart, METRIC_COLORS, TZ_NOTE, type MetricKey } from "@/components/timeseries-chart"
 
 const METRICS = [
   { key: "impressions", label: "Показы" },
@@ -197,7 +197,7 @@ export default function DashboardPage() {
             : undefined
         }
         metricUnit={periodLabel}
-        footerLeft={`${series?.length || 0} точек данных`}
+        footerLeft={`${series?.length || 0} точек данных · ${TZ_NOTE}`}
         footerRight="Central DSP"
       >
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2 px-2 pt-2">

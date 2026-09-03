@@ -31,27 +31,44 @@ const METRIC_LABELS: Record<string, string> = {
 const MONEY_METRICS = new Set(["spend", "cpm", "cpc", "cpa"])
 const PCT_METRICS = new Set(["ctr", "win_rate", "viewability"])
 
+/**
+ * Бэкенд агрегирует бакеты по UTC (date_trunc на ts_hour/created_at), поэтому и
+ * подписи рисуем в UTC — иначе в браузере с МСК суточный бакет «уезжал» бы на 03:00,
+ * а в поясах западнее UTC дневные бакеты показывали бы предыдущую дату.
+ */
+export const CHART_TZ = "UTC" as const
+export const TZ_NOTE = "Время — UTC (МСК = UTC+3)"
+
+const fmtDM = new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "2-digit", timeZone: CHART_TZ })
+const fmtHM = new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit", timeZone: CHART_TZ })
+const fmtDMonthHM = new Intl.DateTimeFormat("ru-RU", {
+  day: "2-digit",
+  month: "long",
+  hour: "2-digit",
+  minute: "2-digit",
+  timeZone: CHART_TZ,
+})
+const fmtDMonthY = new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "long", year: "numeric", timeZone: CHART_TZ })
+
 function formatTick(ts: string, granularity: "hour" | "day" | "week"): string {
   const d = new Date(ts)
+  if (isNaN(d.getTime())) return ts
   if (granularity === "hour") {
-    // Часы дня без даты — дата видна в тултипе; при переходе суток покажем дату
-    return d.getHours() === 0
-      ? d.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" })
-      : d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })
+    // Часы дня без даты — дата видна в тултипе; при переходе суток (00:00 UTC) покажем дату
+    return d.getUTCHours() === 0 ? fmtDM.format(d) : fmtHM.format(d)
   }
-  return d.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" })
+  return fmtDM.format(d)
 }
 
 function formatTooltipTs(ts: string, granularity: "hour" | "day" | "week"): string {
   const d = new Date(ts)
   if (isNaN(d.getTime())) return ts
-  if (granularity === "hour")
-    return d.toLocaleString("ru-RU", { day: "2-digit", month: "long", hour: "2-digit", minute: "2-digit" })
+  if (granularity === "hour") return `${fmtDMonthHM.format(d)} UTC`
   if (granularity === "week") {
     const end = new Date(d.getTime() + 6 * 864e5)
-    return `Неделя ${d.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" })} – ${end.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" })}`
+    return `Неделя ${fmtDM.format(d)} – ${fmtDM.format(end)}`
   }
-  return d.toLocaleDateString("ru-RU", { day: "2-digit", month: "long", year: "numeric" })
+  return fmtDMonthY.format(d)
 }
 
 const nfRu = new Intl.NumberFormat("ru-RU")
