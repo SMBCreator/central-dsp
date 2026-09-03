@@ -527,7 +527,7 @@ export const mockTransactions = [
     type: "spend",
     amount: -187_450.75,
     balance_after: 124_500,
-    description: "Открутка кампа��ии «Осень-2026»",
+    description: "Открутка кампании «Осень-2026»",
     created_at: iso(1 * 864e5),
   },
 ]

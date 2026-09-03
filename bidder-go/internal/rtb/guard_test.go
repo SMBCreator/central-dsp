@@ -15,8 +15,8 @@ func TestBidOversizedBodyIs413(t *testing.T) {
 	h := newTestHandler(testSnapshot())
 	body := `{"id":"big","imp":[{"id":"1","banner":{"w":300,"h":250}}],"ext":{"pad":"` +
 		strings.Repeat("x", MaxBidRequestBytes+1024) + `"}}`
-	req := httptest.NewRequest(http.MethodPost, "/rtb/bid/ep-1", strings.NewReader(body))
-	req.SetPathValue("endpointKey", "ep-1")
+	req := httptest.NewRequest(http.MethodPost, "/rtb/bid/key1", strings.NewReader(body))
+	req.SetPathValue("endpointKey", "key1")
 	rec := httptest.NewRecorder()
 	h.Bid(rec, req)
 	if rec.Code != http.StatusRequestEntityTooLarge {
@@ -28,8 +28,8 @@ func TestBidOversizedBodyIs413(t *testing.T) {
 func TestBidNormalBodyWithinLimit(t *testing.T) {
 	h := newTestHandler(testSnapshot())
 	body := `{"id":"ok","imp":[{"id":"1","banner":{"w":300,"h":250}}],"cur":["RUB"]}`
-	req := httptest.NewRequest(http.MethodPost, "/rtb/bid/ep-1", strings.NewReader(body))
-	req.SetPathValue("endpointKey", "ep-1")
+	req := httptest.NewRequest(http.MethodPost, "/rtb/bid/key1", strings.NewReader(body))
+	req.SetPathValue("endpointKey", "key1")
 	rec := httptest.NewRecorder()
 	h.Bid(rec, req)
 	if rec.Code == http.StatusRequestEntityTooLarge || rec.Code == http.StatusBadRequest {

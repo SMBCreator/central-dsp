@@ -335,7 +335,7 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 	return nil
 }
 
-// matchCandidate — таргетинг line item + SSP allowlist + глобальные домен-л��сты.
+// matchCandidate — таргетинг line item + SSP allowlist + глобальные домен-листы.
 func (h *Handler) matchCandidate(c *feed.Candidate, req *BidRequest, view *targeting.RequestView, partner *feed.Partner, snap *feed.Snapshot) bool {
 	// badv: домен рекламодателя не должен быть заблокирован SSP.
 	if len(req.BAdv) > 0 && c.AdvDomain != "" {
