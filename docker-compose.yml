@@ -49,6 +49,11 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       RTB_API_TOKEN: ${RTB_API_TOKEN:?set RTB_API_TOKEN in .env (openssl rand -hex 32)}
+      # Файлы креативов (баннеры/видео) — на именованном volume, чтобы не
+      # терялись при пересборке контейнера. См. docs/DEPLOYMENT.md §5.1.
+      UPLOAD_DIR: /data/uploads
+      MAX_IMAGE_UPLOAD_BYTES: ${MAX_IMAGE_UPLOAD_BYTES:-2097152}    # 2 МБ
+      MAX_VIDEO_UPLOAD_BYTES: ${MAX_VIDEO_UPLOAD_BYTES:-52428800}   # 50 МБ
     depends_on:
       postgres:
         condition: service_healthy
@@ -57,6 +62,7 @@ services:
     volumes:
       - ./backend:/app                        # hot reload dev
       - geoip_data:/data:ro                   # GeoLite2 DB (read-only)
+      - uploads_data:/data/uploads            # креативы (persistent)
     ports:
       - "8000:8000"
     networks:
@@ -192,6 +198,7 @@ services:
 
 volumes:
   postgres_data:
+  uploads_data:          # файлы креативов (баннеры/видео); бэкапить вместе с БД
   geoip_data:            # Mount your GeoLite2-City.mmdb here in production
                          # docker run --rm -v centraldsp_geoip_data:/data alpine
                          # wget -O /data/GeoLite2-City.mmdb <maxmind_url>

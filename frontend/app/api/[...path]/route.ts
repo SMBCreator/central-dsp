@@ -20,7 +20,10 @@ async function proxyOrMock(req: Request, params: Promise<{ path: string[] }>) {
   // 1) Пробуем реальный бэкенд
   try {
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), 1500)
+    // Обычные запросы — быстрый fallback на mock (1.5 с). Загрузка файлов
+    // креативов (до 50 МБ видео) и экспорты не должны обрываться таймером.
+    const isLong = /^\/creatives\/upload\b/.test(path) || /\/export\b/.test(path)
+    const timer = setTimeout(() => controller.abort(), isLong ? 5 * 60_000 : 1500)
     const backendRes = await fetch(`${BACKEND}${path}${url.search}`, {
       method: req.method,
       headers: filterHeaders(req.headers),

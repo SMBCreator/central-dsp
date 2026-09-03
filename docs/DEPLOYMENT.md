@@ -121,6 +121,47 @@ sudo systemctl reload caddy
 Caddy сам получит и будет продлевать TLS-сертификат Let's Encrypt.
 SSP-партнёру отдаёте URL вида: `https://ваш-домен.ру/rtb/bid/<endpoint_key>`.
 
+### 5.1. Файлы креативов (баннеры/видео)
+
+Файлы хранятся на диске VPS в именованном Docker-volume `uploads_data`
+(смонтирован в backend как `/data/uploads`, переменная `UPLOAD_DIR`) и
+раздаются backend'ом по `/uploads/<hash>.<ext>`. Внешние хранилища (S3/Blob)
+не используются — данные не покидают сервер.
+
+Лимиты (переменные `.env`, по умолчанию): `MAX_IMAGE_UPLOAD_BYTES=2097152`
+(2 МБ), `MAX_VIDEO_UPLOAD_BYTES=52428800` (50 МБ). Тип файла определяется по
+сигнатуре (magic bytes), а не по расширению/Content-Type; разрешены
+png/jpg/gif/webp/mp4/webm.
+
+**Лимит тела на реверс-прокси должен быть >= MAX_VIDEO_UPLOAD_BYTES**, иначе
+браузер получит 413 до того, как запрос дойдёт до backend:
+
+```caddyfile
+    handle /api/* {
+        uri strip_prefix /api
+        request_body {
+            max_size 60MB
+        }
+        reverse_proxy localhost:8000 {
+            transport http {
+                read_timeout 5m
+            }
+        }
+    }
+```
+
+Для nginx — `client_max_body_size 60m;` и `proxy_read_timeout 300s;` в
+`location /api/`.
+
+Проверка: `docker compose exec backend ls -la /data/uploads`. Файлы, у которых
+создание креатива не состоялось, удаляются фронтендом сразу (`DELETE
+/creatives/upload/<name>`); ручная зачистка «висящих» файлов старше суток:
+
+```bash
+docker compose exec backend find /data/uploads -type f -mtime +1 -print
+# перед удалением сверить с creatives.asset_url в БД
+```
+
 ## 6. Первичная настройка через UI
 
 1. Откройте `https://ваш-домен.ру` — вход супер-админа
