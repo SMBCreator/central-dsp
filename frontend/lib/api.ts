@@ -2,9 +2,13 @@ const BASE = "/api"
 
 export class ApiError extends Error {
   status: number
-  constructor(status: number, message: string) {
+  /** Сырое поле `detail` из тела ответа FastAPI — для структурированных ошибок
+   *  (например, 409 при запуске кампании: `{message, blockers: [...]}`). */
+  detail: unknown
+  constructor(status: number, message: string, detail?: unknown) {
     super(message)
     this.status = status
+    this.detail = detail
   }
 }
 
@@ -18,6 +22,11 @@ function extractErrorDetail(status: number, data: unknown): string {
   if (!data || typeof data !== "object") return fallback
   const detail = (data as { detail?: unknown }).detail
   if (typeof detail === "string") return detail
+  // Структурированная ошибка бэкенда: {message: string, ...}
+  if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+    const msg = (detail as { message?: unknown }).message
+    if (typeof msg === "string" && msg) return msg
+  }
   if (Array.isArray(detail)) {
     const parts = detail
       .map((d) => {
@@ -67,8 +76,11 @@ export async function api<T = unknown>(
 
   if (!res.ok) {
     let detail = `Ошибка ${res.status}`
+    let rawDetail: unknown
     try {
-      detail = extractErrorDetail(res.status, await res.json())
+      const data = await res.json()
+      rawDetail = data && typeof data === "object" ? (data as { detail?: unknown }).detail : undefined
+      detail = extractErrorDetail(res.status, data)
     } catch {
       // ignore
     }
@@ -77,7 +89,7 @@ export async function api<T = unknown>(
     if (typeof window !== "undefined") {
       import("@/components/toaster").then(({ toastError }) => toastError(detail)).catch(() => {})
     }
-    throw new ApiError(res.status, detail)
+    throw new ApiError(res.status, detail, rawDetail)
   }
 
   if (res.status === 204) return undefined as T

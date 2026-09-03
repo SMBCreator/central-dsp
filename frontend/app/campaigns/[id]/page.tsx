@@ -414,88 +414,6 @@ function OptimizationCard({ campaign }: { campaign: Campaign }) {
   )
 }
 
-/** Ставка и таргетинг в том же виде, что шаги «Бюджет и ставка» + «Таргетинг» мастера запуска. */
-function BidTargetingEditor({ campaignId, li, extraCount }: { campaignId: string; li: LineItem; extraCount: number }) {
-  const [bidType, setBidType] = useState<"cpm" | "cpc">(li.bid_type as "cpm" | "cpc")
-  const [bidPrice, setBidPrice] = useState(String(li.bid_price ?? ""))
-  const [liBudget, setLiBudget] = useState(String(li.daily_budget ?? ""))
-  const [targeting, setTargeting] = useState<Targeting>(li.targeting || {})
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  // синхронизация при обновлении данных с сервера
-  useEffect(() => {
-    setBidType(li.bid_type as "cpm" | "cpc")
-    setBidPrice(String(li.bid_price ?? ""))
-    setLiBudget(String(li.daily_budget ?? ""))
-    setTargeting(li.targeting || {})
-  }, [li.id, li.bid_type, li.bid_price, li.daily_budget, li.targeting])
-
-  const save = async () => {
-    setSaving(true)
-    setError(null)
-    try {
-      await api(`/line-items/${li.id}`, {
-        method: "PATCH",
-        body: {
-          bid_type: bidType,
-          bid_price: Number(bidPrice),
-          daily_budget: Number(liBudget),
-          targeting,
-        },
-      })
-      await mutate(`/line-items?campaign_id=${campaignId}`)
-      toastSuccess("Ставка и таргетинг сохранены")
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Ошибка сохранения")
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <>
-      <Card>
-        <CardHeader title="Бюджет и ставка" subtitle="Ставка используется биддером в RTB-аукционе" />
-        <div className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2 lg:grid-cols-3">
-          <Field label="Тип ставки">
-            <select value={bidType} onChange={(e) => setBidType(e.target.value as "cpm" | "cpc")} className={inputCls}>
-              <option value="cpm">CPM — за 1000 показов</option>
-              <option value="cpc">CPC — за клик</option>
-            </select>
-          </Field>
-          <Field label={bidType === "cpm" ? "Ставка CPM, ₽" : "Ставка CPC, ₽"}>
-            <input type="number" min="0.01" step="0.01" value={bidPrice} onChange={(e) => setBidPrice(e.target.value)} className={inputCls} />
-          </Field>
-          <Field label="Дневной бюджет строки, ₽">
-            <input type="number" min="1" value={liBudget} onChange={(e) => setLiBudget(e.target.value)} className={inputCls} />
-          </Field>
-        </div>
-      </Card>
-
-      <Card>
-        <CardHeader
-          title="Таргетинг"
-          subtitle={extraCount > 0 ? `Основная строка закупки; ещё ${extraCount} — во вкладке «Продвинутое»` : "Пустые секции — показ без ограничений"}
-        />
-        <div className="p-4">
-          <TargetingEditor value={targeting} onChange={setTargeting} />
-        </div>
-        <div className="flex items-center gap-3 border-t border-border px-4 py-3">
-          <Button onClick={save} disabled={saving || !Number(bidPrice) || !Number(liBudget)}>
-            {saving ? "Сохранение…" : "Сохранить ставку и таргетинг"}
-          </Button>
-          {error ? (
-            <p role="alert" className="text-sm text-danger">
-              {error}
-            </p>
-          ) : null}
-        </div>
-      </Card>
-    </>
-  )
-}
-
 function targetingSummary(t: Targeting): string {
   const parts = [
     t.geo_countries?.join(", "),
@@ -523,6 +441,115 @@ type Diagnostics = {
   blocker_count: number
   warning_count: number
   checks: DiagCheck[]
+  /** Блокеры запуска (без учёта статуса самой кампании) — то, что вернёт 409 при активации */
+  launch_blockers?: DiagCheck[]
+  launch_blocker_count?: number
+  ready_to_launch?: boolean
+}
+
+/** Куда вести пользователя по коду проверки диагностики */
+const CHECK_TAB: Record<string, TabKey> = {
+  line_items: "groups",
+  creatives: "creatives",
+  ord_marking: "creatives",
+  schedule: "settings",
+  balance: "settings",
+  daily_budget: "settings",
+  total_budget: "settings",
+  advertiser: "settings",
+  scoring: "advanced",
+}
+
+type TabKey = "settings" | "groups" | "creatives" | "stats" | "advanced"
+
+/* ---------- Готовность к запуску ---------- */
+
+function ReadinessPanel({
+  campaignId,
+  campaignStatus,
+  onGoTo,
+}: {
+  campaignId: string
+  campaignStatus: string
+  onGoTo: (tab: TabKey) => void
+}) {
+  const { data, error, isLoading } = useSWR<Diagnostics>(`/campaigns/${campaignId}/diagnostics`, fetcher, {
+    refreshInterval: 30000,
+  })
+  if (isLoading) {
+    return (
+      <div className="flex items-center gap-2 rounded-md border border-border bg-surface px-4 py-3 text-sm text-muted">
+        <Spinner /> Проверяем готовность к запуску…
+      </div>
+    )
+  }
+  if (error || !data) {
+    return (
+      <p className="rounded-md border border-border bg-surface px-4 py-3 text-sm text-muted">
+        Не удалось проверить готовность — {error instanceof Error ? error.message : "попробуйте обновить страницу"}.
+      </p>
+    )
+  }
+  const blockers = data.launch_blockers ?? data.checks.filter((c) => !c.ok && c.severity === "blocker" && c.code !== "campaign_status")
+  const warnings = data.checks.filter((c) => !c.ok && c.severity === "warning")
+  const active = campaignStatus === "active"
+
+  if (blockers.length === 0 && warnings.length === 0) {
+    return (
+      <div className="flex items-center gap-2.5 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true" className="shrink-0">
+          <path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+        {active ? "Кампания участвует в аукционах — все проверки пройдены." : "Готово к запуску — все проверки пройдены."}
+      </div>
+    )
+  }
+
+  return (
+    <div
+      role={blockers.length ? "alert" : "status"}
+      className={`rounded-md border px-4 py-3 ${
+        blockers.length ? "border-red-200 bg-red-50" : "border-amber-200 bg-amber-50"
+      }`}
+    >
+      <p className={`text-sm font-medium ${blockers.length ? "text-red-800" : "text-amber-800"}`}>
+        {blockers.length
+          ? active
+            ? `Кампания активна, но не может показываться: ${blockers.length} ${plural(blockers.length, "проблема", "проблемы", "проблем")}`
+            : `Нельзя запустить: ${blockers.length} ${plural(blockers.length, "проблема", "проблемы", "проблем")}`
+          : `${warnings.length} ${plural(warnings.length, "предупреждение", "предупреждения", "предупреждений")}`}
+      </p>
+      <ul className="mt-2 flex flex-col gap-1.5">
+        {[...blockers, ...warnings].map((c) => {
+          const isBlocker = c.severity === "blocker"
+          const target = CHECK_TAB[c.code]
+          return (
+            <li key={c.code} className="flex flex-wrap items-baseline gap-x-2 text-sm">
+              <span className={`font-medium ${isBlocker ? "text-red-800" : "text-amber-800"}`}>{c.title}</span>
+              <span className={isBlocker ? "text-red-700/80" : "text-amber-700/80"}>{c.detail}</span>
+              {target ? (
+                <button
+                  type="button"
+                  onClick={() => onGoTo(target)}
+                  className={`text-xs font-medium underline-offset-2 hover:underline ${isBlocker ? "text-red-800" : "text-amber-800"}`}
+                >
+                  Исправить →
+                </button>
+              ) : null}
+            </li>
+          )
+        })}
+      </ul>
+    </div>
+  )
+}
+
+function plural(n: number, one: string, few: string, many: string) {
+  const m10 = n % 10
+  const m100 = n % 100
+  if (m10 === 1 && m100 !== 11) return one
+  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few
+  return many
 }
 
 function DiagnosticsCard({ campaignId, campaignStatus }: { campaignId: string; campaignStatus: string }) {
@@ -711,23 +738,35 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
     await mutate(`/line-items?campaign_id=${id}`)
   }
 
+  const [toggling, setToggling] = useState(false)
   const toggleCampaign = async () => {
-    if (!campaign) return
+    if (!campaign || toggling) return
     setStatusError(null)
+    setToggling(true)
+    const activating = campaign.status !== "active"
     try {
       await api(`/campaigns/${id}`, {
         method: "PATCH",
-        body: { status: campaign.status === "active" ? "paused" : "active" },
+        body: { status: activating ? "active" : "paused" },
       })
-      await mutate(`/campaigns/${id}`)
+      await Promise.all([mutate(`/campaigns/${id}`), mutate(`/campaigns/${id}/diagnostics`)])
+      toastSuccess(activating ? "Кампания запущена" : "Кампания на паузе")
     } catch (err) {
-      setStatusError(err instanceof Error ? err.message : "Не удалось изменить статус")
+      // 409 от гейта запуска: список блокеров уже покажет ReadinessPanel — обновляем диагностику
+      if (err instanceof ApiError && err.status === 409) {
+        await mutate(`/campaigns/${id}/diagnostics`)
+        setStatusError(err.message)
+      } else {
+        setStatusError(err instanceof Error ? err.message : "Не удалось изменить статус")
+      }
+    } finally {
+      setToggling(false)
     }
   }
 
-  // Вкладки: «Настройки» открывается первой — как при запуске кампании,
-  // техника (строки закупки) убрана в «Продвинутое»
-  const [tab, setTab] = useState<"settings" | "stats" | "advanced">("settings")
+  // Вкладки карточки: Настройки → Группы объявлений → Креативы → Статистика → Продвинутое.
+  // «Группы объявлений» = line_items в БД (таргетинг + ставка, их читает биддер).
+  const [tab, setTab] = useState<TabKey>("settings")
 
   // H1: «Создать похожую» — копия кампании + line items + креативы (draft)
   const router = useRouter()
@@ -794,17 +833,13 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
           <Button variant="secondary" onClick={duplicateCampaign} disabled={duplicating}>
             {duplicating ? "Копирование…" : "Создать похожую"}
           </Button>
-          <Button variant="secondary" onClick={toggleCampaign}>
-            {campaign.status === "active" ? "Пауза" : "Запустить"}
+          <Button
+            variant={campaign.status === "active" ? "secondary" : "primary"}
+            onClick={toggleCampaign}
+            disabled={toggling}
+          >
+            {toggling ? "…" : campaign.status === "active" ? "Пауза" : "Запустить"}
           </Button>
-          <Link href={`/analytics?campaign_id=${id}`}>
-            <Button variant="secondary">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                <path d="M4 20h16M7 16v-5m5 5V8m5 8v-3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-              </svg>
-              Статистика
-            </Button>
-          </Link>
         </div>
       </div>
 
@@ -814,21 +849,26 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
         </p>
       ) : null}
 
-      {/* Вкладки карточки кампании: настройки как при запуске — первыми */}
-      <div role="tablist" aria-label="Разделы кампании" className="flex gap-1 border-b border-border">
+      {/* Готовность к запуску: те же проверки, что использует бэкенд-гейт активации и биддер */}
+      <ReadinessPanel campaignId={id} campaignStatus={campaign.status} onGoTo={setTab} />
+
+      {/* Вкладки карточки кампании: путь запуска слева направо */}
+      <div role="tablist" aria-label="Разделы кампании" className="flex gap-1 overflow-x-auto border-b border-border">
         {(
           [
             ["settings", "Настройки"],
+            ["groups", `Группы объявлений${lineItems ? ` · ${lineItems.length}` : ""}`],
+            ["creatives", `Креативы${campaignCreatives ? ` · ${campaignCreatives.length}` : ""}`],
             ["stats", "Статистика"],
             ["advanced", "Продвинутое"],
-          ] as const
+          ] as [TabKey, string][]
         ).map(([key, label]) => (
           <button
             key={key}
             role="tab"
             aria-selected={tab === key}
             onClick={() => setTab(key)}
-            className={`-mb-px rounded-t-md px-4 py-2 text-sm font-medium transition-colors ${
+            className={`-mb-px shrink-0 rounded-t-md px-4 py-2 text-sm font-medium transition-colors ${
               tab === key
                 ? "border-x border-t border-border bg-card text-foreground"
                 : "text-muted hover:text-foreground"
@@ -839,63 +879,109 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
         ))}
       </div>
 
-      {tab === "settings" ? (
-        <>
-          <SettingsCard campaign={campaign} />
+      {tab === "settings" ? <SettingsCard campaign={campaign} /> : null}
 
-          {/* Ставка и таргетинг — тот же вид, что при запуске кампании.
-              Правится первая (основная) строка закупки; несколько строк — в «Продвинутое» */}
-          {lineItems && lineItems.length > 0 ? (
-            <BidTargetingEditor campaignId={id} li={lineItems[0]} extraCount={lineItems.length - 1} />
-          ) : (
-            <Card>
-              <CardHeader
-                title="Бюджет и ставка"
-                subtitle="Ставка используется биддером в RTB-аукционе"
-                action={<Button onClick={openCreate}>Настроить</Button>}
+      {tab === "groups" ? (
+        <Card>
+          <CardHeader
+            title="Группы объявлений"
+            subtitle="Ставка, бюджет и таргетинг группы — именно их использует биддер в аукционе. Креативы привязываются к группе."
+            action={<Button onClick={openCreate}>Добавить группу</Button>}
+          />
+          {lineItems ? (
+            lineItems.length > 0 ? (
+              <Table headers={["Название", "Статус", "Ставка", "Дневной бюджет", "Расход", "Таргетинг", "Креативы", ""]}>
+                {lineItems.map((li) => {
+                  const bound = (campaignCreatives || []).filter((c) => c.line_item_id === li.id).length
+                  return (
+                    <tr key={li.id} className="hover:bg-surface">
+                      <td className="px-4 py-3 font-medium text-foreground">{li.name}</td>
+                      <td className="px-4 py-3">
+                        <StatusBadge status={li.status} />
+                      </td>
+                      <td className="px-4 py-3 font-mono text-xs">
+                        {fmtMoney(li.bid_price)} {li.bid_type.toUpperCase()}
+                      </td>
+                      <td className="px-4 py-3 font-mono text-xs">{fmtMoney(li.daily_budget)}</td>
+                      <td className="px-4 py-3 font-mono text-xs">{fmtMoney(li.spent_today)}</td>
+                      <td className="max-w-[280px] px-4 py-3 text-xs text-muted">{targetingSummary(li.targeting)}</td>
+                      <td className="px-4 py-3 text-xs text-muted">
+                        {bound > 0 ? `${bound} выбрано` : "все креативы кампании"}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center justify-end gap-1.5">
+                          <Button variant="ghost" onClick={() => openEdit(li)}>
+                            Изменить
+                          </Button>
+                          <Button variant="ghost" onClick={() => toggleLi(li)}>
+                            {li.status === "active" ? "Пауза" : "Запустить"}
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </Table>
+            ) : (
+              <EmptyState
+                title="Нет групп объявлений"
+                description="Группа задаёт ставку и таргетинг — без неё кампания не участвует в аукционах."
+                action={<Button onClick={openCreate}>Добавить группу</Button>}
               />
-              <p className="px-4 pb-4 text-sm text-muted">
-                Ставка и таргетинг не настроены — без них кампания не участвует в аукционах.
-              </p>
-            </Card>
+            )
+          ) : (
+            <Spinner />
           )}
+        </Card>
+      ) : null}
 
-          {/* Креативы кампании — как на последнем шаге мастера */}
-          <Card>
-            <CardHeader
-              title="Креативы"
-              subtitle="Объявления этой кампании"
-              action={
-                <Link href={`/creatives?campaign_id=${id}`}>
-                  <Button variant="secondary">Управлять креативами</Button>
-                </Link>
-              }
-            />
-            {campaignCreatives ? (
-              campaignCreatives.length > 0 ? (
-                <div className="grid gap-3 px-4 pb-4 sm:grid-cols-2 lg:grid-cols-3">
-                  {campaignCreatives.map((c) => (
+      {tab === "creatives" ? (
+        <Card>
+          <CardHeader
+            title="Креативы"
+            subtitle="Объявления этой кампании. Показываются только одобренные модерацией; для трафика РФ нужна маркировка (erid)."
+            action={
+              <Link href={`/creatives?campaign_id=${id}`}>
+                <Button>Добавить / управлять</Button>
+              </Link>
+            }
+          />
+          {campaignCreatives ? (
+            campaignCreatives.length > 0 ? (
+              <div className="grid gap-3 px-4 pb-4 sm:grid-cols-2 lg:grid-cols-3">
+                {campaignCreatives.map((c) => {
+                  const group = lineItems?.find((li) => li.id === c.line_item_id)
+                  return (
                     <div key={c.id} className="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-2">
                       <div className="min-w-0">
                         <p className="truncate text-sm font-medium text-foreground">{c.name}</p>
-                        <p className="text-xs text-muted">
+                        <p className="truncate text-xs text-muted">
                           {c.type === "banner" ? `Баннер ${c.width}×${c.height}` : c.type === "video" ? "Видео" : "Native"}
+                          {" · "}
+                          {group ? group.name : "все группы"}
+                          {c.erid ? "" : " · без erid"}
                         </p>
                       </div>
                       <StatusBadge status={c.status} />
                     </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="px-4 pb-4 text-sm text-muted">
-                  Нет креативов — добавьте хотя бы один, чтобы кампания могла показываться.
-                </p>
-              )
+                  )
+                })}
+              </div>
             ) : (
-              <Spinner />
-            )}
-          </Card>
-        </>
+              <EmptyState
+                title="Нет креативов"
+                description="Добавьте хотя бы один креатив, чтобы кампания могла показываться."
+                action={
+                  <Link href={`/creatives?campaign_id=${id}`}>
+                    <Button>Добавить креатив</Button>
+                  </Link>
+                }
+              />
+            )
+          ) : (
+            <Spinner />
+          )}
+        </Card>
       ) : null}
 
       {tab === "stats" ? (
@@ -910,63 +996,21 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
           ) : (
             <Spinner />
           )}
+          <div className="flex justify-end">
+            <Link href={`/analytics?campaign_id=${id}`} className="text-sm font-medium text-accent hover:underline">
+              Подробная аналитика →
+            </Link>
+          </div>
           <DiagnosticsCard campaignId={id} campaignStatus={campaign.status} />
-          <OptimizationCard campaign={campaign} />
         </>
       ) : null}
 
-      {tab !== "advanced" ? null : (
-      <Card>
-        <CardHeader
-          title="Строки закупки (Line Items)"
-          subtitle="Ставки и таргетинг внутри ка��пании"
-          action={<Button onClick={openCreate}>Добавить строку</Button>}
-        />
-        {lineItems ? (
-          lineItems.length > 0 ? (
-            <Table headers={["Название", "Статус", "Ставка", "Дневной бюджет", "Расход", "Таргетинг", ""]}>
-              {lineItems.map((li) => (
-                <tr key={li.id} className="hover:bg-surface">
-                  <td className="px-4 py-3 font-medium text-foreground">{li.name}</td>
-                  <td className="px-4 py-3">
-                    <StatusBadge status={li.status} />
-                  </td>
-                  <td className="px-4 py-3 font-mono text-xs">
-                    {fmtMoney(li.bid_price)} {li.bid_type.toUpperCase()}
-                  </td>
-                  <td className="px-4 py-3 font-mono text-xs">{fmtMoney(li.daily_budget)}</td>
-                  <td className="px-4 py-3 font-mono text-xs">{fmtMoney(li.spent_today)}</td>
-                  <td className="max-w-[280px] px-4 py-3 text-xs text-muted">{targetingSummary(li.targeting)}</td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center justify-end gap-1.5">
-                      <Button variant="ghost" onClick={() => openEdit(li)}>
-                        Изменить
-                      </Button>
-                      <Button variant="ghost" onClick={() => toggleLi(li)}>
-                        {li.status === "active" ? "Пауза" : "Запустить"}
-                      </Button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </Table>
-          ) : (
-            <EmptyState
-              title="Нет строк закупки"
-              description="Добавьте строку со ставкой и таргетингом — без неё кампания не участвует в аукционах."
-              action={<Button onClick={openCreate}>Добавить строку</Button>}
-            />
-          )
-        ) : (
-          <Spinner />
-        )}
-      </Card>
-      )}
+      {tab === "advanced" ? <OptimizationCard campaign={campaign} /> : null}
 
       <Modal
         open={open}
         onClose={() => setOpen(false)}
-        title={editingLi ? `Строка закупки: ${editingLi.name}` : "Новая строка закупки"}
+        title={editingLi ? `Группа объявлений: ${editingLi.name}` : "Новая группа объявлений"}
         wide
       >
         <form onSubmit={save} className="space-y-4">
