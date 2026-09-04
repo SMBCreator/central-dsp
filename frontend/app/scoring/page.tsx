@@ -72,6 +72,20 @@ export default function ScoringPage() {
 
   const enforcedCount = useMemo(() => (profiles || []).filter((p) => p.enforce).length, [profiles])
 
+  // Поиск и пагинация списка профилей (клиентские: профилей десятки, не тысячи).
+  const [query, setQuery] = useState("")
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(10)
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    const list = profiles || []
+    if (!q) return list
+    return list.filter((p) => p.name.toLowerCase().includes(q) || (p.description || "").toLowerCase().includes(q))
+  }, [profiles, query])
+  const pages = Math.max(1, Math.ceil(filtered.length / pageSize))
+  const safePage = Math.min(page, pages)
+  const pageRows = useMemo(() => filtered.slice((safePage - 1) * pageSize, safePage * pageSize), [filtered, safePage, pageSize])
+
   const openCreate = () => {
     setEditing(null)
     setForm(EMPTY)
@@ -119,6 +133,7 @@ export default function ScoringPage() {
 
   const remove = async (p: ScoringProfile) => {
     if (!p.id) return
+    if (!window.confirm(`Удалить профиль «${p.name}»? Привязанные кампании перестанут фильтровать площадки по нему.`)) return
     await api(`/scoring/profiles/${p.id}`, { method: "DELETE" })
     await mutate("/scoring/profiles")
     if (selected === p.id) setSelected(null)
@@ -142,19 +157,9 @@ export default function ScoringPage() {
           <CardHeader
             title="Профили скоринга"
             subtitle={
-              profiles?.length ? `${profiles.length} профилей · ${enforcedCount} блокируют трафик` : "Наборы правил качества"
-            }
-            action={
-              activeProfile ? (
-                <div className="flex gap-2">
-                  <Button variant="secondary" onClick={() => openEdit(activeProfile)}>
-                    Изменить
-                  </Button>
-                  <Button variant="danger" onClick={() => remove(activeProfile)}>
-                    Удалить
-                  </Button>
-                </div>
-              ) : undefined
+              profiles?.length
+                ? `${profiles.length} профилей · ${enforcedCount} блокируют трафик · выбранный профиль открывает отчёт ниже`
+                : "Наборы правил качества"
             }
           />
           {isLoading ? (
@@ -166,42 +171,160 @@ export default function ScoringPage() {
               action={<Button onClick={openCreate}>Создать профиль</Button>}
             />
           ) : (
-            <ul className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-3" role="radiogroup" aria-label="Выбор профиля">
-              {profiles.map((p) => {
-                const active = p.id === activeProfileId
-                return (
-                  <li key={p.id}>
-                    <button
-                      type="button"
-                      role="radio"
-                      aria-checked={active}
-                      onClick={() => setSelected(p.id)}
-                      className={`flex h-full w-full flex-col gap-1.5 rounded-lg border px-3.5 py-3 text-left transition-colors ${
-                        active
-                          ? "border-accent bg-accent/5 ring-1 ring-accent/40"
-                          : "border-border bg-card hover:bg-panel/60"
-                      }`}
-                    >
-                      <span className="flex items-center justify-between gap-2">
-                        <span className="truncate text-sm font-medium text-foreground">{p.name}</span>
-                        <StatusBadge status={p.enforce ? "active" : "paused"} />
+            <>
+              <div className="flex flex-wrap items-center gap-3 px-4 pb-3">
+                <input
+                  type="search"
+                  value={query}
+                  onChange={(e) => {
+                    setQuery(e.target.value)
+                    setPage(1)
+                  }}
+                  placeholder="Поиск по названию или описанию"
+                  aria-label="Поиск профилей"
+                  className={`${inputCls} h-8 max-w-xs text-xs`}
+                />
+                {query ? (
+                  <span className="text-xs text-muted">
+                    Найдено: {filtered.length} из {profiles.length}
+                  </span>
+                ) : null}
+              </div>
+
+              {filtered.length === 0 ? (
+                <p className="px-4 pb-4 text-sm text-muted">Ничего не найдено по запросу «{query}».</p>
+              ) : (
+                <>
+                  <div className="overflow-x-auto px-2">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-border text-left text-xs font-medium text-muted">
+                          <th className="px-3 py-2.5">Профиль</th>
+                          <th className="px-3 py-2.5">Режим</th>
+                          <th className="px-3 py-2.5 whitespace-nowrap">Окно</th>
+                          <th className="px-3 py-2.5 whitespace-nowrap">Мин. показов</th>
+                          <th className="px-3 py-2.5">Пороги</th>
+                          <th className="px-3 py-2.5 whitespace-nowrap">Порог блока</th>
+                          <th className="px-3 py-2.5 whitespace-nowrap">Обновлён</th>
+                          <th className="px-3 py-2.5 text-right">Действия</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border">
+                        {pageRows.map((p) => {
+                          const active = p.id === activeProfileId
+                          const thresholds: string[] = []
+                          if (p.min_ctr !== null) thresholds.push(`CTR ≥ ${p.min_ctr}%`)
+                          if (p.min_viewability !== null) thresholds.push(`view ≥ ${p.min_viewability}%`)
+                          if (p.max_bounce_rate !== null) thresholds.push(`отказы ≤ ${p.max_bounce_rate}%`)
+                          if (p.min_avg_depth !== null) thresholds.push(`глубина ≥ ${p.min_avg_depth}`)
+                          if (p.min_time_on_site !== null) thresholds.push(`время ≥ ${p.min_time_on_site}с`)
+                          if (p.max_cpa !== null) thresholds.push(`CPA ≤ ${p.max_cpa}₽`)
+                          return (
+                            <tr
+                              key={p.id}
+                              aria-selected={active}
+                              onClick={() => setSelected(p.id)}
+                              className={`cursor-pointer transition-colors ${active ? "bg-accent/5" : "hover:bg-panel/60"}`}
+                            >
+                              <td className="px-3 py-2.5 align-top">
+                                <div className="flex items-start gap-2">
+                                  <span
+                                    aria-hidden
+                                    className={`mt-1.5 size-2 shrink-0 rounded-full ${active ? "bg-accent" : "bg-transparent"}`}
+                                  />
+                                  <div className="min-w-0">
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        setSelected(p.id)
+                                      }}
+                                      className="block max-w-72 truncate text-left font-medium text-foreground hover:underline"
+                                    >
+                                      {p.name}
+                                    </button>
+                                    {p.description ? (
+                                      <p className="line-clamp-1 max-w-72 text-xs text-muted">{p.description}</p>
+                                    ) : null}
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="px-3 py-2.5 align-top">
+                                <StatusBadge status={p.enforce ? "active" : "paused"} />
+                                <span className="sr-only">{p.enforce ? "блокирует закупку" : "только наблюдение"}</span>
+                              </td>
+                              <td className="px-3 py-2.5 align-top whitespace-nowrap text-muted">{p.window_days} дн</td>
+                              <td className="px-3 py-2.5 align-top font-mono text-xs text-muted">{p.min_impressions}</td>
+                              <td className="px-3 py-2.5 align-top">
+                                <div className="flex max-w-80 flex-wrap gap-1 text-[10px] text-muted">
+                                  {thresholds.length ? (
+                                    thresholds.map((t) => (
+                                      <span key={t} className="rounded bg-panel px-1.5 py-0.5 whitespace-nowrap">
+                                        {t}
+                                      </span>
+                                    ))
+                                  ) : (
+                                    <span>—</span>
+                                  )}
+                                </div>
+                              </td>
+                              <td className="px-3 py-2.5 align-top font-mono text-xs text-muted">{p.block_threshold}</td>
+                              <td className="px-3 py-2.5 align-top whitespace-nowrap text-xs text-muted">
+                                {p.updated_at ? new Date(p.updated_at).toLocaleDateString("ru-RU") : "—"}
+                              </td>
+                              <td className="px-3 py-2.5 align-top text-right" onClick={(e) => e.stopPropagation()}>
+                                <div className="flex justify-end gap-1">
+                                  <Button variant="ghost" className="h-7 px-2 text-xs" onClick={() => openEdit(p)}>
+                                    Изменить
+                                  </Button>
+                                  <Button variant="ghost" className="h-7 px-2 text-xs text-danger" onClick={() => remove(p)}>
+                                    Удалить
+                                  </Button>
+                                </div>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-sm text-muted">
+                    <div className="flex items-center gap-2">
+                      <span>
+                        {(safePage - 1) * pageSize + 1}–{Math.min(safePage * pageSize, filtered.length)} из {filtered.length}
                       </span>
-                      {p.description ? (
-                        <span className="line-clamp-2 text-xs text-muted text-pretty">{p.description}</span>
-                      ) : null}
-                      <span className="mt-auto flex flex-wrap gap-1 pt-0.5 text-[10px] text-muted">
-                        <span className="rounded bg-panel px-1.5 py-0.5">окно {p.window_days} дн</span>
-                        {p.min_ctr !== null ? <span className="rounded bg-panel px-1.5 py-0.5">CTR ≥ {p.min_ctr}%</span> : null}
-                        {p.min_viewability !== null ? (
-                          <span className="rounded bg-panel px-1.5 py-0.5">view ≥ {p.min_viewability}%</span>
-                        ) : null}
-                        {p.max_cpa !== null ? <span className="rounded bg-panel px-1.5 py-0.5">CPA ≤ {p.max_cpa}₽</span> : null}
+                      <select
+                        value={pageSize}
+                        onChange={(e) => {
+                          setPageSize(Number(e.target.value))
+                          setPage(1)
+                        }}
+                        aria-label="Строк на странице"
+                        className={`${inputCls} h-7 w-auto py-0 text-xs`}
+                      >
+                        {[10, 25, 50].map((n) => (
+                          <option key={n} value={n}>
+                            {n} / стр
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <Button variant="ghost" onClick={() => setPage(safePage - 1)} disabled={safePage <= 1} className="h-7 px-2 text-xs">
+                        Назад
+                      </Button>
+                      <span className="px-2 font-mono text-xs">
+                        {safePage} / {pages}
                       </span>
-                    </button>
-                  </li>
-                )
-              })}
-            </ul>
+                      <Button variant="ghost" onClick={() => setPage(safePage + 1)} disabled={safePage >= pages} className="h-7 px-2 text-xs">
+                        Вперёд
+                      </Button>
+                    </div>
+                  </div>
+                </>
+              )}
+            </>
           )}
         </Card>
 
