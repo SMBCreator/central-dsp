@@ -543,6 +543,57 @@ export const mockUser = { id: "u-1", email: "demo@central-dsp.ru", name: "Дем
 // Ручные блоки площадок в мок-режиме — живут в памяти процесса (сбрасываются при рестарте).
 const mockManualBlocks = new Set<string>()
 
+type MockRow = { id: string; [k: string]: unknown }
+
+// Пустые в демо по умолчанию, но создаваемые из UI сущности живут в памяти процесса.
+const mockAudiences: MockRow[] = []
+const mockRules: MockRow[] = []
+const mockUsers: MockRow[] = [mockUser as MockRow]
+
+/**
+ * Универсальный in-memory CRUD для демо-коллекций: POST добавляет, PATCH/PUT
+ * обновляет, DELETE удаляет — чтобы кабинет в превью вёл себя как с настоящим
+ * бэком (созданная сущность появляется в списке, удалённая исчезает).
+ * Возвращает undefined, если запрос не относится к коллекции.
+ */
+function crud<T extends MockRow>(
+  method: string,
+  path: string,
+  body: unknown,
+  base: string,
+  rows: T[],
+  opts: { prefix: string; defaults?: (b: Partial<T>) => Partial<T> } ,
+): unknown {
+  const b = (body && typeof body === "object" ? body : {}) as Partial<T>
+  if (path === base && method === "POST") {
+    const template = (rows[0] || {}) as T
+    const created = {
+      ...template,
+      ...(opts.defaults ? opts.defaults(b) : {}),
+      ...b,
+      id: `${opts.prefix}-${Date.now().toString(36)}`,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    } as T
+    rows.unshift(created)
+    return created
+  }
+  const m = path.match(new RegExp(`^${base.replace(/\//g, "\\/")}\\/([^/]+)$`))
+  if (!m) return undefined
+  const idx = rows.findIndex((r) => r.id === m[1])
+  if (method === "GET") return idx >= 0 ? rows[idx] : undefined
+  if (method === "PATCH" || method === "PUT") {
+    if (idx < 0) return undefined
+    rows[idx] = { ...rows[idx], ...b, id: m[1], updated_at: new Date().toISOString() } as T
+    return rows[idx]
+  }
+  if (method === "DELETE") {
+    if (idx >= 0) rows.splice(idx, 1)
+    return { ok: true }
+  }
+  return undefined
+}
+
 export function resolveMock(method: string, path: string, search: URLSearchParams, body?: unknown): unknown {
   // --- Auth ---
   if (path === "/auth/login" || path === "/auth/register") return { token: "demo-token" }
@@ -558,12 +609,32 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
   const dupMatch = path.match(/^\/campaigns\/([^/]+)\/duplicate$/)
   if (dupMatch && method === "POST") {
     const src = mockCampaigns.find((c) => c.id === dupMatch[1]) ?? mockCampaigns[0]
-    return { ...src, id: `${src.id}-copy`, display_id: 99, name: `${src.name} (копия)`, status: "draft", spent_today: 0, spent_total: 0 }
+    const copy = {
+      ...src,
+      id: `${src.id}-copy-${Date.now().toString(36).slice(-4)}`,
+      display_id: 1000 + mockCampaigns.length,
+      name: `${src.name} (копия)`,
+      status: "draft",
+      spent_today: 0,
+      spent_total: 0,
+    }
+    mockCampaigns.unshift(copy)
+    return copy
   }
   const campMatch = path.match(/^\/campaigns\/([^/]+)$/)
   if (campMatch && method === "GET") {
     return mockCampaigns.find((c) => c.id === campMatch[1]) ?? mockCampaigns[0]
   }
+  const campCrud = crud(method, path, body, "/campaigns", mockCampaigns as MockRow[], {
+    prefix: "cmp",
+    defaults: () => ({
+      display_id: 1000 + mockCampaigns.length,
+      status: "draft",
+      spent_today: 0,
+      spent_total: 0,
+    }),
+  })
+  if (campCrud !== undefined) return campCrud
 
   // --- Line items: привязка креативов (G9) ---
   const liCrMatch = path.match(/^\/line-items\/([^/]+)\/creatives$/)
@@ -639,20 +710,69 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
   }
   if (path.startsWith("/stats/breakdown")) return []
 
-  // --- Сущности ---
-  if (path === "/advertisers") return mockAdvertisers
+  // --- Сущности (in-memory CRUD, см. crud()) ---
+  if (path === "/advertisers" && method === "GET") return mockAdvertisers
+  const advCrud = crud(method, path, body, "/advertisers", mockAdvertisers as MockRow[], {
+    prefix: "adv",
+    defaults: () => ({
+      display_id: 100 + mockAdvertisers.length + 1,
+      status: "active",
+      balance: 0,
+      currency: "RUB",
+    }),
+  })
+  if (advCrud !== undefined) return advCrud
+
   if (path === "/groups" && method === "GET") return mockGroups
+  const grpCrud = crud(method, path, body, "/groups", mockGroups as MockRow[], { prefix: "grp" })
+  if (grpCrud !== undefined) return grpCrud
+
   if (path === "/line-items" || path === "/lineitems") return mockLineItems
   const liByCamp = path.match(/^\/campaigns\/([^/]+)\/line-items$/)
   if (liByCamp) return mockLineItems.filter((l) => l.campaign_id === liByCamp[1])
-  if (path === "/creatives") {
+  const liCrud = crud(method, path, body, "/line-items", mockLineItems as MockRow[], {
+    prefix: "li",
+    defaults: () => ({ status: "active" }),
+  })
+  if (liCrud !== undefined) return liCrud
+
+  if (path === "/creatives" && method === "GET") {
     const cid = search.get("campaign_id")
     return cid ? mockCreatives.filter((c) => c.campaign_id === cid) : mockCreatives
   }
+  const crCrud = crud(method, path, body, "/creatives", mockCreatives as MockRow[], {
+    prefix: "cr",
+    defaults: () => ({ status: "pending", erid: null, moderation_comment: null }),
+  })
+  if (crCrud !== undefined) return crCrud
 
   // --- ОРД / маркировка ---
-  if (path === "/ord/counterparties") return mockCounterparties
-  if (path === "/ord/contracts") return mockContracts
+  if (path === "/ord/counterparties" && method === "GET") return mockCounterparties
+  const cpCrud = crud(method, path, body, "/ord/counterparties", mockCounterparties as MockRow[], {
+    prefix: "cp",
+    defaults: () => ({ status: "draft", ord_external_id: null }),
+  })
+  if (cpCrud !== undefined) return cpCrud
+  if (path === "/ord/contracts" && method === "GET") return mockContracts
+  const ctCrud = crud(method, path, body, "/ord/contracts", mockContracts as MockRow[], {
+    prefix: "ct",
+    defaults: () => ({ status: "draft", ord_external_id: null }),
+  })
+  if (ctCrud !== undefined) return ctCrud
+  const ordRegMatch = path.match(/^\/ord\/(counterparties|contracts|creatives)\/([^/]+)\/register$/)
+  if (ordRegMatch && method === "POST") {
+    const list =
+      ordRegMatch[1] === "counterparties" ? mockCounterparties : ordRegMatch[1] === "contracts" ? mockContracts : mockCreatives
+    const row = (list as MockRow[]).find((r) => r.id === ordRegMatch[2])
+    if (row) {
+      if (ordRegMatch[1] === "creatives") row.erid = `2VtzqwDemo${Date.now().toString(36).slice(-4)}`
+      else {
+        row.status = "registered"
+        row.ord_external_id = `${ordRegMatch[1].slice(0, 2)}-ord-${Date.now().toString(36).slice(-4)}`
+      }
+    }
+    return row ?? { ok: true }
+  }
   if (path === "/ord/creatives") return mockCreatives.filter((c) => c.erid)
   if (path === "/ord/exports") return []
   if (path === "/settings/ord")
@@ -691,7 +811,12 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
   if (path === "/settings/throttle/subnets") return { prefixes: ["45.155.204", "193.169"], count: 2 }
 
   // --- Прочее ---
-  if (path === "/users") return [mockUser]
+  if (path === "/users" && method === "GET") return mockUsers
+  const usrCrud = crud(method, path, body, "/users", mockUsers, {
+    prefix: "u",
+    defaults: () => ({ role: "manager", is_active: true }),
+  })
+  if (usrCrud !== undefined) return usrCrud
   // Компонент колокольчика ждёт форму { items, unread } — как отдаёт бэкенд.
   if (path === "/notifications")
     return {
@@ -727,7 +852,12 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
       ],
     }
   if (path === "/settings") return { timezone: "Europe/Moscow", currency: "RUB" }
-  if (path === "/audiences") return []
+  if (path === "/audiences" && method === "GET") return mockAudiences
+  const audCrud = crud(method, path, body, "/audiences", mockAudiences, {
+    prefix: "aud",
+    defaults: () => ({ is_active: true, members: 0, pixel_name: "Сайт магазина курток" }),
+  })
+  if (audCrud !== undefined) return audCrud
   if (path === "/pixels" || path === "/pixel")
     return [
       {
@@ -773,18 +903,24 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
       { key: "low_win_rate", name: "Поднять ставку при низком Win Rate", description: "Выигрываем меньше 5% аукционов — ставка неконкурентна, поднимаем на 10%.", metric: "win_rate", operator: "lt", threshold: 5, action: "increase_bid", action_value: 10, window_hours: 24 },
       { key: "notify_spend_spike", name: "Уведомление о всплеске расхода", description: "Расход за сутки превысил 50 000 ₽ — зафиксировать срабатывание.", metric: "spend", operator: "gt", threshold: 50000, action: "notify", action_value: null, window_hours: 24 },
     ]
-  if (path === "/rules") return []
+  if (path === "/rules" && method === "GET") return mockRules
+  const ruleCrud = crud(method, path, body, "/rules", mockRules, {
+    prefix: "rule",
+    defaults: () => ({ status: "active", last_triggered_at: null, message: null }),
+  })
+  if (ruleCrud !== undefined) return ruleCrud
   if (path === "/share/links" || path === "/share/guests") return []
 
   // --- Онбординг SSP (Часть SSP) ---
   if (path === "/supply-partners" && method === "GET") return mockSupplyPartners
-  if (path === "/supply-partners" && method === "POST")
-    return { ...mockSupplyPartners[0], id: `ssp-${Date.now()}`, status: "draft", name: "Новый SSP", last_check: null }
   if (path.match(/^\/supply-partners\/[^/]+\/check$/) && method === "POST") return mockSspCheck
   if (path.match(/^\/supply-partners\/[^/]+\/rotate-token$/) && method === "POST")
     return { token: "csp_demo_token_4f8a1b2c3d4e5f60718293a4b5c6d7e8" }
-  if (path.startsWith("/supply-partners/") && method === "PATCH") return mockSupplyPartners[0]
-  if (path.startsWith("/supply-partners/") && method === "DELETE") return { ok: true }
+  const sspCrud = crud(method, path, body, "/supply-partners", mockSupplyPartners as MockRow[], {
+    prefix: "ssp",
+    defaults: (b) => ({ name: (b as { name?: string }).name || "Новый SSP", status: "draft", last_check: null }),
+  })
+  if (sspCrud !== undefined) return sspCrud
 
   // --- Скоринг качества площадок (Часть 3b) ---
   // Демо-состояние живёт в памяти процесса: POST/PATCH/DELETE реально меняют список,
