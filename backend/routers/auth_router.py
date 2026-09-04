@@ -10,7 +10,7 @@ from auth import (
     hash_password,
     verify_password,
 )
-from cache import rate_limit
+from cache import clear_login_failures, login_blocked, record_login_failure
 from db import get_pool
 from schemas import ChangePasswordIn, LoginIn, ProfilePatch, RegisterIn
 
@@ -54,17 +54,31 @@ async def register(body: RegisterIn, response: Response):
     return {"id": str(row["id"]), "email": row["email"], "name": row["name"], "role": row["role"], "token": token}
 
 
+def _client_ip(request: Request) -> str:
+    """IP клиента за реверс-прокси (Caddy/nginx ставят X-Forwarded-For).
+    Без заголовка — адрес соединения. Тот же приём, что в global_rate_limiter."""
+    fwd = request.headers.get("x-forwarded-for")
+    if fwd:
+        first = fwd.split(",")[0].strip()
+        if first:
+            return first
+    return request.client.host if request.client else "unknown"
+
+
 @router.post("/login")
 async def login(body: LoginIn, request: Request, response: Response):
-    # GAP-002: brute-force protection. Two fixed windows: per-IP and per-email.
-    client_ip = request.client.host if request.client else "unknown"
+    # GAP-002 / D5: защита от перебора пароля. Считаем НЕУДАЧНЫЕ попытки в двух
+    # окнах — по логину и по IP (cache.login_blocked). Успешные входы не
+    # тратят лимит; успех сбрасывает счётчик по логину. Ответ 429 одинаков для
+    # существующего и несуществующего логина, чтобы не раскрывать список users.
+    client_ip = _client_ip(request)
     email_key = body.email.lower().strip()
-    ip_ok = await rate_limit("login:ip", client_ip, limit=20, window_seconds=300)
-    email_ok = await rate_limit("login:email", email_key, limit=8, window_seconds=300)
-    if not ip_ok or not email_ok:
+    retry_after = await login_blocked(email_key, client_ip)
+    if retry_after:
         raise HTTPException(
             status_code=429,
-            detail="Слишком много попыток входа. Повторите через несколько минут.",
+            detail="Слишком много неудачных попыток входа. Повторите позже.",
+            headers={"Retry-After": str(retry_after)},
         )
     pool = await get_pool()
     row = await pool.fetchrow(
@@ -72,9 +86,12 @@ async def login(body: LoginIn, request: Request, response: Response):
         body.email.lower(),
     )
     if not row or not verify_password(body.password, row["password_hash"]):
+        await record_login_failure(email_key, client_ip)
         raise HTTPException(status_code=401, detail="Неверный email или пароль")
     if row["status"] != "active":
+        # Пароль верный, но аккаунт заблокирован — это не перебор, счётчик не трогаем.
         raise HTTPException(status_code=403, detail="Аккаунт заблокирован")
+    await clear_login_failures(email_key)
     token, _ = await create_session(str(row["id"]))
     _set_cookie(response, token)
     return {"id": str(row["id"]), "email": row["email"], "name": row["name"], "role": row["role"], "token": token}

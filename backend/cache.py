@@ -223,6 +223,69 @@ async def mark_once(kind: str, token: str, ttl: int = 86400) -> bool:
 
 
 # --- Brute-force protection ---------------------------------------------------
+#
+# Логин защищён счётчиком НЕУДАЧНЫХ попыток (не всех запросов): легитимный
+# пользователь, входящий 10 раз за 5 минут, не должен получать 429, а
+# перебор пароля — должен упереться в лимит. Два независимых окна:
+#   login:email — по логину (защищает конкретный аккаунт от перебора с многих IP)
+#   login:ip    — по IP клиента (защищает от перебора многих логинов с одного IP)
+# Успешный вход сбрасывает счётчик по логину. Fail-open при недоступном Redis.
+
+LOGIN_FAILS_PER_EMAIL = int(os.environ.get("LOGIN_FAILS_PER_EMAIL", "8"))
+LOGIN_FAILS_PER_IP = int(os.environ.get("LOGIN_FAILS_PER_IP", "30"))
+LOGIN_FAIL_WINDOW_SECONDS = int(os.environ.get("LOGIN_FAIL_WINDOW_SECONDS", "900"))
+
+
+async def login_blocked(email_key: str, client_ip: str) -> int:
+    """0 — можно пробовать; иначе число секунд до снятия блокировки (Retry-After)."""
+    try:
+        r = get_redis()
+        pipe = r.pipeline(transaction=False)
+        pipe.get(f"rl:login:email:{email_key}")
+        pipe.ttl(f"rl:login:email:{email_key}")
+        pipe.get(f"rl:login:ip:{client_ip}")
+        pipe.ttl(f"rl:login:ip:{client_ip}")
+        e_cnt, e_ttl, ip_cnt, ip_ttl = await pipe.execute()
+        blocked_email = LOGIN_FAILS_PER_EMAIL > 0 and int(e_cnt or 0) >= LOGIN_FAILS_PER_EMAIL
+        blocked_ip = LOGIN_FAILS_PER_IP > 0 and int(ip_cnt or 0) >= LOGIN_FAILS_PER_IP
+        if not (blocked_email or blocked_ip):
+            return 0
+        retry = 0
+        if blocked_email:
+            retry = max(retry, int(e_ttl or 0))
+        if blocked_ip:
+            retry = max(retry, int(ip_ttl or 0))
+        return max(retry, 1)  # TTL может быть -1 в гонке с EXPIRE — всё равно блок
+    except Exception:
+        return 0
+
+
+async def record_login_failure(email_key: str, client_ip: str) -> None:
+    """Неудачная попытка: +1 в оба окна. Окно фиксированное — TTL ставится
+    при первом инкременте и не продлевается, иначе атакующий держал бы
+    жертву заблокированной бесконечно, продолжая слать запросы."""
+    try:
+        r = get_redis()
+        for key in (f"rl:login:email:{email_key}", f"rl:login:ip:{client_ip}"):
+            pipe = r.pipeline(transaction=False)
+            pipe.incr(key)
+            pipe.ttl(key)
+            cnt, ttl = await pipe.execute()
+            if int(ttl) < 0:
+                await r.expire(key, LOGIN_FAIL_WINDOW_SECONDS)
+    except Exception:
+        pass
+
+
+async def clear_login_failures(email_key: str) -> None:
+    """Успешный вход — счётчик по логину сбрасывается (по IP — нет: с этого IP
+    могли перебирать другие аккаунты)."""
+    try:
+        await get_redis().delete(f"rl:login:email:{email_key}")
+    except Exception:
+        pass
+
+
 async def rate_limit(scope: str, key: str, limit: int, window_seconds: int) -> bool:
     """Fixed-window rate limiter. Returns True while under the limit.
 
