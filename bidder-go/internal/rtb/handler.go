@@ -185,7 +185,7 @@ func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2. QPS-гейт партнёра. Ошибка Redis — fail-open (биддим), но считаем
-	//    gate_errors, чтобы деградация Redis была видна в /metrics.
+	//    gate_errors, чтобы деградаци�� Redis была видна в /metrics.
 	if h.redis != nil && partner.QPSLimit > 0 {
 		ok, err := h.redis.CheckQPS(ctx, partner.ID, int64(partner.QPSLimit), time.Now().Unix())
 		if err != nil {
@@ -393,6 +393,7 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 		return &Bid{
 			ID: bidID, ImpID: imp.ID, Price: roundPrice(sc.price),
 			AdM: adm, ADomain: admomains(c), CrID: c.CreativeID,
+			Cat: c.IABCategories, Attr: c.Attrs,
 			NURL: nurl, LURL: lurl, W: w, H: hgt, DealID: dealID, Ext: ext,
 		}
 	}
@@ -408,6 +409,12 @@ func (h *Handler) matchCandidate(c *feed.Candidate, req *BidRequest, view *targe
 				return false
 			}
 		}
+	}
+	// bcat: издатель запретил IAB-категории. Совпадение по коду или по его
+	// tier-1 родителю (bcat "IAB7" блокирует креатив "IAB7-3"). Креатив без
+	// заявленных категорий пропускаем — иначе весь инвентарь с bcat отвалится.
+	if len(req.BCat) > 0 && len(c.IABCategories) > 0 && iabBlocked(req.BCat, c.IABCategories) {
+		return false
 	}
 	// Глобальные white/blacklist владельца (owner_id -> domains).
 	owner := c.OwnerID
@@ -681,6 +688,7 @@ func buildRequestView(req *BidRequest) *targeting.RequestView {
 			v.IP = d.IPv6
 		}
 		v.DNT = d.DNT == 1 || d.LMT == 1
+		v.Make = strings.ToLower(strings.TrimSpace(d.Make))
 		if d.Geo != nil {
 			v.Country = strings.ToUpper(d.Geo.Country)
 			v.Region = strings.ToLower(d.Geo.Region)
@@ -737,7 +745,26 @@ func buildRequestView(req *BidRequest) *targeting.RequestView {
 			}
 		}
 	}
+	v.SChainOK = schainComplete(req.Source)
 	return v
+}
+
+// schainComplete — source.schain (2.6) или source.ext.schain (2.5) присутствует,
+// complete=1 и есть хотя бы одна нода. Нужен для targeting.schain_required.
+func schainComplete(src *Source) bool {
+	if src == nil {
+		return false
+	}
+	sc := src.SChain
+	if sc == nil && len(src.Ext) > 0 {
+		var ext struct {
+			SChain *SupplyChain `json:"schain"`
+		}
+		if json.Unmarshal(src.Ext, &ext) == nil {
+			sc = ext.SChain
+		}
+	}
+	return sc != nil && sc.Complete == 1 && len(sc.Nodes) > 0
 }
 
 // buildImpView — плоское представление imp для targeting.MatchImp (один раз на imp).
@@ -756,6 +783,24 @@ func buildImpView(imp *Imp) *targeting.ImpView {
 		v.HasVideo = true
 		v.VideoMaxDuration = imp.Video.MaxDuration
 		v.VideoSkippable = imp.Video.Skip == 1
+		v.VideoPlacement = imp.Video.Plcmt
+		if v.VideoPlacement == 0 {
+			v.VideoPlacement = imp.Video.Placement
+		}
+		v.VideoProtocols = imp.Video.Protocols
+	}
+	// Viewability: доля 0..1 -> проценты; нет метрики = -1.
+	v.Viewability = -1
+	for _, m := range imp.Metric {
+		if strings.EqualFold(m.Type, "viewability") {
+			pct := int(m.Value*100 + 0.5)
+			if m.Value > 1 { // некоторые SSP шлют уже проценты
+				pct = int(m.Value + 0.5)
+			}
+			if pct > v.Viewability {
+				v.Viewability = pct
+			}
+		}
 	}
 	if !v.Rewarded && len(imp.Ext) > 0 {
 		var ext struct {
@@ -812,8 +857,45 @@ func impAdType(imp *Imp) string {
 	return targeting.ImpAdType(imp.Banner != nil, imp.Native != nil, imp.Video != nil, extPush)
 }
 
+// iabBlocked — есть ли среди категорий креатива запрещённая bcat (точно или
+// по tier-1 родителю: bcat "IAB7" покрывает "IAB7-3"; "IAB7-3" не покрывает "IAB7").
+func iabBlocked(bcat, creativeCats []string) bool {
+	for _, b := range bcat {
+		b = strings.ToUpper(strings.TrimSpace(b))
+		if b == "" {
+			continue
+		}
+		for _, cc := range creativeCats {
+			cc = strings.ToUpper(strings.TrimSpace(cc))
+			if cc == b || strings.HasPrefix(cc, b+"-") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// battrBlocked — креатив имеет атрибут, запрещённый в imp.banner|video.battr.
+func battrBlocked(battr, attrs []int) bool {
+	for _, a := range attrs {
+		for _, b := range battr {
+			if a == b {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func typeMatches(c *feed.Candidate, adType string, imp *Imp) bool {
 	if c.Type != adType {
+		return false
+	}
+	// battr: запрещённые издателем атрибуты креатива (авто-звук, expandable…).
+	switch {
+	case imp.Banner != nil && len(imp.Banner.BAttr) > 0 && battrBlocked(imp.Banner.BAttr, c.Attrs):
+		return false
+	case imp.Video != nil && len(imp.Video.BAttr) > 0 && battrBlocked(imp.Video.BAttr, c.Attrs):
 		return false
 	}
 	// Баннер: точный размер или формат из списка.
@@ -849,12 +931,14 @@ func feedTargetingToMatch(t *feed.Targeting) *targeting.Targeting {
 		KeywordsBlock: t.KeywordsBlock, KeywordsAllow: t.KeywordsAllow,
 		IPRanges:   t.IPRanges,
 		BlockCOPPA: t.BlockCOPPA, BlockGDPR: t.BlockGDPR, SkipDNT: t.SkipDNT,
+		DeviceMakes: t.DeviceMakes, SChainRequired: t.SChainRequired,
 	}
 }
 
 // feedImpTargeting — imp-level часть таргетинга line item.
 func feedImpTargeting(t *feed.Targeting) *targeting.ImpTargeting {
 	return &targeting.ImpTargeting{
+		ViewabilityMin: t.ViewabilityMin, VideoPlacements: t.VideoPlacements, VideoProtocols: t.VideoProtocols,
 		BannerPositions:  t.BannerPositions,
 		InterstitialOnly: t.InterstitialOnly, ExcludeInterstitial: t.ExcludeInterstitial,
 		RewardedOnly: t.RewardedOnly, SecureOnly: t.SecureOnly,

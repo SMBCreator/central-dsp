@@ -92,13 +92,60 @@ export interface Targeting {
   secure_only?: boolean
   video_min_duration?: number
   video_skippable_only?: boolean
+  /* SSP-сигналы слота (OpenRTB 2.6): plcmt 1 instream, 2 accompanying, 3 interstitial, 4 standalone;
+     protocols: 2 VAST2, 3 VAST3, 7 VAST4, 5/6/8 wrappers; viewability — imp.metric, % */
+  video_placements?: number[]
+  video_protocols?: number[]
+  viewability_min?: number
   /* PMP */
   deal_ids?: string[]
   /* Regulatory & privacy */
   block_coppa?: boolean
   block_gdpr?: boolean
   skip_dnt?: boolean
+  /* Устройство и цепочка поставки */
+  device_makes?: string[]
+  schain_required?: boolean
 }
+
+/** OpenRTB 2.5 §5.3 Creative Attributes — для creatives.attrs и фильтра battr. */
+export const CREATIVE_ATTRS: Record<number, string> = {
+  1: "Аудио (автозапуск)",
+  2: "Аудио (по клику)",
+  3: "Expandable (авто)",
+  4: "Expandable (по клику)",
+  5: "Expandable (по наведению)",
+  6: "Видео в баннере (автозапуск)",
+  7: "Видео в баннере (по клику)",
+  8: "Pop (over/under/upon exit)",
+  9: "Провокационный/сексуальный контент",
+  10: "Шокирующий (мигание, тряска)",
+  11: "Опросы и анкеты",
+  12: "Ввод текста (формы)",
+  13: "Интерактив (игры, мини-приложения)",
+  14: "Диалоги / предупреждения Windows",
+  15: "Флэш",
+  16: "Скрытая ссылка/кнопка",
+  17: "Adobe Flash (устар.)",
+}
+
+export const VIDEO_PLACEMENTS: Record<number, string> = {
+  1: "In-stream (в видеоконтенте)",
+  2: "Accompanying content",
+  3: "Interstitial",
+  4: "Standalone / out-stream",
+}
+
+export const VIDEO_PROTOCOLS: Record<number, string> = {
+  2: "VAST 2.0",
+  3: "VAST 3.0",
+  7: "VAST 4.x",
+  5: "VAST 2.0 Wrapper",
+  6: "VAST 3.0 Wrapper",
+  8: "VAST 4.x Wrapper",
+}
+
+export const DEVICE_MAKES = ["Apple", "Samsung", "Xiaomi", "Huawei", "Honor", "Realme", "OPPO", "Vivo", "Google", "OnePlus", "Tecno", "Infinix"]
 
 export const IAB_CATEGORIES: Record<string, string> = {
   "IAB1": "Искусство и развлечения",

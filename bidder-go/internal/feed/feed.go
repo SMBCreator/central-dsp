@@ -61,6 +61,10 @@ type Candidate struct {
 	ImpTrackerURL   string `json:"imp_tracker_url"`
 	ClickTrackerURL string `json:"click_tracker_url"`
 	Erid            string `json:"erid"`
+	// Brand-safety сигналы креатива (миграция 035): bid.cat / фильтр bcat,
+	// bid.attr / фильтр imp.banner|video.battr.
+	IABCategories []string `json:"iab_categories"`
+	Attrs         []int    `json:"attrs"`
 
 	// Информация о рекламодателе (38-ФЗ): для инфо-значка на креативе
 	AdvName    string `json:"adv_name"`
@@ -107,6 +111,10 @@ type Targeting struct {
 	BlockCOPPA      bool     `json:"block_coppa"`
 	BlockGDPR       bool     `json:"block_gdpr"`
 	SkipDNT         bool     `json:"skip_dnt"`
+	// SSP-сигналы (session 04.09): производитель устройства (device.make),
+	// обязательный source.schain (прозрачность цепочки поставки).
+	DeviceMakes    []string `json:"device_makes"`
+	SChainRequired bool     `json:"schain_required"`
 
 	BannerPositions     []int `json:"banner_positions"`
 	InterstitialOnly    bool  `json:"interstitial_only"`
@@ -115,6 +123,13 @@ type Targeting struct {
 	SecureOnly          bool  `json:"secure_only"`
 	VideoMinDuration    int   `json:"video_min_duration"`
 	VideoSkippableOnly  bool  `json:"video_skippable_only"`
+	// imp-level SSP-сигналы: минимальная прогнозная viewability (imp.metric
+	// type=viewability, 0..100), video.plcmt (OpenRTB 2.6: 1 instream,
+	// 2 accompanying, 3 interstitial, 4 no-content/standalone; fallback
+	// placement 2.5), video.protocols (VAST 2/3/4 = 2,3,7; wrapper = 5,6,8).
+	ViewabilityMin  int   `json:"viewability_min"`
+	VideoPlacements []int `json:"video_placements"`
+	VideoProtocols  []int `json:"video_protocols"`
 
 	DealIDs         []string `json:"deal_ids"`
 	AudienceInclude []string `json:"audience_include"`

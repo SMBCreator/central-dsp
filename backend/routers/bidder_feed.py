@@ -57,6 +57,7 @@ async def campaigns_feed(authorization: str | None = Header(default=None)):
                cr.html_snippet, cr.native_title, cr.native_description, cr.native_cta,
                cr.native_icon_url, cr.video_url, cr.video_duration, cr.vast_xml, cr.name,
                cr.imp_tracker_url, cr.click_tracker_url, cr.erid,
+               cr.iab_categories, cr.attrs,
                cp.name AS adv_name, cp.inn AS adv_inn, cp.ogrn AS adv_ogrn, cp.address AS adv_address
         FROM line_items li
         JOIN campaigns c ON c.id = li.campaign_id AND c.status = 'active'

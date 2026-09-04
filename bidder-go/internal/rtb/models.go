@@ -58,6 +58,7 @@ type Imp struct {
 	Secure      int             `json:"secure,omitempty"` // 1 = HTTPS-only
 	Rwdd        int             `json:"rwdd,omitempty"`   // OpenRTB 2.6 rewarded; fallback ext.rewarded
 	PMP         *PMP            `json:"pmp,omitempty"`
+	Metric      []Metric        `json:"metric,omitempty"`      // прогнозная viewability и т.п.
 	BidFloor    float64         `json:"bidfloor,omitempty"`    // floor сравнивается в Decimal-семантике: см. money notes в спеке
 	BidFloorCur string          `json:"bidfloorcur,omitempty"` // ожидаем RUB
 	Ext         json.RawMessage `json:"ext,omitempty"`
@@ -80,7 +81,8 @@ type Banner struct {
 	W      int      `json:"w,omitempty"`
 	H      int      `json:"h,omitempty"`
 	Format []Format `json:"format,omitempty"`
-	Pos    *int     `json:"pos,omitempty"` // OpenRTB AdPosition; nil = не передан
+	Pos    *int     `json:"pos,omitempty"`   // OpenRTB AdPosition; nil = не передан
+	BAttr  []int    `json:"battr,omitempty"` // запрещённые creative attributes (§5.3)
 }
 
 type Format struct {
@@ -95,7 +97,19 @@ type Video struct {
 	W           int      `json:"w,omitempty"`
 	H           int      `json:"h,omitempty"`
 	Pos         *int     `json:"pos,omitempty"`
-	Skip        int      `json:"skip,omitempty"` // 1 = skippable
+	Skip        int      `json:"skip,omitempty"`      // 1 = skippable
+	Plcmt       int      `json:"plcmt,omitempty"`     // OpenRTB 2.6 placement subtype
+	Placement   int      `json:"placement,omitempty"` // OpenRTB 2.5 (deprecated) — fallback
+	Protocols   []int    `json:"protocols,omitempty"` // VAST 2/3/4 = 2,3,7; wrappers 5,6,8
+	BAttr       []int    `json:"battr,omitempty"`
+}
+
+// Metric — imp.metric: прогнозные метрики SSP (viewability, click-through…).
+// value для viewability — доля 0..1.
+type Metric struct {
+	Type   string  `json:"type"`
+	Value  float64 `json:"value"`
+	Vendor string  `json:"vendor,omitempty"`
 }
 
 type Native struct {
@@ -208,6 +222,8 @@ type Bid struct {
 	Price   float64         `json:"price"`         // сериализация из Decimal-вычислений, 4 знака
 	AdM     string          `json:"adm,omitempty"` // креатив: banner HTML с erid-маркировкой / VAST / native JSON
 	ADomain []string        `json:"adomain,omitempty"`
+	Cat     []string        `json:"cat,omitempty"`  // IAB-категории креатива (creatives.iab_categories)
+	Attr    []int           `json:"attr,omitempty"` // creative attributes (creatives.attrs)
 	CrID    string          `json:"crid,omitempty"`
 	NURL    string          `json:"nurl,omitempty"` // win notice -> /rtb/win
 	LURL    string          `json:"lurl,omitempty"` // loss notice -> /rtb/loss

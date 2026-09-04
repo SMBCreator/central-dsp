@@ -1,5 +1,10 @@
 """Pydantic request/response schemas for the management API."""
-from pydantic import BaseModel, EmailStr, Field
+import re
+
+from pydantic import BaseModel, EmailStr, Field, field_validator
+
+# IAB Content Taxonomy 1.0: "IAB1" (tier-1) или "IAB1-1" (tier-2).
+_IAB_CODE_RE = re.compile(r"^IAB\d{1,2}(-\d{1,2})?$")
 
 
 # --- Auth -------------------------------------------------------------------
@@ -155,6 +160,30 @@ class CreativeIn(BaseModel):
     # ККТУ-классификатор объявления (маркировка), см. миграцию 024
     kktu_code: str | None = Field(default=None, max_length=20)
     kktu_label: str | None = Field(default=None, max_length=300)
+    # Brand-safety сигналы для SSP (миграция 035): bid.cat / фильтр bcat;
+    # bid.attr / фильтр imp.*.battr. Коды IAB 1.0 вида "IAB1" / "IAB1-1", attrs 1..17.
+    iab_categories: list[str] = Field(default_factory=list, max_length=10)
+    attrs: list[int] = Field(default_factory=list, max_length=17)
+
+    @field_validator("iab_categories")
+    @classmethod
+    def _iab_codes(cls, v: list[str]) -> list[str]:
+        out: list[str] = []
+        for code in v:
+            code = code.strip().upper()
+            if not _IAB_CODE_RE.match(code):
+                raise ValueError(f"Некорректный IAB-код: {code!r} (ожидается IAB1 или IAB1-1)")
+            if code not in out:
+                out.append(code)
+        return out
+
+    @field_validator("attrs")
+    @classmethod
+    def _attr_codes(cls, v: list[int]) -> list[int]:
+        bad = [a for a in v if not 1 <= a <= 17]
+        if bad:
+            raise ValueError(f"OpenRTB creative attribute вне диапазона 1..17: {bad}")
+        return sorted(set(v))
 
 
 class CreativePatch(BaseModel):
@@ -162,6 +191,18 @@ class CreativePatch(BaseModel):
     counterparty_id: str | None = None
     kktu_code: str | None = Field(default=None, max_length=20)
     kktu_label: str | None = Field(default=None, max_length=300)
+    iab_categories: list[str] | None = Field(default=None, max_length=10)
+    attrs: list[int] | None = Field(default=None, max_length=17)
+
+    @field_validator("iab_categories")
+    @classmethod
+    def _iab_codes(cls, v):
+        return None if v is None else CreativeIn._iab_codes(v)
+
+    @field_validator("attrs")
+    @classmethod
+    def _attr_codes(cls, v):
+        return None if v is None else CreativeIn._attr_codes(v)
     imp_tracker_url: str | None = Field(default=None, max_length=1000)
     click_tracker_url: str | None = Field(default=None, max_length=1000)
     status: str | None = Field(default=None, pattern="^(pending|approved|rejected|archived)$")

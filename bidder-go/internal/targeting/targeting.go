@@ -53,10 +53,15 @@ type Targeting struct {
 	BlockCOPPA      bool     `json:"block_coppa,omitempty"`
 	BlockGDPR       bool     `json:"block_gdpr,omitempty"`
 	SkipDNT         bool     `json:"skip_dnt,omitempty"`
+	DeviceMakes     []string `json:"device_makes,omitempty"`    // device.make без регистра (apple, samsung, xiaomi)
+	SChainRequired  bool     `json:"schain_required,omitempty"` // source.schain обязателен и complete=1
 }
 
 // ImpTargeting — таргетинг уровня impression (порт _match_imp_targeting).
 type ImpTargeting struct {
+	ViewabilityMin      int      `json:"viewability_min,omitempty"`  // imp.metric[type=viewability].value*100 >= N; нет метрики = мимо
+	VideoPlacements     []int    `json:"video_placements,omitempty"` // video.plcmt (2.6) | video.placement (2.5)
+	VideoProtocols      []int    `json:"video_protocols,omitempty"`  // пересечение с video.protocols; пустой список у SSP = пропускаем
 	BannerPositions     []int    `json:"banner_positions,omitempty"`
 	InterstitialOnly    bool     `json:"interstitial_only,omitempty"`
 	ExcludeInterstitial bool     `json:"exclude_interstitial,omitempty"`
@@ -92,6 +97,8 @@ type RequestView struct {
 	YOB        int      // user.yob
 	COPPA      bool     // regs.coppa == 1
 	GDPR       bool     // regs.gdpr == 1 || regs.ext.gdpr == 1
+	Make       string   // device.make (lower)
+	SChainOK   bool     // source.schain (или source.ext.schain) есть, complete==1, nodes>0
 	Now        time.Time
 }
 
@@ -104,6 +111,9 @@ type ImpView struct {
 	HasVideo         bool
 	VideoMaxDuration int  // video.maxduration
 	VideoSkippable   bool // video.skip == 1
+	VideoPlacement   int  // video.plcmt, иначе video.placement; 0 = не передан
+	VideoProtocols   []int
+	Viewability      int // imp.metric type=viewability, в процентах 0..100; -1 = метрики нет
 	DealIDs          []string
 }
 
@@ -308,6 +318,16 @@ func Match(t *Targeting, r *RequestView) bool {
 	if t.SkipDNT && r.DNT {
 		return false
 	}
+	// --- Device make: без регистра, пустой make у SSP = мимо (как carriers) ---
+	if len(t.DeviceMakes) > 0 {
+		if r.Make == "" || !containsFold(t.DeviceMakes, r.Make, strings.ToLower) {
+			return false
+		}
+	}
+	// --- Supply chain: только запросы с полной schain ---
+	if t.SChainRequired && !r.SChainOK {
+		return false
+	}
 	return true
 }
 
@@ -341,11 +361,34 @@ func MatchImp(t *ImpTargeting, v *ImpView) bool {
 		if t.VideoSkippableOnly && !v.VideoSkippable {
 			return false
 		}
+		// plcmt: SSP не передал (0) — считаем «неизвестно» и пропускаем только
+		// если фильтр не задан; задан фильтр + нет plcmt = мимо (клиент платит
+		// за конкретное размещение, неизвестное — не то).
+		if len(t.VideoPlacements) > 0 && !containsInt(t.VideoPlacements, v.VideoPlacement) {
+			return false
+		}
+		// protocols: SSP не передал список — принимает любые, пропускаем.
+		if len(t.VideoProtocols) > 0 && len(v.VideoProtocols) > 0 && !intersectsInt(t.VideoProtocols, v.VideoProtocols) {
+			return false
+		}
+	}
+	// Viewability: фильтр задан, метрики нет (-1) — мимо; иначе сравнение в процентах.
+	if t.ViewabilityMin > 0 && v.Viewability < t.ViewabilityMin {
+		return false
 	}
 	if len(t.DealIDs) > 0 && MatchedDeal(t.DealIDs, v.DealIDs) == "" {
 		return false
 	}
 	return true
+}
+
+func intersectsInt(a, b []int) bool {
+	for _, x := range a {
+		if containsInt(b, x) {
+			return true
+		}
+	}
+	return false
 }
 
 // MatchedDeal — порт _matched_deal: первый настроенный deal id, присутствующий
