@@ -195,6 +195,9 @@ def make_test_bid_request(ad_type: str, *, request_id: str, bid_floor: float = 0
     return {
         "id": request_id,
         "at": 2,
+        # OpenRTB test=1: Go-биддер отдаёт реальный бид, но не резервирует бюджет
+        # клиента и помечает bidmeta is_test — проверка SSP не тратит деньги.
+        "test": 1,
         "tmax": 300,
         "cur": ["RUB"],
         "imp": [imp],
