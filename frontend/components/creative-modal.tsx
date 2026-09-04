@@ -5,8 +5,9 @@ import useSWR, { mutate } from "swr"
 import { api, apiDeleteUpload, apiUpload, assetUrl, fetcher, type UploadResult } from "@/lib/api"
 import { kktuShortLabel } from "@/lib/kktu"
 import { KktuSelect } from "@/components/kktu-select"
-import { AD_TYPE_LABELS, type Campaign, type Counterparty } from "@/lib/types"
+import { AD_TYPE_LABELS, CREATIVE_ATTRS, IAB_CATEGORIES, type Campaign, type Counterparty } from "@/lib/types"
 import { Button, Field, inputCls, Modal } from "@/components/ui"
+import { MultiSelect } from "@/components/multi-select"
 import { CreativePreview } from "@/components/creative-preview"
 
 type AdType = "banner" | "native" | "video" | "push"
@@ -62,6 +63,9 @@ interface FormState {
   native_icon_url: string
   video_url: string
   video_duration: string
+  /* Brand-safety для SSP: bid.cat (фильтр bcat) и bid.attr (фильтр battr) */
+  iab_categories: string[]
+  attrs: number[]
 }
 
 const emptyForm = (campaignId: string): FormState => ({
@@ -69,6 +73,8 @@ const emptyForm = (campaignId: string): FormState => ({
   counterparty_id: "",
   kktu_code: "",
   kktu_label: "",
+  iab_categories: [],
+  attrs: [],
   name: "",
   size: "300x250",
   asset_url: "",
@@ -325,6 +331,8 @@ export function CreativeModal({
         counterparty_id: form.counterparty_id || null,
         kktu_code: form.kktu_code || null,
         kktu_label: form.kktu_label || null,
+        iab_categories: form.iab_categories,
+        attrs: form.attrs,
         click_url: form.click_url.trim(),
         imp_tracker_url: form.imp_tracker_url.trim() || null,
         click_tracker_url: form.click_tracker_url.trim() || null,
@@ -703,6 +711,31 @@ export function CreativeModal({
                   "Обязательное поле: категория товара/услуги уходит в ОРД вместе с erid."
                 )}
               </p>
+
+              <div className="flex flex-col gap-3 border-t border-border pt-4">
+                <div>
+                  <h4 className="text-sm font-medium text-foreground">Сигналы для площадок (brand safety)</h4>
+                  <p className="text-xs text-muted">
+                    Уходят в ответе биддера как bid.cat / bid.attr. Площадки с запретами (bcat / battr) отсеивают
+                    несовпадающие креативы ещё до аукциона — честная разметка повышает win-rate и защищает от
+                    блокировок SSP.
+                  </p>
+                </div>
+                <Field label="IAB-категории креатива" hint="Тематика рекламируемого товара. До 10 категорий">
+                  <MultiSelect
+                    options={Object.entries(IAB_CATEGORIES).map(([code, label]) => ({ value: code, label, hint: code }))}
+                    selected={form.iab_categories}
+                    onChange={(next) => patch({ iab_categories: next.slice(0, 10) })}
+                  />
+                </Field>
+                <Field label="Атрибуты креатива (OpenRTB)" hint="Отметьте всё, что есть в креативе: авто-звук, expandable, опросы…">
+                  <MultiSelect
+                    options={Object.entries(CREATIVE_ATTRS).map(([code, label]) => ({ value: code, label, hint: code }))}
+                    selected={form.attrs.map(String)}
+                    onChange={(next) => patch({ attrs: next.map(Number).sort((a, b) => a - b) })}
+                  />
+                </Field>
+              </div>
             </div>
           ) : null}
 

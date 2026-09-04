@@ -7,7 +7,7 @@ import { TagInput } from "@/components/tag-input"
 import { GeoDrawer, countryLabel } from "@/components/geo-panel"
 import useSWR from "swr"
 import { fetcher } from "@/lib/api"
-import { IAB_CATEGORIES, type Targeting } from "@/lib/types"
+import { DEVICE_MAKES, IAB_CATEGORIES, VIDEO_PLACEMENTS, VIDEO_PROTOCOLS, type Targeting } from "@/lib/types"
 
 export const COUNTRIES = ["RU", "KZ", "BY", "UZ", "KG", "AM", "AZ", "GE", "MD", "TJ", "TM", "UA"]
 export const DEVICES = [
@@ -211,10 +211,11 @@ function deviceEnvSummary(t: Targeting): string {
   if (t.device_types?.length)
     parts.push(t.device_types.map((d) => DEVICES.find((x) => x.value === d)?.label || d).join(", "))
   if (t.os?.length) parts.push(`ОС: ${t.os.join(", ")}`)
-  if (t.browsers?.length) parts.push(`Браузеры: ${t.browsers.length}`)
+  if (t.browsers?.length) parts.push(`Бра��зеры: ${t.browsers.length}`)
   if (t.languages?.length) parts.push(`Языки: ${t.languages.length}`)
   if (t.connection_types?.length) parts.push(`Сеть: ${t.connection_types.length}`)
   if (t.carriers?.length) parts.push(`Операторы: ${t.carriers.length}`)
+  if (t.device_makes?.length) parts.push(`Бренды: ${t.device_makes.length}`)
   return parts.join(" · ") || "Все устройства и среды"
 }
 
@@ -253,6 +254,9 @@ function slotSummary(t: Targeting): string {
   if (t.rewarded_only) parts.push("rewarded")
   if (t.secure_only) parts.push("HTTPS")
   if (t.video_skippable_only) parts.push("skippable")
+  if (t.video_placements?.length) parts.push(`plcmt×${t.video_placements.length}`)
+  if (t.video_protocols?.length) parts.push(`VAST×${t.video_protocols.length}`)
+  if (t.viewability_min) parts.push(`viewability ≥${t.viewability_min}%`)
   if (t.deal_ids?.length) parts.push(`PMP×${t.deal_ids.length}`)
   return parts.join(" · ") || "Любой слот"
 }
@@ -262,6 +266,7 @@ function regulatorySummary(t: Targeting): string {
   if (t.block_coppa) parts.push("без COPPA")
   if (t.block_gdpr) parts.push("без GDPR")
   if (t.skip_dnt) parts.push("без DNT")
+  if (t.schain_required) parts.push("только с schain")
   return parts.join(" · ") || "Без ограничений"
 }
 
@@ -414,6 +419,7 @@ export function TargetingEditor({
           set({
             device_types: undefined, os: undefined, browsers: undefined, languages: undefined,
             connection_types: undefined, carriers: undefined, os_version_min: undefined, ip_ranges: undefined,
+            device_makes: undefined,
           })
         }
       >
@@ -483,6 +489,13 @@ export function TargetingEditor({
             />
           </Field>
         </div>
+        <Field label="Производитель устройства" hint="По полю device.make запроса. Пусто — все производители">
+          <MultiSelect
+            options={DEVICE_MAKES.map((m) => ({ value: m.toLowerCase(), label: m }))}
+            selected={value.device_makes || []}
+            onChange={(next) => set({ device_makes: norm(next) })}
+          />
+        </Field>
       </TargetSection>
 
       {/* --- Инвентарь --- */}
@@ -532,7 +545,7 @@ export function TargetingEditor({
           </div>
         </Field>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Field label="Белый список доменов" hint="Через запятую; пусто — все площадки">
+          <Field label="Белый список доменов" hint="Через запятую; пуст�� — все площадки">
             <input
               className={inputCls}
               defaultValue={(value.domain_allowlist || []).join(", ")}
@@ -734,6 +747,7 @@ export function TargetingEditor({
             banner_positions: undefined, interstitial_only: undefined, exclude_interstitial: undefined,
             rewarded_only: undefined, secure_only: undefined, video_skippable_only: undefined,
             video_min_duration: undefined, deal_ids: undefined,
+            video_placements: undefined, video_protocols: undefined, viewability_min: undefined,
           })
         }
       >
@@ -786,13 +800,46 @@ export function TargetingEditor({
             />
           </Field>
         </div>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Field label="Тип видеоразмещения" hint="video.plcmt / placement. Пусто — любой. Если SSP не передал тип, показ пропускается">
+            <MultiSelect
+              options={Object.entries(VIDEO_PLACEMENTS).map(([v, label]) => ({ value: v, label }))}
+              selected={(value.video_placements || []).map(String)}
+              onChange={(next) => set({ video_placements: next.length ? next.map(Number) : undefined })}
+            />
+          </Field>
+          <Field label="Протоколы VAST" hint="Пусто — любые. Сравнивается с video.protocols запроса">
+            <MultiSelect
+              options={Object.entries(VIDEO_PROTOCOLS).map(([v, label]) => ({ value: v, label }))}
+              selected={(value.video_protocols || []).map(String)}
+              onChange={(next) => set({ video_protocols: next.length ? next.map(Number) : undefined })}
+            />
+          </Field>
+        </div>
+        <Field
+          label="Мин. прогнозная видимость, %"
+          hint="По imp.metric type=viewability от SSP. Слоты без метрики отсеиваются, если задано"
+        >
+          <input
+            type="number"
+            min={0}
+            max={100}
+            className={inputCls}
+            defaultValue={value.viewability_min ?? ""}
+            onBlur={(e) => {
+              const n = Number(e.target.value)
+              set({ viewability_min: e.target.value && n > 0 ? Math.min(100, Math.round(n)) : undefined })
+            }}
+            placeholder="Любая"
+          />
+        </Field>
       </TargetSection>
 
       {/* --- Регуляторика --- */}
       <TargetSection
         title="Регуляторика и приватность"
         summary={regulatorySummary(value)}
-        onReset={() => set({ block_coppa: undefined, block_gdpr: undefined, skip_dnt: undefined })}
+        onReset={() => set({ block_coppa: undefined, block_gdpr: undefined, skip_dnt: undefined, schain_required: undefined })}
       >
         <div className="flex flex-wrap gap-1.5">
           <Chip active={!!value.block_coppa} onClick={() => set({ block_coppa: !value.block_coppa || undefined })}>
@@ -804,7 +851,14 @@ export function TargetingEditor({
           <Chip active={!!value.skip_dnt} onClick={() => set({ skip_dnt: !value.skip_dnt || undefined })}>
             Пропускать DNT / LMT устройства
           </Chip>
+          <Chip active={!!value.schain_required} onClick={() => set({ schain_required: !value.schain_required || undefined })}>
+            Только с полной supply chain
+          </Chip>
         </div>
+        <p className="text-xs text-muted-foreground">
+          Supply chain (source.schain, complete=1) — прозрачная цепочка перепродаж инвентаря. Запросы без неё чаще
+          относятся к непрозрачному ресейлу.
+        </p>
       </TargetSection>
     </div>
   )

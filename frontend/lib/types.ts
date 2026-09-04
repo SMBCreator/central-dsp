@@ -199,6 +199,9 @@ export interface Creative {
   counterparty_id: string | null
   kktu_code: string | null
   kktu_label: string | null
+  /** Brand-safety сигналы для SSP: bid.cat и bid.attr (миграция 035). */
+  iab_categories?: string[]
+  attrs?: number[]
   erid: string | null
   moderation_comment: string | null
   created_at: string
