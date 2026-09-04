@@ -6,6 +6,8 @@
  * Next.js, поэтому этот модуль в прод-трафике не участвует.
  */
 
+import type { ScoringProfile } from "@/lib/types"
+
 const now = Date.now()
 const iso = (msAgo: number) => new Date(now - msAgo).toISOString()
 const today = new Date().toISOString().slice(0, 10)
@@ -785,11 +787,35 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
   if (path.startsWith("/supply-partners/") && method === "DELETE") return { ok: true }
 
   // --- Скоринг качества площадок (Часть 3b) ---
+  // Демо-состояние живёт в памяти процесса: POST/PATCH/DELETE реально меняют список,
+  // чтобы кабинет вёл себя как с настоящим бэком.
   if (path === "/scoring/profiles" && method === "GET") return mockScoringProfiles
-  if (path === "/scoring/profiles" && method === "POST")
-    return { ...mockScoringProfiles[0], id: `sp-${Date.now()}`, name: "Новый профиль" }
-  if (path.startsWith("/scoring/profiles/") && (method === "PATCH" || method === "DELETE"))
-    return method === "DELETE" ? { ok: true } : mockScoringProfiles[0]
+  if (path === "/scoring/profiles" && method === "POST") {
+    const b = (body && typeof body === "object" ? body : {}) as Partial<ScoringProfile>
+    const created: ScoringProfile = {
+      ...mockScoringProfiles[0],
+      ...b,
+      id: `sp-${Date.now()}`,
+      name: b.name || "Новый профиль",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }
+    mockScoringProfiles.unshift(created)
+    return created
+  }
+  const spMatch = path.match(/^\/scoring\/profiles\/([^/]+)$/)
+  if (spMatch && method === "PATCH") {
+    const idx = mockScoringProfiles.findIndex((p) => p.id === spMatch[1])
+    if (idx < 0) throw new Error("Профиль не найден")
+    const b = (body && typeof body === "object" ? body : {}) as Partial<ScoringProfile>
+    mockScoringProfiles[idx] = { ...mockScoringProfiles[idx], ...b, id: spMatch[1], updated_at: new Date().toISOString() }
+    return mockScoringProfiles[idx]
+  }
+  if (spMatch && method === "DELETE") {
+    const idx = mockScoringProfiles.findIndex((p) => p.id === spMatch[1])
+    if (idx >= 0) mockScoringProfiles.splice(idx, 1)
+    return { ok: true }
+  }
   if (path === "/scoring/report" || path === "/scoring/report.csv") {
     const dim = search.get("dimension") || "domain"
     const profile = mockScoringProfiles.find((p) => p.id === search.get("profile_id")) || mockScoringProfiles[0]
@@ -962,8 +988,8 @@ const mockSupplyPartners = [
   },
 ]
 
-// Демо-данные скоринга
-export const mockScoringProfiles = [
+// Демо-данные скоринга (mutable: POST/PATCH/DELETE в resolveMock меняют список)
+export const mockScoringProfiles: ScoringProfile[] = [
   {
     id: "sp-brand",
     name: "Бренд-безопасность (жёсткий)",
