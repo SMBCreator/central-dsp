@@ -42,12 +42,12 @@ func TestBidDeadline(t *testing.T) {
 		tmax int
 		want time.Duration
 	}{
-		{0, defaultBidBudget},                    // tmax не задан -> дефолт
-		{-5, defaultBidBudget},                   // мусор -> дефолт
-		{10, minBidBudget},                       // слишком мало -> минимум
-		{50, 30 * time.Millisecond},              // 50 - 20 резерв
-		{100, defaultBidBudget},                  // 80 -> ровно дефолт
-		{1000, defaultBidBudget},                 // большой tmax не раздувает бюджет
+		{0, defaultBidBudget},       // tmax не задан -> дефолт
+		{-5, defaultBidBudget},      // мусор -> дефолт
+		{10, minBidBudget},          // слишком мало -> минимум
+		{50, 30 * time.Millisecond}, // 50 - 20 резерв
+		{100, defaultBidBudget},     // 80 -> ровно дефолт
+		{1000, defaultBidBudget},    // большой tmax не раздувает бюджет
 	}
 	for _, c := range cases {
 		if got := bidDeadline(c.tmax); got != c.want {
