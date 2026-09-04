@@ -291,7 +291,7 @@ export default function ScoringPage() {
 
                   <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-sm text-muted">
                     <div className="flex items-center gap-2">
-                      <span>
+                      <span className="whitespace-nowrap">
                         {(safePage - 1) * pageSize + 1}–{Math.min(safePage * pageSize, filtered.length)} из {filtered.length}
                       </span>
                       <select
