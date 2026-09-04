@@ -265,6 +265,10 @@ export const STATUS_LABELS: Record<string, string> = {
   rejected: "Отклонён",
   completed: "Завершена",
   testing: "Тестирование",
+  // ОРД (ord_status у контрагентов/договоров)
+  registered: "В ОРД",
+  failed: "Ошибка ОРД",
+  sending: "Отправка",
 }
 
 export const AD_TYPE_LABELS: Record<string, string> = {
@@ -275,14 +279,37 @@ export const AD_TYPE_LABELS: Record<string, string> = {
 }
 
 
+// Поля — как в backend/routers/ord_router.py (CounterpartyIn + ord_*)
 export interface Counterparty {
   id: string
   name: string
   inn: string | null
   ogrn: string | null
-  legal_form: string | null
+  legal_type: "ul" | "ip" | "fl" | string | null
+  role: "advertiser" | "agency" | "ors" | "publisher" | string | null
+  advertiser_id: string | null
   address: string | null
-  role: string | null
+  ord_status: "draft" | "sending" | "registered" | "failed" | string
+  ord_error: string | null
+  ord_external_id: string | null
+  created_at: string
+}
+
+export interface OrdContract {
+  id: string
+  client_id: string
+  contractor_id: string
+  client_name?: string
+  contractor_name?: string
+  contract_type: string
+  subject_type: string
+  number: string | null
+  signed_at: string | null
+  amount: number | null
+  is_vat: boolean
+  ord_status: string
+  ord_error: string | null
+  ord_external_id: string | null
   created_at: string
 }
 

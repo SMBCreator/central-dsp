@@ -106,6 +106,10 @@ export function StatusBadge({ status }: { status: string }) {
     archived: "bg-muted/10 text-muted",
     completed: "bg-accent/10 text-accent",
     rejected: "bg-danger/10 text-danger",
+    // ОРД
+    registered: "bg-success/10 text-success",
+    sending: "bg-warning/10 text-warning",
+    failed: "bg-danger/10 text-danger",
   }
   return (
     <span
