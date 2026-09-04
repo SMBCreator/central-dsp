@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/feed"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/metrics"
@@ -318,6 +319,11 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 		if c.T != nil && !targeting.MatchImp(feedImpTargeting(c.T), impView) {
 			continue
 		}
+		// Ретаргетинг-сегменты — единственный Redis-вызов среди фильтров, поэтому
+		// после всех in-memory проверок; у большинства line items сегментов нет.
+		if c.T != nil && !h.audienceOK(rctx, c.T.AudienceInclude, c.T.AudienceExclude, deviceID) {
+			continue
+		}
 		raw := c.BidPrice
 		if c.MaxBid != nil && *c.MaxBid > 0 && raw > *c.MaxBid {
 			raw = *c.MaxBid
@@ -541,10 +547,64 @@ func (h *Handler) persistBidMeta(ctx interface {
 		capsJSON, _ := json.Marshal(caps)
 		rdb.Set(ctx, "bidfreq:"+bidID, deviceID+"|"+string(capsJSON), time.Hour)
 	}
-	// Retargeting bridge: clid == bid_id после клика.
+	// Retargeting bridge: clid == bid_id после клика. Ключ и TTL — контракт с
+	// backend/audiences.py (resolve_clid читает clidmap:{bid_id}, CLIDMAP_TTL 7d):
+	// пиксель на лендинге может сработать через дни после клика. Раньше Go писал
+	// clid:{bid} на 24h — пиксель его не находил, сегменты с Go-трафика не росли.
 	if deviceID != "" {
-		rdb.Set(ctx, "clid:"+bidID, deviceID, 24*time.Hour)
+		rdb.Set(ctx, clidMapPrefix+bidID, deviceID, clidMapTTL)
 	}
+}
+
+const (
+	clidMapPrefix  = "clidmap:"
+	clidMapTTL     = 7 * 24 * time.Hour
+	audiencePrefix = "aud:" // aud:{segment_id} — SET device_id; наполняет пиксель (audiences.py)
+)
+
+// audienceOK — порт check_audiences (backend/audiences.py): устройство должно
+// быть хотя бы в одном include-сегменте и ни в одном exclude. Fail-open при
+// ошибке Redis (торгуем как без сегментов) — паритет с Python. Без device_id
+// include невыполним, exclude — не мешает.
+func (h *Handler) audienceOK(ctx context.Context, include, exclude []string, deviceID string) bool {
+	if len(include) == 0 && len(exclude) == 0 {
+		return true
+	}
+	if deviceID == "" {
+		return len(include) == 0
+	}
+	if h.redis == nil {
+		return true
+	}
+	pipe := h.redis.Raw().Pipeline()
+	cmds := make([]*redis.BoolCmd, 0, len(include)+len(exclude))
+	for _, sid := range include {
+		cmds = append(cmds, pipe.SIsMember(ctx, audiencePrefix+sid, deviceID))
+	}
+	for _, sid := range exclude {
+		cmds = append(cmds, pipe.SIsMember(ctx, audiencePrefix+sid, deviceID))
+	}
+	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
+		return true
+	}
+	if len(include) > 0 {
+		anyIn := false
+		for _, c := range cmds[:len(include)] {
+			if c.Val() {
+				anyIn = true
+				break
+			}
+		}
+		if !anyIn {
+			return false
+		}
+	}
+	for _, c := range cmds[len(include):] {
+		if c.Val() {
+			return false
+		}
+	}
+	return true
 }
 
 // Win — POST /rtb/win (вн��тренний; в prod win идёт на backend /api/rtb/win).
