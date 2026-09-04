@@ -6,7 +6,6 @@ import useSWR from "swr"
 import { api, fetcher } from "@/lib/api"
 import { fmtMoney, fmtNum, fmtPct } from "@/lib/types"
 import { Button, Card, CardHeader, EmptyState, Field, Spinner, inputCls } from "@/components/ui"
-import { DomainQualityCard } from "@/components/domain-quality-card"
 import { ColumnsButton, ColumnsModal, useTableColumns } from "@/components/table-columns"
 import { TimeseriesChart, METRIC_COLORS, CHART_TZ, TZ_NOTE } from "@/components/timeseries-chart"
 
@@ -524,8 +523,6 @@ function AnalyticsInner() {
           </div>
         )}
       </Card>
-
-      <DomainQualityCard />
     </div>
   )
 }
