@@ -136,12 +136,14 @@ export function CreativePreview({ type, assetUrl, width, height, nativeTitle, na
     )
   }
 
+  // Видео: контейнер не шире родителя (в модалке колонка превью 22rem, раньше
+  // фиксированные w-96 обрезали бейдж «Реклама» справа), аспект 16:9 как у плеера.
   return (
-    <div className="relative w-96 overflow-hidden rounded border border-border bg-black">
+    <div className="relative aspect-video w-full max-w-96 overflow-hidden rounded border border-border bg-black">
       {videoUrl ? (
-        <video src={videoUrl} controls muted className="h-54 w-full" aria-label="Превью видеообъявления" />
+        <video src={videoUrl} controls muted className="h-full w-full object-contain" aria-label="Превью видеообъявления" />
       ) : (
-        <div className="flex h-54 w-full items-center justify-center text-xs text-white/60">Видео не загружено</div>
+        <div className="flex h-full w-full items-center justify-center text-xs text-white/60">Видео не загружено</div>
       )}
       <InfoBadge advertiser={advertiser} />
     </div>
