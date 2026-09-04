@@ -9,7 +9,9 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"net"
 	"net/http"
+	"strings"
 
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/feed"
 )
@@ -42,4 +44,43 @@ func partnerTokenOK(p *feed.Partner, r *http.Request) bool {
 func sha256Hex(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
+}
+
+// partnerIPOK — IP-whitelist партнёра (supply_partners.ip_whitelist, миграция
+// 030). Пустой список = принимать откуда угодно. Паритет с rtb.py
+// (ssp_check.ip_allowed). Биддер стоит за Caddy, поэтому клиентский IP берём
+// из первого элемента X-Forwarded-For; без прокси — RemoteAddr.
+func partnerIPOK(p *feed.Partner, r *http.Request) bool {
+	if len(p.IPNets) == 0 {
+		return true
+	}
+	ip := clientIP(r)
+	if ip == nil {
+		return false
+	}
+	for _, n := range p.IPNets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func clientIP(r *http.Request) net.IP {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		first := strings.TrimSpace(strings.Split(xff, ",")[0])
+		if ip := net.ParseIP(first); ip != nil {
+			return ip
+		}
+	}
+	if xr := r.Header.Get("X-Real-IP"); xr != "" {
+		if ip := net.ParseIP(strings.TrimSpace(xr)); ip != nil {
+			return ip
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	return net.ParseIP(host)
 }

@@ -31,10 +31,13 @@ def _check(authorization: str | None):
 async def partners_feed(authorization: str | None = Header(default=None)):
     _check(authorization)
     pool = await get_pool()
+    # active + testing: testing = онбординг SSP (реальные биды, чтобы партнёр
+    # прошёл интеграционный тест). Go отдаёт 404 для всех остальных статусов —
+    # см. bidder-go partnerBiddable и Python process_bid_request.
     rows = await pool.fetch(
         """SELECT id, endpoint_key, auth_token_hash, qps_limit, bid_floor, status,
-                  allowed_ad_types
-           FROM supply_partners WHERE status = 'active'"""
+                  allowed_ad_types, ip_whitelist
+           FROM supply_partners WHERE status IN ('active', 'testing')"""
     )
     return {"partners": [dict(r) for r in rows]}
 

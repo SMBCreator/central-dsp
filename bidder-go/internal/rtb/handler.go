@@ -6,6 +6,7 @@ package rtb
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,10 +35,31 @@ type Handler struct {
 	base    string // базовый URL backend'а для nurl/imp/click
 	seat    string
 	metrics *metrics.Registry // nil-safe: без реестра метрики не пишутся
+	// internalToken — RTB_API_TOKEN: им backend подписывает автопроверку SSP
+	// (ssp_check.py), чтобы обойти IP-whitelist партнёра. "" = обход выключен.
+	internalToken string
 }
 
 // SetMetrics подключает реестр метрик (вызывается из main до старта сервера).
 func (h *Handler) SetMetrics(r *metrics.Registry) { h.metrics = r }
+
+// SetInternalToken задаёт секрет для заголовка internalCheckHeader.
+func (h *Handler) SetInternalToken(t string) { h.internalToken = t }
+
+// internalCheckHeader — заголовок автопроверки из кабинета. Значение = RTB_API_TOKEN.
+const internalCheckHeader = "X-CentralDSP-Internal-Check"
+
+// skipTokenHeader — "1" вместе с валидным internalCheckHeader: не сверять
+// SSP-токен партнёра (открытого токена у backend'а нет). См. Bid.
+const skipTokenHeader = "X-CentralDSP-Skip-Token"
+
+func (h *Handler) isInternalCheck(r *http.Request) bool {
+	if h.internalToken == "" {
+		return false
+	}
+	given := r.Header.Get(internalCheckHeader)
+	return given != "" && subtle.ConstantTimeCompare([]byte(given), []byte(h.internalToken)) == 1
+}
 
 // MaxBidRequestBytes — верхняя граница тела OpenRTB-запроса. Типичный запрос
 // с несколькими imp, device, user.eids и ext — 5-50 КиБ; 256 КиБ покрывает
@@ -139,9 +161,22 @@ func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown endpoint", http.StatusNotFound)
 		return
 	}
-	if !partnerTokenOK(partner, r) {
+	// Автопроверка из кабинета (ssp_check.py) идёт с IP backend'а и без открытого
+	// SSP-токена (в БД только хэш, миграция 032). Поэтому с валидным internal-
+	// токеном (RTB_API_TOKEN) она может: (а) пропустить IP-whitelist — как
+	// client_ip=None в Python; (б) по заголовку X-CentralDSP-Skip-Token пропустить
+	// сверку токена партнёра — это verify_token=False в Python. Негативный тест
+	// auth шлёт явный неверный токен без Skip-Token и должен получить 403.
+	internal := h.isInternalCheck(r)
+	skipToken := internal && r.Header.Get(skipTokenHeader) == "1" && r.Header.Get(TokenHeader) == ""
+	if !skipToken && !partnerTokenOK(partner, r) {
 		h.mNoBid(metrics.ReasonBadAuth)
 		http.Error(w, "invalid ssp token", http.StatusForbidden)
+		return
+	}
+	if !internal && !partnerIPOK(partner, r) {
+		h.mNoBid(metrics.ReasonBadAuth)
+		http.Error(w, "ip not allowed", http.StatusForbidden)
 		return
 	}
 	endpointKey := r.PathValue("endpointKey")
@@ -594,6 +629,27 @@ func (h *Handler) Imp(w http.ResponseWriter, r *http.Request) {
 }
 
 // Healthz — GET /healthz: liveness + возраст фида.
+// FeedReload — POST /internal/feed/reload: немедленный рефреш фида.
+// Требует internalCheckHeader = RTB_API_TOKEN; иначе 403 (или 404, если токен
+// не настроен — эндпоинта «как бы нет»).
+func (h *Handler) FeedReload(w http.ResponseWriter, r *http.Request) {
+	if h.internalToken == "" {
+		http.NotFound(w, r)
+		return
+	}
+	if !h.isInternalCheck(r) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	h.store.Refresh(ctx)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok": true, "campaigns": h.store.Len(), "feed_age_seconds": h.store.Age().Seconds(),
+	})
+}
+
 func (h *Handler) Healthz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	redisOK := false

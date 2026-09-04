@@ -143,9 +143,10 @@ async def revoke_token(partner_id: str, user: dict = Depends(require_admin)):
 async def connection_check(partner_id: str, user: dict = Depends(require_admin)):
     """Прогоняет интеграционный чек-лист подключения и сохраняет результат.
 
-    Партнёр в статусе draft на время проверки допускается к биддеру
-    (process_bid_request принимает active/testing; draft переводим в testing
-    автоматически при первом запуске проверки — это и есть смысл теста).
+    Проверка идёт через боевой Go-биддер по HTTP (ssp_check.go_bidder_caller),
+    а не через Python-паритет: иначе результат ничего не говорит о том, что
+    увидит SSP в продакшене. Партнёр в статусе draft переводится в testing
+    (биддер и фид принимают active/testing) — это и есть смысл теста.
     """
     pool = await get_pool()
     row = await pool.fetchrow(
@@ -165,9 +166,10 @@ async def connection_check(partner_id: str, user: dict = Depends(require_admin))
         )
         partner["status"] = "testing"
 
-    from routers.rtb import process_bid_request
-
-    result = await ssp_check.run_connection_check(partner, process_bid_request)
+    # Go перечитывает фид раз в 30 с: только что переведённый в testing партнёр
+    # ещё не в снапшоте -> проверка дала бы 404. Просим перечитать сейчас.
+    await ssp_check.request_feed_reload()
+    result = await ssp_check.run_connection_check(partner, ssp_check.go_bidder_caller())
     await pool.execute(
         "UPDATE supply_partners SET last_check = $2::jsonb, updated_at = now() WHERE id = $1",
         partner_id, json.dumps(result),

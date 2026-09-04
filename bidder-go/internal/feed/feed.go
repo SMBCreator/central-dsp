@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -129,8 +130,45 @@ type Partner struct {
 	BidFloor       float64         `json:"bid_floor"`
 	Status         string          `json:"status"`
 	AllowedAdTypes json.RawMessage `json:"allowed_ad_types"`
+	IPWhitelist    json.RawMessage `json:"ip_whitelist"` // JSON-массив IP/CIDR серверов SSP; пусто = любой IP
 
 	AllowedTypes map[string]bool `json:"-"`
+	IPNets       []*net.IPNet    `json:"-"` // распарсенный IPWhitelist
+}
+
+// ParseIPWhitelist разбирает JSON-массив строк IP или CIDR (объект/строка с
+// объектом — как ParseAllowedTypes). Мусорные элементы пропускаются —
+// паритет с ssp_check.ip_allowed.
+func ParseIPWhitelist(raw json.RawMessage) []*net.IPNet {
+	if len(raw) == 0 {
+		return nil
+	}
+	var items []string
+	if err := json.Unmarshal(raw, &items); err != nil {
+		var s string
+		if json.Unmarshal(raw, &s) != nil || json.Unmarshal([]byte(s), &items) != nil {
+			return nil
+		}
+	}
+	out := make([]*net.IPNet, 0, len(items))
+	for _, it := range items {
+		it = strings.TrimSpace(it)
+		if it == "" {
+			continue
+		}
+		if _, n, err := net.ParseCIDR(it); err == nil {
+			out = append(out, n)
+			continue
+		}
+		if ip := net.ParseIP(it); ip != nil {
+			bits := 32
+			if ip.To4() == nil {
+				bits = 128
+			}
+			out = append(out, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
+		}
+	}
+	return out
 }
 
 // DomainList — глобальные white/blacklist на уровне аккаунта.
@@ -173,6 +211,9 @@ func NewStore(cfg Config) *Store {
 		snap:   &Snapshot{Partners: map[string]*Partner{}},
 	}
 }
+
+// Refresh — немедленный рефреш снапшота (POST /internal/feed/reload).
+func (s *Store) Refresh(ctx context.Context) { s.refresh(ctx) }
 
 // Run — цикл рефреша; завершение по ctx.
 func (s *Store) Run(ctx context.Context) {
@@ -245,6 +286,7 @@ func (s *Store) refresh(ctx context.Context) {
 	for i := range parts.Partners {
 		p := &parts.Partners[i]
 		p.AllowedTypes = ParseAllowedTypes(p.AllowedAdTypes)
+		p.IPNets = ParseIPWhitelist(p.IPWhitelist)
 		snap.Partners[p.EndpointKey] = p
 	}
 	for i := range camps.Candidates {

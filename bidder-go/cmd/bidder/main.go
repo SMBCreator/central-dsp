@@ -58,6 +58,10 @@ func main() {
 	}
 
 	h := rtb.NewHandler(store, rc)
+	// Тот же секрет, что и для фида: backend подписывает им автопроверку SSP
+	// (обход IP-whitelist) и запрос принудительного рефреша фида.
+	internalToken := env("RTB_API_TOKEN", os.Getenv("INTERNAL_FEED_TOKEN"))
+	h.SetInternalToken(internalToken)
 
 	// Prometheus-метрики: счётчики hot path + gauges состояния (GAP-011).
 	reg := metrics.New()
@@ -85,6 +89,10 @@ func main() {
 	mux.HandleFunc("POST /rtb/imp", h.Imp)
 	mux.HandleFunc("GET /healthz", h.Healthz)
 	mux.Handle("GET /metrics", reg.Handler())
+	// Принудительный рефреш фида: backend дёргает перед автопроверкой SSP
+	// (draft->testing должен попасть в снапшот сразу, а не через 30 с).
+	// Только с internal-токеном; Caddy этот путь наружу не проксирует.
+	mux.HandleFunc("POST /internal/feed/reload", h.FeedReload)
 
 	srv := &http.Server{
 		Addr:              addr,

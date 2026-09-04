@@ -280,6 +280,76 @@ func TestMacroOrEmpty(t *testing.T) {
 	}
 }
 
+// IP-whitelist партнёра (паритет с rtb.py/ssp_check.ip_allowed): пустой список —
+// любой IP; непустой — только перечисленные IP/CIDR; XFF имеет приоритет.
+func TestBidIPWhitelist(t *testing.T) {
+	snap := testSnapshot()
+	snap.Partners["key1"].IPNets = feed.ParseIPWhitelist([]byte(`["203.0.113.7","10.1.0.0/16"]`))
+	h := newTestHandler(snap)
+	body := `{"id":"r9","imp":[{"id":"1","banner":{"w":300,"h":250}}]}`
+
+	mk := func(remote, xff string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, "/rtb/bid/key1", strings.NewReader(body))
+		r.SetPathValue("endpointKey", "key1")
+		r.RemoteAddr = remote
+		if xff != "" {
+			r.Header.Set("X-Forwarded-For", xff)
+		}
+		w := httptest.NewRecorder()
+		h.Bid(w, r)
+		return w
+	}
+	if w := mk("203.0.113.7:5555", ""); w.Code != http.StatusOK {
+		t.Fatalf("exact ip: want 200, got %d", w.Code)
+	}
+	if w := mk("10.1.2.3:5555", ""); w.Code != http.StatusOK {
+		t.Fatalf("cidr: want 200, got %d", w.Code)
+	}
+	if w := mk("198.51.100.1:5555", ""); w.Code != http.StatusForbidden {
+		t.Fatalf("foreign ip: want 403, got %d", w.Code)
+	}
+	// За Caddy: RemoteAddr = прокси, реальный клиент в XFF.
+	if w := mk("127.0.0.1:1", "203.0.113.7, 127.0.0.1"); w.Code != http.StatusOK {
+		t.Fatalf("xff allowed: want 200, got %d", w.Code)
+	}
+	if w := mk("127.0.0.1:1", "198.51.100.1"); w.Code != http.StatusForbidden {
+		t.Fatalf("xff foreign: want 403, got %d", w.Code)
+	}
+	// Автопроверка из кабинета: internal-токен обходит whitelist; без токена — нет.
+	h.SetInternalToken("infra-secret")
+	r := httptest.NewRequest(http.MethodPost, "/rtb/bid/key1", strings.NewReader(body))
+	r.SetPathValue("endpointKey", "key1")
+	r.RemoteAddr = "172.18.0.5:4000"
+	r.Header.Set(internalCheckHeader, "infra-secret")
+	w := httptest.NewRecorder()
+	h.Bid(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("internal check bypass: want 200, got %d", w.Code)
+	}
+	r.Header.Set(internalCheckHeader, "wrong")
+	w = httptest.NewRecorder()
+	h.Bid(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("wrong internal token must not bypass: want 403, got %d", w.Code)
+	}
+}
+
+func TestFeedReloadAuth(t *testing.T) {
+	h := newTestHandler(testSnapshot())
+	// Токен не настроен -> 404 (эндпоинта «нет»).
+	w := httptest.NewRecorder()
+	h.FeedReload(w, httptest.NewRequest(http.MethodPost, "/internal/feed/reload", nil))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("no token configured: want 404, got %d", w.Code)
+	}
+	h.SetInternalToken("s")
+	w = httptest.NewRecorder()
+	h.FeedReload(w, httptest.NewRequest(http.MethodPost, "/internal/feed/reload", nil))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("missing header: want 403, got %d", w.Code)
+	}
+}
+
 func TestHealthz(t *testing.T) {
 	h := newTestHandler(testSnapshot())
 	r := httptest.NewRequest(http.MethodGet, "/healthz", nil)

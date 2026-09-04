@@ -18,8 +18,92 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import time
 from typing import Any
+
+# --- Адаптер к боевому Go-биддеру ---------------------------------------------
+#
+# Проверка должна идти через тот же бинарь, что торгует в продакшене. Python
+# process_bid_request — legacy-паритет, и результат проверки через него ничего
+# не говорит о Go (см. docs/audit/preprod_checklist_2026-09.md D2).
+#
+# Контракт адаптера = контракту process_bid_request, чтобы run_connection_check
+# и её тесты не менялись:
+#   dict  -> BidResponse;  None -> no-bid (204);  HTTPException(status) -> отказ.
+
+BIDDER_URL = os.environ.get("BIDDER_URL", "http://bidder-go:8090").rstrip("/")
+INTERNAL_CHECK_HEADER = "X-CentralDSP-Internal-Check"  # = bidder-go rtb.internalCheckHeader
+TOKEN_HEADER = "X-CentralDSP-Token"  # = bidder-go rtb.TokenHeader
+
+
+def go_bidder_caller(client=None):
+    """Возвращает async-функцию с сигнатурой process_bid_request, бьющую в Go.
+
+    client — httpx.AsyncClient (инжектится в тестах). Внутренний токен
+    (RTB_API_TOKEN) в заголовке INTERNAL_CHECK_HEADER даёт Go обойти
+    IP-whitelist партнёра: запрос идёт с IP backend'а, а не SSP.
+    """
+    import httpx
+    from fastapi import HTTPException
+
+    internal_token = os.environ.get("RTB_API_TOKEN", "")
+
+    async def call(endpoint_key: str, req: dict, *, verify_token: bool = True,
+                   ssp_token: str | None = None, client_ip: str | None = None):
+        headers = {"Content-Type": "application/json"}
+        if internal_token:
+            headers[INTERNAL_CHECK_HEADER] = internal_token
+        if ssp_token is not None:
+            headers[TOKEN_HEADER] = ssp_token
+        elif not verify_token and internal_token:
+            # Открытого токена в БД нет (032, только хэш). Проверка формата не
+            # должна падать на 403 — просим Go пропустить сверку токена для
+            # этого internal-запроса. Негативный тест auth идёт с ssp_token.
+            headers["X-CentralDSP-Skip-Token"] = "1"
+        url = f"{BIDDER_URL}/rtb/bid/{endpoint_key}"
+        own = client is None
+        c = client or httpx.AsyncClient(timeout=httpx.Timeout(3.0, connect=1.0))
+        try:
+            try:
+                resp = await c.post(url, json=req, headers=headers)
+            except httpx.HTTPError as e:
+                raise HTTPException(status_code=503, detail=f"Go-биддер недоступен ({BIDDER_URL}): {type(e).__name__}")
+        finally:
+            if own:
+                await c.aclose()
+        if resp.status_code == 204:
+            return None
+        if resp.status_code == 200:
+            try:
+                return resp.json()
+            except ValueError:
+                raise HTTPException(status_code=502, detail="Go-биддер вернул не-JSON на 200")
+        raise HTTPException(status_code=resp.status_code, detail=resp.text.strip()[:200])
+
+    return call
+
+
+async def request_feed_reload(client=None) -> bool:
+    """Просит Go немедленно перечитать фид (draft->testing должен попасть в
+    снапшот до проверки, а не через 30 с). Ошибка — не фатальна."""
+    import httpx
+
+    token = os.environ.get("RTB_API_TOKEN", "")
+    if not token:
+        return False
+    own = client is None
+    c = client or httpx.AsyncClient(timeout=httpx.Timeout(6.0, connect=1.0))
+    try:
+        try:
+            r = await c.post(f"{BIDDER_URL}/internal/feed/reload", headers={INTERNAL_CHECK_HEADER: token})
+            return r.status_code == 200
+        except httpx.HTTPError:
+            return False
+    finally:
+        if own:
+            await c.aclose()
+
 
 # --- Чистые функции ---------------------------------------------------------
 
