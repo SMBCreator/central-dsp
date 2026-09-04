@@ -520,18 +520,29 @@ def _fire_and_forget(coro) -> None:
     task.add_done_callback(_swallow)
 
 
+def _is_test_bid(row) -> bool:
+    """bidmeta (Go пишет is_test=1 при OpenRTB test=1) или строка bid_events (034)."""
+    try:
+        v = row.get("is_test") if hasattr(row, "get") else row["is_test"]
+    except (KeyError, IndexError, TypeError):
+        return False
+    return v in (1, "1", True)
+
+
 async def _log_event(pool, event_type: str, **kw: Any) -> None:
     await pool.execute(
         """
         INSERT INTO bid_events (event_type, bid_id, imp_id, campaign_id, line_item_id, creative_id,
-                                supply_partner_id, price, clear_price, device_type, geo_country, ad_type, domain, os, browser, pctr)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+                                supply_partner_id, price, clear_price, device_type, geo_country, ad_type, domain, os, browser, pctr,
+                                is_test)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
         """,
         event_type, kw.get("bid_id", ""), kw.get("imp_id"), kw.get("campaign_id"),
         kw.get("line_item_id"), kw.get("creative_id"), kw.get("supply_partner_id"),
         kw.get("price"), kw.get("clear_price"), kw.get("device_type"),
         kw.get("geo_country"), kw.get("ad_type"), kw.get("domain"),
         kw.get("os"), kw.get("browser"), kw.get("pctr"),
+        bool(kw.get("is_test", False)),
     )
 
 
@@ -685,7 +696,7 @@ async def process_bid_request(
     Partners in 'testing' status are served: this is the SSP onboarding
     test phase (Часть SSP-онбординга).
 
-    verify_token=False — только для внутренней автопроверки (ssp_check):
+    verify_token=False — только для внутре��ней автопроверки (ssp_check):
     открытый токен в БД не хранится (миграция 032), поэтому сервер сам
     предъявить его не может. Публичный HTTP-роут всегда проверяет."""
     pool = await get_pool()
@@ -1091,6 +1102,22 @@ async def win_notice(bid: str, price: str | None = None):
     clear_price = clamp_clearing_price(price, row["price"] or 0)
     cost = cpm_to_cost(clear_price)
 
+    # OpenRTB test=1 (bidmeta.is_test от Go-биддера): SSP проверяет интеграцию.
+    # Фиксируем win в журнале (видно в отчёте с флагом), но не списываем деньги
+    # и не трогаем stats_hourly — иначе тест SSP исказит расход клиента.
+    if _is_test_bid(row):
+        if await mark_once("testwin", bid):
+            obs_metrics.inc("rtb_test_wins_total")
+            await _log_event(
+                pool, "win", bid_id=bid, imp_id=row["imp_id"], campaign_id=row["campaign_id"],
+                line_item_id=row["line_item_id"], creative_id=row["creative_id"],
+                supply_partner_id=row["supply_partner_id"], price=row["price"],
+                clear_price=clear_price, device_type=row["device_type"],
+                geo_country=row["geo_country"], ad_type=row["ad_type"], domain=row["domain"],
+                os=row["os"], browser=row["browser"], is_test=True,
+            )
+        return {"ok": True, "test": True}
+
     async with pool.acquire() as conn:
         result = await bill_win(
             conn,
@@ -1127,14 +1154,18 @@ async def impression(bid: str):
         return Response(content=_PIXEL, media_type="image/gif")
     row = await _find_bid(pool, bid)
     if row:
+        is_test = _is_test_bid(row)
         obs_metrics.inc("rtb_imps_total")
         await _log_event(
             pool, "impression", bid_id=bid, imp_id=row["imp_id"], campaign_id=row["campaign_id"],
             line_item_id=row["line_item_id"], creative_id=row["creative_id"],
             supply_partner_id=row["supply_partner_id"], device_type=row["device_type"],
             geo_country=row["geo_country"], ad_type=row["ad_type"], domain=row["domain"],
-                os=row["os"], browser=row["browser"],
+            os=row["os"], browser=row["browser"], is_test=is_test,
         )
+        if is_test:
+            # Тестовый показ SSP: в журнале есть, в статистике клиента — нет.
+            return Response(content=_PIXEL, media_type="image/gif")
         await _bump_domain_stats(pool, row, "impressions")
         await _bump_stats(pool, "impressions", 0, row["campaign_id"], row["line_item_id"], row["creative_id"], row["supply_partner_id"])
         # Count the impression against the frequency cap

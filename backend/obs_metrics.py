@@ -33,6 +33,10 @@ _COUNTER_HELP = {
     "rtb_viewable_imps_total": "Viewable impression events (MRC 50%/1s) accepted.",
     "rtb_clicks_total": "Click events accepted.",
     "rtb_event_token_rejects_total": "Event notifications rejected (bad/expired token).",
+    # Consumer событий Go-биддера (events_consumer.py): rtb:events -> bid_events/stats_hourly.
+    "rtb_events_consumed_total": "Bid/loss events consumed from the Go bidder Redis stream.",
+    "rtb_events_consumer_errors_total": "Consumer iterations that failed (Redis/PG error, retried with backoff).",
+    "rtb_test_wins_total": "Win notices for OpenRTB test=1 bids (recorded, not billed).",
 }
 
 _LATENCY_BUCKETS = (0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 1.0)

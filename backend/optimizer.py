@@ -104,6 +104,7 @@ async def optimize_campaign(campaign: dict) -> list[dict]:
                        COALESCE(SUM(be.clear_price) FILTER (WHERE be.event_type = 'win'), 0) / 1000.0 AS spend
                 FROM bid_events be
                 WHERE be.campaign_id = $1 AND {dim_expr} IS NOT NULL
+                  AND NOT be.is_test
                   AND be.created_at >= now() - interval '{WINDOW}'
                 GROUP BY {dim_expr}
                 HAVING count(*) FILTER (WHERE be.event_type = 'impression') >= $2""",

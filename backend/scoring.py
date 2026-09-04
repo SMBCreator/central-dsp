@@ -110,7 +110,7 @@ async def domain_metrics(pool, user_id: str, profile: dict, campaign_id: str | N
                COALESCE(sum(e.clear_price) FILTER (WHERE e.event_type = 'impression'), 0) / 1000.0 AS spend
         FROM bid_events e
         JOIN campaigns c ON c.id = e.campaign_id
-        WHERE c.user_id = $1 AND e.domain IS NOT NULL
+        WHERE c.user_id = $1 AND e.domain IS NOT NULL AND NOT e.is_test
           AND e.created_at >= now() - ($2 || ' days')::interval {camp_filter}
         GROUP BY 1
         """,

@@ -47,6 +47,7 @@ async def recompute_factors() -> dict:
                 WHERE created_at > now() - interval '24 hours'
                   AND campaign_id IS NOT NULL
                   AND supply_partner_id IS NOT NULL
+                  AND NOT is_test
                 GROUP BY campaign_id, supply_partner_id
             )
             SELECT a.*, f.factor AS prev_factor

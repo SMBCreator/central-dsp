@@ -453,6 +453,7 @@ async def report(body: ReportRequest, user: dict = Depends(current_user)):
             WHERE e.campaign_id = ANY($1::uuid[])
               AND e.created_at >= $2::date
               AND e.created_at < ($3::date + interval '1 day')
+              AND NOT e.is_test
               {extra}
             GROUP BY {grp_by}
             ORDER BY {grp_by}

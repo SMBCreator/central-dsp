@@ -37,11 +37,28 @@ from routers.stats import router as stats_router
 from routers.supply_partners import router as supply_partners_router
 
 from audit import AuditMiddleware
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    """Фоновые задачи процесса. Сейчас одна: consumer событий Go-биддера
+    (rtb:events -> bid_events/stats_hourly). Без него у Go-трафика нет
+    бидов в статистике => win-rate/eCPM в кабинете пустые."""
+    import events_consumer
+
+    events_consumer.start_background()
+    try:
+        yield
+    finally:
+        await events_consumer.stop_background()
+
 
 app = FastAPI(
     title="CentralDSP API",
     version="1.0.0",
     description="Demand-Side Platform: management API + OpenRTB 2.5 bidder",
+    lifespan=_lifespan,
 )
 
 app.add_middleware(AuditMiddleware)
