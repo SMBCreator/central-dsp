@@ -278,31 +278,86 @@ export const mockCreatives = [
   },
 ]
 
+// Поля — как в backend/routers/ord_router.py (CounterpartyIn / ContractIn + ord_status/ord_error)
 export const mockCounterparties = [
   {
     id: "cp-1",
     name: "ООО «Северный Свет»",
     inn: "7810123456",
     ogrn: "1027810123456",
-    legal_address: "г. Санкт-Петербург, Невский пр., д. 1",
-    type: "ul",
-    status: "registered",
+    legal_type: "ul",
+    role: "advertiser",
+    advertiser_id: "adv-1",
+    address: "г. Санкт-Петербург, Невский пр., д. 1",
+    ord_status: "registered",
+    ord_error: null,
     ord_external_id: "cp-ord-1",
     created_at: iso(60 * 864e5),
+  },
+  {
+    id: "cp-2",
+    name: "ООО «ЦентралДСП»",
+    inn: "7707083893",
+    ogrn: "1027700132195",
+    legal_type: "ul",
+    role: "ors",
+    advertiser_id: null,
+    address: "г. Москва, ул. Тверская, д. 7",
+    ord_status: "registered",
+    ord_error: null,
+    ord_external_id: "cp-ord-2",
+    created_at: iso(90 * 864e5),
+  },
+  {
+    id: "cp-3",
+    name: "ИП Петров А.В.",
+    inn: "781012345678",
+    ogrn: "318784700012345",
+    legal_type: "ip",
+    role: "advertiser",
+    advertiser_id: "adv-2",
+    address: "г. Санкт-Петербург, Литейный пр., д. 22",
+    ord_status: "draft",
+    ord_error: null,
+    ord_external_id: null,
+    created_at: iso(3 * 864e5),
   },
 ]
 
 export const mockContracts = [
   {
     id: "ct-1",
-    counterparty_id: "cp-1",
+    client_id: "cp-1",
+    contractor_id: "cp-2",
+    client_name: "ООО «Северный Свет»",
+    contractor_name: "ООО «ЦентралДСП»",
+    contract_type: "service",
+    subject_type: "distribution",
     number: "ДС-2026/14",
-    date: "2026-01-15",
+    signed_at: "2026-01-15",
     amount: 450_000,
-    subject: "Распространение рекламы",
-    status: "registered",
+    is_vat: true,
+    ord_status: "registered",
+    ord_error: null,
     ord_external_id: "ct-ord-1",
     created_at: iso(50 * 864e5),
+  },
+  {
+    id: "ct-2",
+    client_id: "cp-3",
+    contractor_id: "cp-2",
+    client_name: "ИП Петров А.В.",
+    contractor_name: "ООО «ЦентралДСП»",
+    contract_type: "service",
+    subject_type: "distribution",
+    number: "ДС-2026/21",
+    signed_at: "2026-08-30",
+    amount: 120_000,
+    is_vat: false,
+    ord_status: "failed",
+    ord_error: "Заказчик не зарегистрирован в ОРД — сначала отправьте контрагента",
+    ord_external_id: null,
+    created_at: iso(2 * 864e5),
   },
 ]
 
@@ -469,7 +524,7 @@ export function mockDiagnostics(campaignId: string) {
       ok: true,
       severity: "warning",
       title: "Заблокированные источники",
-      detail: "Оптимизатор не блокировал источники",
+      detail: "Оптимизатор не блокировал источ��ики",
     },
   ]
 
@@ -478,7 +533,7 @@ export function mockDiagnostics(campaignId: string) {
   return {
     eligible: blockers.length === 0,
     summary: blockers.length
-      ? "Кампания не откручивается: устраните блокирующие проблемы ниже."
+      ? "Кампания не откручивается: устраните ��локирующие проблемы ниже."
       : warnings.length
         ? "Кампания участвует в торгах, но охват ограничен — см. предупреждения."
         : "Все проверки пройдены — кампания готова к откруткам.",
@@ -708,7 +763,45 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
       : 0
     return { rows, totals }
   }
-  if (path.startsWith("/stats/breakdown")) return []
+  if (path.startsWith("/stats/breakdown")) {
+    // Строки разбивки выводим из spent_total кампаний, чтобы цифры в списке
+    // кампаний/групп были согласованы с карточками (eCPM ~ 180 ₽, CTR ~ 0.8%).
+    const dimension = search.get("dimension") || "campaign"
+    const rowFor = (id: string, name: string, status: string, spend: number) => {
+      const impressions = Math.round((spend / 180) * 1000)
+      const clicks = Math.round(impressions * 0.0082)
+      const wins = impressions
+      const bids = Math.round(wins / 0.31)
+      return {
+        id,
+        name,
+        status,
+        bids,
+        wins,
+        impressions,
+        clicks,
+        viewable_imps: Math.round(impressions * 0.71),
+        spend,
+        // Как в backend/routers/stats.py: win_rate и ctr — в процентах.
+        win_rate: bids ? Math.round((wins / bids) * 10000) / 100 : 0,
+        ctr: impressions ? Math.round((clicks / impressions) * 100000) / 1000 : 0,
+        ecpm: impressions ? Math.round((spend / impressions) * 1000 * 100) / 100 : 0,
+      }
+    }
+    if (dimension === "group") {
+      return mockGroups.map((g) => {
+        const spend = mockCampaigns.filter((c) => c.group_id === g.id).reduce((s, c) => s + (c.spent_total || 0), 0)
+        return rowFor(g.id, g.name, "active", spend)
+      })
+    }
+    if (dimension === "advertiser") {
+      return mockAdvertisers.map((a) => {
+        const spend = mockCampaigns.filter((c) => c.advertiser_id === a.id).reduce((s, c) => s + (c.spent_total || 0), 0)
+        return rowFor(a.id, a.name, a.status, spend)
+      })
+    }
+    return mockCampaigns.map((c) => rowFor(c.id, c.name, c.status, c.spent_total || 0))
+  }
 
   // --- Сущности (in-memory CRUD, см. crud()) ---
   if (path === "/advertisers" && method === "GET") return mockAdvertisers
@@ -750,13 +843,24 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
   if (path === "/ord/counterparties" && method === "GET") return mockCounterparties
   const cpCrud = crud(method, path, body, "/ord/counterparties", mockCounterparties as MockRow[], {
     prefix: "cp",
-    defaults: () => ({ status: "draft", ord_external_id: null }),
+    defaults: () => ({ ord_status: "draft", ord_error: null, ord_external_id: null, advertiser_id: null }),
   })
   if (cpCrud !== undefined) return cpCrud
   if (path === "/ord/contracts" && method === "GET") return mockContracts
   const ctCrud = crud(method, path, body, "/ord/contracts", mockContracts as MockRow[], {
     prefix: "ct",
-    defaults: () => ({ status: "draft", ord_external_id: null }),
+    defaults: (b) => {
+      // Бэк отдаёт имена сторон денормализованно — повторяем это в демо.
+      const cb = b as { client_id?: string; contractor_id?: string }
+      const byId = (id?: string) => mockCounterparties.find((c) => c.id === id)?.name ?? "—"
+      return {
+        ord_status: "draft",
+        ord_error: null,
+        ord_external_id: null,
+        client_name: byId(cb.client_id),
+        contractor_name: byId(cb.contractor_id),
+      }
+    },
   })
   if (ctCrud !== undefined) return ctCrud
   const ordRegMatch = path.match(/^\/ord\/(counterparties|contracts|creatives)\/([^/]+)\/register$/)
@@ -765,10 +869,25 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
       ordRegMatch[1] === "counterparties" ? mockCounterparties : ordRegMatch[1] === "contracts" ? mockContracts : mockCreatives
     const row = (list as MockRow[]).find((r) => r.id === ordRegMatch[2])
     if (row) {
-      if (ordRegMatch[1] === "creatives") row.erid = `2VtzqwDemo${Date.now().toString(36).slice(-4)}`
-      else {
-        row.status = "registered"
-        row.ord_external_id = `${ordRegMatch[1].slice(0, 2)}-ord-${Date.now().toString(36).slice(-4)}`
+      if (ordRegMatch[1] === "creatives") {
+        row.erid = `2VtzqwDemo${Date.now().toString(36).slice(-4)}`
+      } else if (ordRegMatch[1] === "contracts") {
+        // Как в бэке: договор регистрируется только между уже зарегистрированными сторонами.
+        const ct = row as { client_id?: string; contractor_id?: string }
+        const sides = [ct.client_id, ct.contractor_id].map((id) => mockCounterparties.find((c) => c.id === id))
+        const missing = sides.find((s) => !s || s.ord_status !== "registered")
+        if (missing !== undefined) {
+          row.ord_status = "failed"
+          row.ord_error = "Заказчик не зарегистрирован в ОРД — сначала отправьте контрагента"
+        } else {
+          row.ord_status = "registered"
+          row.ord_error = null
+          row.ord_external_id = `ct-ord-${Date.now().toString(36).slice(-4)}`
+        }
+      } else {
+        row.ord_status = "registered"
+        row.ord_error = null
+        row.ord_external_id = `cp-ord-${Date.now().toString(36).slice(-4)}`
       }
     }
     return row ?? { ok: true }
