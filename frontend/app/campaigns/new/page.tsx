@@ -7,7 +7,9 @@ import { api, fetcher } from "@/lib/api"
 import { Button, Card, CardHeader, Field, HelpTip, inputCls } from "@/components/ui"
 import { CreativeBuilder, type CreativeDraft, FORMAT_LABELS } from "@/components/creative-builder"
 import { TargetingEditor, targetingSummary } from "@/components/targeting-editor"
-import type { Targeting } from "@/lib/types"
+import { KktuSelect } from "@/components/kktu-select"
+import { kktuShortLabel } from "@/lib/kktu"
+import type { Counterparty, Targeting } from "@/lib/types"
 
 type Advertiser = { id: string; name: string }
 type Group = { id: string; name: string }
@@ -60,8 +62,15 @@ export default function NewCampaignPage() {
   const [autoOptimize, setAutoOptimize] = useState(true)
   // Step 3: full targeting
   const [targeting, setTargeting] = useState<Targeting>({})
-  // Step 4: creatives
+  // Step 4: creatives + ОРД-маркировка (общая для всех креативов кампании;
+  // без ККТУ и контрагента /creatives примет запись, но регистрация erid в ОРД не пройдёт —
+  // поэтому мастер требует то же, что и модалка «Новый креатив»)
   const [creatives, setCreatives] = useState<CreativeDraft[]>([])
+  const [counterpartyId, setCounterpartyId] = useState("")
+  const [kktuCode, setKktuCode] = useState("")
+  const [kktuLabel, setKktuLabel] = useState("")
+  const { data: counterparties } = useSWR<Counterparty[]>(step === 4 ? "/ord/counterparties" : null, fetcher)
+  const selectedCp = useMemo(() => (counterparties || []).find((cp) => cp.id === counterpartyId) || null, [counterparties, counterpartyId])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState("")
 
@@ -70,8 +79,8 @@ export default function NewCampaignPage() {
     if (step === 1) return !!name.trim() && !!advertiserId
     if (step === 2) return Number(dailyBudget) > 0 && Number(bidPrice) > 0
     if (step === 3) return true // targeting is optional (empty = no restrictions)
-    return creatives.length > 0
-  }, [step, format, name, advertiserId, dailyBudget, bidPrice, creatives])
+    return creatives.length > 0 && !!kktuCode
+  }, [step, format, name, advertiserId, dailyBudget, bidPrice, creatives, kktuCode])
 
   const launch = async () => {
     setSaving(true)
@@ -131,7 +140,17 @@ export default function NewCampaignPage() {
       })
       await api(`/line-items/${li.id}`, { method: "PATCH", body: { status: "active" } })
       for (const cr of creatives) {
-        await api("/creatives", { method: "POST", body: { ...cr, campaign_id: camp.id, line_item_id: li.id } })
+        await api("/creatives", {
+          method: "POST",
+          body: {
+            ...cr,
+            campaign_id: camp.id,
+            line_item_id: li.id,
+            counterparty_id: counterpartyId || null,
+            kktu_code: kktuCode || null,
+            kktu_label: kktuLabel || null,
+          },
+        })
       }
       await api(`/campaigns/${camp.id}`, { method: "PATCH", body: { status: "active" } })
       router.push(`/campaigns/${camp.id}`)
@@ -386,6 +405,64 @@ export default function NewCampaignPage() {
             </dl>
           </Card>
           <CreativeBuilder format={format} creatives={creatives} onChange={setCreatives} />
+
+          <Card>
+            <CardHeader
+              title="Маркировка (ОРД)"
+              subtitle="Применяется ко всем креативам кампании. По 38-ФЗ данные рекламодателя показываются в инфо-значке на креативе и уходят в ОРД при регистрации erid."
+            />
+            <div className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2">
+              <Field label="Контрагент (рекламодатель)">
+                <select value={counterpartyId} onChange={(e) => setCounterpartyId(e.target.value)} className={inputCls}>
+                  <option value="">Не выбран</option>
+                  {(counterparties || []).map((cp) => (
+                    <option key={cp.id} value={cp.id}>
+                      {cp.name}
+                      {cp.inn ? ` · ИНН ${cp.inn}` : ""}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Классификатор ККТУ *">
+                <KktuSelect
+                  value={kktuCode}
+                  onChange={(code, label) => {
+                    setKktuCode(code)
+                    setKktuLabel(label)
+                  }}
+                />
+              </Field>
+              <div className="sm:col-span-2">
+                {selectedCp ? (
+                  <dl className="grid grid-cols-1 gap-x-6 gap-y-1 rounded-lg bg-panel px-3 py-2 text-xs sm:grid-cols-2">
+                    <div className="flex gap-1.5">
+                      <dt className="text-muted">ИНН:</dt>
+                      <dd className="text-foreground">{selectedCp.inn || "—"}</dd>
+                    </div>
+                    <div className="flex gap-1.5">
+                      <dt className="text-muted">ОГРН:</dt>
+                      <dd className="text-foreground">{selectedCp.ogrn || "—"}</dd>
+                    </div>
+                    <div className="flex gap-1.5 sm:col-span-2">
+                      <dt className="text-muted">Адрес:</dt>
+                      <dd className="text-foreground">{selectedCp.address || "—"}</dd>
+                    </div>
+                  </dl>
+                ) : (
+                  <p className="text-xs text-warning">Без контрагента креативы не пройдут регистрацию в ОРД. Добавить: раздел «Маркировка (ОРД)».</p>
+                )}
+                <p className="mt-2 text-xs text-muted">
+                  {kktuCode ? (
+                    <>
+                      Категория: <span className="text-foreground">{kktuShortLabel(kktuCode)}</span>
+                    </>
+                  ) : (
+                    "Обязательное поле: категория товара/услуги уходит в ОРД вместе с erid."
+                  )}
+                </p>
+              </div>
+            </div>
+          </Card>
         </div>
       ) : null}
 
@@ -453,6 +530,11 @@ export default function NewCampaignPage() {
                 </Button>
               )}
             </div>
+            {step === 4 && !canNext ? (
+              <p className="text-[11px] leading-relaxed text-muted">
+                {creatives.length === 0 ? "Добавьте хотя бы один креатив." : "Выберите классификатор ККТУ в блоке «Маркировка (ОРД)»."}
+              </p>
+            ) : null}
           </div>
         </aside>
       </div>
