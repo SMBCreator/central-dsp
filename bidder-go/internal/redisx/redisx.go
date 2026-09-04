@@ -56,6 +56,31 @@ func (c *Client) Ping(ctx context.Context) error { return c.rdb.Ping(ctx).Err() 
 func (c *Client) Close() error { return c.rdb.Close() }
 
 // ---------------------------------------------------------------------------
+// Event stream (bid events -> backend consumer)
+//
+// Go-биддер не пишет в Postgres: каждое событие «bid» кладётся в Redis Stream,
+// а backend (events_consumer.py, группа "backend") переносит его в bid_events и
+// stats_hourly. Без этого win-rate/бид-статистика по Go-трафику была бы пустой.
+
+// EventStreamKey — имя стрима; должно совпадать с backend/events_consumer.py.
+const EventStreamKey = "rtb:events"
+
+// eventStreamMaxLen ограничивает стрим (~200k событий ≈ несколько минут
+// пикового трафика), чтобы лежащий consumer не съел память Redis.
+const eventStreamMaxLen = 200_000
+
+// EmitEvent добавляет событие в стрим. Fire-and-forget: ошибка логируется
+// вызывающей стороной, торги не блокируются.
+func (c *Client) EmitEvent(ctx context.Context, fields map[string]any) error {
+	return c.rdb.XAdd(ctx, &redis.XAddArgs{
+		Stream: EventStreamKey,
+		MaxLen: eventStreamMaxLen,
+		Approx: true,
+		Values: fields,
+	}).Err()
+}
+
+// ---------------------------------------------------------------------------
 // Budget reservation (port of cache.py BUDGET_RESERVE_LUA)
 //
 // Keys: budget:{campaign_id}:{YYYYMMDD} (daily spent, micros)

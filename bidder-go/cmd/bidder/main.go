@@ -79,6 +79,8 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /rtb/bid/{endpointKey}", h.Bid)
 	mux.HandleFunc("POST /rtb/win", h.Win)
+	// lurl SSP вызывают GET-ом (пиксель/серверный GET); POST оставлен для совместимости.
+	mux.HandleFunc("GET /rtb/loss", h.Loss)
 	mux.HandleFunc("POST /rtb/loss", h.Loss)
 	mux.HandleFunc("POST /rtb/imp", h.Imp)
 	mux.HandleFunc("GET /healthz", h.Healthz)

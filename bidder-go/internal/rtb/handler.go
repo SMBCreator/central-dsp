@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -129,8 +130,11 @@ func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "feed not loaded", http.StatusServiceUnavailable)
 		return
 	}
+	// Паритет с Python (rtb.py): партнёр торгуется в статусах active и testing.
+	// testing = онбординг: реальные биды, чтобы SSP видел ответы; deny-статусы
+	// (draft/paused/blocked) фид не отдаёт вовсе (bidder_feed.py).
 	partner := snap.Partners[r.PathValue("endpointKey")]
-	if partner == nil || partner.Status != "active" {
+	if partner == nil || !partnerBiddable(partner.Status) {
 		h.mNoBid(metrics.ReasonUnknownEndpoint)
 		http.Error(w, "unknown endpoint", http.StatusNotFound)
 		return
@@ -139,6 +143,10 @@ func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 		h.mNoBid(metrics.ReasonBadAuth)
 		http.Error(w, "invalid ssp token", http.StatusForbidden)
 		return
+	}
+	endpointKey := r.PathValue("endpointKey")
+	if h.metrics != nil {
+		h.metrics.IncPartnerRequest(endpointKey)
 	}
 
 	// 2. QPS-гейт партнёра. Ошибка Redis — fail-open (биддим), но считаем
@@ -218,6 +226,7 @@ func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 			sum += bids[i].Price
 		}
 		h.metrics.IncBidResponse(len(bids), sum)
+		h.metrics.IncPartnerBids(endpointKey, len(bids))
 	}
 	resp := BidResponse{
 		ID:      req.ID,
@@ -227,6 +236,12 @@ func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 	slog.Debug("bid", "id", req.ID, "bids", len(bids), "took", time.Since(start))
+}
+
+// partnerBiddable — статусы SSP-партнёра, при которых биддер отвечает на запросы.
+// Совпадает с фильтром фида (bidder_feed.py) и Python-биддером.
+func partnerBiddable(status string) bool {
+	return status == "active" || status == "testing"
 }
 
 // bidOnImp — кандидаты одного impression: фильтры + выбор лучшей цены.
@@ -290,7 +305,9 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 		// кампании И line item в одном Lua-роундтрипе — порт gate_and_reserve.
 		// Инкремент freq-счётчиков делает backend на /imp через bidfreq:{bid_id}.
 		capsList := parseCaps(c)
-		if h.redis != nil {
+		// test=1 (OpenRTB 3.2.1): SSP проверяет интеграцию — отвечаем реальным
+		// бидом, но бюджет не резервируем и деньги не списываем (is_test в bidmeta).
+		if h.redis != nil && req.Test != 1 {
 			cost := sc.price / 1000.0 // CPM -> цена одного показа
 			liBudget := 0.0
 			if c.LiBudget != nil {
@@ -318,10 +335,14 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 			slog.Error("sign token", "err", err)
 			return nil
 		}
-		h.persistBidMeta(rctx, bidID, imp, c, partner, sc.price, view, adType, deviceID, capsList)
+		h.persistBidMeta(rctx, bidID, imp, c, partner, sc.price, view, adType, deviceID, capsList, req.Test == 1)
 
 		adm := BuildAdm(c, h.base, token)
 		nurl := fmt.Sprintf("%s/api/rtb/win?bid=%s&price=${AUCTION_PRICE}", h.base, token)
+		// lurl (OpenRTB 2.5 §4.2.3): SSP сообщает о проигрыше с кодом причины и
+		// ценой, которой не хватило. Идёт в Go (/rtb/* -> биддер): освобождаем
+		// бюджетный резерв сразу и пишем событие loss для отчёта «почему проигрываем».
+		lurl := fmt.Sprintf("%s/rtb/loss?bid=%s&reason=${AUCTION_LOSS}&mtw=${AUCTION_MIN_TO_WIN}", h.base, token)
 		w, hgt := 0, 0
 		if c.Width != nil {
 			w = *c.Width
@@ -337,7 +358,7 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 		return &Bid{
 			ID: bidID, ImpID: imp.ID, Price: roundPrice(sc.price),
 			AdM: adm, ADomain: admomains(c), CrID: c.CreativeID,
-			NURL: nurl, W: w, H: hgt, DealID: dealID, Ext: ext,
+			NURL: nurl, LURL: lurl, W: w, H: hgt, DealID: dealID, Ext: ext,
 		}
 	}
 	return nil
@@ -413,7 +434,7 @@ func (h *Handler) persistBidMeta(ctx interface {
 	Err() error
 	Deadline() (time.Time, bool)
 	Value(any) any
-}, bidID string, imp *Imp, c *feed.Candidate, partner *feed.Partner, price float64, view *targeting.RequestView, adType, deviceID string, caps []redisx.CapWindow) {
+}, bidID string, imp *Imp, c *feed.Candidate, partner *feed.Partner, price float64, view *targeting.RequestView, adType, deviceID string, caps []redisx.CapWindow, isTest bool) {
 	if h.redis == nil {
 		return
 	}
@@ -422,15 +443,58 @@ func (h *Handler) persistBidMeta(ctx interface {
 	if dt == "" {
 		dt = "unknown"
 	}
+	browser := targeting.DeviceBrowser(view.UA)
+	testFlag := 0
+	if isTest {
+		testFlag = 1
+	}
+	// bidmeta читает backend в win/imp/click (rtb.py:_find_bid) — формат Python,
+	// плюс is_test, чтобы win по тестовому запросу не списывал деньги.
 	meta, _ := json.Marshal(map[string]any{
 		"bid_id": bidID, "imp_id": imp.ID,
 		"campaign_id": c.CampaignID, "line_item_id": c.LiID,
 		"creative_id": c.CreativeID, "supply_partner_id": partner.ID,
 		"price":       roundPrice(price),
 		"device_type": dt, "geo_country": view.Country, "ad_type": adType,
-		"domain": view.Domain, "os": view.OS, "browser": "",
+		"domain": view.Domain, "os": view.OS, "browser": browser,
+		"is_test": testFlag,
 	})
 	rdb.Set(ctx, "bidmeta:"+bidID, meta, time.Hour)
+
+	// Событие «bid» -> Redis Stream -> backend/events_consumer.py -> bid_events +
+	// stats_hourly.bids. Расширенные поля (tagid/publisher/bundle/city/region)
+	// нужны отчётам «по площадкам» и оптимизатору. Все значения — строки: так
+	// их читает XREADGROUP на стороне Python.
+	ev := map[string]any{
+		"type":              "bid",
+		"bid_id":            bidID,
+		"imp_id":            imp.ID,
+		"campaign_id":       c.CampaignID,
+		"line_item_id":      c.LiID,
+		"creative_id":       c.CreativeID,
+		"supply_partner_id": partner.ID,
+		"price":             strconv.FormatFloat(roundPrice(price), 'f', 4, 64),
+		"bidfloor":          strconv.FormatFloat(imp.BidFloor, 'f', 4, 64),
+		"device_type":       dt,
+		"geo_country":       view.Country,
+		"geo_region":        view.Region,
+		"geo_city":          view.City,
+		"ad_type":           adType,
+		"domain":            view.Domain,
+		"bundle":            view.Bundle,
+		"publisher_id":      view.PubID,
+		"tagid":             imp.TagID,
+		"os":                view.OS,
+		"browser":           browser,
+		"is_test":           strconv.Itoa(testFlag),
+		"ts":                strconv.FormatInt(time.Now().Unix(), 10),
+	}
+	if err := h.redis.EmitEvent(ctx, ev); err != nil {
+		slog.Warn("emit bid event", "err", err)
+		if h.metrics != nil {
+			h.metrics.IncEventEmitError()
+		}
+	}
 	if deviceID != "" && len(caps) > 0 {
 		capsJSON, _ := json.Marshal(caps)
 		rdb.Set(ctx, "bidfreq:"+bidID, deviceID+"|"+string(capsJSON), time.Hour)
@@ -441,7 +505,7 @@ func (h *Handler) persistBidMeta(ctx interface {
 	}
 }
 
-// Win — POST /rtb/win (внутренний; в prod win идёт на backend /api/rtb/win).
+// Win — POST /rtb/win (вн��тренний; в prod win идёт на backend /api/rtb/win).
 func (h *Handler) Win(w http.ResponseWriter, r *http.Request) {
 	if VerifyEventToken(r.URL.Query().Get("bid")) == "" {
 		http.Error(w, "invalid event token", http.StatusForbidden)
@@ -457,23 +521,71 @@ func (h *Handler) Loss(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid event token", http.StatusForbidden)
 		return
 	}
+	// reason — OpenRTB Loss Reason Code (${AUCTION_LOSS}); mtw — минимальная
+	// цена для выигрыша (${AUCTION_MIN_TO_WIN}). SSP может не подставить макросы —
+	// тогда строки остаются как есть, и мы пишем пусто.
+	reason := macroOrEmpty(r.URL.Query().Get("reason"))
+	mtw := macroOrEmpty(r.URL.Query().Get("mtw"))
 	if h.redis != nil {
-		raw, err := h.redis.Raw().Get(r.Context(), "bidmeta:"+bidID).Result()
+		ctx := r.Context()
+		// Идемпотентность: SSP может повторить lurl; бюджет возвращаем один раз.
+		// Ключ живёт столько же, сколько bidmeta.
+		first, err := h.redis.Raw().SetNX(ctx, "lossdone:"+bidID, "1", time.Hour).Result()
+		if err == nil && !first {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		raw, err := h.redis.Raw().Get(ctx, "bidmeta:"+bidID).Result()
 		if err == nil {
 			var meta struct {
-				CampaignID string  `json:"campaign_id"`
-				LineItemID string  `json:"line_item_id"`
-				Price      float64 `json:"price"`
+				CampaignID      string  `json:"campaign_id"`
+				LineItemID      string  `json:"line_item_id"`
+				CreativeID      string  `json:"creative_id"`
+				SupplyPartnerID string  `json:"supply_partner_id"`
+				Price           float64 `json:"price"`
+				DeviceType      string  `json:"device_type"`
+				GeoCountry      string  `json:"geo_country"`
+				AdType          string  `json:"ad_type"`
+				Domain          string  `json:"domain"`
+				OS              string  `json:"os"`
+				Browser         string  `json:"browser"`
+				IsTest          int     `json:"is_test"`
 			}
 			if json.Unmarshal([]byte(raw), &meta) == nil && meta.CampaignID != "" {
-				_ = h.redis.ReleaseGate(r.Context(), meta.CampaignID, meta.LineItemID, meta.Price/1000.0)
+				if meta.IsTest == 0 {
+					_ = h.redis.ReleaseGate(ctx, meta.CampaignID, meta.LineItemID, meta.Price/1000.0)
+				}
 				if h.metrics != nil {
 					h.metrics.IncLossRelease()
+				}
+				if err := h.redis.EmitEvent(ctx, map[string]any{
+					"type": "loss", "bid_id": bidID,
+					"campaign_id": meta.CampaignID, "line_item_id": meta.LineItemID,
+					"creative_id": meta.CreativeID, "supply_partner_id": meta.SupplyPartnerID,
+					"price":       strconv.FormatFloat(meta.Price, 'f', 4, 64),
+					"loss_reason": reason, "min_to_win": mtw,
+					"device_type": meta.DeviceType, "geo_country": meta.GeoCountry,
+					"ad_type": meta.AdType, "domain": meta.Domain, "os": meta.OS, "browser": meta.Browser,
+					"is_test": strconv.Itoa(meta.IsTest),
+					"ts":      strconv.FormatInt(time.Now().Unix(), 10),
+				}); err != nil {
+					slog.Warn("emit loss event", "err", err)
+					if h.metrics != nil {
+						h.metrics.IncEventEmitError()
+					}
 				}
 			}
 		}
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// macroOrEmpty — если SSP не подставил макрос (осталось "${...}"), возвращаем "".
+func macroOrEmpty(v string) string {
+	if strings.HasPrefix(v, "${") {
+		return ""
+	}
+	return v
 }
 
 // Imp — POST /rtb/imp (в prod imp идёт на backend /api/rtb/imp).

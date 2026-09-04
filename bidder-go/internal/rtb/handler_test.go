@@ -217,6 +217,69 @@ func BenchmarkBidHotPath(b *testing.B) {
 	}
 }
 
+// Партнёр в статусе testing (онбординг) торгуется — паритет с Python и с
+// фильтром фида. Раньше Go отвечал 404, и SSP не мог пройти интеграционный тест.
+func TestBidTestingPartnerIsBiddable(t *testing.T) {
+	snap := testSnapshot()
+	snap.Partners["key1"].Status = "testing"
+	h := newTestHandler(snap)
+	body := `{"id":"r5","imp":[{"id":"1","banner":{"w":300,"h":250}}]}`
+	w := doBid(t, h, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("testing partner must bid: want 200, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestBidPausedPartnerIsRejected(t *testing.T) {
+	for _, st := range []string{"paused", "blocked", "draft"} {
+		snap := testSnapshot()
+		snap.Partners["key1"].Status = st
+		h := newTestHandler(snap)
+		w := doBid(t, h, `{"id":"r6","imp":[{"id":"1","banner":{"w":300,"h":250}}]}`)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("status %s: want 404, got %d", st, w.Code)
+		}
+	}
+}
+
+// Ответ содержит lurl с макросами loss-reason / min-to-win, чтобы SSP мог
+// сообщить о проигрыше (освобождение бюджета + отчёт «почему проигрываем»).
+func TestBidResponseHasLURL(t *testing.T) {
+	h := newTestHandler(testSnapshot())
+	w := doBid(t, h, `{"id":"r7","imp":[{"id":"1","banner":{"w":300,"h":250}}]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w.Code)
+	}
+	var resp BidResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	bid := resp.SeatBid[0].Bid[0]
+	if !strings.Contains(bid.LURL, "/rtb/loss?bid=v1.") ||
+		!strings.Contains(bid.LURL, "reason=${AUCTION_LOSS}") ||
+		!strings.Contains(bid.LURL, "mtw=${AUCTION_MIN_TO_WIN}") {
+		t.Fatalf("lurl malformed: %s", bid.LURL)
+	}
+}
+
+// test=1 (OpenRTB): бид отдаём, чтобы SSP увидел ответ, но парсинг флага не
+// должен ломать запрос. Без Redis резервация и так пропускается — проверяем
+// сам путь.
+func TestBidTestFlagStillBids(t *testing.T) {
+	h := newTestHandler(testSnapshot())
+	w := doBid(t, h, `{"id":"r8","test":1,"imp":[{"id":"1","tagid":"slot-1","banner":{"w":300,"h":250}}]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200 on test=1, got %d", w.Code)
+	}
+}
+
+func TestMacroOrEmpty(t *testing.T) {
+	if macroOrEmpty("${AUCTION_LOSS}") != "" {
+		t.Fatal("unsubstituted macro must become empty")
+	}
+	if macroOrEmpty("102") != "102" {
+		t.Fatal("real value must pass through")
+	}
+}
+
 func TestHealthz(t *testing.T) {
 	h := newTestHandler(testSnapshot())
 	r := httptest.NewRequest(http.MethodGet, "/healthz", nil)

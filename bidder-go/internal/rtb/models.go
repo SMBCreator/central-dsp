@@ -16,8 +16,29 @@ type BidRequest struct {
 	TMax   int             `json:"tmax,omitempty"`
 	Cur    []string        `json:"cur,omitempty"` // Central DSP биддит только в RUB
 	BAdv   []string        `json:"badv,omitempty"`
+	BCat   []string        `json:"bcat,omitempty"` // IAB-категории, запрещённые издателем
+	Test   int             `json:"test,omitempty"` // 1 = тестовый запрос: бид считаем, деньги не списываем
 	Regs   *Regs           `json:"regs,omitempty"`
+	Source *Source         `json:"source,omitempty"`
 	Ext    json.RawMessage `json:"ext,omitempty"`
+}
+
+// Source — источник запроса; schain нужен для «только прямые продавцы».
+type Source struct {
+	SChain *SupplyChain    `json:"schain,omitempty"`
+	Ext    json.RawMessage `json:"ext,omitempty"` // OpenRTB 2.5: source.ext.schain
+}
+
+// SupplyChain — IAB Supply Chain Object (sellers.json / ads.txt).
+type SupplyChain struct {
+	Complete int               `json:"complete,omitempty"`
+	Nodes    []SupplyChainNode `json:"nodes,omitempty"`
+}
+
+type SupplyChainNode struct {
+	ASI string `json:"asi,omitempty"` // домен продавца
+	SID string `json:"sid,omitempty"` // seller id
+	HP  int    `json:"hp,omitempty"`  // 1 = участвует в платеже
 }
 
 // Regs — регуляторные флаги (block_coppa / block_gdpr в таргетинге).
@@ -29,6 +50,7 @@ type Regs struct {
 
 type Imp struct {
 	ID          string          `json:"id"`
+	TagID       string          `json:"tagid,omitempty"` // id рекламного места у SSP — разрез отчёта «по площадкам»
 	Banner      *Banner         `json:"banner,omitempty"`
 	Video       *Video          `json:"video,omitempty"`
 	Native      *Native         `json:"native,omitempty"`
@@ -123,6 +145,8 @@ type Device struct {
 	IP             string `json:"ip,omitempty"`
 	IPv6           string `json:"ipv6,omitempty"`
 	Geo            *Geo   `json:"geo,omitempty"`
+	Make           string `json:"make,omitempty"`  // производитель (Apple, Samsung) — таргетинг device_makes
+	Model          string `json:"model,omitempty"` // модель
 	OS             string `json:"os,omitempty"`
 	OSV            string `json:"osv,omitempty"`
 	DeviceType     int    `json:"devicetype,omitempty"`

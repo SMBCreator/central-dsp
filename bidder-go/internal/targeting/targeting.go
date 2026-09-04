@@ -124,6 +124,22 @@ func DeviceOS(osField, ua string) string {
 	return "unknown"
 }
 
+// DeviceBrowser — порт _device_browser (rtb.py:_BROWSER_MARKERS): семейство
+// браузера по UA. Порядок маркеров важен: Chrome-based браузеры содержат
+// "chrome" в UA, поэтому yandex/edge/opera/samsung проверяются раньше.
+func DeviceBrowser(ua string) string {
+	l := strings.ToLower(ua)
+	for _, m := range []struct{ marker, name string }{
+		{"yabrowser", "yandex"}, {"edg", "edge"}, {"opr", "opera"}, {"opera", "opera"},
+		{"samsungbrowser", "samsung"}, {"firefox", "firefox"}, {"chrome", "chrome"}, {"safari", "safari"},
+	} {
+		if strings.Contains(l, m.marker) {
+			return m.name
+		}
+	}
+	return "unknown"
+}
+
 // Match — порт _match_targeting. Все ключи опциональны; пусто = нет ограничения.
 func Match(t *Targeting, r *RequestView) bool {
 	if t == nil {

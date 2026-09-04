@@ -24,14 +24,14 @@ import (
 type NoBidReason string
 
 const (
-	ReasonFeedNotLoaded  NoBidReason = "feed_not_loaded"
+	ReasonFeedNotLoaded   NoBidReason = "feed_not_loaded"
 	ReasonUnknownEndpoint NoBidReason = "unknown_endpoint"
-	ReasonBadAuth        NoBidReason = "bad_auth"
-	ReasonQPSExceeded    NoBidReason = "qps_exceeded"
-	ReasonParseError     NoBidReason = "parse_error"
-	ReasonEmptyRequest   NoBidReason = "empty_request"
-	ReasonCurrency       NoBidReason = "currency_mismatch"
-	ReasonNoCandidates   NoBidReason = "no_candidates"
+	ReasonBadAuth         NoBidReason = "bad_auth"
+	ReasonQPSExceeded     NoBidReason = "qps_exceeded"
+	ReasonParseError      NoBidReason = "parse_error"
+	ReasonEmptyRequest    NoBidReason = "empty_request"
+	ReasonCurrency        NoBidReason = "currency_mismatch"
+	ReasonNoCandidates    NoBidReason = "no_candidates"
 )
 
 // AllNoBidReasons — полный список для инициализации серий (нулевые значения
@@ -46,15 +46,21 @@ var latencyBuckets = []float64{0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.075, 0
 
 // Registry — все метрики биддера. Потокобезопасен.
 type Registry struct {
-	bidRequests  atomic.Int64 // всего входящих bid-запросов
-	bidResponses atomic.Int64 // ответов с >=1 бидом
+	bidRequests   atomic.Int64 // всего входящих bid-запросов
+	bidResponses  atomic.Int64 // ответов с >=1 бидом
 	bidsSubmitted atomic.Int64 // всего бидов (по impression)
 
 	noBid sync.Map // NoBidReason -> *atomic.Int64
 
-	gateRejects atomic.Int64 // gate_and_reserve: отказ (бюджет/freq cap)
-	gateErrors  atomic.Int64 // gate_and_reserve: ошибка Redis
-	lossReleases atomic.Int64 // /rtb/loss: освобождение резерва
+	gateRejects     atomic.Int64 // gate_and_reserve: отказ (бюджет/freq cap)
+	gateErrors      atomic.Int64 // gate_and_reserve: ошибка Redis
+	lossReleases    atomic.Int64 // /rtb/loss: освобождение резерва
+	eventEmitErrors atomic.Int64 // XADD в rtb:events не удался (событие потеряно для статистики)
+
+	// Per-partner (endpoint_key): запросы и биды. Кардинальность = число SSP
+	// (единицы-десятки), поэтому безопасно для Prometheus.
+	partnerRequests sync.Map // endpoint_key -> *atomic.Int64
+	partnerBids     sync.Map // endpoint_key -> *atomic.Int64
 
 	// Суммы цен (RUB CPM) для avg bid price = sum/count. Fixed-point milli-RUB,
 	// т.к. atomic float в stdlib нет.
@@ -103,6 +109,39 @@ func (r *Registry) IncNoBid(reason NoBidReason) {
 func (r *Registry) IncGateReject()  { r.gateRejects.Add(1) }
 func (r *Registry) IncGateError()   { r.gateErrors.Add(1) }
 func (r *Registry) IncLossRelease() { r.lossReleases.Add(1) }
+
+// IncEventEmitError — не удалось положить событие в Redis Stream.
+func (r *Registry) IncEventEmitError() { r.eventEmitErrors.Add(1) }
+
+// IncPartnerRequest / IncPartnerBids — счётчики по SSP (endpoint_key).
+func (r *Registry) IncPartnerRequest(endpointKey string) {
+	incMap(&r.partnerRequests, endpointKey, 1)
+}
+func (r *Registry) IncPartnerBids(endpointKey string, n int) {
+	incMap(&r.partnerBids, endpointKey, int64(n))
+}
+
+func incMap(m *sync.Map, key string, n int64) {
+	if key == "" {
+		key = "unknown"
+	}
+	v, ok := m.Load(key)
+	if !ok {
+		v, _ = m.LoadOrStore(key, new(atomic.Int64))
+	}
+	v.(*atomic.Int64).Add(n)
+}
+
+func writeLabeled(w http.ResponseWriter, m *sync.Map, name, help string) {
+	fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s counter\n", name, help, name)
+	keys := make([]string, 0, 8)
+	m.Range(func(k, _ any) bool { keys = append(keys, k.(string)); return true })
+	sort.Strings(keys)
+	for _, k := range keys {
+		v, _ := m.Load(k)
+		fmt.Fprintf(w, "%s{endpoint_key=%q} %d\n", name, k, v.(*atomic.Int64).Load())
+	}
+}
 
 // ObserveLatency — латентность обработки bid-запроса в секундах.
 func (r *Registry) ObserveLatency(sec float64) {
@@ -156,6 +195,10 @@ func (r *Registry) write(w http.ResponseWriter) {
 	c("bidder_gate_rejects_total", "gate_and_reserve rejections (budget or frequency cap).", r.gateRejects.Load())
 	c("bidder_gate_errors_total", "gate_and_reserve Redis errors.", r.gateErrors.Load())
 	c("bidder_loss_releases_total", "Budget reservations released via /rtb/loss.", r.lossReleases.Load())
+	c("bidder_event_emit_errors_total", "Bid events that failed to be written to the rtb:events Redis stream.", r.eventEmitErrors.Load())
+
+	writeLabeled(w, &r.partnerRequests, "bidder_partner_requests_total", "Bid requests by SSP endpoint_key.")
+	writeLabeled(w, &r.partnerBids, "bidder_partner_bids_total", "Bids submitted by SSP endpoint_key.")
 
 	fmt.Fprintf(w, "# HELP bidder_bid_price_cpm_rub_sum Sum of submitted bid prices (RUB CPM). Avg = sum/bidder_bids_total.\n# TYPE bidder_bid_price_cpm_rub_sum counter\n")
 	fmt.Fprintf(w, "bidder_bid_price_cpm_rub_sum %g\n", float64(r.bidPriceMilliCPM.Load())/1000)
