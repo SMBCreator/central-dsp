@@ -255,6 +255,7 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 	}
 
 	// Собираем прошедших таргетинг кандидатов, сортируем по цене (desc).
+	impView := buildImpView(imp)
 	var scored []scoredCandidate
 	for i := range snap.Candidates {
 		c := &snap.Candidates[i]
@@ -262,6 +263,9 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 			continue
 		}
 		if !h.matchCandidate(c, req, view, partner, snap) {
+			continue
+		}
+		if c.T != nil && !targeting.MatchImp(feedImpTargeting(c.T), impView) {
 			continue
 		}
 		raw := c.BidPrice
@@ -326,10 +330,14 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 			hgt = *c.Height
 		}
 		ext, _ := json.Marshal(map[string]string{"erid": c.Erid})
+		dealID := ""
+		if c.T != nil {
+			dealID = targeting.MatchedDeal(c.T.DealIDs, impView.DealIDs)
+		}
 		return &Bid{
 			ID: bidID, ImpID: imp.ID, Price: roundPrice(sc.price),
 			AdM: adm, ADomain: admomains(c), CrID: c.CreativeID,
-			NURL: nurl, W: w, H: hgt, Ext: ext,
+			NURL: nurl, W: w, H: hgt, DealID: dealID, Ext: ext,
 		}
 	}
 	return nil
@@ -491,26 +499,110 @@ func (h *Handler) Healthz(w http.ResponseWriter, r *http.Request) {
 // --- helpers ---
 
 func buildRequestView(req *BidRequest) *targeting.RequestView {
-	v := &targeting.RequestView{Now: time.Now()}
+	v := &targeting.RequestView{Now: time.Now(), Env: "site"}
 	if d := req.Device; d != nil {
 		v.UA = strings.ToLower(d.UA)
 		v.OS = targeting.DeviceOS(d.OS, d.UA)
+		v.OSV = strings.TrimSpace(d.OSV)
 		v.DeviceType = d.DeviceType
+		v.Language = strings.ToLower(d.Language)
+		v.ConnType = d.ConnectionType
+		v.Carrier = strings.ToLower(strings.TrimSpace(d.Carrier))
+		v.IP = d.IP
+		if v.IP == "" {
+			v.IP = d.IPv6
+		}
+		v.DNT = d.DNT == 1 || d.LMT == 1
 		if d.Geo != nil {
 			v.Country = strings.ToUpper(d.Geo.Country)
 			v.Region = strings.ToLower(d.Geo.Region)
 			v.City = strings.ToLower(d.Geo.City)
 		}
 	}
-	if req.Site != nil {
-		v.Domain = strings.ToLower(req.Site.Domain)
-		v.SiteCats = req.Site.Cat
-	} else if req.App != nil {
-		v.Domain = strings.ToLower(req.App.Bundle)
+	// Python: site = req.site or req.app — приоритет у site, если переданы оба.
+	var pub *Publisher
+	var content *Content
+	var kw, page string
+	switch {
+	case req.Site != nil:
+		s := req.Site
+		v.Domain = strings.ToLower(s.Domain)
+		v.SiteCats = s.Cat
+		pub, content, kw, page = s.Publisher, s.Content, s.Keywords, s.Page
+		if req.App != nil {
+			v.Env = "app"
+			v.Bundle = strings.ToLower(req.App.Bundle)
+		}
+	case req.App != nil:
+		a := req.App
+		v.Env = "app"
+		v.Bundle = strings.ToLower(a.Bundle)
+		// domain для allow/block-листов: Python берёт site.domain or site.bundle из объекта app.
+		v.Domain = strings.ToLower(a.Domain)
+		if v.Domain == "" {
+			v.Domain = v.Bundle
+		}
+		v.SiteCats = a.Cat
+		pub, content, kw = a.Publisher, a.Content, a.Keywords
 	}
+	if pub != nil {
+		v.PubID = strings.TrimSpace(pub.ID)
+	}
+	var cKw, cTitle string
+	if content != nil {
+		cKw, cTitle = content.Keywords, content.Title
+	}
+	v.Keywords = targeting.KeywordHaystack(kw, cKw, page, cTitle)
 	if u := req.User; u != nil {
-		// yob/gender не в модели User — Python берёт их из user; расширяется при необходимости.
-		_ = u
+		v.Gender = strings.ToUpper(strings.TrimSpace(u.Gender))
+		v.YOB = u.YOB
+	}
+	if r := req.Regs; r != nil {
+		v.COPPA = r.COPPA == 1
+		v.GDPR = r.GDPR == 1
+		if !v.GDPR && len(r.Ext) > 0 {
+			var ext struct {
+				GDPR int `json:"gdpr"`
+			}
+			if json.Unmarshal(r.Ext, &ext) == nil && ext.GDPR == 1 {
+				v.GDPR = true
+			}
+		}
+	}
+	return v
+}
+
+// buildImpView — плоское представление imp для targeting.MatchImp (один раз на imp).
+func buildImpView(imp *Imp) *targeting.ImpView {
+	v := &targeting.ImpView{
+		Interstitial: imp.Instl == 1,
+		Secure:       imp.Secure == 1,
+		Rewarded:     imp.Rwdd == 1,
+	}
+	if imp.Banner != nil {
+		v.Pos = imp.Banner.Pos
+	} else if imp.Video != nil {
+		v.Pos = imp.Video.Pos
+	}
+	if imp.Video != nil {
+		v.HasVideo = true
+		v.VideoMaxDuration = imp.Video.MaxDuration
+		v.VideoSkippable = imp.Video.Skip == 1
+	}
+	if !v.Rewarded && len(imp.Ext) > 0 {
+		var ext struct {
+			Rewarded int `json:"rewarded"`
+		}
+		if json.Unmarshal(imp.Ext, &ext) == nil && ext.Rewarded == 1 {
+			v.Rewarded = true
+		}
+	}
+	if imp.PMP != nil {
+		for _, d := range imp.PMP.Deals {
+			if d.ID != "" {
+				v.DealIDs = append(v.DealIDs, d.ID)
+			}
+		}
 	}
 	return v
 }
@@ -572,6 +664,9 @@ func typeMatches(c *feed.Candidate, adType string, imp *Imp) bool {
 	return true
 }
 
+// feedTargetingToMatch — request-level часть таргетинга line item. Должна
+// покрывать ВСЕ ключи, которые редактирует кабинет (frontend/components/targeting-editor.tsx):
+// поле, не переданное сюда, молча игнорируется биддером.
 func feedTargetingToMatch(t *feed.Targeting) *targeting.Targeting {
 	return &targeting.Targeting{
 		GeoCountries: t.GeoCountries, GeoRegions: t.GeoRegions, GeoCities: t.GeoCities,
@@ -580,6 +675,23 @@ func feedTargetingToMatch(t *feed.Targeting) *targeting.Targeting {
 		DomainAllowlist: t.DomainAllowlist, DomainBlocklist: t.DomainBlocklist,
 		AgeMin: t.AgeMin, AgeMax: t.AgeMax, Genders: t.Genders,
 		Hours: t.Hours, Days: t.Days,
+		TrafficTypes: t.TrafficTypes, Carriers: t.Carriers, OSVersionMin: t.OSVersionMin,
+		AppBundlesBlock: t.AppBundlesBlock, AppBundlesAllow: t.AppBundlesAllow,
+		PublisherBlock: t.PublisherBlock, PublisherAllow: t.PublisherAllow,
+		KeywordsBlock: t.KeywordsBlock, KeywordsAllow: t.KeywordsAllow,
+		IPRanges:   t.IPRanges,
+		BlockCOPPA: t.BlockCOPPA, BlockGDPR: t.BlockGDPR, SkipDNT: t.SkipDNT,
+	}
+}
+
+// feedImpTargeting — imp-level часть таргетинга line item.
+func feedImpTargeting(t *feed.Targeting) *targeting.ImpTargeting {
+	return &targeting.ImpTargeting{
+		BannerPositions:  t.BannerPositions,
+		InterstitialOnly: t.InterstitialOnly, ExcludeInterstitial: t.ExcludeInterstitial,
+		RewardedOnly: t.RewardedOnly, SecureOnly: t.SecureOnly,
+		VideoMinDuration: t.VideoMinDuration, VideoSkippableOnly: t.VideoSkippableOnly,
+		DealIDs: t.DealIDs,
 	}
 }
 

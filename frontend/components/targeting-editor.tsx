@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react"
 import { Field, inputCls } from "@/components/ui"
 import { MultiSelect } from "@/components/multi-select"
+import { TagInput } from "@/components/tag-input"
 import { GeoDrawer, countryLabel } from "@/components/geo-panel"
 import useSWR from "swr"
 import { fetcher } from "@/lib/api"
@@ -224,7 +225,7 @@ function inventorySummary(t: Targeting): string {
   if (t.traffic_types?.length) parts.push(t.traffic_types.includes("app") ? "Приложения" : "Web")
   if (t.domain_allowlist?.length) parts.push(`allow×${t.domain_allowlist.length}`)
   if (t.domain_blocklist?.length) parts.push(`block×${t.domain_blocklist.length}`)
-  if (t.keywords_allow?.length) parts.push(`слова×${t.keywords_allow.length}`)
+  if (t.keywords_allow?.length) parts.push(`сло��а×${t.keywords_allow.length}`)
   return parts.join(" · ") || "Весь инвентарь"
 }
 
@@ -585,20 +586,28 @@ export function TargetingEditor({
           </Field>
         </div>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Field label="Ключевые слова (контекст)" hint="Показывать на страницах с этими словами">
-            <input
-              className={inputCls}
-              defaultValue={(value.keywords_allow || []).join(", ")}
-              onBlur={(e) => set({ keywords_allow: csv(e.target.value) })}
-              placeholder="Любой контекст"
+          <Field
+            label="Ключевые слова (контекст)"
+            hint="Показывать на страницах, где SSP передаёт хотя бы одно из этих слов (site.keywords / content.keywords). Матчинг по подстроке без учёта регистра."
+          >
+            <TagInput
+              value={value.keywords_allow || []}
+              onChange={(next) => set({ keywords_allow: norm(next) })}
+              placeholder="Любой контекст — например: ипотека, новостройки"
+              ariaLabel="Ключевые слова"
+              lowercase
             />
           </Field>
-          <Field label="Стоп-слова" hint="Не показывать при наличии этих слов">
-            <input
-              className={inputCls}
-              defaultValue={(value.keywords_block || []).join(", ")}
-              onBlur={(e) => set({ keywords_block: csv(e.target.value) })}
-              placeholder="—"
+          <Field
+            label="Стоп-слова"
+            hint="Не показывать, если в keywords страницы есть любое из этих слов. Стоп-слово приоритетнее ключевого."
+          >
+            <TagInput
+              value={value.keywords_block || []}
+              onChange={(next) => set({ keywords_block: norm(next) })}
+              placeholder="Например: авария, катастрофа"
+              ariaLabel="Стоп-слова"
+              lowercase
             />
           </Field>
         </div>

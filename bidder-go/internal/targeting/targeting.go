@@ -3,6 +3,7 @@
 package targeting
 
 import (
+	"strconv"
 	"strings"
 	"time"
 )
@@ -37,6 +38,33 @@ type Targeting struct {
 	Hours           []int    `json:"hours,omitempty"`
 	Days            []int    `json:"days,omitempty"`
 	SSPAllowlist    []string `json:"ssp_allowlist,omitempty"`
+
+	// --- Расширенный инвентарь / контекст (порт хвоста _match_targeting) ---
+	TrafficTypes    []string `json:"traffic_types,omitempty"` // "site" | "app"
+	Carriers        []string `json:"carriers,omitempty"`
+	OSVersionMin    string   `json:"os_version_min,omitempty"`
+	AppBundlesBlock []string `json:"app_bundles_block,omitempty"`
+	AppBundlesAllow []string `json:"app_bundles_allow,omitempty"`
+	PublisherBlock  []string `json:"publisher_block,omitempty"`
+	PublisherAllow  []string `json:"publisher_allow,omitempty"`
+	KeywordsBlock   []string `json:"keywords_block,omitempty"`
+	KeywordsAllow   []string `json:"keywords_allow,omitempty"`
+	IPRanges        []string `json:"ip_ranges,omitempty"` // префиксы: "192.168." / "2a00:"
+	BlockCOPPA      bool     `json:"block_coppa,omitempty"`
+	BlockGDPR       bool     `json:"block_gdpr,omitempty"`
+	SkipDNT         bool     `json:"skip_dnt,omitempty"`
+}
+
+// ImpTargeting — таргетинг уровня impression (порт _match_imp_targeting).
+type ImpTargeting struct {
+	BannerPositions     []int    `json:"banner_positions,omitempty"`
+	InterstitialOnly    bool     `json:"interstitial_only,omitempty"`
+	ExcludeInterstitial bool     `json:"exclude_interstitial,omitempty"`
+	RewardedOnly        bool     `json:"rewarded_only,omitempty"`
+	SecureOnly          bool     `json:"secure_only,omitempty"`
+	VideoMinDuration    int      `json:"video_min_duration,omitempty"`
+	VideoSkippableOnly  bool     `json:"video_skippable_only,omitempty"`
+	DealIDs             []string `json:"deal_ids,omitempty"`
 }
 
 // RequestView — плоское представление BidRequest для матчинга
@@ -47,14 +75,36 @@ type RequestView struct {
 	City       string   // device.geo.city (lower)
 	DeviceType int      // device.devicetype
 	OS         string   // device.os (lower, после _device_os)
+	OSV        string   // device.osv (как есть)
 	UA         string   // device.ua (lower)
 	Language   string   // device.language (lower)
 	ConnType   int      // device.connectiontype
+	Carrier    string   // device.carrier (lower)
+	IP         string   // device.ip, иначе device.ipv6
+	DNT        bool     // device.dnt == 1 || device.lmt == 1
 	SiteCats   []string // site.cat | app.cat (upper)
 	Domain     string   // site.domain | app.bundle (lower)
+	Env        string   // "app" если есть req.app, иначе "site"
+	Bundle     string   // app.bundle (lower); пусто для web
+	PubID      string   // (site|app).publisher.id
+	Keywords   string   // lower(" ".join(keywords, content.keywords, page, content.title))
 	Gender     string   // user.gender (upper)
 	YOB        int      // user.yob
+	COPPA      bool     // regs.coppa == 1
+	GDPR       bool     // regs.gdpr == 1 || regs.ext.gdpr == 1
 	Now        time.Time
+}
+
+// ImpView — плоское представление одного imp для MatchImp.
+type ImpView struct {
+	Pos              *int // banner.pos, иначе video.pos; nil = не передан
+	Interstitial     bool // imp.instl == 1
+	Rewarded         bool // imp.rwdd == 1 || imp.ext.rewarded == 1
+	Secure           bool // imp.secure == 1
+	HasVideo         bool
+	VideoMaxDuration int  // video.maxduration
+	VideoSkippable   bool // video.skip == 1
+	DealIDs          []string
 }
 
 // DeviceOS — порт _device_os: явный device.os, иначе UA-sniff.
@@ -168,7 +218,180 @@ func Match(t *Targeting, r *RequestView) bool {
 			return false
 		}
 	}
+	// --- Inventory environment: site (web) vs app ---
+	if len(t.TrafficTypes) > 0 && !contains(t.TrafficTypes, r.Env) {
+		return false
+	}
+	// --- Carrier / ISP: подстрока в любую сторону, пустой carrier = мимо ---
+	if len(t.Carriers) > 0 {
+		if r.Carrier == "" {
+			return false
+		}
+		found := false
+		for _, c := range t.Carriers {
+			lc := strings.ToLower(c)
+			if lc == "" {
+				continue
+			}
+			if strings.Contains(r.Carrier, lc) || strings.Contains(lc, r.Carrier) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	// --- Minimum OS version (major.minor, семантика кортежей Python) ---
+	if t.OSVersionMin != "" {
+		if r.OSV == "" || compareVersion(r.OSV, t.OSVersionMin) < 0 {
+			return false
+		}
+	}
+	// --- App bundle allow/block (отдельно от web-доменов) ---
+	if r.Bundle != "" && len(t.AppBundlesBlock) > 0 && containsFold(t.AppBundlesBlock, r.Bundle, strings.ToLower) {
+		return false
+	}
+	if len(t.AppBundlesAllow) > 0 && !containsFold(t.AppBundlesAllow, r.Bundle, strings.ToLower) {
+		return false
+	}
+	// --- Publisher allow/block: точное сравнение id ---
+	if r.PubID != "" && len(t.PublisherBlock) > 0 && contains(t.PublisherBlock, r.PubID) {
+		return false
+	}
+	if len(t.PublisherAllow) > 0 && !contains(t.PublisherAllow, r.PubID) {
+		return false
+	}
+	// --- Contextual keywords: стоп-слова приоритетнее, подстрока без регистра ---
+	if len(t.KeywordsBlock) > 0 && anySubstring(t.KeywordsBlock, r.Keywords) {
+		return false
+	}
+	if len(t.KeywordsAllow) > 0 && !anySubstring(t.KeywordsAllow, r.Keywords) {
+		return false
+	}
+	// --- IP prefix ranges ---
+	if len(t.IPRanges) > 0 {
+		found := false
+		for _, p := range t.IPRanges {
+			if p != "" && strings.HasPrefix(r.IP, p) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	// --- Regulatory ---
+	if t.BlockCOPPA && r.COPPA {
+		return false
+	}
+	if t.BlockGDPR && r.GDPR {
+		return false
+	}
+	if t.SkipDNT && r.DNT {
+		return false
+	}
 	return true
+}
+
+// MatchImp — порт _match_imp_targeting: позиция, interstitial, rewarded,
+// secure, параметры видео, PMP-сделки. nil таргетинг = без ограничений.
+func MatchImp(t *ImpTargeting, v *ImpView) bool {
+	if t == nil {
+		return true
+	}
+	if len(t.BannerPositions) > 0 {
+		if v.Pos == nil || !containsInt(t.BannerPositions, *v.Pos) {
+			return false
+		}
+	}
+	if t.InterstitialOnly && !v.Interstitial {
+		return false
+	}
+	if t.ExcludeInterstitial && v.Interstitial {
+		return false
+	}
+	if t.RewardedOnly && !v.Rewarded {
+		return false
+	}
+	if t.SecureOnly && !v.Secure {
+		return false
+	}
+	if v.HasVideo {
+		if t.VideoMinDuration > 0 && v.VideoMaxDuration > 0 && v.VideoMaxDuration < t.VideoMinDuration {
+			return false
+		}
+		if t.VideoSkippableOnly && !v.VideoSkippable {
+			return false
+		}
+	}
+	if len(t.DealIDs) > 0 && MatchedDeal(t.DealIDs, v.DealIDs) == "" {
+		return false
+	}
+	return true
+}
+
+// MatchedDeal — порт _matched_deal: первый настроенный deal id, присутствующий
+// в imp.pmp.deals. Пусто, если deal_ids не заданы или пересечения нет.
+func MatchedDeal(wanted, present []string) string {
+	if len(wanted) == 0 {
+		return ""
+	}
+	for _, p := range present {
+		if p != "" && contains(wanted, p) {
+			return p
+		}
+	}
+	return ""
+}
+
+// compareVersion сравнивает "major.minor" как кортежи Python:
+// берутся первые два числовых компонента, более короткий кортеж меньше
+// при равном префиксе ((16,) < (16,4)). Нечисловой компонент -> -1 (как
+// ValueError в Python: line item не матчится).
+func compareVersion(a, b string) int {
+	pa, okA := versionTuple(a)
+	pb, okB := versionTuple(b)
+	if !okA || !okB {
+		return -1
+	}
+	for i := 0; i < len(pa) && i < len(pb); i++ {
+		if pa[i] != pb[i] {
+			if pa[i] < pb[i] {
+				return -1
+			}
+			return 1
+		}
+	}
+	switch {
+	case len(pa) < len(pb):
+		return -1
+	case len(pa) > len(pb):
+		return 1
+	}
+	return 0
+}
+
+func versionTuple(v string) ([]int, bool) {
+	parts := strings.Split(strings.TrimSpace(v), ".")
+	if len(parts) > 2 {
+		parts = parts[:2]
+	}
+	out := make([]int, 0, len(parts))
+	for _, p := range parts {
+		n, err := strconv.Atoi(strings.TrimSpace(p))
+		if err != nil {
+			return nil, false
+		}
+		out = append(out, n)
+	}
+	return out, true
+}
+
+// KeywordHaystack — порт сборки kw_haystack: lower(" ".join(...)).
+func KeywordHaystack(parts ...string) string {
+	return strings.ToLower(strings.Join(parts, " "))
 }
 
 // MatchSSP — ssp_allowlist: пусто = все SSP разрешены.
@@ -264,6 +487,17 @@ func containsFold(list []string, v string, norm func(string) string) bool {
 func containsInt(list []int, v int) bool {
 	for _, x := range list {
 		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+// anySubstring: хотя бы одна непустая needle (lower) входит в haystack (уже lower).
+func anySubstring(needles []string, haystack string) bool {
+	for _, n := range needles {
+		ln := strings.ToLower(strings.TrimSpace(n))
+		if ln != "" && strings.Contains(haystack, ln) {
 			return true
 		}
 	}

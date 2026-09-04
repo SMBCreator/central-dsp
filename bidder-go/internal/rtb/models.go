@@ -16,7 +16,15 @@ type BidRequest struct {
 	TMax   int             `json:"tmax,omitempty"`
 	Cur    []string        `json:"cur,omitempty"` // Central DSP биддит только в RUB
 	BAdv   []string        `json:"badv,omitempty"`
+	Regs   *Regs           `json:"regs,omitempty"`
 	Ext    json.RawMessage `json:"ext,omitempty"`
+}
+
+// Regs — регуляторные флаги (block_coppa / block_gdpr в таргетинге).
+type Regs struct {
+	COPPA int             `json:"coppa,omitempty"`
+	GDPR  int             `json:"gdpr,omitempty"` // OpenRTB 2.6; в 2.5 — regs.ext.gdpr
+	Ext   json.RawMessage `json:"ext,omitempty"`
 }
 
 type Imp struct {
@@ -24,15 +32,33 @@ type Imp struct {
 	Banner      *Banner         `json:"banner,omitempty"`
 	Video       *Video          `json:"video,omitempty"`
 	Native      *Native         `json:"native,omitempty"`
+	Instl       int             `json:"instl,omitempty"`  // 1 = interstitial
+	Secure      int             `json:"secure,omitempty"` // 1 = HTTPS-only
+	Rwdd        int             `json:"rwdd,omitempty"`   // OpenRTB 2.6 rewarded; fallback ext.rewarded
+	PMP         *PMP            `json:"pmp,omitempty"`
 	BidFloor    float64         `json:"bidfloor,omitempty"`    // floor сравнивается в Decimal-семантике: см. money notes в спеке
 	BidFloorCur string          `json:"bidfloorcur,omitempty"` // ожидаем RUB
 	Ext         json.RawMessage `json:"ext,omitempty"`
+}
+
+// PMP — private marketplace (deal_ids в таргетинге).
+type PMP struct {
+	PrivateAuction int    `json:"private_auction,omitempty"`
+	Deals          []Deal `json:"deals,omitempty"`
+}
+
+type Deal struct {
+	ID          string  `json:"id"`
+	BidFloor    float64 `json:"bidfloor,omitempty"`
+	BidFloorCur string  `json:"bidfloorcur,omitempty"`
+	At          int     `json:"at,omitempty"`
 }
 
 type Banner struct {
 	W      int      `json:"w,omitempty"`
 	H      int      `json:"h,omitempty"`
 	Format []Format `json:"format,omitempty"`
+	Pos    *int     `json:"pos,omitempty"` // OpenRTB AdPosition; nil = не передан
 }
 
 type Format struct {
@@ -46,6 +72,8 @@ type Video struct {
 	MaxDuration int      `json:"maxduration,omitempty"`
 	W           int      `json:"w,omitempty"`
 	H           int      `json:"h,omitempty"`
+	Pos         *int     `json:"pos,omitempty"`
+	Skip        int      `json:"skip,omitempty"` // 1 = skippable
 }
 
 type Native struct {
@@ -55,27 +83,55 @@ type Native struct {
 }
 
 type Site struct {
-	ID     string   `json:"id,omitempty"`
-	Domain string   `json:"domain,omitempty"` // проверяется против global+campaign white/blacklist
-	Page   string   `json:"page,omitempty"`
-	Cat    []string `json:"cat,omitempty"`
+	ID        string     `json:"id,omitempty"`
+	Domain    string     `json:"domain,omitempty"` // проверяется против global+campaign white/blacklist
+	Page      string     `json:"page,omitempty"`
+	Cat       []string   `json:"cat,omitempty"`
+	Keywords  string     `json:"keywords,omitempty"` // CSV контекстных слов страницы
+	Publisher *Publisher `json:"publisher,omitempty"`
+	Content   *Content   `json:"content,omitempty"`
 }
 
 type App struct {
+	ID        string     `json:"id,omitempty"`
+	Bundle    string     `json:"bundle,omitempty"`
+	Domain    string     `json:"domain,omitempty"`
+	Cat       []string   `json:"cat,omitempty"`
+	Keywords  string     `json:"keywords,omitempty"`
+	Publisher *Publisher `json:"publisher,omitempty"`
+	Content   *Content   `json:"content,omitempty"`
+}
+
+// Publisher — site.publisher / app.publisher (publisher_allow/block в таргетинге).
+type Publisher struct {
 	ID     string `json:"id,omitempty"`
-	Bundle string `json:"bundle,omitempty"`
+	Name   string `json:"name,omitempty"`
 	Domain string `json:"domain,omitempty"`
 }
 
+// Content — контекст страницы/видео (keywords_allow/block в таргетинге).
+type Content struct {
+	ID       string   `json:"id,omitempty"`
+	Title    string   `json:"title,omitempty"`
+	Keywords string   `json:"keywords,omitempty"`
+	Cat      []string `json:"cat,omitempty"`
+	Language string   `json:"language,omitempty"`
+}
+
 type Device struct {
-	UA         string `json:"ua,omitempty"`
-	IP         string `json:"ip,omitempty"`
-	IPv6       string `json:"ipv6,omitempty"`
-	Geo        *Geo   `json:"geo,omitempty"`
-	OS         string `json:"os,omitempty"`
-	OSV        string `json:"osv,omitempty"`
-	DeviceType int    `json:"devicetype,omitempty"`
-	IFA        string `json:"ifa,omitempty"` // device id — вход для freq caps и audiences
+	UA             string `json:"ua,omitempty"`
+	IP             string `json:"ip,omitempty"`
+	IPv6           string `json:"ipv6,omitempty"`
+	Geo            *Geo   `json:"geo,omitempty"`
+	OS             string `json:"os,omitempty"`
+	OSV            string `json:"osv,omitempty"`
+	DeviceType     int    `json:"devicetype,omitempty"`
+	IFA            string `json:"ifa,omitempty"` // device id — вход для freq caps и audiences
+	Language       string `json:"language,omitempty"`
+	ConnectionType int    `json:"connectiontype,omitempty"`
+	Carrier        string `json:"carrier,omitempty"`
+	DNT            int    `json:"dnt,omitempty"`
+	LMT            int    `json:"lmt,omitempty"`
 }
 
 type Geo struct {
@@ -92,6 +148,8 @@ type User struct {
 	ID       string `json:"id,omitempty"`
 	BuyerUID string `json:"buyeruid,omitempty"`
 	EIDs     []EID  `json:"eids,omitempty"`
+	Gender   string `json:"gender,omitempty"` // M / F / O
+	YOB      int    `json:"yob,omitempty"`    // год рождения
 }
 
 // EID — extended identifier (OpenRTB 2.5 user.ext.eids / 2.6 user.eids).
@@ -131,5 +189,6 @@ type Bid struct {
 	LURL    string          `json:"lurl,omitempty"` // loss notice -> /rtb/loss
 	W       int             `json:"w,omitempty"`
 	H       int             `json:"h,omitempty"`
-	Ext     json.RawMessage `json:"ext,omitempty"` // ext.erid — ОРД-маркировка (обязательна для РФ)
+	DealID  string          `json:"dealid,omitempty"` // PMP: id сделки из imp.pmp.deals, если line item ограничен deal_ids
+	Ext     json.RawMessage `json:"ext,omitempty"`    // ext.erid — ОРД-маркировка (обязательна для РФ)
 }
