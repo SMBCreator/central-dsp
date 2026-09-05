@@ -24,6 +24,7 @@ from shading import get_factor as shading_get_factor, should_shade
 from cache import bump_frequency, bump_frequency_multi, check_frequency_cap, check_qps, gate_and_reserve, get_redis, mark_once, reserve_budget
 from db import get_pool
 from money import CURRENCY, clamp_clearing_price, cpm_to_cost
+from ord.service import feed_gate_sql
 from tokens import sign_event_token, verify_event_token
 
 router = APIRouter(prefix="/rtb", tags=["rtb"])
@@ -754,8 +755,9 @@ async def process_bid_request(
     # Candidate line items: active campaign within budget & dates, active LI, approved creative
     candidates, _fresh = _cache_get("candidates")
     if candidates is None or (not _fresh and _claim_refresh("candidates")):
+        # erid-гейт — паритет с /rtb-feed/campaigns (ord.service.ERID_FEED_GATE_SQL)
         candidates = await pool.fetch(
-        """
+        f"""
         SELECT li.id AS li_id, li.bid_price, li.bid_type, li.max_bid, li.daily_budget AS li_budget,
                li.targeting, li.campaign_id, li.user_id AS owner_id,
                c.daily_budget AS camp_budget, c.frequency_cap_impressions, c.frequency_cap_period_hours, c.frequency_caps,
@@ -776,6 +778,7 @@ async def process_bid_request(
              AND (cr.line_item_id IS NULL OR cr.line_item_id = li.id)
         LEFT JOIN counterparties cp ON cp.id = cr.counterparty_id
         WHERE li.status = 'active' AND li.bid_price > 0
+        {feed_gate_sql()}
         """
         )
         _cache_put("candidates", candidates)

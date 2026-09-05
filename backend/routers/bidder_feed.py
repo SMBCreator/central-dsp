@@ -14,6 +14,7 @@ import os
 from fastapi import APIRouter, Header, HTTPException
 
 from db import get_pool
+from ord.service import feed_gate_sql
 
 router = APIRouter(prefix="/rtb-feed", tags=["bidder-feed"])
 
@@ -46,8 +47,10 @@ async def partners_feed(authorization: str | None = Header(default=None)):
 async def campaigns_feed(authorization: str | None = Header(default=None)):
     _check(authorization)
     pool = await get_pool()
+    # erid-гейт (38-ФЗ): креатив без erid не уходит в фид, если группа
+    # показывается в РФ. Биддер этого не проверяет — и не должен.
     cands = await pool.fetch(
-        """
+        f"""
         SELECT li.id AS li_id, li.bid_price, li.bid_type, li.max_bid, li.daily_budget AS li_budget,
                li.targeting, li.campaign_id, li.user_id AS owner_id,
                c.daily_budget AS camp_budget, c.frequency_cap_impressions, c.frequency_cap_period_hours,
@@ -69,6 +72,7 @@ async def campaigns_feed(authorization: str | None = Header(default=None)):
              AND (cr.line_item_id IS NULL OR cr.line_item_id = li.id)
         LEFT JOIN counterparties cp ON cp.id = cr.counterparty_id
         WHERE li.status = 'active' AND li.bid_price > 0
+        {feed_gate_sql()}
         """
     )
     out = []

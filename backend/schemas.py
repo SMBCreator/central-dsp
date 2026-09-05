@@ -157,6 +157,8 @@ class CreativeIn(BaseModel):
     click_tracker_url: str | None = Field(default=None, max_length=1000)
     # Информация о рекламодателе (контрагент из ОРД): ОГРН, наименование, адрес
     counterparty_id: str | None = None
+    # Договор ОРД для получения erid (миграция 036). Пусто — подбирается по контрагенту.
+    contract_id: str | None = None
     # ККТУ-классификатор объявления (маркировка), см. миграцию 024
     kktu_code: str | None = Field(default=None, max_length=20)
     kktu_label: str | None = Field(default=None, max_length=300)
@@ -189,6 +191,7 @@ class CreativeIn(BaseModel):
 class CreativePatch(BaseModel):
     name: str | None = None
     counterparty_id: str | None = None
+    contract_id: str | None = None
     kktu_code: str | None = Field(default=None, max_length=20)
     kktu_label: str | None = Field(default=None, max_length=300)
     iab_categories: list[str] | None = Field(default=None, max_length=10)
@@ -205,7 +208,10 @@ class CreativePatch(BaseModel):
         return None if v is None else CreativeIn._attr_codes(v)
     imp_tracker_url: str | None = Field(default=None, max_length=1000)
     click_tracker_url: str | None = Field(default=None, max_length=1000)
-    status: str | None = Field(default=None, pattern="^(pending|approved|rejected|archived)$")
+    # Владелец может только отправить на модерацию или архивировать.
+    # approved/rejected ставит исключительно /moderation (админ) — иначе
+    # обход модерации и показ непроверенного креатива.
+    status: str | None = Field(default=None, pattern="^(pending|archived)$")
     asset_url: str | None = None
     click_url: str | None = None
     html_snippet: str | None = None

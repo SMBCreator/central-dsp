@@ -14,6 +14,12 @@ from schemas import CreativeIn, CreativePatch
 
 router = APIRouter(prefix="/creatives", tags=["creatives"])
 
+# Поля, изменение которых меняет то, что увидит пользователь — требуют повторной модерации
+_CONTENT_FIELDS = frozenset({
+    "asset_url", "click_url", "html_snippet", "native_title", "native_description",
+    "native_cta", "native_icon_url", "video_url", "vast_xml",
+})
+
 _REQUIRED_BY_TYPE = {
     "banner": ["width", "height", "click_url"],
     "native": ["native_title", "click_url"],
@@ -76,16 +82,16 @@ async def create_creative(body: CreativeIn, user: dict = Depends(require_creativ
                                asset_url, click_url, html_snippet, native_title, native_description,
                                native_cta, native_icon_url, video_url, video_duration, vast_xml, crop,
                                imp_tracker_url, click_tracker_url, status, counterparty_id,
-                               kktu_code, kktu_label, iab_categories, attrs)
+                               kktu_code, kktu_label, iab_categories, attrs, contract_id)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,
-                $26::text[], $27::smallint[]) RETURNING *
+                $26::text[], $27::smallint[], $28) RETURNING *
         """,
         body.campaign_id, body.line_item_id, user["id"], body.name, body.type, body.subtype, body.width,
         body.height, body.asset_url, body.click_url, body.html_snippet, body.native_title,
         body.native_description, body.native_cta, body.native_icon_url, body.video_url,
         body.video_duration, body.vast_xml, json.dumps(body.crop) if body.crop else None,
         body.imp_tracker_url, body.click_tracker_url, status, body.counterparty_id,
-        body.kktu_code, body.kktu_label, body.iab_categories, body.attrs,
+        body.kktu_code, body.kktu_label, body.iab_categories, body.attrs, body.contract_id,
     )
     if status == "pending":
         await notify_admins(
@@ -103,6 +109,20 @@ async def update_creative(creative_id: str, body: CreativePatch, user: dict = De
     if not updates:
         raise HTTPException(status_code=400, detail="Нет полей для обновления")
     pool = await get_pool()
+    # Изменение видимого содержимого одобренного креатива (картинка, ссылка,
+    # текст, видео) отправляет его обратно на модерацию — иначе после approve
+    # можно подменить баннер. Админ модерирует сам себя, для него не сбрасываем.
+    remoderate = False
+    if not is_admin(user) and _CONTENT_FIELDS & set(updates) and "status" not in updates:
+        cur = await pool.fetchrow(
+            "SELECT status, erid, name FROM creatives WHERE id = $1 AND user_id = $2", creative_id, user["id"]
+        )
+        if cur and cur["status"] == "approved":
+            remoderate = True
+            updates["status"] = "pending"
+            # erid выдан на конкретное содержимое; новое содержимое = новая
+            # регистрация в ОРД после повторного одобрения.
+            updates["erid"] = None
     sets, values = [], []
     for i, (k, v) in enumerate(updates.items(), start=3):
         sets.append(f"{k} = ${i}")
@@ -113,6 +133,17 @@ async def update_creative(creative_id: str, body: CreativePatch, user: dict = De
     )
     if not row:
         raise HTTPException(status_code=404, detail="Креатив не найден")
+    if remoderate:
+        await pool.execute(
+            "UPDATE ord_creatives SET status = 'superseded', updated_at = now() WHERE creative_id = $1 AND status = 'registered'",
+            creative_id,
+        )
+        await notify_admins(
+            "moderation_pending",
+            f"Креатив изменён, повторная модерация: «{row['name']}»",
+            f"Пользователь {user['email']} изменил содержимое одобренного креатива.",
+            "/moderation",
+        )
     return _serialize(row)
 
 

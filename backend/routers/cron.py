@@ -131,16 +131,16 @@ async def ord_monthly_export(request: Request, period: str | None = None):
         return {"period": period, "status": "ok", "skipped": "already exported"}
 
     rows = await pool.fetch(
-        """SELECT c.erid, oc.ord_external_id,
+        """SELECT oc.erid, oc.ord_external_id,
                   sum(s.impressions) AS impressions,
                   sum(s.clicks)      AS clicks,
                   sum(s.spend)       AS spend
            FROM stats_hourly s
-           JOIN creatives c      ON c.id = s.creative_id
-           JOIN ord_creatives oc ON oc.creative_id = c.id AND oc.status = 'registered'
-           WHERE c.erid IS NOT NULL AND c.erid <> ''
+           JOIN ord_creatives oc ON oc.creative_id = s.creative_id
+                AND oc.status IN ('registered', 'superseded')
+           WHERE oc.erid IS NOT NULL AND oc.erid <> ''
              AND to_char(s.ts_hour, 'YYYY-MM') = $1
-           GROUP BY c.erid, oc.ord_external_id
+           GROUP BY oc.erid, oc.ord_external_id
            HAVING sum(s.impressions) > 0""",
         period,
     )

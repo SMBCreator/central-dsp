@@ -5,7 +5,7 @@ import useSWR, { mutate } from "swr"
 import { api, apiDeleteUpload, apiUpload, assetUrl, fetcher, type UploadResult } from "@/lib/api"
 import { kktuShortLabel } from "@/lib/kktu"
 import { KktuSelect } from "@/components/kktu-select"
-import { AD_TYPE_LABELS, CREATIVE_ATTRS, IAB_CATEGORIES, type Campaign, type Counterparty } from "@/lib/types"
+import { AD_TYPE_LABELS, CREATIVE_ATTRS, IAB_CATEGORIES, type Campaign, type Counterparty, type OrdContract } from "@/lib/types"
 import { Button, Field, inputCls, Modal } from "@/components/ui"
 import { MultiSelect } from "@/components/multi-select"
 import { CreativePreview } from "@/components/creative-preview"
@@ -49,6 +49,7 @@ interface UploadState {
 interface FormState {
   campaign_id: string
   counterparty_id: string
+  contract_id: string
   kktu_code: string
   kktu_label: string
   name: string
@@ -71,6 +72,7 @@ interface FormState {
 const emptyForm = (campaignId: string): FormState => ({
   campaign_id: campaignId,
   counterparty_id: "",
+  contract_id: "",
   kktu_code: "",
   kktu_label: "",
   iab_categories: [],
@@ -154,6 +156,7 @@ export function CreativeModal({
   defaultCampaignId?: string
 }) {
   const { data: counterparties } = useSWR<Counterparty[]>(open ? "/ord/counterparties" : null, fetcher)
+  const { data: contracts } = useSWR<OrdContract[]>(open ? "/ord/contracts" : null, fetcher)
 
   const [step, setStep] = useState<StepKey>("type")
   const [type, setType] = useState<AdType>("banner")
@@ -185,6 +188,15 @@ export function CreativeModal({
   const selectedCp = useMemo(
     () => (counterparties || []).find((cp) => cp.id === form.counterparty_id) || null,
     [counterparties, form.counterparty_id],
+  )
+  // Договоры, по которым можно получить erid: зарегистрированы в ОРД и заказчик — выбранный контрагент.
+  // Если такой ровно один — бэкенд подберёт его сам при approve; при нескольких выбор обязателен.
+  const eligibleContracts = useMemo(
+    () =>
+      (contracts || []).filter(
+        (c) => c.ord_status === "registered" && (!form.counterparty_id || c.client_id === form.counterparty_id),
+      ),
+    [contracts, form.counterparty_id],
   )
   const uploading = Object.keys(uploads).length > 0
 
@@ -294,8 +306,10 @@ export function CreativeModal({
     else if (form.click_tracker_url && !isHttpUrl(form.click_tracker_url)) e.tracking = "Трекер клика: некорректный URL"
 
     if (!form.kktu_code) e.ord = "Выберите классификатор ККТУ"
+    else if (form.counterparty_id && eligibleContracts.length > 1 && !form.contract_id)
+      e.ord = "У контрагента несколько договоров в ОРД — выберите, по какому регистрировать erid"
     return e
-  }, [form, type, bannerAssets.length])
+  }, [form, type, bannerAssets.length, eligibleContracts.length])
 
   const canSubmit = Object.keys(stepErrors).length === 0 && !uploading && !saving
   const stepIdx = STEPS.findIndex((s) => s.key === step)
@@ -329,6 +343,7 @@ export function CreativeModal({
         name: form.name.trim(),
         type,
         counterparty_id: form.counterparty_id || null,
+        contract_id: form.contract_id || null,
         kktu_code: form.kktu_code || null,
         kktu_label: form.kktu_label || null,
         iab_categories: form.iab_categories,
@@ -668,10 +683,15 @@ export function CreativeModal({
           {step === "ord" ? (
             <div className="space-y-4">
               <p className="text-xs leading-relaxed text-muted">
-                По 38-ФЗ наименование, ИНН/ОГРН и адрес рекламодателя показываются в инфо-значке на креативе и уходят в ОРД при регистрации erid.
+                По 38-ФЗ наименование, ИНН/ОГРН и адрес рекламодателя показываются в инфо-значке на креативе и уходят в ОРД.
+                erid присваивается автоматически после одобрения модератором — по договору с контрагентом.
               </p>
               <Field label="Контрагент (рекламодатель)">
-                <select value={form.counterparty_id} onChange={(e) => patch({ counterparty_id: e.target.value })} className={inputCls}>
+                <select
+                  value={form.counterparty_id}
+                  onChange={(e) => patch({ counterparty_id: e.target.value, contract_id: "" })}
+                  className={inputCls}
+                >
                   <option value="">Не выбран</option>
                   {(counterparties || []).map((cp) => (
                     <option key={cp.id} value={cp.id}>
@@ -697,8 +717,31 @@ export function CreativeModal({
                   </div>
                 </dl>
               ) : (
-                <p className="text-xs text-warning">Без контрагента креатив не пройдёт регистрацию в ОРД. Добавить: раздел «Маркировка (ОРД)».</p>
+                <p className="text-xs text-warning">Без контрагента креатив не получит erid и не будет показываться в РФ. Добавить: раздел «Маркировка (ОРД)».</p>
               )}
+              {selectedCp ? (
+                <Field
+                  label={eligibleContracts.length > 1 ? "Договор для erid *" : "Договор для erid"}
+                  hint={
+                    eligibleContracts.length === 0
+                      ? "У контрагента нет зарегистрированного в ОРД договора — erid не будет присвоен при одобрении"
+                      : eligibleContracts.length === 1
+                        ? "Единственный договор подставится автоматически"
+                        : "Несколько договоров — укажите, по какому регистрировать"
+                  }
+                >
+                  <select value={form.contract_id} onChange={(e) => patch({ contract_id: e.target.value })} className={inputCls}>
+                    <option value="">{eligibleContracts.length === 1 ? `Автоматически: ${eligibleContracts[0].number || "без номера"}` : "Не выбран"}</option>
+                    {eligibleContracts.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.number || "без номера"}
+                        {c.signed_at ? ` от ${String(c.signed_at).slice(0, 10)}` : ""}
+                        {c.contractor_name ? ` · ${c.contractor_name}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              ) : null}
               <Field label="Классификатор ККТУ *">
                 <KktuSelect value={form.kktu_code} onChange={(code, label) => patch({ kktu_code: code, kktu_label: label })} />
               </Field>

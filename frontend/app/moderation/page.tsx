@@ -45,6 +45,7 @@ export default function ModerationPage() {
   const [comment, setComment] = useState("")
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   // E: фильтры, сортировка и массовые операции
   const [typeFilter, setTypeFilter] = useState("")
   const [q, setQ] = useState("")
@@ -102,8 +103,16 @@ export default function ModerationPage() {
   const approve = async (item: QueueItem) => {
     setBusy(item.id)
     setError(null)
+    setNotice(null)
     try {
-      await api(`/moderation/${item.id}/approve`, { method: "POST" })
+      const res = await api<QueueItem & { ord?: { status: string; error: string | null } }>(
+        `/moderation/${item.id}/approve`,
+        { method: "POST" },
+      )
+      const ord = res.ord
+      if (ord?.status === "ok") setNotice(`«${item.name}» одобрен, erid ${res.erid} присвоен.`)
+      else if (ord?.status === "not_required") setNotice(`«${item.name}» одобрен. Маркировка не требуется для выбранного гео.`)
+      else if (ord) setError(`«${item.name}» одобрен, но не промаркирован: ${ord.error || "ошибка ОРД"}. Без erid креатив не участвует в показах на РФ.`)
       await refresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : "Ошибка")
@@ -196,7 +205,8 @@ export default function ModerationPage() {
         )}
       </div>
 
-      {error ? <p className="text-xs text-danger">{error}</p> : null}
+      {error ? <p role="alert" className="text-xs text-danger">{error}</p> : null}
+      {notice ? <p role="status" className="text-xs text-success">{notice}</p> : null}
 
       {isLoading ? (
         <Spinner />
@@ -280,7 +290,7 @@ export default function ModerationPage() {
                   </div>
                   {!item.counterparty_name && tab === "pending" ? (
                     <p className="rounded border border-warning/40 bg-warning/10 px-2 py-1.5 text-xs text-warning">
-                      К креативу не привязан контрагент — маркировка (erid) не сможет пройти регистрацию в ОРД.
+                      К креативу не привязан контрагент — при одобрении erid не будет присвоен, и креатив не попадёт в показы на РФ.
                     </p>
                   ) : null}
                   {item.moderation_comment ? (

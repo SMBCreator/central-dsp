@@ -1,9 +1,15 @@
-"""Creative moderation queue (admin only)."""
+"""Creative moderation queue (admin only).
+
+Approve = одобрение + автоматическая регистрация в ОРД (erid). Маркировка —
+ответственность платформы: без erid креатив не попадает в фид биддера для
+РФ-трафика (ord.service.ERID_FEED_GATE_SQL), а кампания не пройдёт launch gate.
+"""
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from db import get_pool
 from notify import notify_user
+from ord.service import campaign_targets_ru, register_creative
 from rbac import require_admin
 
 router = APIRouter(prefix="/moderation", tags=["moderation"])
@@ -56,13 +62,40 @@ async def approve_creative(creative_id: str, user: dict = Depends(require_admin)
     )
     if not row:
         raise HTTPException(404, "Креатив не найден или уже промодерирован")
-    await notify_user(
-        row["user_id"], "moderation_approved",
-        f"Креатив «{row['name']}» одобрен",
-        "Креатив прошёл модерацию и будет участвовать в показах.",
-        f"/creatives?campaign_id={row['campaign_id']}",
-    )
-    return _ser(row)
+
+    # Маркировка. Для не-РФ гео erid не нужен — не дёргаем ОРД зря.
+    ord_result: dict = {"outcome": "not_required"}
+    if await campaign_targets_ru(pool, str(row["campaign_id"])):
+        ord_result = await register_creative(pool, dict(row))
+        if ord_result["outcome"] == "ok":
+            row = await pool.fetchrow("SELECT * FROM creatives WHERE id = $1", creative_id)
+
+    if ord_result["outcome"] == "ok":
+        await notify_user(
+            row["user_id"], "moderation_approved",
+            f"Креатив «{row['name']}» одобрен и промаркирован",
+            f"erid {row['erid']} присвоен. Креатив будет участвовать в показах.",
+            f"/creatives?campaign_id={row['campaign_id']}",
+        )
+    elif ord_result["outcome"] == "not_required":
+        await notify_user(
+            row["user_id"], "moderation_approved",
+            f"Креатив «{row['name']}» одобрен",
+            "Креатив прошёл модерацию и будет участвовать в показах.",
+            f"/creatives?campaign_id={row['campaign_id']}",
+        )
+    else:
+        await notify_user(
+            row["user_id"], "ord_marking_required",
+            f"Креатив «{row['name']}» одобрен, но не промаркирован",
+            (ord_result.get("error") or "Ошибка регистрации в ОРД")
+            + " Без erid креатив не участвует в показах на РФ.",
+            "/ord",
+        )
+
+    out = _ser(row)
+    out["ord"] = {"status": ord_result["outcome"], "error": ord_result.get("error")}
+    return out
 
 
 @router.post("/{creative_id}/reject")

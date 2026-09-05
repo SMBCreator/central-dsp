@@ -15,6 +15,7 @@ from auth import current_user
 from rbac import require_platform_write
 from db import get_pool
 from ord import OrdError, get_ord_adapter
+from ord.service import register_creative as ord_register_creative
 
 router = APIRouter(prefix="/ord", tags=["ord"])
 
@@ -43,7 +44,8 @@ class ContractIn(BaseModel):
 
 
 class CreativeRegisterIn(BaseModel):
-    contract_id: str
+    # Пусто → договор подбирается по контрагенту креатива (ord.service.resolve_contract)
+    contract_id: Optional[str] = None
 
 
 def _row(r) -> dict:
@@ -187,74 +189,26 @@ async def register_contract(contract_id: str, user: dict = Depends(require_platf
 # ---------------------------------------------------------------- creatives --
 @router.post("/creatives/{creative_id}/register")
 async def register_creative(creative_id: str, body: CreativeRegisterIn, user: dict = Depends(require_platform_write)):
-    """Регистрирует креатив в ОРД, получает erid, денормализует его в creatives.erid."""
-    import json as _json
-
+    """Ручная регистрация креатива в ОРД (страница «Маркировка»). Тот же код,
+    что авторегистрация при approve — ord.service.register_creative."""
     pool = await get_pool()
     cr = await pool.fetchrow(
         "SELECT * FROM creatives WHERE id = $1 AND user_id = $2", creative_id, user["id"]
     )
     if not cr:
         raise HTTPException(404, "Креатив не найден")
-    existing = await pool.fetchrow("SELECT * FROM ord_creatives WHERE creative_id = $1", creative_id)
-    if existing and existing["status"] == "registered":
-        return _row(existing)  # идемпотентно
-    contract = await pool.fetchrow(
-        "SELECT * FROM ord_contracts WHERE id = $1 AND user_id = $2", body.contract_id, user["id"]
-    )
-    if not contract or contract["ord_status"] != "registered":
-        raise HTTPException(409, "Договор должен быть зарегистрирован в ОРД до регистрации креатива")
-
-    # ККТУ: приоритет у классификатора самого креатива (шаг «Маркировка»);
-    # если у креатива не задан — берём значение по умолчанию с кампании (миграция 014).
-    cr_kktu = cr["kktu_code"] if cr["kktu_code"] else None
-    if not cr_kktu:
-        camp_kktu = await pool.fetchrow(
-            "SELECT kktu_code, kktu_label FROM campaigns WHERE id = $1", cr["campaign_id"]
+    if body.contract_id:
+        owns = await pool.fetchval(
+            "SELECT 1 FROM ord_contracts WHERE id = $1 AND user_id = $2", body.contract_id, user["id"]
         )
-        cr_kktu = camp_kktu["kktu_code"] if camp_kktu and camp_kktu["kktu_code"] else None
-    payload = {
-        "contract_external_id": contract["ord_external_id"],
-        "type": cr["type"],
-        "name": cr["name"],
-        "click_url": cr.get("click_url") if isinstance(cr, dict) else cr["click_url"],
-        "description": cr["native_description"] or cr["name"],
-        # Тематика ККТУ: категория товара/услуги для маркировки объявления
-        "kktu": cr_kktu,
-    }
-    adapter = await get_ord_adapter()
-    try:
-        out = await adapter.register_creative(payload)
-    except OrdError as e:
-        await pool.execute(
-            """INSERT INTO ord_creatives (creative_id, contract_id, status, payload, error)
-               VALUES ($1,$2,'failed',$3,$4)
-               ON CONFLICT (creative_id) DO UPDATE
-                 SET status='failed', error=EXCLUDED.error, payload=EXCLUDED.payload, updated_at=now()""",
-            creative_id, body.contract_id, _json.dumps(payload, ensure_ascii=False), str(e),
-        )
-        raise HTTPException(502, f"ОРД: {e}")
-
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            row = await conn.fetchrow(
-                """INSERT INTO ord_creatives
-                     (creative_id, contract_id, erid, ord_provider, ord_external_id,
-                      status, payload, registered_at)
-                   VALUES ($1,$2,$3,$4,$5,'registered',$6, now())
-                   ON CONFLICT (creative_id) DO UPDATE
-                     SET erid=EXCLUDED.erid, ord_external_id=EXCLUDED.ord_external_id,
-                         contract_id=EXCLUDED.contract_id, status='registered',
-                         error=NULL, registered_at=now(), updated_at=now()
-                   RETURNING *""",
-                creative_id, body.contract_id, out["erid"], adapter.provider,
-                out.get("external_id"), _json.dumps(payload, ensure_ascii=False),
-            )
-            await conn.execute(
-                "UPDATE creatives SET erid = $2, updated_at = now() WHERE id = $1",
-                creative_id, out["erid"],
-            )
-    return _row(row)
+        if not owns:
+            raise HTTPException(404, "Договор не найден")
+    result = await ord_register_creative(pool, dict(cr), contract_id=body.contract_id)
+    if result["outcome"] == "awaiting_contract":
+        raise HTTPException(409, result.get("error") or "Договор должен быть зарегистрирован в ОРД до регистрации креатива")
+    if result["outcome"] == "failed":
+        raise HTTPException(502, f"ОРД: {result.get('error')}")
+    return {k: v for k, v in result.items() if k != "outcome"}
 
 
 @router.get("/creatives")

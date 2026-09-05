@@ -132,7 +132,7 @@ export default function OrdPage() {
     try {
       await api(`/ord/creatives/${crForm.creative_id}/register`, {
         method: "POST",
-        body: { contract_id: crForm.contract_id },
+        body: { contract_id: crForm.contract_id || null },
       })
       await Promise.all([mutate("/ord/creatives"), mutate("/creatives")])
       setCrOpen(false)
@@ -163,7 +163,8 @@ export default function OrdPage() {
         <div>
           <h1 className="text-lg font-semibold text-foreground">Маркировка (ОРД)</h1>
           <p className="text-xs text-muted">
-            Контрагенты, договоры и erid-токены — регистрация в ОРД Ozon. Кампания не запустится без erid у всех креативов.
+            Контрагенты, договоры и erid-токены — регистрация в ОРД Ozon. erid присваивается автоматически при одобрении
+            креатива модератором; здесь — ручная регистрация для креативов, у которых договор появился позже.
           </p>
         </div>
         <PillTabs value={tab} onChange={setTab} options={TABS} />
@@ -175,7 +176,7 @@ export default function OrdPage() {
         </div>
       ) : null}
 
-      <ol className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted" aria-label="Порядок регистрации в ОРД">
+      <ol className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted" aria-label="Порядок регистрации �� ОРД">
         <li className="flex items-center gap-1.5">
           <span className="font-mono text-foreground">1</span> Контрагенты (ИНН/ОГРН) → «В ОРД»
         </li>
@@ -185,7 +186,7 @@ export default function OrdPage() {
         </li>
         <li aria-hidden className="text-border">/</li>
         <li className="flex items-center gap-1.5">
-          <span className="font-mono text-foreground">3</span> Креатив с ККТУ → erid
+          <span className="font-mono text-foreground">3</span> Креатив с ККТУ одобрен модератором → erid автоматически
         </li>
         <li aria-hidden className="text-border">/</li>
         <li className="flex items-center gap-1.5">
@@ -449,9 +450,9 @@ export default function OrdPage() {
               ))}
             </select>
           </Field>
-          <Field label="Договор" hint="Только договоры, зарегистрированные в ОРД">
-            <select required className={inputCls} value={crForm.contract_id} onChange={(e) => setCrForm({ ...crForm, contract_id: e.target.value })}>
-              <option value="">— выбрать —</option>
+          <Field label="Договор" hint="Только договоры, зарегистрированные в ОРД. Пусто — подобрать по контрагенту креатива">
+            <select className={inputCls} value={crForm.contract_id} onChange={(e) => setCrForm({ ...crForm, contract_id: e.target.value })}>
+              <option value="">Автоматически по контрагенту</option>
               {registeredContracts.map((ct) => (
                 <option key={ct.id} value={ct.id}>{ct.number} ({ct.client_name})</option>
               ))}

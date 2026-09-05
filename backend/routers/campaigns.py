@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from auth import current_user
 from rbac import can_see_all, require_campaign_editor, require_campaign_write
 from db import get_pool
+from ord.service import campaign_targets_ru
 from schemas import CampaignIn, CampaignPatch
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
@@ -340,7 +341,7 @@ async def compute_diagnostics(pool, camp, *, assume_active: bool = False) -> dic
         "Группы объявлений",
         f"Активных групп со ставкой > 0: {li_active}" if li_active > 0
         else (
-            "Нет ни одной группы объявлений — создайте группу с таргетингом и ставкой."
+            "Нет ни одной группы объявлений ��� создайте группу с таргетингом и ставкой."
             if li_total == 0
             else "Все группы на паузе или со ставкой 0 ₽. Активируйте группу и задайте ставку."
         ),
@@ -369,17 +370,9 @@ async def compute_diagnostics(pool, camp, *, assume_active: bool = False) -> dic
         ),
     )
 
-    # 8. Маркировка ОРД (erid) — блокер только для РФ-трафика
-    targets_ru = await pool.fetchval(
-        """SELECT bool_or(
-                 COALESCE(jsonb_array_length(targeting->'geo_countries'), 0) = 0
-                 OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(targeting->'geo_countries') g
-                            WHERE upper(g) IN ('RU','RUS'))
-               )
-           FROM line_items WHERE campaign_id = $1""",
-        campaign_id,
-    )
-    ru_relevant = targets_ru is None or targets_ru
+    # 8. Маркировка ОРД (erid) — блокер только для РФ-трафика. Критерий общий
+    # с фидом биддера и авторегистрацией при approve (ord.service).
+    ru_relevant = await campaign_targets_ru(pool, campaign_id)
     unmarked = 0
     if ru_relevant and cr_approved:
         unmarked = await pool.fetchval(

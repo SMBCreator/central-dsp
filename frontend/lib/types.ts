@@ -197,6 +197,8 @@ export interface Creative {
   video_duration: number | null
   vast_xml: string | null
   counterparty_id: string | null
+  /** Договор ОРД для erid (миграция 036); null — подбирается по контрагенту при approve. */
+  contract_id?: string | null
   kktu_code: string | null
   kktu_label: string | null
   /** Brand-safety сигналы для SSP: bid.cat и bid.attr (миграция 035). */
@@ -319,6 +321,8 @@ export const STATUS_LABELS: Record<string, string> = {
   registered: "В ОРД",
   failed: "Ошибка ОРД",
   sending: "Отправка",
+  awaiting_contract: "Нет договора",
+  superseded: "Устарел",
 }
 
 export const AD_TYPE_LABELS: Record<string, string> = {
