@@ -37,7 +37,37 @@ _COUNTER_HELP = {
     "rtb_events_consumed_total": "Bid/loss events consumed from the Go bidder Redis stream.",
     "rtb_events_consumer_errors_total": "Consumer iterations that failed (Redis/PG error, retried with backoff).",
     "rtb_test_wins_total": "Win notices for OpenRTB test=1 bids (recorded, not billed).",
+    "ord_export_failures_total": "Monthly ORD stats exports that ended with status=failed.",
 }
+
+# Gauges (D8): значения, которые нельзя вывести из счётчиков. None = ещё не
+# измерялось в этом процессе -> серия не рендерится (в PromQL видно как absent()).
+_GAUGE_HELP = {
+    "bid_events_default_partition_rows": (
+        "Rows sitting in bid_events DEFAULT partition (should be 0; >0 = partition cron lagged). "
+        "Refreshed by GET /cron/retention."
+    ),
+    "ord_export_last_success_timestamp_seconds": (
+        "Unix time of the last successful monthly ORD export (seeded from ord_export_log at startup)."
+    ),
+}
+
+# Фиксированный список cron-задач (routers/cron.py) — bounded label `job`.
+CRON_JOBS = (
+    "rules",
+    "reset_daily",
+    "optimize",
+    "fx_refresh",
+    "shading",
+    "ml_train",
+    "domain_quality",
+    "ord_export",
+    "retention",
+)
+_CRON_RESULTS = ("ok", "error")
+
+# Классы HTTP-ответов бэкенда (доля 5xx для алерта Backend5xxShare).
+HTTP_CLASSES = ("1xx", "2xx", "3xx", "4xx", "5xx")
 
 _LATENCY_BUCKETS = (0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 1.0)
 
@@ -60,6 +90,10 @@ _prefilter: dict[str, int] = {r: 0 for r in PREFILTER_REASONS}
 _lat_counts = [0] * (len(_LATENCY_BUCKETS) + 1)
 _lat_sum = 0.0
 _lat_total = 0
+_gauges: dict[str, float | None] = {name: None for name in _GAUGE_HELP}
+_cron_runs: dict[tuple[str, str], int] = {(j, r): 0 for j in CRON_JOBS for r in _CRON_RESULTS}
+_cron_last_ok: dict[str, float | None] = {j: None for j in CRON_JOBS}
+_http: dict[str, int] = {c: 0 for c in HTTP_CLASSES}
 
 
 def inc(name: str, value: float = 1.0) -> None:
@@ -82,6 +116,33 @@ def inc_prefilter(reason: str) -> None:
     key = reason if reason in _prefilter else "other"
     with _lock:
         _prefilter[key] += 1
+
+
+def set_gauge(name: str, value: float) -> None:
+    """Установить gauge. Неизвестное имя — KeyError (fail fast на опечатку)."""
+    if name not in _GAUGE_HELP:
+        raise KeyError(f"unknown metric gauge: {name}")
+    with _lock:
+        _gauges[name] = float(value)
+
+
+def record_cron_run(job: str, ok: bool, now: float | None = None) -> None:
+    """Исход запуска cron-задачи; job вне CRON_JOBS — KeyError."""
+    if job not in CRON_JOBS:
+        raise KeyError(f"unknown cron job: {job}")
+    ts = time.time() if now is None else now
+    with _lock:
+        _cron_runs[(job, "ok" if ok else "error")] += 1
+        if ok:
+            _cron_last_ok[job] = ts
+
+
+def inc_http_status(status_code: int) -> None:
+    """Класс ответа бэкенда (1xx..5xx); всё вне диапазона — 5xx (ошибка сервера)."""
+    cls = f"{status_code // 100}xx"
+    key = cls if cls in _http else "5xx"
+    with _lock:
+        _http[key] += 1
 
 
 def observe_bid_latency(sec: float) -> None:
@@ -110,6 +171,10 @@ def snapshot() -> dict:
             "no_bid": dict(_no_bid),
             "prefilter": dict(_prefilter),
             "bid_latency": {"count": _lat_total, "sum": _lat_sum, "buckets": buckets},
+            "gauges": dict(_gauges),
+            "cron_runs": dict(_cron_runs),
+            "cron_last_ok": dict(_cron_last_ok),
+            "http": dict(_http),
         }
 
 
@@ -143,6 +208,32 @@ def render_prometheus() -> str:
         lines.append(f"rtb_bid_latency_seconds_sum {_lat_sum:g}")
         lines.append(f"rtb_bid_latency_seconds_count {_lat_total}")
 
+        lines.append("# HELP http_responses_total Backend HTTP responses by status class.")
+        lines.append("# TYPE http_responses_total counter")
+        for cls in HTTP_CLASSES:
+            lines.append(f'http_responses_total{{class="{cls}"}} {_http[cls]}')
+
+        lines.append("# HELP cron_job_runs_total Cron endpoint runs by job and result.")
+        lines.append("# TYPE cron_job_runs_total counter")
+        for job in CRON_JOBS:
+            for res in _CRON_RESULTS:
+                lines.append(f'cron_job_runs_total{{job="{job}",result="{res}"}} {_cron_runs[(job, res)]}')
+
+        lines.append("# HELP cron_job_last_success_timestamp_seconds Unix time of the last successful run per job (this process).")
+        lines.append("# TYPE cron_job_last_success_timestamp_seconds gauge")
+        for job in CRON_JOBS:
+            ts = _cron_last_ok[job]
+            if ts is not None:
+                lines.append(f'cron_job_last_success_timestamp_seconds{{job="{job}"}} {ts:.3f}')
+
+        for name in sorted(_GAUGE_HELP):
+            value = _gauges[name]
+            if value is None:
+                continue
+            lines.append(f"# HELP {name} {_GAUGE_HELP[name]}")
+            lines.append(f"# TYPE {name} gauge")
+            lines.append(f"{name} {value:g}")
+
         lines.append("# HELP process_uptime_seconds Seconds since process start.")
         lines.append("# TYPE process_uptime_seconds gauge")
         lines.append(f"process_uptime_seconds {time.time() - _started_at:g}")
@@ -167,3 +258,11 @@ def reset_for_tests() -> None:
             _lat_counts[i] = 0
         _lat_sum = 0.0
         _lat_total = 0
+        for name in _gauges:
+            _gauges[name] = None
+        for key in _cron_runs:
+            _cron_runs[key] = 0
+        for job in _cron_last_ok:
+            _cron_last_ok[job] = None
+        for cls in _http:
+            _http[cls] = 0

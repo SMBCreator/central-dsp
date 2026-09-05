@@ -147,3 +147,97 @@ groups:
             THROTTLE_COUNTRIES и список подсетей после недавних изменений).
             Разбивка по причинам: rtb_prefilter_drops_total{reason=...}.
             Runbook: rtb_alerts.md#prefilter-drops
+
+  # Чеклист D8 (2026-09-05): доля gate-ошибок, 5xx бэкенда, DEFAULT-партиция,
+  # cron и ОРД-выгрузка. Источник: backend /metrics (obs_metrics.py) и Go.
+  - name: centraldsp-ops
+    rules:
+      - alert: BidderGateErrorRate
+        expr: |
+          rate(bidder_gate_errors_total[5m])
+            / clamp_min(rate(bidder_bid_requests_total[5m]), 1) > 0.01
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Более 1% бидов отброшено из-за ошибки бюджетного гейта"
+          description: >-
+            GateAndReserve (Redis Lua) возвращает ошибку: кандидат пропускается
+            (fail-closed для денег), доставка проседает. Обычно предвестник
+            BidderRedisDown или деградация Redis (latency, OOM, maxclients).
+            Runbook: rtb_alerts.md#gate-errors
+
+      - alert: Backend5xxShare
+        expr: |
+          sum(rate(http_responses_total{class="5xx"}[5m]))
+            / clamp_min(sum(rate(http_responses_total[5m])), 0.1) > 0.02
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Бэкенд отдаёт более 2% ответов 5xx"
+          description: >-
+            Кабинет/пиксель/win-notice деградировали. Первое подозрение —
+            Postgres (см. runbook postgres-down) или Redis. Считается на
+            /metrics бэкенда, сам скрейп не учитывается.
+            Runbook: rtb_alerts.md#backend-5xx
+
+      - alert: BidEventsDefaultPartitionNonEmpty
+        expr: bid_events_default_partition_rows > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "В DEFAULT-партиции bid_events есть строки"
+          description: >-
+            Дневная партиция на дату события не существовала — cron
+            /cron/retention отставал или VPS перезагружался. Строки надо
+            перенести, партиции создать вперёд. Значение обновляется при
+            каждом запуске /cron/retention. Runbook: rtb_alerts.md#default-partition
+
+      - alert: CronRetentionStale
+        expr: time() - cron_job_last_success_timestamp_seconds{job="retention"} > 2 * 86400
+        labels:
+          severity: warning
+        annotations:
+          summary: "Cron /cron/retention не выполнялся успешно более 2 суток"
+          description: >-
+            Партиции bid_events создаются на 7 дней вперёд — запас есть, но
+            через неделю события начнут падать в DEFAULT. Метрика живёт в
+            процессе backend: после рестарта серия absent до первого запуска.
+            Runbook: rtb_alerts.md#cron
+
+      - alert: CronJobFailing
+        expr: increase(cron_job_runs_total{result="error"}[1h]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Cron-задача {{ $labels.job }} завершилась ошибкой"
+          description: >-
+            Исключение или 5xx внутри cron-ручки (401/503 по секрету не
+            считаются). Смотреть логи backend по пути /cron/{{ $labels.job }}.
+            Runbook: rtb_alerts.md#cron
+
+      - alert: OrdExportFailed
+        expr: increase(ord_export_failures_total[1d]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Месячная выгрузка статистики в ОРД завершилась ошибкой"
+          description: >-
+            /cron/ord-export получил OrdError от провайдера; запись со
+            status=failed и текстом ошибки — в ord_export_log. Дедлайн подачи
+            в ОРД — до конца месяца, следующего за отчётным.
+            Runbook: rtb_alerts.md#ord-export
+
+      - alert: OrdExportLag
+        expr: time() - ord_export_last_success_timestamp_seconds > 40 * 86400
+        for: 1h
+        labels:
+          severity: critical
+        annotations:
+          summary: "Успешной выгрузки в ОРД не было более 40 дней"
+          description: >-
+            Выгрузка помесячная (за предыдущий месяц) — при живом cron
+            интервал между успехами не превышает ~31 день. Gauge сеется из
+            ord_export_log при старте backend, обновляется на каждом успешном
+            /cron/ord-export. Runbook: rtb_alerts.md#ord-export

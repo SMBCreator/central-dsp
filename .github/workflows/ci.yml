@@ -31,7 +31,7 @@ jobs:
           cache: pip
           cache-dependency-path: backend/pyproject.toml
       - name: Install backend dependencies
-        run: pip install ./backend pytest pytest-asyncio httpx "fakeredis[lua]"
+        run: pip install ./backend pytest pytest-asyncio httpx "fakeredis[lua]" pyyaml
       - name: Apply migrations to a fresh database
         run: python backend/migrate.py
       - name: Migrations are idempotent on re-run

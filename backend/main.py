@@ -45,12 +45,20 @@ async def _lifespan(_app: FastAPI):
     """Фоновые задачи процесса. Сейчас одна: consumer событий Go-биддера
     (rtb:events -> bid_events/stats_hourly). Без него у Go-трафика нет
     бидов в статистике => win-rate/eCPM в кабинете пустые."""
+    import asyncio
+    import logging
+
     import events_consumer
     import startup_checks
+    from routers.cron import seed_gauges_from_db
 
     # APP_ENV=production + пустой/плейсхолдерный секрет => RuntimeError,
     # процесс не поднимается (чеклист 6.1 / 6.11).
     startup_checks.assert_production_config()
+    try:
+        await asyncio.wait_for(seed_gauges_from_db(), timeout=3)
+    except Exception as e:  # noqa: BLE001 — БД может быть недоступна; метрика просто absent
+        logging.getLogger("startup").warning("seed_gauges_from_db skipped: %s", e)
     events_consumer.start_background()
     try:
         yield
@@ -146,6 +154,25 @@ async def global_rate_limiter(request: Request, call_next):
                 headers={"Retry-After": str(_RL_WINDOW)},
             )
     return await call_next(request)
+
+
+@app.middleware("http")
+async def http_status_class_metrics(request: Request, call_next):
+    """Счётчик http_responses_total{class} для алерта Backend5xxShare (D8).
+    Регистрируется последним => внешний слой: видит и 429 лимитера, и 403
+    viewer-guard'а. Необработанное исключение станет 500 в ServerErrorMiddleware —
+    считаем его как 5xx здесь и пробрасываем дальше."""
+    import obs_metrics
+
+    if request.url.path == "/metrics":
+        return await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception:
+        obs_metrics.inc_http_status(500)
+        raise
+    obs_metrics.inc_http_status(response.status_code)
+    return response
 
 
 @app.get("/health")

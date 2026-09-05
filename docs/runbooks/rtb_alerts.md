@@ -41,10 +41,13 @@ Python backend `/metrics` (серии `rtb_*`). Правила: `ops/prometheus/
 
 **Действия:**
 - Поднять/восстановить Redis. Биддер восстановится сам, рестарт не нужен.
-- После восстановления проверить счётчики бюджета: `budget:*` ключи. Если
-  Redis потерял состояние (flush/OOM-эвикция) — счётчики пересоберутся из
-  БД при следующем цикле синхронизации; до этого возможен кратковременный
-  перерасход. Сверить спенд за окно инцидента с `bid_events`.
+- После восстановления проверить дневные счётчики расхода: ключи
+  `spend:camp:{id}` / `spend:li:{id}` (TTL до полуночи UTC). Если Redis
+  потерял состояние (flush/OOM-эвикция) — счётчики начинают с нуля, а не
+  пересобираются из БД: до полуночи возможен перерасход дневного бюджета в
+  размере уже потраченного до инцидента. Сверить спенд за окно инцидента с
+  `bid_events`; при необходимости выставить ключи руками
+  (`SET spend:camp:<id> <потрачено_сегодня> EX <секунд_до_полуночи_UTC>`).
 
 ## no-traffic — BidderNoTraffic
 
@@ -183,6 +186,134 @@ Python backend `/metrics` (серии `rtb_*`). Правила: `ops/prometheus/
 - Реальный мусорный трафик — фильтр работает как задумано; уведомить
   партнёра, приложив разбивку причин. Аварийное отключение всего слоя:
   `THROTTLE_ENABLED=0` + рестарт backend.
+
+## gate-errors — BidderGateErrorRate
+
+**Что значит:** `GateAndReserve` (Lua-резерв дневного бюджета) возвращает
+ошибку более чем на 1% бидов. Биддер **не** торгует таким кандидатом
+(fail-closed для денег, `handler.go` → `continue`, метрика
+`bidder_gate_errors_total`) — доставка проседает пропорционально.
+
+**Диагностика:**
+1. `redis-cli -u $REDIS_URL --latency` и `INFO clients|memory` — таймауты,
+   maxclients, OOM.
+2. Совпал ли рост с деплоем Redis/сетевыми работами; смотрит ли биддер в тот
+   же инстанс, что и backend (`REDIS_URL_BIDDER`).
+3. Логи биддера: текст ошибки Lua (например, `NOSCRIPT` после рестарта Redis —
+   лечится само на следующем вызове; `BUSY` — долгий скрипт/другой клиент).
+
+**Действия:** как для redis-down. При частичной деградации (latency) —
+увеличить таймаут Redis-клиента биддера только если p99 бидов остаётся в tmax.
+
+## backend-5xx — Backend5xxShare
+
+**Что значит:** более 2% HTTP-ответов backend — 5xx (считается на всех
+ручках кроме `/metrics`: кабинет, `/pixel/collect`, win/imp/click-нотисы).
+
+**Диагностика:**
+1. Логи backend — трейсбек первого 5xx. Типичные: `asyncpg` connection refused /
+   too many clients (→ postgres-down), Redis timeout (→ redis-down),
+   `502` из `/cron/ord-export` (→ ord-export).
+2. `GET /health` backend, `docker compose ps`, `pg_isready`.
+3. Если 5xx только на `/pixel/collect` — это критично отдельно: пиксель стоит
+   на сайтах клиентов; ручка обязана отвечать 204 всегда (см. чеклист 6.7).
+
+**Действия:** устранить причину; сам счётчик сбросится с рестартом backend.
+
+## postgres-down — Postgres недоступен
+
+**Что значит:** backend не может выполнить запросы к БД (`asyncpg` ошибки,
+5xx в кабинете, `/rtb-feed/*` отдаёт 500). Сигналы: `Backend5xxShare`,
+затем `BidderFeedStale` (через 120 с — Go не смог обновить фид).
+
+**Что делает Go-биддер:** торгует на **последнем успешном снимке фида**
+(`internal/feed` — при ошибке refresh снимок не сбрасывается, срока
+годности у снимка нет). Значит:
+- дневные бюджеты и частотные капы **продолжают** соблюдаться (гейт в Redis);
+- паузы кампаний, смена ставок, исчерпание `total_budget`, обнуление баланса
+  рекламодателя, отзыв креатива **не доезжают** до биддера;
+- win/imp/click-нотисы падают в backend → `bill_win` не выполняется →
+  Redis-резерв остаётся, но `spent_total`/баланс в БД не списываются; события
+  `rtb:events` копятся в Redis-стриме (consumer дочитает после восстановления).
+
+**Сколько можно жить:** минуты — безболезненно. Часы — риск перерасхода
+`total_budget` (не дневного) и показов по кампании, которую рекламодатель
+поставил на паузу. **Правило:** если восстановление БД займёт более 30 минут —
+остановить торги: `docker compose stop bidder-go` (SSP получат таймауты/ошибки
+и снизят трафик — это лучше, чем неучтённые показы).
+
+**Диагностика:**
+1. `docker compose ps postgres`, `docker compose logs --tail=200 postgres`.
+2. `pg_isready -h <host> -p 5432`; место на диске (`df -h`), OOM в `dmesg`.
+3. `SELECT count(*) FROM pg_stat_activity` — не упёрлись ли в `max_connections`
+   (backend-пул + worker + beat + миграции).
+
+**Восстановление:**
+1. Поднять Postgres; убедиться `pg_isready` → accepting.
+2. `docker compose exec backend python migrate.py --dry-run` — список должен
+   быть пустым (иначе БД восстановлена из старого бэкапа — см. `ops/restore.sh`).
+3. `curl -H "Authorization: Bearer $RTB_API_TOKEN" /rtb-feed/campaigns | jq length`
+   — фид отвечает; через ≤ 30 с `bidder_feed_age_seconds` падает к нулю.
+4. `docker compose start bidder-go`, если останавливали.
+5. Сверить окно инцидента: `bid_events` (после дочитки consumer'ом) против
+   Redis `spend:camp:*` и `campaigns.spent_today`; расхождение занести в
+   `gap_register.md`, при необходимости скорректировать `spent_total` руками.
+
+## default-partition — BidEventsDefaultPartitionNonEmpty
+
+**Что значит:** в `bid_events_default` есть строки — на момент вставки не было
+дневной партиции для `ts`. Запросы по таким строкам медленнее, retention их не
+удалит.
+
+**Действия:**
+1. `SELECT min(ts), max(ts), count(*) FROM bid_events_default;`
+2. `SELECT bid_events_ensure_partitions(<min_date>, current_date + 7);`
+3. Перенос: `WITH moved AS (DELETE FROM bid_events_default RETURNING *)
+   INSERT INTO bid_events SELECT * FROM moved;` (партиционированная таблица
+   сама разложит строки).
+4. Проверить, почему не отработал `/cron/retention` (см. cron).
+
+## cron — CronRetentionStale / CronJobFailing
+
+**Что значит:** cron-ручка не запускалась успешно (stale) или упала с
+исключением/5xx (failing). Расписание — `crontab`/systemd timers на VPS или
+Vercel Cron; ручки защищены `CRON_SECRET`.
+
+**Диагностика:**
+1. `crontab -l` / `systemctl list-timers` — расписание на месте, секрет в
+   команде совпадает с `.env`.
+2. Логи nginx по `/cron/<job>`: 401 = секрет не совпал; 503 = `CRON_SECRET`
+   пустой в production (startup_checks не даст так стартовать, но проверить).
+3. Логи backend: трейсбек задачи.
+
+**Действия:** запустить руками `curl -H "Authorization: Bearer $CRON_SECRET"
+https://<host>/cron/<job>` и прочитать JSON ответа; `reset-daily` — только
+в 00:00 UTC (иначе дневные бюджеты обнулятся среди дня).
+
+## ord-export — OrdExportFailed / OrdExportLag
+
+**Что значит:** месячная выгрузка статистики показов в ОРД (`/cron/ord-export`,
+ФЗ-347) не удалась (`failed`) или не было успеха более 40 дней (`lag`).
+
+**Дедлайн:** статистика за месяц N подаётся в ОРД до конца месяца N+1. Cron
+идёт в начале месяца — запас на повтор есть, но не бесконечный. За пропуск
+подачи отвечает рекламораспространитель — эскалация ответственному за ОРД
+в тот же день.
+
+**Диагностика:**
+1. `SELECT period, status, rows_sent, error, started_at, finished_at FROM
+   ord_export_log ORDER BY started_at DESC LIMIT 5;`
+2. Причина в `error`: авторизация провайдера (`ORD_*` в `.env`), отклонённый
+   erid (креатив с `ord_creatives.status` не `registered`), сеть.
+3. Кабинет «Маркировка (ОРД)» — статусы контрагентов/креативов, `ord_error`.
+
+**Действия:**
+1. Устранить причину, повторить:
+   `curl -H "Authorization: Bearer $CRON_SECRET" "https://<host>/cron/ord-export?period=YYYY-MM"`
+   — идемпотентно: если за период уже есть `ok`, вернёт `skipped`.
+2. Если провайдер отклонил часть строк — по каждой найти креатив, проверить
+   регистрацию (`POST /ord/creatives/{id}/register`), повторить выгрузку.
+3. Убедиться, что `ord_export_last_success_timestamp_seconds` обновился.
 
 ---
 

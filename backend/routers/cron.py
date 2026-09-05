@@ -3,10 +3,13 @@
 Protected by CRON_SECRET when set (Vercel sends it as a Bearer token).
 """
 
+import functools
 import os
+import time
 
 from fastapi import APIRouter, HTTPException, Request
 
+import obs_metrics
 from cache import clear_daily_spend
 from db import get_pool
 from optimizer import run_optimizer
@@ -29,7 +32,45 @@ def _check_secret(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Invalid cron secret")
 
 
+def _cron_job(name: str):
+    """Учёт исхода запуска в obs_metrics (D8: алерты CronJobFailing /
+    CronRetentionStale). Отказ по секрету (401/503) — не «падение задачи»,
+    поэтому HTTPException с этими кодами не считается ошибкой."""
+
+    def deco(fn):
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            try:
+                result = await fn(*args, **kwargs)
+            except HTTPException as e:
+                if e.status_code not in (401, 503):
+                    obs_metrics.record_cron_run(name, ok=False)
+                raise
+            except Exception:
+                obs_metrics.record_cron_run(name, ok=False)
+                raise
+            obs_metrics.record_cron_run(name, ok=True)
+            return result
+
+        return wrapper
+
+    return deco
+
+
+async def seed_gauges_from_db() -> None:
+    """Однократно при старте: gauge последнего успешного ОРД-экспорта из
+    ord_export_log, чтобы после рестарта процесса OrdExportLag не молчал
+    (absent) до ближайшего запуска cron. Любая ошибка БД — пропуск."""
+    pool = await get_pool()
+    ts = await pool.fetchval(
+        "SELECT extract(epoch FROM max(finished_at)) FROM ord_export_log WHERE status = 'ok'"
+    )
+    if ts is not None:
+        obs_metrics.set_gauge("ord_export_last_success_timestamp_seconds", float(ts))
+
+
 @router.get("/rules")
+@_cron_job("rules")
 async def run_all_rules(request: Request):
     """Evaluate auto-rules for every user with active rules."""
     _check_secret(request)
@@ -43,6 +84,7 @@ async def run_all_rules(request: Request):
 
 
 @router.get("/reset-daily")
+@_cron_job("reset_daily")
 async def reset_daily_budgets(request: Request):
     """Reset daily spend counters in Postgres AND Redis.
 
@@ -58,6 +100,7 @@ async def reset_daily_budgets(request: Request):
 
 
 @router.get("/optimize")
+@_cron_job("optimize")
 async def run_buy_optimizer(request: Request):
     """Analyze traffic quality and block weak sources for auto_optimize campaigns."""
     _check_secret(request)
@@ -65,6 +108,7 @@ async def run_buy_optimizer(request: Request):
 
 
 @router.get("/fx-refresh")
+@_cron_job("fx_refresh")
 async def fx_refresh(request: Request):
     """Ежедневное обновление курса ЦБ (дергается Vercel Cron)."""
     _check_secret(request)
@@ -74,6 +118,7 @@ async def fx_refresh(request: Request):
 
 
 @router.get("/shading")
+@_cron_job("shading")
 async def shading_recompute(request: Request):
     """Ежечасный пересчёт факторов bid-шейдинга по (кампания, SSP)."""
     _check_secret(request)
@@ -83,6 +128,7 @@ async def shading_recompute(request: Request):
 
 
 @router.get("/ml-train")
+@_cron_job("ml_train")
 async def ml_train(request: Request):
     """Переобучение pCTR-модели по окну bid_events (Часть B).
 
@@ -99,6 +145,7 @@ async def ml_train(request: Request):
 
 
 @router.get("/domain-quality")
+@_cron_job("domain_quality")
 async def domain_quality_recompute(request: Request):
     """Пересчёт скоринга качества доменов для clean-traffic режима (Часть B)."""
     _check_secret(request)
@@ -110,6 +157,7 @@ async def domain_quality_recompute(request: Request):
 
 
 @router.get("/ord-export")
+@_cron_job("ord_export")
 async def ord_monthly_export(request: Request, period: str | None = None):
     """Месячная выгрузка статистики показов в ОРД (ФЗ-347).
 
@@ -133,6 +181,7 @@ async def ord_monthly_export(request: Request, period: str | None = None):
         period,
     )
     if already:
+        obs_metrics.set_gauge("ord_export_last_success_timestamp_seconds", time.time())
         return {"period": period, "status": "ok", "skipped": "already exported"}
 
     rows = await pool.fetch(
@@ -168,6 +217,7 @@ async def ord_monthly_export(request: Request, period: str | None = None):
         await pool.execute(
             "UPDATE ord_export_log SET status='ok', finished_at=now() WHERE id=$1", log_id
         )
+        obs_metrics.set_gauge("ord_export_last_success_timestamp_seconds", time.time())
         return {"period": period, "status": "ok", "rows": 0}
 
     adapter = await get_ord_adapter()
@@ -177,16 +227,19 @@ async def ord_monthly_export(request: Request, period: str | None = None):
             "UPDATE ord_export_log SET status='ok', response=$2, finished_at=now() WHERE id=$1",
             log_id, _json.dumps(out, ensure_ascii=False),
         )
+        obs_metrics.set_gauge("ord_export_last_success_timestamp_seconds", time.time())
         return {"period": period, "status": "ok", "rows": len(stats), "provider": adapter.provider}
     except OrdError as e:
         await pool.execute(
             "UPDATE ord_export_log SET status='failed', error=$2, finished_at=now() WHERE id=$1",
             log_id, str(e),
         )
+        obs_metrics.inc("ord_export_failures_total")
         raise HTTPException(status_code=502, detail=f"ОРД выгрузка не удалась: {e}")
 
 
 @router.get("/retention")
+@_cron_job("retention")
 async def bid_events_retention(request: Request):
     """Ретенция сырого лога bid_events (миграция 033, партиции по дням).
 
@@ -220,6 +273,7 @@ async def bid_events_retention(request: Request):
     dropped = await pool.fetchval("SELECT bid_events_drop_old_partitions($1)", keep_days)
     # Строки в DEFAULT-партиции — признак, что cron создания партиций отставал.
     in_default = await pool.fetchval("SELECT count(*) FROM bid_events_default")
+    obs_metrics.set_gauge("bid_events_default_partition_rows", int(in_default or 0))
     return {
         "keep_days": keep_days,
         "partitions_created": created,
