@@ -207,6 +207,51 @@ def test_approve_without_contract_marks_awaiting_and_keeps_out_of_feed(env):
     _run(scenario())
 
 
+def test_approve_without_kktu_marks_awaiting_kktu_and_keeps_out_of_feed(env):
+    """ККТУ обязателен для регистрации в ОРД: без кода у креатива и у кампании
+    approve проходит, но erid не выдаётся, в ОРД не ходим, в фид не попадаем.
+    Ручная регистрация → 409 с понятной причиной. После заполнения кода на
+    кампании (fallback) регистрация проходит."""
+    async def scenario():
+        conn = await _conn()
+        e = await _Env().setup(conn, geo=["RU"])
+        try:
+            await e.add_contract(conn)
+            cr = await e.add_creative(conn)
+            await conn.execute("UPDATE creatives SET kktu_code = NULL WHERE id = $1", cr)
+            await conn.execute("UPDATE campaigns SET kktu_code = NULL WHERE id = $1", e.ids["camp"])
+            client = _app_as(_admin(e))
+
+            r = await client.post(f"/moderation/{cr}/approve")
+            assert r.status_code == 200, r.text
+            body = r.json()
+            assert body["status"] == "approved"
+            assert body["ord"]["status"] == "awaiting_kktu"
+            assert body["erid"] is None
+            oc = await conn.fetchrow("SELECT status, error, payload FROM ord_creatives WHERE creative_id = $1", cr)
+            assert oc["status"] == "awaiting_kktu" and "ккту" in oc["error"].lower()
+            assert oc["payload"] is None  # в ОРД ничего не отправляли
+            assert cr not in await _feed_creatives(client)
+
+            r2 = await client.post(f"/ord/creatives/{cr}/register", json={})
+            assert r2.status_code == 409, r2.text
+            assert "ККТУ" in r2.json()["detail"]
+
+            # ККТУ на кампании — достаточный fallback
+            await conn.execute("UPDATE campaigns SET kktu_code = '30.10' WHERE id = $1", e.ids["camp"])
+            r3 = await client.post(f"/ord/creatives/{cr}/register", json={})
+            assert r3.status_code == 200, r3.text
+            assert r3.json()["erid"].startswith("MOCK-")
+            oc2 = await conn.fetchrow("SELECT payload FROM ord_creatives WHERE creative_id = $1", cr)
+            assert json.loads(oc2["payload"])["kktu"] == "30.10"
+            assert cr in await _feed_creatives(client)
+        finally:
+            await e.teardown(conn)
+            await conn.close()
+
+    _run(scenario())
+
+
 def test_non_ru_geo_does_not_require_erid(env):
     async def scenario():
         conn = await _conn()

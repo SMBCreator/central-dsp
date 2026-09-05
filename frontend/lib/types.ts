@@ -322,6 +322,7 @@ export const STATUS_LABELS: Record<string, string> = {
   failed: "Ошибка ОРД",
   sending: "Отправка",
   awaiting_contract: "Нет договора",
+  awaiting_kktu: "Нет ККТУ",
   superseded: "Устарел",
 }
 

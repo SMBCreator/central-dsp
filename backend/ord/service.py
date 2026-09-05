@@ -148,8 +148,9 @@ def _result(outcome: str, record: dict, error: str | None = None) -> dict:
 
     outcome: ok                → record['erid'] заполнен;
              awaiting_contract → договор не найден/не зарегистрирован, ошибки ОРД нет;
+             awaiting_kktu     → нет кода ККТУ ни у креатива, ни у кампании, в ОРД не ходили;
              failed            → ОРД вернул ошибку (error).
-    'status' в record — статус строки ord_creatives (registered/awaiting_contract/failed),
+    'status' в record — статус строки ord_creatives (registered/awaiting_contract/awaiting_kktu/failed),
     он намеренно не смешивается с outcome.
     """
     out = dict(record)
@@ -185,7 +186,19 @@ async def register_creative(pool, creative: dict, *, contract_id: str | None = N
         rec = await _mark(pool, creative["id"], creative.get("contract_id"), "awaiting_contract", None, why)
         return _result("awaiting_contract", rec, why)
 
+    # ККТУ обязателен при регистрации креатива в ОРД с 01.09.2023. Реальный ОРД
+    # отклонит заявку без кода; мок — нет, и erid оказался бы выдан на
+    # объявление без тематики. Проверяем до отправки, единообразно для всех
+    # адаптеров, чтобы владелец получил понятную причину, а не ошибку ОРД.
     kktu = await _kktu_for(pool, creative)
+    if not kktu:
+        why = (
+            "Не указан код ККТУ (тематика товара/услуги). Заполните его на шаге «Маркировка» "
+            "креатива или в настройках кампании — без ККТУ ОРД не выдаёт erid."
+        )
+        rec = await _mark(pool, creative["id"], contract["id"], "awaiting_kktu", None, why)
+        return _result("awaiting_kktu", rec, why)
+
     payload = _payload(creative, contract, kktu)
     adapter = await get_ord_adapter()
     try:

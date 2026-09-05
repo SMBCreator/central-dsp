@@ -206,6 +206,8 @@ async def register_creative(creative_id: str, body: CreativeRegisterIn, user: di
     result = await ord_register_creative(pool, dict(cr), contract_id=body.contract_id)
     if result["outcome"] == "awaiting_contract":
         raise HTTPException(409, result.get("error") or "Договор должен быть зарегистрирован в ОРД до регистрации креатива")
+    if result["outcome"] == "awaiting_kktu":
+        raise HTTPException(409, result.get("error") or "Укажите код ККТУ креатива или кампании до регистрации в ОРД")
     if result["outcome"] == "failed":
         raise HTTPException(502, f"ОРД: {result.get('error')}")
     return {k: v for k, v in result.items() if k != "outcome"}

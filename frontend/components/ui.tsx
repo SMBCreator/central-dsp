@@ -111,6 +111,7 @@ export function StatusBadge({ status }: { status: string }) {
     sending: "bg-warning/10 text-warning",
     failed: "bg-danger/10 text-danger",
     awaiting_contract: "bg-warning/10 text-warning",
+    awaiting_kktu: "bg-warning/10 text-warning",
     superseded: "bg-muted/10 text-muted",
   }
   return (
