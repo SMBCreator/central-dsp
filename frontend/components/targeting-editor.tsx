@@ -726,7 +726,7 @@ export function TargetingEditor({
         summary={timeSummary(value)}
         onReset={() => set({ days: undefined, hours: undefined })}
       >
-        <Field label="Дни недели" hint="Пусто — все дни">
+        <Field label="Дни недели (UTC)" hint="Пусто — все дни. Сутки по UTC: до 03:00 МСК ещё предыдущий день">
           <div className="flex flex-wrap gap-1.5">
             {DAYS.map((d, i) => (
               <Chip key={d} active={(value.days || []).includes(i)} onClick={() => set({ days: toggle(value.days, i) })}>
