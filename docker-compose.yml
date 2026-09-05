@@ -197,6 +197,12 @@ services:
     restart: unless-stopped
     ports:
       - "3000:3000"
+    environment:
+      # Штатно /api/* до Next.js не доходит (Caddy -> backend:8000). Если всё же
+      # дошёл — проксируем в backend по сети compose, а не в 127.0.0.1 контейнера.
+      # Mock-fallback в production-сборке выключен; ALLOW_MOCK_FALLBACK=1 включает осознанно.
+      BACKEND_INTERNAL_URL: http://backend:8000
+      ALLOW_MOCK_FALLBACK: ${ALLOW_MOCK_FALLBACK:-0}
     depends_on:
       - backend
     networks:

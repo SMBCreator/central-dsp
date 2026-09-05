@@ -42,15 +42,30 @@ function extractErrorDetail(status: number, data: unknown): string {
   return fallback
 }
 
-function getToken(): string | null {
-  if (typeof window === "undefined") return null
-  return window.localStorage.getItem("dsp_token")
+/**
+ * Сессия — только HttpOnly-cookie `cdsp_session` (same-origin через /api-прокси).
+ * В JS токена нет вообще: ни в localStorage, ни в заголовке Authorization.
+ * Авторизованность определяется ответом GET /auth/me (lib/use-me.ts).
+ */
+
+/** Ключ localStorage, оставшийся от старой схемы с Bearer — вычищаем при загрузке. */
+const LEGACY_TOKEN_KEY = "dsp_token"
+if (typeof window !== "undefined") {
+  try {
+    window.localStorage.removeItem(LEGACY_TOKEN_KEY)
+  } catch {
+    // приватный режим / запрет storage — не критично
+  }
 }
 
-export function setToken(token: string | null) {
-  if (typeof window === "undefined") return
-  if (token) window.localStorage.setItem("dsp_token", token)
-  else window.localStorage.removeItem("dsp_token")
+let mockWarned = false
+/** Демо-ответ прокси (x-dsp-mock) — предупреждаем один раз, чтобы фейковые цифры не приняли за реальные. */
+function warnIfMock(res: Response) {
+  if (mockWarned || typeof window === "undefined") return
+  if (res.headers.get("x-dsp-mock") === "1") {
+    mockWarned = true
+    console.warn("[Central DSP] Бэкенд недоступен — интерфейс показывает демо-данные (mock).")
+  }
 }
 
 export async function api<T = unknown>(
@@ -58,17 +73,16 @@ export async function api<T = unknown>(
   options: { method?: string; body?: unknown } = {},
 ): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/json" }
-  const token = getToken()
-  if (token) headers["Authorization"] = `Bearer ${token}`
 
   const res = await fetch(`${BASE}${path}`, {
     method: options.method || "GET",
     headers,
+    credentials: "same-origin",
     body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
   })
+  warnIfMock(res)
 
   if (res.status === 401 && typeof window !== "undefined" && !path.startsWith("/auth/")) {
-    setToken(null)
     // H5: не молчаливый фейл — сообщение на /login
     window.location.href = "/login?reason=session_expired"
     throw new ApiError(401, "Сессия истекла — войдите заново")
@@ -86,7 +100,10 @@ export async function api<T = unknown>(
     }
     // F5: единый toast-обработчик — ни одна ошибка API не проглатывается молча.
     // Динамический импорт, чтобы lib/api.ts оставался импортируемым из любого контекста.
-    if (typeof window !== "undefined") {
+    // Исключение: 401 на /auth/me — это штатная проверка «есть ли сессия»
+    // (AppShell уводит на /login), тост здесь только шумит.
+    const silent = res.status === 401 && path === "/auth/me"
+    if (typeof window !== "undefined" && !silent) {
       import("@/components/toaster").then(({ toastError }) => toastError(detail)).catch(() => {})
     }
     throw new ApiError(res.status, detail, rawDetail)
@@ -99,14 +116,11 @@ export async function api<T = unknown>(
 export const fetcher = <T = unknown>(path: string) => api<T>(path)
 
 /**
- * Скачивание файла (CSV-экспорт) с авторизацией: обычная ссылка `<a href>`
- * не передаёт Bearer-токен, поэтому качаем через fetch и отдаём как blob.
+ * Скачивание файла (CSV-экспорт): качаем через fetch (cookie уходит сама),
+ * чтобы показать ошибку бэкенда вместо «битого» файла, и отдаём как blob.
  */
 export async function downloadCsv(path: string, filename: string): Promise<void> {
-  const headers: Record<string, string> = {}
-  const token = getToken()
-  if (token) headers["Authorization"] = `Bearer ${token}`
-  const res = await fetch(`${BASE}${path}`, { headers })
+  const res = await fetch(`${BASE}${path}`, { credentials: "same-origin" })
   if (!res.ok) {
     const detail = `Не удалось выгрузить файл (${res.status})`
     if (typeof window !== "undefined") {
@@ -181,8 +195,7 @@ export function apiUpload<T = UploadResult>(path: string, file: File, opts: Uplo
     const isVideo = file.type.startsWith("video/")
     xhr.timeout = opts.timeoutMs ?? (isVideo ? 5 * 60_000 : 60_000)
     xhr.open("POST", `${BASE}${path}`)
-    const token = getToken()
-    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`)
+    xhr.withCredentials = true
 
     const fail = (status: number, detail: string) => {
       if (typeof window !== "undefined") {

@@ -3,7 +3,8 @@
 import { useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { api, setToken } from "@/lib/api"
+import { mutate } from "swr"
+import { api } from "@/lib/api"
 import { Button, Field, inputCls } from "@/components/ui"
 
 export default function RegisterPage() {
@@ -19,11 +20,11 @@ export default function RegisterPage() {
     setError(null)
     setLoading(true)
     try {
-      const res = await api<{ token: string }>("/auth/register", {
+      await api("/auth/register", {
         method: "POST",
         body: { name, email, password },
       })
-      setToken(res.token)
+      await mutate("/auth/me", undefined, { revalidate: false })
       router.push("/")
     } catch (err) {
       setError(err instanceof Error ? err.message : "Ошибка регистрации")

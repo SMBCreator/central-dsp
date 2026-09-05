@@ -4,7 +4,8 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { createPortal } from "react-dom"
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
-import { setToken } from "@/lib/api"
+import { mutate } from "swr"
+import { api } from "@/lib/api"
 import { canAccessRoute } from "@/lib/roles"
 import { useMe } from "@/lib/use-me"
 import { NAV_SECTIONS, PROFILE_ITEM, isItemActive, sectionOfPath, type NavItem } from "@/lib/nav"
@@ -126,8 +127,14 @@ export function Sidebar({
   }, [forceExpanded, toggle])
 
   const logoutTip = useHoverTip()
-  const logout = () => {
-    setToken(null)
+  const logout = async () => {
+    // Сессию гасит сервер (удаляет запись + cookie); в JS токена нет.
+    try {
+      await api("/auth/logout", { method: "POST" })
+    } catch {
+      // сессия уже могла истечь — всё равно уходим на /login
+    }
+    await mutate("/auth/me", undefined, { revalidate: false })
     router.push("/login")
   }
 

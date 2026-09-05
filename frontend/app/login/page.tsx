@@ -3,7 +3,8 @@
 import { useEffect, useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { api, setToken } from "@/lib/api"
+import { mutate } from "swr"
+import { api } from "@/lib/api"
 import { homeRoute } from "@/lib/roles"
 import { Button, Field, inputCls } from "@/components/ui"
 
@@ -28,11 +29,13 @@ export default function LoginPage() {
     setError(null)
     setLoading(true)
     try {
-      const res = await api<{ token: string; role?: string }>("/auth/login", {
+      // Сессия приходит HttpOnly-cookie; в теле — только профиль без токена.
+      const res = await api<{ role?: string }>("/auth/login", {
         method: "POST",
         body: { email, password },
       })
-      setToken(res.token)
+      // Сбрасываем закешированный /auth/me предыдущего пользователя в этой вкладке.
+      await mutate("/auth/me", undefined, { revalidate: false })
       // viewer попадает на /report, finance — на /billing, остальные — на дашборд
       router.push(homeRoute(res.role))
     } catch (err) {

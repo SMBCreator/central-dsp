@@ -13,7 +13,6 @@ import { Breadcrumbs } from "@/components/breadcrumbs"
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
-  const [ready, setReady] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const isAuthPage = pathname === "/login" || pathname === "/register" || pathname.startsWith("/share")
 
@@ -22,22 +21,16 @@ export function AppShell({ children }: { children: ReactNode }) {
     setMenuOpen(false)
   }, [pathname])
 
+  // Источник истины об авторизации — сервер (GET /auth/me по HttpOnly-cookie).
+  // В JS токена нет, поэтому «есть ли сессия» узнаём только так; 401 → /login.
+  const { me, error } = useMe(isAuthPage)
+  const unauthenticated = !isAuthPage && !!error && (error as { status?: number }).status === 401
   useEffect(() => {
-    if (isAuthPage) {
-      setReady(true)
-      return
-    }
-    const token = window.localStorage.getItem("dsp_token")
-    if (!token) {
-      router.replace("/login")
-      return
-    }
-    setReady(true)
-  }, [isAuthPage, pathname, router])
+    if (unauthenticated) router.replace("/login")
+  }, [unauthenticated, router])
 
   // Блокировка недоступных разделов по матрице ролей (зеркалит серверный RBAC):
   // по прямой ссылке — редирект на домашнюю страницу роли
-  const { me } = useMe(isAuthPage)
   const blocked = !!me && !canAccessRoute(me.role, pathname, me.permissions)
   useEffect(() => {
     if (blocked && me) router.replace(homeRoute(me.role))
@@ -50,7 +43,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         <Toaster />
       </>
     )
-  if (!ready || blocked) return null
+  if (!me || blocked) return null
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">

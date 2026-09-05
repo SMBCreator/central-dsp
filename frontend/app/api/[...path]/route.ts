@@ -3,14 +3,29 @@ import { resolveMock } from "@/lib/mock-api"
 /**
  * Catch-all для /api/* внутри Next.js.
  *
- * Приоритет — реальный FastAPI-бэкенд (proxy). Если он недоступен (например,
- * превью v0 без Python/Postgres) — отвечаем demo-данными из lib/mock-api.
+ * Приоритет — реальный FastAPI-бэкенд (proxy). Demo-данные из lib/mock-api
+ * отдаются ТОЛЬКО когда фолбэк включён явно (см. MOCK_FALLBACK): молчаливая
+ * подмена реальных цифр на фейковые на стейдже/VPS недопустима.
  *
  * В проде этот код не участвует в обработке /api: vercel.json маршрутизирует
  * /api/* на Python-функцию до того, как запрос дойдёт до Next.js.
  */
 
 const BACKEND = process.env.BACKEND_INTERNAL_URL || "http://127.0.0.1:8000"
+
+/**
+ * Mock-fallback: ALLOW_MOCK_FALLBACK=1 включает, =0 выключает. Без переменной —
+ * включён только в dev-сборке (превью v0 без Python/Postgres), в production
+ * всегда выключен: бэкенд недоступен → честный 503, а не демо-данные.
+ */
+const MOCK_FALLBACK =
+  process.env.ALLOW_MOCK_FALLBACK === "1" ||
+  (process.env.ALLOW_MOCK_FALLBACK !== "0" && process.env.NODE_ENV !== "production")
+
+// Без мока нет смысла обрывать медленный бэкенд через 1.5 с — ждём как обычный прокси.
+const FAST_FALLBACK_MS = 1500
+const PROXY_TIMEOUT_MS = 30_000
+const LONG_TIMEOUT_MS = 5 * 60_000
 
 async function proxyOrMock(req: Request, params: Promise<{ path: string[] }>) {
   const { path: segments } = await params
@@ -20,12 +35,13 @@ async function proxyOrMock(req: Request, params: Promise<{ path: string[] }>) {
   const rawBody = req.method === "GET" || req.method === "HEAD" ? undefined : await req.arrayBuffer()
 
   // 1) Пробуем реальный бэкенд
+  let backendError: unknown
   try {
     const controller = new AbortController()
-    // Обычные запросы — быстрый fallback на mock (1.5 с). Загрузка файлов
-    // креативов (до 50 МБ видео) и экспорты не должны обрываться таймером.
+    // Загрузка файлов креативов (до 50 МБ видео) и экспорты не должны обрываться таймером.
     const isLong = /^\/creatives\/upload\b/.test(path) || /\/export\b/.test(path)
-    const timer = setTimeout(() => controller.abort(), isLong ? 5 * 60_000 : 1500)
+    const timeout = isLong ? LONG_TIMEOUT_MS : MOCK_FALLBACK ? FAST_FALLBACK_MS : PROXY_TIMEOUT_MS
+    const timer = setTimeout(() => controller.abort(), timeout)
     const backendRes = await fetch(`${BACKEND}${path}${url.search}`, {
       method: req.method,
       headers: filterHeaders(req.headers),
@@ -39,8 +55,16 @@ async function proxyOrMock(req: Request, params: Promise<{ path: string[] }>) {
       status: backendRes.status,
       headers: backendRes.headers,
     })
-  } catch {
-    // бэкенда нет — переходим к mock
+  } catch (e) {
+    backendError = e
+  }
+
+  if (!MOCK_FALLBACK) {
+    const reason = backendError instanceof Error ? backendError.name : "unknown"
+    return Response.json(
+      { detail: "Сервис временно недоступен: нет связи с бэкендом. Повторите через минуту." },
+      { status: 503, headers: { "Retry-After": "30", "x-dsp-backend-error": reason } },
+    )
   }
 
   // 2) Mock-fallback (демо-режим превью)

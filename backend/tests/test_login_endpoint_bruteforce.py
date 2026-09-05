@@ -99,3 +99,16 @@ def test_xff_first_hop_is_used(client):
         assert _login(client, f"a{i}@x.ru", "x", ip="10.0.0.1, 127.0.0.1").status_code == 401
     assert _login(client, "b@x.ru", "x", ip="10.0.0.1").status_code == 429
     assert _login(client, "b@x.ru", "x", ip="10.0.0.2").status_code == 401
+
+
+def test_session_token_only_in_httponly_cookie(client):
+    """Токен сессии не покидает HttpOnly-cookie: в теле ответа его нет, чтобы
+    фронт физически не мог сохранить его в localStorage (XSS ≠ угон сессии)."""
+    r = _login(client, "alice@x.ru", "correct-horse")
+    assert r.status_code == 200
+    body = r.json()
+    assert "token" not in body
+    assert body["role"] == "manager"
+    cookie = r.headers.get("set-cookie", "")
+    assert cookie.startswith("cdsp_session=tok-")
+    assert "HttpOnly" in cookie and "Secure" in cookie and "SameSite=none" in cookie
