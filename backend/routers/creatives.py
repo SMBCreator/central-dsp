@@ -231,7 +231,7 @@ def _fmt_size(n: int) -> str:
 def sniff_upload(head: bytes) -> str | None:
     """Определяет реальный MIME по сигнатуре файла (первые байты).
 
-    Не доверяем Content-Type из multipart: браузер/клиент может по��ставить что угодно,
+    Не доверяем Content-Type из multipart: браузер/клиент может подставить что угодно,
     а отдавать чужой HTML/SVG с нашего origin под видом картинки — XSS-риск.
     Возвращает MIME из _ALLOWED_UPLOAD_TYPES или None.
     """
