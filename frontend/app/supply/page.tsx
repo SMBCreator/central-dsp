@@ -173,7 +173,7 @@ export default function SupplyPage() {
   }
 
   const rotateToken = async (p: SupplyPartner) => {
-    const res = await api<{ token: string }>(`/supply-partners/${p.id}/rotate-token`, { method: "POST", body: {} })
+    const res = await api<{ token: string }>(`/supply-partners/${p.id}/token`, { method: "POST" })
     if (res?.token) setIssuedToken({ partnerId: p.id, token: res.token })
     await mutate("/supply-partners")
   }

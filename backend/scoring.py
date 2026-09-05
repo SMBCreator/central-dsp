@@ -111,7 +111,7 @@ async def domain_metrics(pool, user_id: str, profile: dict, campaign_id: str | N
         FROM bid_events e
         JOIN campaigns c ON c.id = e.campaign_id
         WHERE c.user_id = $1 AND e.domain IS NOT NULL AND NOT e.is_test
-          AND e.created_at >= now() - ($2 || ' days')::interval {camp_filter}
+          AND e.created_at >= now() - make_interval(days => $2) {camp_filter}
         GROUP BY 1
         """,
         *params,
@@ -140,7 +140,7 @@ async def domain_metrics(pool, user_id: str, profile: dict, campaign_id: str | N
                 SELECT session_id, event_type, duration_sec, scroll_pct,
                        lower(regexp_replace(COALESCE(referrer, ''), '^https?://([^/]+).*$', '\\1')) AS src
                 FROM pixel_events
-                WHERE pixel_id = $1 AND created_at >= now() - ($2 || ' days')::interval
+                WHERE pixel_id = $1 AND created_at >= now() - make_interval(days => $2)
               ) e WHERE src <> ''
               GROUP BY session_id, src
             ) s
@@ -164,7 +164,7 @@ async def domain_metrics(pool, user_id: str, profile: dict, campaign_id: str | N
             """SELECT lower(domain) AS domain, count(*) AS conv, COALESCE(SUM(value),0) AS val
                FROM conversions
                WHERE goal_id = $1 AND domain IS NOT NULL
-                 AND created_at >= now() - ($2 || ' days')::interval
+                 AND created_at >= now() - make_interval(days => $2)
                GROUP BY 1""",
             profile["goal_id"], window_days,
         )

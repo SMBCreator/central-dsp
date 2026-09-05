@@ -931,6 +931,18 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
 
   // --- Прочее ---
   if (path === "/users" && method === "GET") return mockUsers
+  if (path === "/audit/entities") return [{ key: "campaigns", label: "Кампании" }, { key: "creatives", label: "Креативы" }, { key: "users", label: "Пользователи" }]
+  if (path.startsWith("/audit/log")) {
+    const now = Date.now()
+    return {
+      items: [
+        { id: 3, user_id: "u1", user_email: "admin@example.com", user_role: "admin", method: "PATCH", path: "/campaigns/c-1", status_code: 200, entity: "campaigns", entity_id: "c-1", ip: "10.0.0.1", created_at: new Date(now - 60_000).toISOString() },
+        { id: 2, user_id: "u2", user_email: "buyer@agency.ru", user_role: "manager", method: "POST", path: "/creatives", status_code: 201, entity: "creatives", entity_id: null, ip: "10.0.0.2", created_at: new Date(now - 3_600_000).toISOString() },
+        { id: 1, user_id: null, user_email: null, user_role: null, method: "DELETE", path: "/users/u-9", status_code: 403, entity: "users", entity_id: "u-9", ip: "203.0.113.9", created_at: new Date(now - 86_400_000).toISOString() },
+      ],
+      next_before_id: null,
+    }
+  }
   const usrCrud = crud(method, path, body, "/users", mockUsers, {
     prefix: "u",
     defaults: () => ({ role: "manager", is_active: true }),
@@ -1033,7 +1045,7 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
   // --- Онбординг SSP (Часть SSP) ---
   if (path === "/supply-partners" && method === "GET") return mockSupplyPartners
   if (path.match(/^\/supply-partners\/[^/]+\/check$/) && method === "POST") return mockSspCheck
-  if (path.match(/^\/supply-partners\/[^/]+\/rotate-token$/) && method === "POST")
+  if (path.match(/^\/supply-partners\/[^/]+\/token$/) && method === "POST")
     return { token: "csp_demo_token_4f8a1b2c3d4e5f60718293a4b5c6d7e8" }
   const sspCrud = crud(method, path, body, "/supply-partners", mockSupplyPartners as MockRow[], {
     prefix: "ssp",

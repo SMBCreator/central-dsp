@@ -444,7 +444,7 @@ async def _ssp_rows(pool, user, profile, campaign_id) -> list[dict]:
             FROM bid_events e
             JOIN campaigns c        ON c.id = e.campaign_id
             JOIN supply_partners p  ON p.id = e.supply_partner_id
-            WHERE c.user_id = $1 AND e.created_at >= now() - ($2 || ' days')::interval {camp_filter}
+            WHERE c.user_id = $1 AND e.created_at >= now() - make_interval(days => $2) {camp_filter}
             GROUP BY p.id, p.name""",
         *params,
     )

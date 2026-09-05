@@ -80,6 +80,10 @@ function SortTh({
 /** Отчёт скоринга: серверная сортировка/пагинация/фильтры, ручные блокировки и экспорт CSV. */
 export function ScoringReportCard({ profileId }: { profileId: string | null }) {
   const [dim, setDim] = useState<Dim>("domain")
+  // Блок-лист в бэкенде — на кампанию (scoring_blocklist.campaign_id). Без выбранной
+  // кампании отчёт показывает блоки по всем кампаниям, но кнопки блокировки скрыты.
+  const [campaignId, setCampaignId] = useState("")
+  const { data: campaigns } = useSWR<{ id: string; name: string }[]>("/campaigns", fetcher)
   const [sort, setSort] = useState<ScoringSortKey>("score")
   const [order, setOrder] = useState<Order>("asc")
   const [page, setPage] = useState(1)
@@ -108,6 +112,7 @@ export function ScoringReportCard({ profileId }: { profileId: string | null }) {
     page_size: String(pageSize),
   })
   if (profileId) qs.set("profile_id", profileId)
+  if (campaignId) qs.set("campaign_id", campaignId)
   if (q) qs.set("q", q)
   if (onlyFlagged) qs.set("flagged", "1")
   if (onlyBlocked) qs.set("blocked", "1")
@@ -138,13 +143,15 @@ export function ScoringReportCard({ profileId }: { profileId: string | null }) {
   }
 
   async function toggleBlock(row: ScoringRow) {
-    if (!row.domain) return
+    if (!row.domain || !campaignId) return
     setBusy(row.domain)
     try {
       if (row.blocked && row.block_source === "manual") {
-        await api(`/scoring/blocks/${encodeURIComponent(row.domain)}`, { method: "DELETE" })
+        await api(`/scoring/blocks/${encodeURIComponent(campaignId)}/${encodeURIComponent(row.domain)}`, {
+          method: "DELETE",
+        })
       } else if (!row.blocked) {
-        await api("/scoring/blocks", { method: "POST", body: { domain: row.domain } })
+        await api("/scoring/blocks", { method: "POST", body: { campaign_id: campaignId, domain: row.domain } })
       }
       await mutate()
     } finally {
@@ -214,6 +221,24 @@ export function ScoringReportCard({ profileId }: { profileId: string | null }) {
           Только ниже порога
         </label>
         {dim === "domain" ? (
+          <select
+            value={campaignId}
+            onChange={(e) => {
+              setCampaignId(e.target.value)
+              setPage(1)
+            }}
+            aria-label="Кампания для блокировок"
+            className={`${inputCls} h-8 w-56`}
+          >
+            <option value="">Все кампании (только просмотр)</option>
+            {(campaigns || []).map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        ) : null}
+        {dim === "domain" ? (
           <label className="flex items-center gap-2 text-sm text-muted">
             <input
               type="checkbox"
@@ -261,7 +286,7 @@ export function ScoringReportCard({ profileId }: { profileId: string | null }) {
               <tbody>
                 {rows.map((r: ScoringRow) => {
                   const manual = r.blocked && r.block_source === "manual"
-                  const canToggle = dim === "domain" && (!r.blocked || manual)
+                  const canToggle = dim === "domain" && Boolean(campaignId) && (!r.blocked || manual)
                   return (
                     <tr
                       key={r.domain || r.id}
@@ -317,6 +342,10 @@ export function ScoringReportCard({ profileId }: { profileId: string | null }) {
                             >
                               {r.blocked ? "Разблокировать" : "Заблокировать"}
                             </Button>
+                          ) : !campaignId ? (
+                            <span className="text-[11px] text-muted" title="Выберите кампанию в фильтре, чтобы блокировать площадки">
+                              выберите кампанию
+                            </span>
                           ) : (
                             <span className="text-[11px] text-muted" title="Снимается только изменением профиля или пересчётом">
                               авто

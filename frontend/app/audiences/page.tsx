@@ -32,7 +32,7 @@ const ruleLabel = (rt: string) => RULE_TYPES.find((r) => r.value === rt)?.label 
 
 export default function AudiencesPage() {
   const { data: segments, isLoading } = useSWR<Segment[]>("/audiences", fetcher)
-  const { data: pixels } = useSWR<Pixel[]>("/pixel", fetcher)
+  const { data: pixels } = useSWR<Pixel[]>("/pixels", fetcher)
   const [open, setOpen] = useState(false)
   const [form, setForm] = useState({ pixel_id: "", name: "", rule_type: "all_visitors", rule_value: "", ttl_days: 30 })
   const [saving, setSaving] = useState(false)
