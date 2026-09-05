@@ -50,6 +50,10 @@ _GAUGE_HELP = {
     "ord_export_last_success_timestamp_seconds": (
         "Unix time of the last successful monthly ORD export (seeded from ord_export_log at startup)."
     ),
+    "ord_export_skipped_without_erid": (
+        "Creatives with impressions in the last exported period but no registered erid "
+        "(should be 0; >0 = ads served without ORD marking). Refreshed by GET /cron/ord-export."
+    ),
 }
 
 # Фиксированный список cron-задач (routers/cron.py) — bounded label `job`.

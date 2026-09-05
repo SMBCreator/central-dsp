@@ -83,6 +83,20 @@ export const ROUTE_LABELS: Record<string, string> = {
   new: "Новая кампания",
 }
 
+/**
+ * Заголовки вкладок (metadata.title в layout.tsx каждого раздела; шаблон
+ * «%s — CentralDSP» задан в корневом layout). Страницы клиентские, поэтому
+ * title живёт в серверных layout'ах, а не в page.tsx.
+ */
+export const PAGE_TITLES: Record<string, string> = {
+  ...ROUTE_LABELS,
+  login: "Вход",
+  register: "Регистрация",
+  share: "Общий отчёт",
+  "campaigns/new": "Новая кампания · Кампании",
+  "campaigns/[id]": "Кампания",
+}
+
 export function isItemActive(href: string, pathname: string): boolean {
   return href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(href + "/")
 }

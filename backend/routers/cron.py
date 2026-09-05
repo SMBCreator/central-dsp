@@ -4,6 +4,7 @@ Protected by CRON_SECRET when set (Vercel sends it as a Bearer token).
 """
 
 import functools
+import logging
 import os
 import time
 
@@ -14,6 +15,8 @@ from cache import clear_daily_spend
 from db import get_pool
 from optimizer import run_optimizer
 from rules_engine import evaluate_rules_for_user
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/cron", tags=["cron"])
 
@@ -208,17 +211,50 @@ async def ord_monthly_export(request: Request, period: str | None = None):
         }
         for r in rows
     ]
+    # Показы были, а зарегистрированного erid нет — в ОРД такое отправить нельзя,
+    # но и молча пропускать нельзя: это реклама без маркировки (ФЗ-347).
+    skipped_rows = await pool.fetch(
+        """SELECT s.creative_id, s.campaign_id,
+                  sum(s.impressions) AS impressions,
+                  max(oc.status)     AS ord_status
+           FROM stats_hourly s
+           LEFT JOIN ord_creatives oc ON oc.creative_id = s.creative_id
+                AND oc.status IN ('registered', 'superseded')
+                AND oc.erid IS NOT NULL AND oc.erid <> ''
+           WHERE to_char(s.ts_hour, 'YYYY-MM') = $1
+           GROUP BY s.creative_id, s.campaign_id
+           HAVING sum(s.impressions) > 0 AND count(oc.id) = 0
+           ORDER BY sum(s.impressions) DESC""",
+        period,
+    )
+    skipped_without_erid = [
+        {
+            "creative_id": str(r["creative_id"]),
+            "campaign_id": str(r["campaign_id"]) if r["campaign_id"] else None,
+            "impressions": int(r["impressions"]),
+        }
+        for r in skipped_rows
+    ]
+    obs_metrics.set_gauge("ord_export_skipped_without_erid", len(skipped_without_erid))
+    if skipped_without_erid:
+        logger.warning(
+            "ord-export %s: %d creatives with impressions but no erid: %s",
+            period, len(skipped_without_erid),
+            ", ".join(x["creative_id"] for x in skipped_without_erid[:20]),
+        )
+
     log_id = await pool.fetchval(
         """INSERT INTO ord_export_log (period, kind, rows_sent, request)
            VALUES ($1, 'stats', $2, $3) RETURNING id""",
-        period, len(stats), _json.dumps(stats, ensure_ascii=False),
+        period, len(stats),
+        _json.dumps({"stats": stats, "skipped_without_erid": skipped_without_erid}, ensure_ascii=False),
     )
     if not stats:
         await pool.execute(
             "UPDATE ord_export_log SET status='ok', finished_at=now() WHERE id=$1", log_id
         )
         obs_metrics.set_gauge("ord_export_last_success_timestamp_seconds", time.time())
-        return {"period": period, "status": "ok", "rows": 0}
+        return {"period": period, "status": "ok", "rows": 0, "skipped_without_erid": skipped_without_erid}
 
     adapter = await get_ord_adapter()
     try:
@@ -228,7 +264,13 @@ async def ord_monthly_export(request: Request, period: str | None = None):
             log_id, _json.dumps(out, ensure_ascii=False),
         )
         obs_metrics.set_gauge("ord_export_last_success_timestamp_seconds", time.time())
-        return {"period": period, "status": "ok", "rows": len(stats), "provider": adapter.provider}
+        return {
+            "period": period,
+            "status": "ok",
+            "rows": len(stats),
+            "provider": adapter.provider,
+            "skipped_without_erid": skipped_without_erid,
+        }
     except OrdError as e:
         await pool.execute(
             "UPDATE ord_export_log SET status='failed', error=$2, finished_at=now() WHERE id=$1",

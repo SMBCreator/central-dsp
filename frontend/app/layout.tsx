@@ -9,7 +9,10 @@ const inter = Inter({ subsets: ['latin', 'cyrillic'], variable: '--font-inter' }
 const jetbrains = JetBrains_Mono({ subsets: ['latin', 'cyrillic'], variable: '--font-jetbrains' })
 
 export const metadata: Metadata = {
-  title: 'CentralDSP — Платформа программатик-рекламы',
+  title: {
+    default: 'CentralDSP — Платформа программатик-рекламы',
+    template: '%s — CentralDSP',
+  },
   description:
     'DSP-платформа для рынка СНГ: RTB-закупка, баннеры, нативная и видеореклама, аналитика, автоправила и AI-инструменты.',
 }

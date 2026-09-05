@@ -241,3 +241,15 @@ groups:
             интервал между успехами не превышает ~31 день. Gauge сеется из
             ord_export_log при старте backend, обновляется на каждом успешном
             /cron/ord-export. Runbook: rtb_alerts.md#ord-export
+
+      - alert: OrdExportSkippedWithoutErid
+        expr: ord_export_skipped_without_erid > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Показы без erid: {{ $value }} креатив(ов) не попали в выгрузку ОРД"
+          description: >-
+            За экспортированный период были показы креативов без
+            зарегистрированного erid — реклама без маркировки (ФЗ-347).
+            Список — в ответе /cron/ord-export (skipped_without_erid) и в
+            ord_export_log.request. Runbook: rtb_alerts.md#ord-export
