@@ -176,7 +176,7 @@ export default function OrdPage() {
         </div>
       ) : null}
 
-      <ol className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted" aria-label="Порядок регистрации �� ОРД">
+      <ol className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted" aria-label="Порядок регистрации в ОРД">
         <li className="flex items-center gap-1.5">
           <span className="font-mono text-foreground">1</span> Контрагенты (ИНН/ОГРН) → «В ОРД»
         </li>
