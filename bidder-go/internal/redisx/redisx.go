@@ -19,8 +19,9 @@ import (
 type Client struct {
 	rdb *redis.Client
 
-	gateScript *redis.Script
-	qpsScript  *redis.Script
+	gateScript    *redis.Script
+	releaseScript *redis.Script
+	qpsScript     *redis.Script
 }
 
 // New creates a Client from a redis URL (redis://host:port/db).
@@ -36,9 +37,10 @@ func New(url string) (*Client, error) {
 	opt.PoolSize = 64
 	opt.MinIdleConns = 8
 	return &Client{
-		rdb:        redis.NewClient(opt),
-		gateScript: redis.NewScript(luaGateAndReserve),
-		qpsScript:  redis.NewScript(luaQPSCheck),
+		rdb:           redis.NewClient(opt),
+		gateScript:    redis.NewScript(luaGateAndReserve),
+		releaseScript: redis.NewScript(luaReleaseGate),
+		qpsScript:     redis.NewScript(luaQPSCheck),
 	}, nil
 }
 
@@ -212,14 +214,46 @@ func (c *Client) GateAndReserve(ctx context.Context, campaignID, liID string, co
 	return res == 1, nil
 }
 
-// ReleaseGate refunds a gate reservation on both keys (port of release_budget
-// called for camp+li after a lost auction / expired pending bid).
+// luaReleaseGate refunds a reservation symmetrically to luaGateAndReserve.
+//
+// A refund must never create or drive a counter negative:
+//   - spend:li does not exist when the line item has no daily budget
+//     (gate skips it), so a blind INCRBYFLOAT would accumulate negative
+//     spend and let the gate overspend once a budget is set later that day;
+//   - a loss arriving after UTC midnight (key expired) must not seed the
+//     new day's counter with a negative value.
+//
+// Hence: refund only existing keys and clamp at 0, keeping the TTL.
+const luaReleaseGate = `
+local cost = tonumber(ARGV[1])
+for i = 1, #KEYS do
+  if redis.call('EXISTS', KEYS[i]) == 1 then
+    local v = tonumber(redis.call('INCRBYFLOAT', KEYS[i], -cost))
+    if v < 0 then
+      local ttl = redis.call('TTL', KEYS[i])
+      if ttl > 0 then
+        redis.call('SET', KEYS[i], '0', 'EX', ttl)
+      else
+        redis.call('SET', KEYS[i], '0')
+      end
+    end
+  end
+end
+return 1
+`
+
+// ReleaseGate refunds a gate reservation on spend:camp and spend:li after a
+// lost auction / expired pending bid. See luaReleaseGate for the invariants.
 func (c *Client) ReleaseGate(ctx context.Context, campaignID, liID string, cost float64) error {
-	if err := c.rdb.IncrByFloat(ctx, "spend:camp:"+campaignID, -cost).Err(); err != nil {
-		return err
+	if cost <= 0 || campaignID == "" {
+		return nil
 	}
+	keys := []string{"spend:camp:" + campaignID}
 	if liID != "" {
-		return c.rdb.IncrByFloat(ctx, "spend:li:"+liID, -cost).Err()
+		keys = append(keys, "spend:li:"+liID)
+	}
+	if err := c.releaseScript.Run(ctx, c.rdb, keys, strconv.FormatFloat(cost, 'f', -1, 64)).Err(); err != nil {
+		return fmt.Errorf("redisx: release_gate: %w", err)
 	}
 	return nil
 }
