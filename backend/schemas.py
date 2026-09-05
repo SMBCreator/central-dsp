@@ -3,6 +3,8 @@ import re
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
+from targeting_contract import validate_targeting
+
 # IAB Content Taxonomy 1.0: "IAB1" (tier-1) или "IAB1-1" (tier-2).
 _IAB_CODE_RE = re.compile(r"^IAB\d{1,2}(-\d{1,2})?$")
 
@@ -114,6 +116,11 @@ class LineItemIn(BaseModel):
     daily_budget: float = Field(default=0, ge=0)
     targeting: dict = Field(default_factory=dict)
 
+    @field_validator("targeting")
+    @classmethod
+    def _targeting_contract(cls, v: dict) -> dict:
+        return validate_targeting(v)
+
 
 class LineItemPatch(BaseModel):
     name: str | None = None
@@ -123,6 +130,11 @@ class LineItemPatch(BaseModel):
     max_bid: float | None = Field(default=None, ge=0.01, le=1000)
     daily_budget: float | None = Field(default=None, ge=0)
     targeting: dict | None = None
+
+    @field_validator("targeting")
+    @classmethod
+    def _targeting_contract(cls, v: dict | None) -> dict | None:
+        return None if v is None else validate_targeting(v)
 
 
 class LineItemCreativesIn(BaseModel):

@@ -223,6 +223,7 @@ function inventorySummary(t: Targeting): string {
   const parts: string[] = []
   if (t.ssp_allowlist?.length) parts.push(`SSP: ${t.ssp_allowlist.length}`)
   if (t.iab_categories?.length) parts.push(`IAB: ${t.iab_categories.length}`)
+  if (t.iab_block?.length) parts.push(`IAB−${t.iab_block.length}`)
   if (t.traffic_types?.length) parts.push(t.traffic_types.includes("app") ? "Приложения" : "Web")
   if (t.domain_allowlist?.length) parts.push(`allow×${t.domain_allowlist.length}`)
   if (t.domain_blocklist?.length) parts.push(`block×${t.domain_blocklist.length}`)
@@ -504,7 +505,7 @@ export function TargetingEditor({
         summary={inventorySummary(value)}
         onReset={() =>
           set({
-            ssp_allowlist: undefined, iab_categories: undefined, traffic_types: undefined,
+            ssp_allowlist: undefined, iab_categories: undefined, iab_block: undefined, traffic_types: undefined,
             domain_allowlist: undefined, domain_blocklist: undefined,
             app_bundles_allow: undefined, app_bundles_block: undefined,
             publisher_allow: undefined, publisher_block: undefined,
@@ -529,6 +530,13 @@ export function TargetingEditor({
               options={Object.entries(IAB_CATEGORIES).map(([code, label]) => ({ value: code, label: `${code} · ${label}` }))}
               selected={value.iab_categories || []}
               onChange={(next) => set({ iab_categories: norm(next) })}
+            />
+          </Field>
+          <Field label="Исключить тематики (IAB)" hint="Не показывать на площадках этих категорий">
+            <MultiSelect
+              options={Object.entries(IAB_CATEGORIES).map(([code, label]) => ({ value: code, label: `${code} · ${label}` }))}
+              selected={value.iab_block || []}
+              onChange={(next) => set({ iab_block: norm(next) })}
             />
           </Field>
         </div>

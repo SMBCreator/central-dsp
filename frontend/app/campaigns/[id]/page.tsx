@@ -8,7 +8,6 @@ import { api, ApiError, fetcher } from "@/lib/api"
 import { CopyId } from "@/components/copy-id"
 import { toastSuccess } from "@/components/toaster"
 import {
-  AD_TYPE_LABELS,
   fmtMoney,
   fmtNum,
   fmtPct,
@@ -418,7 +417,6 @@ function targetingSummary(t: Targeting): string {
   const parts = [
     t.geo_countries?.join(", "),
     t.device_types?.map((d) => DEVICES.find((x) => x.value === d)?.label || d).join(", "),
-    t.ad_types?.map((x) => AD_TYPE_LABELS[x] || x).join(", "),
     t.iab_categories?.length ? `IAB: ${t.iab_categories.length}` : undefined,
     t.age_min || t.age_max ? `Возраст ${t.age_min ?? "?"}–${t.age_max ?? "?"}` : undefined,
     t.hours?.length ? `Часы: ${t.hours.length}` : undefined,

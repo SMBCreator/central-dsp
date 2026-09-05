@@ -161,7 +161,7 @@ export const mockLineItems = [
     max_bid: 250,
     daily_budget: 8_000,
     spent_today: 3_820.4,
-    targeting: { geo_countries: ["RU"], device_types: ["desktop"], ad_types: ["banner"] },
+    targeting: { geo_countries: ["RU"], device_types: ["desktop"] },
     created_at: iso(35 * 864e5),
   },
   {
@@ -175,7 +175,7 @@ export const mockLineItems = [
     max_bid: null,
     daily_budget: 7_000,
     spent_today: 2_500,
-    targeting: { geo_countries: ["RU"], device_types: ["mobile"], ad_types: ["native"] },
+    targeting: { geo_countries: ["RU"], device_types: ["mobile"] },
     created_at: iso(34 * 864e5),
   },
   {
@@ -189,7 +189,7 @@ export const mockLineItems = [
     max_bid: null,
     daily_budget: 10_000,
     spent_today: 0,
-    targeting: { geo_countries: ["RU"], ad_types: ["video"] },
+    targeting: { geo_countries: ["RU"] },
     created_at: iso(5 * 864e5),
   },
 ]
