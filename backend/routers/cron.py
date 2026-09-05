@@ -18,7 +18,12 @@ router = APIRouter(prefix="/cron", tags=["cron"])
 def _check_secret(request: Request) -> None:
     secret = os.environ.get("CRON_SECRET")
     if not secret:
-        return  # not configured: allow (dev)
+        # Без секрета ручки открыты всем — допустимо только в dev. В production
+        # startup_checks не даст процессу подняться; здесь второй слой на случай
+        # запуска мимо lifespan (например, uvicorn --factory / тесты).
+        if os.environ.get("APP_ENV", "").strip().lower() in ("production", "prod"):
+            raise HTTPException(status_code=503, detail="CRON_SECRET is not configured")
+        return
     auth = request.headers.get("authorization", "")
     if auth != f"Bearer {secret}":
         raise HTTPException(status_code=401, detail="Invalid cron secret")

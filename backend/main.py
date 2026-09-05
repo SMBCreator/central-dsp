@@ -46,7 +46,11 @@ async def _lifespan(_app: FastAPI):
     (rtb:events -> bid_events/stats_hourly). Без него у Go-трафика нет
     бидов в статистике => win-rate/eCPM в кабинете пустые."""
     import events_consumer
+    import startup_checks
 
+    # APP_ENV=production + пустой/плейсхолдерный секрет => RuntimeError,
+    # процесс не поднимается (чеклист 6.1 / 6.11).
+    startup_checks.assert_production_config()
     events_consumer.start_background()
     try:
         yield

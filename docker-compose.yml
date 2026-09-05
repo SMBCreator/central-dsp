@@ -49,6 +49,9 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       RTB_API_TOKEN: ${RTB_API_TOKEN:?set RTB_API_TOKEN in .env (openssl rand -hex 32)}
+      # production => fail-fast на пустых/плейсхолдерных секретах при старте
+      # (backend/startup_checks.py). Для локальной разработки: APP_ENV=dev в .env.
+      APP_ENV: ${APP_ENV:-production}
       # Автопроверка SSP из кабинета бьёт в боевой Go-биддер по HTTP
       # (ssp_check.go_bidder_caller). Тот же RTB_API_TOKEN подписывает запрос.
       BIDDER_URL: ${BIDDER_URL:-http://bidder-go:8090}
