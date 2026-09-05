@@ -15,6 +15,40 @@ func baseView() *RequestView {
 	}
 }
 
+// Dayparting: часы/дни — в UTC (UI так и подписывает), дни в нумерации
+// Python weekday() 0=Пн..6=Вс. Go Weekday() 0=Вс — конвертация обязана совпасть.
+func TestMatchDayparting(t *testing.T) {
+	// 2026-09-07 — понедельник. 20:30 UTC = 23:30 МСК.
+	mon2030 := time.Date(2026, 9, 7, 20, 30, 0, 0, time.UTC)
+	sun2359 := time.Date(2026, 9, 6, 23, 59, 59, 0, time.UTC)
+
+	cases := []struct {
+		name string
+		tg   Targeting
+		now  time.Time
+		want bool
+	}{
+		{"hour in list", Targeting{Hours: []int{20}}, mon2030, true},
+		{"hour not in list", Targeting{Hours: []int{21}}, mon2030, false},
+		{"hours are UTC, not MSK", Targeting{Hours: []int{23}}, mon2030, false},
+		{"monday is 0", Targeting{Days: []int{0}}, mon2030, true},
+		{"sunday is 6", Targeting{Days: []int{6}}, sun2359, true},
+		{"sunday is not 0", Targeting{Days: []int{0}}, sun2359, false},
+		{"weekdays only rejects sunday", Targeting{Days: []int{0, 1, 2, 3, 4}}, sun2359, false},
+		{"hours+days both required", Targeting{Hours: []int{20}, Days: []int{6}}, mon2030, false},
+		{"empty schedule = always", Targeting{}, sun2359, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			v := baseView()
+			v.Now = c.now.In(time.FixedZone("MSK", 3*3600)) // Match обязан привести к UTC сам
+			if got := Match(&c.tg, v); got != c.want {
+				t.Fatalf("Match=%v, want %v (hours=%v days=%v now=%s)", got, c.want, c.tg.Hours, c.tg.Days, c.now)
+			}
+		})
+	}
+}
+
 func TestMatchTrafficTypes(t *testing.T) {
 	tg := &Targeting{TrafficTypes: []string{"app"}}
 	if Match(tg, baseView()) {
