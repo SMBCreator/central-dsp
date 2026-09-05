@@ -11,7 +11,11 @@ from pydantic import BaseModel, EmailStr, Field
 
 from auth import current_user, hash_password
 from db import get_pool
-from rbac import ADMIN_ROLES, effective_markup_pct, visible_user_ids
+from rbac import ADMIN_ROLES, effective_markup_pct, require_roles, visible_user_ids
+
+# Управлять пользователями могут admin-роли и agency (только своими client);
+# грубый фильтр — здесь, чтобы был виден в матрице RBAC, тонкий — в хендлерах.
+require_user_manager = require_roles(*ADMIN_ROLES, "agency")
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -90,7 +94,7 @@ async def list_users(user: dict = Depends(current_user)):
 
 
 @router.post("", status_code=201)
-async def create_user(body: UserCreate, user: dict = Depends(current_user)):
+async def create_user(body: UserCreate, user: dict = Depends(require_user_manager)):
     pool = await get_pool()
     if user["role"] in ADMIN_ROLES:
         if body.role not in CREATABLE_BY_ADMIN:
@@ -124,7 +128,7 @@ async def create_user(body: UserCreate, user: dict = Depends(current_user)):
 
 
 @router.patch("/{user_id}")
-async def patch_user(user_id: str, body: UserPatch, user: dict = Depends(current_user)):
+async def patch_user(user_id: str, body: UserPatch, user: dict = Depends(require_user_manager)):
     pool = await get_pool()
     if user["role"] in ADMIN_ROLES:
         target = await pool.fetchrow("SELECT id, role FROM users WHERE id = $1", user_id)
