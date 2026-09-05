@@ -32,6 +32,10 @@ const GROUPINGS: { key: string; label: string; section: string }[] = [
   { key: "browser", label: "Браузер", section: "Трафик" },
   { key: "ad_type", label: "Формат", section: "Трафик" },
   { key: "domain", label: "Домен", section: "Трафик" },
+  { key: "publisher", label: "Паблишер", section: "Инвентарь SSP" },
+  { key: "tagid", label: "Плейсмент (tagid)", section: "Инвентарь SSP" },
+  { key: "bundle", label: "Приложение (bundle)", section: "Инвентарь SSP" },
+  { key: "loss_reason", label: "Причина проигрыша", section: "Инвентарь SSP" },
 ]
 
 const METRICS: { key: string; label: string; fmt: (v: number) => string }[] = [
@@ -47,6 +51,11 @@ const METRICS: { key: string; label: string; fmt: (v: number) => string }[] = [
   { key: "conversions", label: "Конверсии", fmt: fmtNum },
   { key: "cpa", label: "CPA", fmt: fmtMoney },
   { key: "viewability", label: "Viewability", fmt: fmtPct },
+  { key: "losses", label: "Проигрыши (lurl)", fmt: fmtNum },
+  { key: "loss_rate", label: "Loss rate", fmt: fmtPct },
+  { key: "avg_bid", label: "Ср. ставка", fmt: fmtMoney },
+  { key: "avg_bidfloor", label: "Ср. bidfloor", fmt: fmtMoney },
+  { key: "avg_min_to_win", label: "Ср. цена победы", fmt: fmtMoney },
 ]
 
 const DEFAULT_METRICS = ["impressions", "clicks", "ctr", "spend", "cpm", "win_rate"]
@@ -496,7 +505,7 @@ function AnalyticsInner() {
                     ))}
                     {activeMetrics.map((m) => (
                       <td key={m.key} className="whitespace-nowrap px-4 py-2.5 text-right font-mono text-xs transition-colors group-hover:bg-surface">
-                        {m.fmt(Number(row[m.key] ?? 0))}
+                        {row[m.key] == null ? "—" : m.fmt(Number(row[m.key]))}
                       </td>
                     ))}
                   </tr>

@@ -361,9 +361,44 @@ _DIM_EVENTS: dict[str, str] = {
     "browser": "COALESCE(e.browser, '—')",
     "ad_type": "COALESCE(e.ad_type, '—')",
     "domain": "COALESCE(e.domain, '—')",
+    # supply-side slices (Go bidder writes them on bid/loss, see docs/CONTRACTS.md)
+    "tagid": "COALESCE(e.tagid, '—')",
+    "publisher": "COALESCE(e.publisher_id, '—')",
+    "bundle": "COALESCE(e.bundle, '—')",
+    "loss_reason": "COALESCE(e.loss_reason, '—')",
 }
 
-_EVENTS_ONLY_DIMS = {"country", "device", "os", "browser", "ad_type", "domain"}
+_EVENTS_ONLY_DIMS = {"country", "device", "os", "browser", "ad_type", "domain", "tagid", "publisher", "bundle", "loss_reason"}
+
+# OpenRTB 2.5 §5.25 Loss Reason Codes — что SSP сообщает в ${AUCTION_LOSS}.
+# Ключи — строки: consumer пишет loss_reason как text без приведения.
+LOSS_REASON_LABELS: dict[str, str] = {
+    "0": "Выиграли",
+    "1": "Внутренняя ошибка SSP",
+    "2": "Показ не состоялся (timeout)",
+    "3": "Некорректный bid response",
+    "4": "Некорректный deal ID",
+    "5": "Некорректный auction ID",
+    "6": "Некорректный advertiser domain",
+    "7": "Отсутствуют маркеры/макросы",
+    "8": "Не соответствует политике",
+    "100": "Ставка ниже bidfloor",
+    "101": "Ставка ниже deal floor",
+    "102": "Проиграли по цене",
+    "103": "Проиграли PMP-сделке",
+    "104": "Покупатель занял слот",
+    "105": "Проиграли гарантированному размещению",
+    "200": "Креатив отклонён фильтром",
+    "201": "Креатив на модерации",
+    "202": "Креатив не соответствует размеру",
+    "203": "Креатив не проходит по домену",
+    "204": "Креатив не проходит по категории",
+    "205": "Креатив: недопустимый атрибут",
+    "206": "Креатив: недопустимый формат/MIME",
+    "207": "Креатив: недопустимая длительность",
+    "208": "Креатив: некорректный adm/VAST",
+    "209": "Креатив: нет erid",
+}
 
 
 class ReportRequest(BaseModel):
@@ -448,7 +483,11 @@ async def report(body: ReportRequest, user: dict = Depends(current_user)):
                    count(*) FILTER (WHERE e.event_type = 'click')      AS clicks,
                    count(*) FILTER (WHERE e.event_type = 'viewable')   AS viewable_imps,
                    COALESCE(sum(e.clear_price) FILTER (WHERE e.event_type = 'impression'), 0) / 1000.0 AS spend,
-                   0::bigint AS conversions
+                   0::bigint AS conversions,
+                   count(*) FILTER (WHERE e.event_type = 'loss')       AS losses,
+                   avg(e.price)      FILTER (WHERE e.event_type = 'bid')  AS avg_bid,
+                   avg(e.bidfloor)   FILTER (WHERE e.event_type = 'bid')  AS avg_bidfloor,
+                   avg(e.min_to_win) FILTER (WHERE e.event_type = 'loss') AS avg_min_to_win
             FROM bid_events e
             WHERE e.campaign_id = ANY($1::uuid[])
               AND e.created_at >= $2::date
@@ -468,7 +507,9 @@ async def report(body: ReportRequest, user: dict = Depends(current_user)):
                    COALESCE(sum(s.clicks), 0)      AS clicks,
                    COALESCE(sum(s.viewable_imps), 0) AS viewable_imps,
                    COALESCE(sum(s.spend), 0)       AS spend,
-                   COALESCE(sum(s.conversions), 0) AS conversions
+                   COALESCE(sum(s.conversions), 0) AS conversions,
+                   NULL::bigint AS losses, NULL::numeric AS avg_bid,
+                   NULL::numeric AS avg_bidfloor, NULL::numeric AS avg_min_to_win
             FROM stats_hourly s
             WHERE s.campaign_id = ANY($1::uuid[])
               AND s.ts_hour >= $2::date
@@ -485,9 +526,11 @@ async def report(body: ReportRequest, user: dict = Depends(current_user)):
             if kind in groupings:
                 nrows = await conn.fetch(f"SELECT id, name FROM {table}")
                 name_maps[kind] = {str(r["id"]): r["name"] for r in nrows}
+        if "loss_reason" in groupings:
+            name_maps["loss_reason"] = LOSS_REASON_LABELS
 
     out_rows = []
-    tot = {"bids": 0, "wins": 0, "impressions": 0, "clicks": 0, "viewable_imps": 0, "spend": 0.0, "conversions": 0}
+    tot = {"bids": 0, "wins": 0, "impressions": 0, "clicks": 0, "viewable_imps": 0, "spend": 0.0, "conversions": 0, "losses": 0}
     for r in recs:
         row: dict = {}
         for i, g in enumerate(groupings):
@@ -504,6 +547,10 @@ async def report(body: ReportRequest, user: dict = Depends(current_user)):
             "impressions": int(r["impressions"]), "clicks": int(r["clicks"]),
             "viewable_imps": int(r["viewable_imps"] or 0),
             "spend": float(r["spend"]), "conversions": int(r["conversions"]),
+            "losses": int(r["losses"] or 0),
+            "avg_bid": round(float(r["avg_bid"]), 4) if r["avg_bid"] is not None else None,
+            "avg_bidfloor": round(float(r["avg_bidfloor"]), 4) if r["avg_bidfloor"] is not None else None,
+            "avg_min_to_win": round(float(r["avg_min_to_win"]), 4) if r["avg_min_to_win"] is not None else None,
         }
         m["win_rate"] = round(m["wins"] / m["bids"] * 100, 2) if m["bids"] else 0.0
         m["ctr"] = round(m["clicks"] / m["impressions"] * 100, 3) if m["impressions"] else 0.0
@@ -515,6 +562,9 @@ async def report(body: ReportRequest, user: dict = Depends(current_user)):
         out_rows.append(row)
         for k in tot:
             tot[k] += m[k]
+    for r in out_rows:
+        # доля проигрышей считается от откликов, по которым SSP вообще шлёт lurl
+        r["loss_rate"] = round(r["losses"] / r["bids"] * 100, 2) if r["bids"] and r["losses"] else 0.0
 
     totals = dict(tot)
     totals["win_rate"] = round(totals["wins"] / totals["bids"] * 100, 2) if totals["bids"] else 0.0
@@ -523,5 +573,6 @@ async def report(body: ReportRequest, user: dict = Depends(current_user)):
     totals["cpc"] = round(totals["spend"] / totals["clicks"], 4) if totals["clicks"] else 0.0
     totals["cpa"] = round(totals["spend"] / totals["conversions"], 4) if totals["conversions"] else 0.0
     totals["viewability"] = round(totals["viewable_imps"] / totals["impressions"] * 100, 1) if totals["impressions"] else 0.0
+    totals["loss_rate"] = round(totals["losses"] / totals["bids"] * 100, 2) if totals["bids"] and totals["losses"] else 0.0
     totals["spend"] = round(totals["spend"], 4)
     return {"rows": out_rows, "totals": totals}
