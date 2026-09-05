@@ -4,6 +4,7 @@ import { useMemo, useState } from "react"
 import useSWR, { mutate } from "swr"
 import { api, fetcher } from "@/lib/api"
 import { AD_TYPE_LABELS, type SspCheckResult, type SupplyPartner } from "@/lib/types"
+import { SspPartnerStats } from "@/components/ssp-partner-stats"
 import {
   Button,
   Card,
@@ -105,6 +106,7 @@ export default function SupplyPage() {
   // Токен показывается один раз после выдачи; результат проверки разворачивается
   const [issuedToken, setIssuedToken] = useState<{ partnerId: string; token: string } | null>(null)
   const [checkingId, setCheckingId] = useState<string | null>(null)
+  const [statsId, setStatsId] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [copied, setCopied] = useState<string | null>(null)
 
@@ -334,6 +336,13 @@ export default function SupplyPage() {
                         Пауза
                       </Button>
                     ) : null}
+                    <Button
+                      variant={statsId === p.id ? "secondary" : "ghost"}
+                      onClick={() => setStatsId(statsId === p.id ? null : p.id)}
+                      aria-expanded={statsId === p.id}
+                    >
+                      Статистика
+                    </Button>
                     <Button variant="ghost" onClick={() => openEdit(p)}>
                       Изменить
                     </Button>
@@ -383,6 +392,8 @@ export default function SupplyPage() {
                     ) : null}
                   </div>
                 ) : null}
+
+                {statsId === p.id ? <SspPartnerStats partner={p} /> : null}
               </Card>
             )
           })}

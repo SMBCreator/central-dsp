@@ -246,6 +246,30 @@ export interface SupplyPartner {
   last_check?: SspCheckResult | null
 }
 
+export interface SupplyPartnerMetrics {
+  bids: number
+  wins: number
+  impressions: number
+  clicks: number
+  losses: number
+  spend: number
+  win_rate: number | null
+  ctr: number | null
+}
+
+export interface SupplyPartnerStats {
+  days: number
+  totals: SupplyPartnerMetrics & {
+    avg_bid: number | null
+    avg_bidfloor: number | null
+    avg_min_to_win: number | null
+  }
+  daily: (SupplyPartnerMetrics & { ts: string })[]
+  loss_reasons: { reason: string; label: string; count: number; share: number | null }[]
+  placements: (SupplyPartnerMetrics & { publisher_id: string; tagid: string; site: string })[]
+  ad_types: (SupplyPartnerMetrics & { ad_type: string })[]
+}
+
 export interface Rule {
   id: string
   campaign_id: string | null

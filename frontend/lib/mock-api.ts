@@ -1045,6 +1045,7 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
   // --- Онбординг SSP (Часть SSP) ---
   if (path === "/supply-partners" && method === "GET") return mockSupplyPartners
   if (path.match(/^\/supply-partners\/[^/]+\/check$/) && method === "POST") return mockSspCheck
+  if (path.match(/^\/supply-partners\/[^/]+\/stats$/) && method === "GET") return mockSspStats()
   if (path.match(/^\/supply-partners\/[^/]+\/token$/) && method === "POST")
     return { token: "csp_demo_token_4f8a1b2c3d4e5f60718293a4b5c6d7e8" }
   const sspCrud = crud(method, path, body, "/supply-partners", mockSupplyPartners as MockRow[], {
@@ -1157,6 +1158,37 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
 }
 
 // Демо-данные онбординга SSP
+function mockSspStats() {
+  const m = (bids: number, wins: number, imps: number, clicks: number, losses: number, spend: number) => ({
+    bids, wins, impressions: imps, clicks, losses, spend,
+    win_rate: bids ? Math.round((wins / bids) * 10000) / 100 : null,
+    ctr: imps ? Math.round((clicks / imps) * 10000) / 100 : null,
+  })
+  const day = 24 * 3600 * 1000
+  return {
+    days: 7,
+    totals: { ...m(48200, 6120, 5890, 71, 39800, 9420.5), avg_bid: 112.4, avg_bidfloor: 85.0, avg_min_to_win: 131.7 },
+    daily: Array.from({ length: 7 }, (_, i) => ({
+      ts: new Date(Date.now() - (6 - i) * day).toISOString().slice(0, 10) + "T00:00:00+00:00",
+      ...m(6500 + i * 200, 800 + i * 40, 780 + i * 38, 9 + (i % 3), 5400 + i * 150, 1250 + i * 60),
+    })),
+    loss_reasons: [
+      { reason: "102", label: "Проиграли по цене", count: 31200, share: 78.39 },
+      { reason: "100", label: "Ставка ниже bidfloor", count: 6100, share: 15.33 },
+      { reason: "2", label: "Показ не состоялся (timeout)", count: 2500, share: 6.28 },
+    ],
+    placements: [
+      { publisher_id: "pub-avito", tagid: "avito_main_300x250", site: "avito.ru", ...m(21000, 3100, 2980, 40, 17200, 4800) },
+      { publisher_id: "pub-avito", tagid: "avito_item_728x90", site: "avito.ru", ...m(15400, 1900, 1830, 19, 13100, 2900) },
+      { publisher_id: "pub-news", tagid: "news_side_240x400", site: "news.example", ...m(11800, 1120, 1080, 12, 9500, 1720.5) },
+    ],
+    ad_types: [
+      { ad_type: "banner", ...m(44000, 5800, 5590, 66, 36500, 8900) },
+      { ad_type: "video", ...m(4200, 320, 300, 5, 3300, 520.5) },
+    ],
+  }
+}
+
 const mockSspCheck = {
   ran_at: iso(0),
   passed: true,
