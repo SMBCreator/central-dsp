@@ -87,19 +87,19 @@ func BuildAdm(c *feed.Candidate, base, eventToken string) string {
 		return string(b)
 
 	default: // video
+		eridExt := ""
+		if erid != "" || c.AdvName != "" {
+			eridExt = fmt.Sprintf(`<Extensions><Extension type="erid"><Erid>%s</Erid></Extension><Extension type="AdvertiserInfo"><Name>%s</Name><INN>%s</INN><OGRN>%s</OGRN><Address>%s</Address></Extension></Extensions>`,
+				xmlEscape(erid), xmlEscape(c.AdvName), xmlEscape(c.AdvINN), xmlEscape(c.AdvOGRN), xmlEscape(c.AdvAddress))
+		}
 		if c.VastXML != "" {
-			return c.VastXML
+			return injectVastExtensions(c.VastXML, eridExt)
 		}
 		duration := 15
 		if c.VideoDuration != nil && *c.VideoDuration > 0 {
 			duration = *c.VideoDuration
 		}
 		vevent := fmt.Sprintf("%s/api/rtb/vevent?bid=%s", base, eventToken)
-		eridExt := ""
-		if erid != "" || c.AdvName != "" {
-			eridExt = fmt.Sprintf(`<Extensions><Extension type="erid"><Erid>%s</Erid></Extension><Extension type="AdvertiserInfo"><Name>%s</Name><INN>%s</INN><OGRN>%s</OGRN><Address>%s</Address></Extension></Extensions>`,
-				erid, xmlEscape(c.AdvName), xmlEscape(c.AdvINN), xmlEscape(c.AdvOGRN), xmlEscape(c.AdvAddress))
-		}
 		thirdImpNode := ""
 		if thirdImp != "" {
 			thirdImpNode = fmt.Sprintf("<Impression><![CDATA[%s]]></Impression>", thirdImp)
@@ -128,6 +128,23 @@ func BuildAdm(c *feed.Candidate, base, eventToken string) string {
 			vevent, vevent, vevent, vevent, vevent, vevent,
 			c.ClickURL, clickURL, thirdClickNode, c.VideoURL)
 	}
+}
+
+// injectVastExtensions вставляет блок erid/AdvertiserInfo в пользовательский
+// VAST (creatives.vast_xml). erid выдан ОРД именно на этот ролик, и без
+// Extension площадка показала бы его как немаркированный. Уже промаркированный
+// VAST (есть <Erid>) не трогаем; без <InLine>/<Wrapper> — отдаём как есть.
+func injectVastExtensions(vast, ext string) string {
+	if ext == "" || strings.Contains(vast, "<Erid>") {
+		return vast
+	}
+	for _, open := range []string{"<InLine>", "<Wrapper>"} {
+		if i := strings.Index(vast, open); i >= 0 {
+			at := i + len(open)
+			return vast[:at] + ext + vast[at:]
+		}
+	}
+	return vast
 }
 
 // advertiserInfoMap возвращает данные рекламодателя для native ext (38-ФЗ), либо nil.
