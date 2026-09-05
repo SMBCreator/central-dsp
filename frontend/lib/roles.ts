@@ -71,6 +71,7 @@ export const ROUTE_ACCESS: Array<{ prefix: string; roles: Role[] }> = [
   { prefix: "/users", roles: [...ADMINS, "agency"] },
   { prefix: "/access", roles: ["superadmin", "admin", "manager", "advertiser", "agency", "client"] },
   { prefix: "/settings", roles: ADMINS },
+  { prefix: "/audit", roles: ADMINS },
   { prefix: "/", roles: ALL.filter((r) => r !== "viewer") },
 ]
 
@@ -146,7 +147,7 @@ export function canWrite(
 // ---- Обратная совместимость со старым API (app-shell/sidebar до рефактора) ----
 
 /** Разделы только для админов и менеджеров платформы */
-export const ADMIN_ROUTES = ["/supply", "/rtb-test", "/users", "/access", "/settings", "/advertisers"] as const
+export const ADMIN_ROUTES = ["/supply", "/rtb-test", "/users", "/access", "/settings", "/advertisers", "/audit"] as const
 
 export function isAdminRole(role: string | null | undefined): boolean {
   return role === "admin" || role === "manager" || role === "superadmin"

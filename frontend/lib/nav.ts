@@ -55,6 +55,7 @@ export const NAV_SECTIONS: NavSection[] = [
         icon: "M17 20h5v-2a4 4 0 00-3-3.87M9 20H4v-2a4 4 0 013-3.87m6-1.13a4 4 0 10-4-4 4 4 0 004 4zm6-8a3 3 0 11-3-3",
       },
       { href: "/access", label: "Доступ клиентов", icon: "M16 8a4 4 0 11-8 0 4 4 0 018 0zM4 21a8 8 0 0116 0M19 8v4m2-2h-4" },
+      { href: "/audit", label: "Журнал действий", icon: "M9 5h10M9 12h10M9 19h10M5 5h.01M5 12h.01M5 19h.01" },
       {
         href: "/settings",
         label: "Настройки",
