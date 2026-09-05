@@ -229,7 +229,8 @@ docker compose exec -T postgres dropdb -U centraldsp centraldsp_restore_<ts>
 Реальное восстановление после потери базы: `ops/restore.sh <бэкап>` → остановить
 `backend`/`bidder` → сменить `DATABASE_URL` на новую базу (или `ALTER DATABASE ... RENAME`)
 → поднять сервисы → `redis-cli FLUSHDB` (счётчики пересчитаются) → проверить
-`GET /health` и фид биддера `/internal/bidder/feed`.
+`GET /health` и фид биддера: `GET /rtb-feed/partners` и `GET /rtb-feed/campaigns`
+(заголовок `Authorization: Bearer ${RTB_API_TOKEN}`).
 
 ## 9.1. Планировщик `/cron/*` на VPS
 

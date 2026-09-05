@@ -211,7 +211,7 @@ function deviceEnvSummary(t: Targeting): string {
   if (t.device_types?.length)
     parts.push(t.device_types.map((d) => DEVICES.find((x) => x.value === d)?.label || d).join(", "))
   if (t.os?.length) parts.push(`ОС: ${t.os.join(", ")}`)
-  if (t.browsers?.length) parts.push(`Бра��зеры: ${t.browsers.length}`)
+  if (t.browsers?.length) parts.push(`Браузеры: ${t.browsers.length}`)
   if (t.languages?.length) parts.push(`Языки: ${t.languages.length}`)
   if (t.connection_types?.length) parts.push(`Сеть: ${t.connection_types.length}`)
   if (t.carriers?.length) parts.push(`Операторы: ${t.carriers.length}`)
@@ -226,7 +226,7 @@ function inventorySummary(t: Targeting): string {
   if (t.traffic_types?.length) parts.push(t.traffic_types.includes("app") ? "Приложения" : "Web")
   if (t.domain_allowlist?.length) parts.push(`allow×${t.domain_allowlist.length}`)
   if (t.domain_blocklist?.length) parts.push(`block×${t.domain_blocklist.length}`)
-  if (t.keywords_allow?.length) parts.push(`сло��а×${t.keywords_allow.length}`)
+  if (t.keywords_allow?.length) parts.push(`слова×${t.keywords_allow.length}`)
   return parts.join(" · ") || "Весь инвентарь"
 }
 
@@ -545,7 +545,7 @@ export function TargetingEditor({
           </div>
         </Field>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Field label="Белый список доменов" hint="Через запятую; пуст�� — все площадки">
+          <Field label="Белый список доменов" hint="Через запятую; пусто — все площадки">
             <input
               className={inputCls}
               defaultValue={(value.domain_allowlist || []).join(", ")}

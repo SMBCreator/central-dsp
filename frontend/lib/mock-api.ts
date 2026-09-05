@@ -524,7 +524,7 @@ export function mockDiagnostics(campaignId: string) {
       ok: true,
       severity: "warning",
       title: "Заблокированные источники",
-      detail: "Оптимизатор не блокировал источ��ики",
+      detail: "Оптимизатор не блокировал источники",
     },
   ]
 
@@ -533,7 +533,7 @@ export function mockDiagnostics(campaignId: string) {
   return {
     eligible: blockers.length === 0,
     summary: blockers.length
-      ? "Кампания не откручивается: устраните ��локирующие проблемы ниже."
+      ? "Кампания не откручивается: устраните блокирующие проблемы ниже."
       : warnings.length
         ? "Кампания участвует в торгах, но охват ограничен — см. предупреждения."
         : "Все проверки пройдены — кампания готова к откруткам.",

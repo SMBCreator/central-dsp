@@ -54,13 +54,13 @@ jobs:
           version: 9
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: frontend/.nvmrc
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
       - name: No broken UTF-8 (U+FFFD) in source
         run: |
           set -o pipefail
-          if grep -rIn $'\xEF\xBF\xBD' frontend/app frontend/components frontend/lib backend/routers backend/*.py backend/migrations --include='*.ts' --include='*.tsx' --include='*.py' --include='*.sql'; then
+          if grep -rIn $'\xEF\xBF\xBD' frontend/app frontend/components frontend/lib backend bidder-go docs ops --include='*.ts' --include='*.tsx' --include='*.py' --include='*.sql' --include='*.go' --include='*.md' --include='*.yml' --include='*.yaml' --include='*.conf' --include='*.sh'; then
             echo "::error::Found U+FFFD replacement characters (broken encoding) in source files above"
             exit 1
           fi

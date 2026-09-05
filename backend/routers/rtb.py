@@ -696,7 +696,7 @@ async def process_bid_request(
     Partners in 'testing' status are served: this is the SSP onboarding
     test phase (Часть SSP-онбординга).
 
-    verify_token=False — только для внутре��ней автопроверки (ssp_check):
+    verify_token=False — только для внутренней автопроверки (ssp_check):
     открытый токен в БД не хранится (миграция 032), поэтому сервер сам
     предъявить его не может. Публичный HTTP-роут всегда проверяет."""
     pool = await get_pool()

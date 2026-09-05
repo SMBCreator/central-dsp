@@ -79,7 +79,7 @@
 | Fail-open/close | Prefilter (`prefilter.py`) fail-open по документу; блок-листы/скоринг — fail-open при отсутствии в кэше; деньги — fail-close | OK (осознанно) |
 | Body size SSP | Нет `http.MaxBytesReader`; `json.NewDecoder(r.Body)` без лимита | Риск (R9) |
 | Rate limit per partner | Нет; авторизация партнёра — по `auth_token` (см. 6.3) | Риск, S |
-| Нагрузочный тест | `backend/loadtest/rtb_load.py` есть; в песочнице запустить нельзя (нет go/docker). p50/95/99 при 1k/5k QPS �� **не проверено** | — |
+| Нагрузочный тест | `backend/loadtest/rtb_load.py` есть; в песочнице запустить нельзя (нет go/docker). p50/95/99 при 1k/5k QPS — **не проверено** | — |
 
 **Воспроизведение:** `grep -n "MaxBytesReader" -r bidder-go` → пусто; `grep -n "GateAndReserve" -A 8 bidder-go/internal/rtb/handler.go`.
 
@@ -133,7 +133,7 @@
 | Миграции и откат | Прямые SQL-файлы, идемпотентные, применяются скриптом; down-миграций нет (по практике — forward-only с бэкапом перед деплоем) | OK при наличии R5 |
 | Blue/green биддера | Compose — один инстанс; `go_bidder_plan.md` описывает канареечный процент через SSP-конфиг; не реализовано | Риск, M |
 | Падение Redis | Login fail-open; RTB деньги fail-close; `mark_once` бросит исключение → 500 на трекерах (потеря учёта показов) | Риск, S |
-| Падение Postgres | FastAPI отдаёт 500; Go-биддер продолжает бидить по кэшированному фиду до `feed staleness` ал��рта | OK |
+| Падение Postgres | FastAPI отдаёт 500; Go-биддер продолжает бидить по кэшированному фиду до `feed staleness` алерта | OK |
 | UTC/Москва | Все `timestamptz`, агрегация по UTC-часам, в UI не подписан пояс; отчёты ОРД сдаются по MSK-суткам | Риск (R12) |
 
 **Рекомендации:** R5 — `ops/backup.sh` (pg_dump + uploads → S3-совместимое хранилище, ежедневно, хранение 30 дней), ежемесячный `restore-drill` на staging с записью RTO; целевые RPO 24 ч / RTO 2 ч — S; трекеры — оборачивать `mark_once` в try/except с fail-open и метрикой `redis_errors_total` — S; R12 — вывести пояс в UI («по МСК»), агрегировать ОРД-выгрузки по `Europe/Moscow` — S.

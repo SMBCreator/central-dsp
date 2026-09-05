@@ -186,7 +186,7 @@ func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2. QPS-гейт партнёра. Ошибка Redis — fail-open (биддим), но считаем
-	//    gate_errors, чтобы деградаци�� Redis была видна в /metrics.
+	//    gate_errors, чтобы деградация Redis была видна в /metrics.
 	if h.redis != nil && partner.QPSLimit > 0 {
 		ok, err := h.redis.CheckQPS(ctx, partner.ID, int64(partner.QPSLimit), time.Now().Unix())
 		if err != nil {
@@ -607,7 +607,7 @@ func (h *Handler) audienceOK(ctx context.Context, include, exclude []string, dev
 	return true
 }
 
-// Win — POST /rtb/win (вн��тренний; в prod win идёт на backend /api/rtb/win).
+// Win — POST /rtb/win (внутренний; в prod win идёт на backend /api/rtb/win).
 func (h *Handler) Win(w http.ResponseWriter, r *http.Request) {
 	if VerifyEventToken(r.URL.Query().Get("bid")) == "" {
 		http.Error(w, "invalid event token", http.StatusForbidden)
