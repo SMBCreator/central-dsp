@@ -19,10 +19,8 @@ import (
 type Client struct {
 	rdb *redis.Client
 
-	budgetScript  *redis.Script
-	gateScript    *redis.Script
-	qpsScript     *redis.Script
-	releaseScript *redis.Script
+	gateScript *redis.Script
+	qpsScript  *redis.Script
 }
 
 // New creates a Client from a redis URL (redis://host:port/db).
@@ -38,11 +36,9 @@ func New(url string) (*Client, error) {
 	opt.PoolSize = 64
 	opt.MinIdleConns = 8
 	return &Client{
-		rdb:           redis.NewClient(opt),
-		budgetScript:  redis.NewScript(luaBudgetReserve),
-		gateScript:    redis.NewScript(luaGateAndReserve),
-		qpsScript:     redis.NewScript(luaQPSCheck),
-		releaseScript: redis.NewScript(luaBudgetRelease),
+		rdb:        redis.NewClient(opt),
+		gateScript: redis.NewScript(luaGateAndReserve),
+		qpsScript:  redis.NewScript(luaQPSCheck),
 	}, nil
 }
 
@@ -81,93 +77,12 @@ func (c *Client) EmitEvent(ctx context.Context, fields map[string]any) error {
 }
 
 // ---------------------------------------------------------------------------
-// Budget reservation (port of cache.py BUDGET_RESERVE_LUA)
-//
-// Keys: budget:{campaign_id}:{YYYYMMDD} (daily spent, micros)
-//       budget_total:{campaign_id}     (lifetime spent, micros)
-// Args: amount_micros, daily_limit_micros (0 = unlimited),
-//       total_limit_micros (0 = unlimited), ttl_seconds
-// Returns 1 if reserved, 0 if either cap would be exceeded.
-// ---------------------------------------------------------------------------
-
-const luaBudgetReserve = `
-local daily_key = KEYS[1]
-local total_key = KEYS[2]
-local amount = tonumber(ARGV[1])
-local daily_limit = tonumber(ARGV[2])
-local total_limit = tonumber(ARGV[3])
-local ttl = tonumber(ARGV[4])
-
-local daily_spent = tonumber(redis.call('GET', daily_key) or '0')
-local total_spent = tonumber(redis.call('GET', total_key) or '0')
-
-if daily_limit > 0 and daily_spent + amount > daily_limit then
-  return 0
-end
-if total_limit > 0 and total_spent + amount > total_limit then
-  return 0
-end
-
-local new_daily = redis.call('INCRBY', daily_key, amount)
-if new_daily == amount then
-  redis.call('EXPIRE', daily_key, ttl)
-end
-redis.call('INCRBY', total_key, amount)
-return 1
-`
-
-// ReserveBudget atomically reserves amountMicros against daily/total caps.
-func (c *Client) ReserveBudget(ctx context.Context, campaignID string, day string, amountMicros, dailyLimitMicros, totalLimitMicros int64) (bool, error) {
-	keys := []string{
-		fmt.Sprintf("budget:%s:%s", campaignID, day),
-		fmt.Sprintf("budget_total:%s", campaignID),
-	}
-	res, err := c.budgetScript.Run(ctx, c.rdb, keys,
-		amountMicros, dailyLimitMicros, totalLimitMicros, 172800).Int64()
-	if err != nil {
-		return false, fmt.Errorf("redisx: budget reserve: %w", err)
-	}
-	return res == 1, nil
-}
-
-// ---------------------------------------------------------------------------
-// Budget release (port of cache.py BUDGET_RELEASE_LUA) — used on loss/expiry.
-// ---------------------------------------------------------------------------
-
-const luaBudgetRelease = `
-local daily_key = KEYS[1]
-local total_key = KEYS[2]
-local amount = tonumber(ARGV[1])
-
-local daily = tonumber(redis.call('GET', daily_key) or '0')
-if daily >= amount then
-  redis.call('DECRBY', daily_key, amount)
-else
-  redis.call('SET', daily_key, '0', 'KEEPTTL')
-end
-local total = tonumber(redis.call('GET', total_key) or '0')
-if total >= amount then
-  redis.call('DECRBY', total_key, amount)
-else
-  redis.call('SET', total_key, '0')
-end
-return 1
-`
-
-// ReleaseBudget returns a previously reserved amount (bid lost / expired).
-func (c *Client) ReleaseBudget(ctx context.Context, campaignID string, day string, amountMicros int64) error {
-	keys := []string{
-		fmt.Sprintf("budget:%s:%s", campaignID, day),
-		fmt.Sprintf("budget_total:%s", campaignID),
-	}
-	if err := c.releaseScript.Run(ctx, c.rdb, keys, amountMicros).Err(); err != nil {
-		return fmt.Errorf("redisx: budget release: %w", err)
-	}
-	return nil
-}
-
-// ---------------------------------------------------------------------------
 // Bid-time gate (port of cache.py _GATE_LUA — 1:1).
+//
+// Единственный источник истины по бюджету — ключи spend:camp:/spend:li:,
+// общие с Python (cache.py). Старый порт BUDGET_RESERVE_LUA на ключах
+// budget:{camp}:{day} удалён: backend их не читал, а «резерв» в них
+// никогда не совпадал с фактическим расходом.
 //
 // KEYS[1..3]: freq:{campaign_id}:{hours}h:{device_id} (pad-keys when <3 caps)
 // KEYS[4]:    spend:camp:{campaign_id}

@@ -75,8 +75,9 @@ FLOWER_PASSWORD=<пароль для Flower UI>
 ## 4. Запуск стека
 
 ```bash
-# Собрать и поднять всё (Go-биддер включается профилем)
-docker compose --profile bidder-go up -d --build postgres redis backend bidder-go worker beat frontend
+# Собрать и поднять всё. Go-биддер (bidder-go) входит в набор по умолчанию;
+# legacy-биддер `bidder` поднимается только явно: --profile legacy.
+docker compose up -d --build postgres redis backend bidder-go worker beat frontend
 
 # Проверить статусы
 docker compose ps
@@ -192,7 +193,7 @@ docker compose exec backend find /data/uploads -type f -mtime +1 -print
 ```bash
 cd central-dsp
 git pull
-docker compose --profile bidder-go up -d --build
+docker compose up -d --build
 docker compose logs backend --tail 10   # миграции применились?
 ```
 
@@ -227,7 +228,7 @@ docker compose exec -T postgres dropdb -U centraldsp centraldsp_restore_<ts>
 ```
 
 Реальное восстановление после потери базы: `ops/restore.sh <бэкап>` → остановить
-`backend`/`bidder` → сменить `DATABASE_URL` на новую базу (или `ALTER DATABASE ... RENAME`)
+`backend`/`bidder-go` → сменить `DATABASE_URL` на новую базу (или `ALTER DATABASE ... RENAME`)
 → поднять сервисы → `redis-cli FLUSHDB` (счётчики пересчитаются) → проверить
 `GET /health` и фид биддера: `GET /rtb-feed/partners` и `GET /rtb-feed/campaigns`
 (заголовок `Authorization: Bearer ${RTB_API_TOKEN}`).

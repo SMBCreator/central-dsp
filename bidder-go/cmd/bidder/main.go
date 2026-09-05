@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -96,7 +97,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           recoverMiddleware(mux, reg),
 		ReadHeaderTimeout: 2 * time.Second,
 		ReadTimeout:       5 * time.Second, // RTB timeout budget: ответ обязан уйти < 100ms
 		WriteTimeout:      5 * time.Second,
@@ -120,4 +121,30 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
+}
+
+// recoverMiddleware не даёт одному кривому bid-запросу (nil в неожиданном
+// месте OpenRTB, паника в таргетинге) уронить весь процесс: net/http сам
+// ловит паники, но пишет только в stderr и без метрики. Здесь — slog со
+// стеком, счётчик bidder_panics_total и no-bid (204) SSP вместо обрыва TCP.
+// http.ErrAbortHandler пропускаем: это штатный способ оборвать ответ.
+func recoverMiddleware(next http.Handler, reg *metrics.Registry) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			rec := recover()
+			if rec == nil {
+				return
+			}
+			if rec == http.ErrAbortHandler {
+				panic(rec)
+			}
+			reg.IncPanic()
+			slog.Error("handler panic recovered",
+				"method", r.Method, "path", r.URL.Path, "panic", rec,
+				"stack", string(debug.Stack()))
+			// Заголовки могли уже уйти — тогда просто завершаем ответ.
+			w.WriteHeader(http.StatusNoContent)
+		}()
+		next.ServeHTTP(w, r)
+	})
 }

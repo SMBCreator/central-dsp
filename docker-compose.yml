@@ -75,12 +75,14 @@ services:
       - centraldsp
 
   # ─────────────────────────────────────────
-  # CENTRALBIDDER (Java OpenRTB 2.5 Engine)
-  # DEPRECATED: заменяется bidder-go (см. docs/audit/go_bidder_plan.md).
-  # Оставлен как reference до cutover; новые фичи сюда не добавляются.
+  # CENTRALBIDDER (legacy OpenRTB 2.5 Engine)
+  # DEPRECATED: заменён bidder-go. НЕ поднимается по умолчанию — только
+  # `docker compose --profile legacy up bidder` для сравнения/отката.
+  # Новые фичи сюда не добавляются; кандидат на удаление после релиза.
   # ─────────────────────────────────────────
   bidder:
     build: ./bidder
+    profiles: ["legacy"]
     restart: unless-stopped
     env_file: .env
     environment:
@@ -109,13 +111,12 @@ services:
       - centraldsp
 
   # ─────────────────────────────────────────
-  # BIDDER-GO (Go OpenRTB 2.5 Engine) — основной трек.
-  # Скелет: включается профилем `--profile bidder-go` до прохождения
-  # contract-тестов и shadow-режима (docs/audit/go_bidder_plan.md).
+  # BIDDER-GO (Go OpenRTB 2.5 Engine) — единственный боевой биддер.
+  # Поднимается по умолчанию (`docker compose up -d`); backend ходит в него
+  # по BIDDER_URL для автопроверки SSP и рефреша фида.
   # ─────────────────────────────────────────
   bidder-go:
     build: ./bidder-go
-    profiles: ["bidder-go"]
     restart: unless-stopped
     environment:
       BIDDER_ADDR: ":8090"

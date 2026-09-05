@@ -56,6 +56,7 @@ type Registry struct {
 	gateErrors      atomic.Int64 // gate_and_reserve: ошибка Redis
 	lossReleases    atomic.Int64 // /rtb/loss: освобождение резерва
 	eventEmitErrors atomic.Int64 // XADD в rtb:events не удался (событие потеряно для статистики)
+	panics          atomic.Int64 // паники хендлеров, перехваченные recover-middleware
 
 	// Per-partner (endpoint_key): запросы и биды. Кардинальность = число SSP
 	// (единицы-десятки), поэтому безопасно для Prometheus.
@@ -112,6 +113,9 @@ func (r *Registry) IncLossRelease() { r.lossReleases.Add(1) }
 
 // IncEventEmitError — не удалось положить событие в Redis Stream.
 func (r *Registry) IncEventEmitError() { r.eventEmitErrors.Add(1) }
+
+// IncPanic — хендлер упал с паникой, процесс выжил благодаря recover.
+func (r *Registry) IncPanic() { r.panics.Add(1) }
 
 // IncPartnerRequest / IncPartnerBids — счётчики по SSP (endpoint_key).
 func (r *Registry) IncPartnerRequest(endpointKey string) {
@@ -196,6 +200,7 @@ func (r *Registry) write(w http.ResponseWriter) {
 	c("bidder_gate_errors_total", "gate_and_reserve Redis errors.", r.gateErrors.Load())
 	c("bidder_loss_releases_total", "Budget reservations released via /rtb/loss.", r.lossReleases.Load())
 	c("bidder_event_emit_errors_total", "Bid events that failed to be written to the rtb:events Redis stream.", r.eventEmitErrors.Load())
+	c("bidder_panics_total", "Handler panics recovered by the HTTP middleware (process kept alive).", r.panics.Load())
 
 	writeLabeled(w, &r.partnerRequests, "bidder_partner_requests_total", "Bid requests by SSP endpoint_key.")
 	writeLabeled(w, &r.partnerBids, "bidder_partner_bids_total", "Bids submitted by SSP endpoint_key.")
