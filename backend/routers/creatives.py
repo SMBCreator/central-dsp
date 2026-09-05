@@ -92,6 +92,22 @@ async def create_creative(body: CreativeIn, user: dict = Depends(require_creativ
     )
     if not camp:
         raise HTTPException(status_code=404, detail="Кампания не найдена")
+    # Ссылочные id тоже должны принадлежать пользователю И этой кампании: иначе
+    # креатив можно повесить на чужую группу (уйдёт в чужой фид) или подписать
+    # в ОРД чужим контрагентом.
+    if body.line_item_id:
+        li_ok = await pool.fetchval(
+            "SELECT 1 FROM line_items WHERE id = $1 AND campaign_id = $2 AND user_id = $3",
+            body.line_item_id, body.campaign_id, user["id"],
+        )
+        if not li_ok:
+            raise HTTPException(status_code=404, detail="Группа объявлений не найдена")
+    if body.counterparty_id:
+        cp_ok = await pool.fetchval(
+            "SELECT 1 FROM counterparties WHERE id = $1 AND user_id = $2", body.counterparty_id, user["id"]
+        )
+        if not cp_ok:
+            raise HTTPException(status_code=404, detail="Контрагент не найден")
     # Админы модерируют сами себя: креатив сразу approved. Остальные — на модерацию.
     status = "approved" if is_admin(user) else "pending"
     row = await pool.fetchrow(
@@ -215,7 +231,7 @@ def _fmt_size(n: int) -> str:
 def sniff_upload(head: bytes) -> str | None:
     """Определяет реальный MIME по сигнатуре файла (первые байты).
 
-    Не доверяем Content-Type из multipart: браузер/клиент может подставить что угодно,
+    Не доверяем Content-Type из multipart: браузер/клиент может по��ставить что угодно,
     а отдавать чужой HTML/SVG с нашего origin под видом картинки — XSS-риск.
     Возвращает MIME из _ALLOWED_UPLOAD_TYPES или None.
     """
