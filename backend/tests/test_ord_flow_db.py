@@ -24,6 +24,7 @@ import httpx  # noqa: E402
 
 import db  # noqa: E402
 import routers.bidder_feed as feed  # noqa: E402
+import routers.creatives as crs  # noqa: E402
 import routers.moderation as mod  # noqa: E402
 import routers.ord_router as ordr  # noqa: E402
 from auth import current_user  # noqa: E402
@@ -120,6 +121,7 @@ def _app_as(user_row: dict) -> httpx.AsyncClient:
     app.include_router(mod.router)
     app.include_router(ordr.router)
     app.include_router(feed.router)
+    app.include_router(crs.router)
 
     async def _fake_user():
         return user_row
@@ -266,6 +268,91 @@ def test_register_is_idempotent(env):
             b = await register_creative(pool, cr)
             assert a["outcome"] == b["outcome"] == "ok"
             assert a["erid"] == b["erid"]
+        finally:
+            await e.teardown(conn)
+            await conn.close()
+
+    _run(scenario())
+
+
+def _manager(env_: _Env) -> dict:
+    return {**_admin(env_), "role": "manager", "permissions": {"can_manage_creatives": True}}
+
+
+def _banner_body(e: _Env, **over) -> dict:
+    return {
+        "campaign_id": e.ids["camp"], "line_item_id": e.ids["li"], "name": "b", "type": "banner",
+        "width": 300, "height": 250, "asset_url": "http://a/1.png", "click_url": "http://x",
+        "counterparty_id": e.ids["cp"], "kktu_code": "30.10", **over,
+    }
+
+
+def test_admin_created_creative_is_marked_without_moderation_queue(env):
+    """Админ модерирует сам себя: креатив сразу approved — но не минуя ОРД."""
+    async def scenario():
+        conn = await _conn()
+        e = await _Env().setup(conn, geo=["RU"])
+        try:
+            client = _app_as(_admin(e))
+            # договора ещё нет → approved, awaiting_contract, не в фиде
+            r = await client.post("/creatives", json=_banner_body(e))
+            assert r.status_code == 201, r.text
+            b0 = r.json()
+            assert b0["status"] == "approved" and not b0.get("erid")
+            assert b0["ord"]["status"] == "awaiting_contract"
+            assert b0["id"] not in await _feed_creatives(client)
+
+            await e.add_contract(conn)
+            r = await client.post("/creatives", json=_banner_body(e, asset_url="http://a/2.png"))
+            assert r.status_code == 201, r.text
+            b1 = r.json()
+            assert b1["status"] == "approved" and b1["erid"] and b1["ord"]["status"] == "ok"
+            assert b1["id"] in await _feed_creatives(client)
+        finally:
+            await e.teardown(conn)
+            await conn.close()
+
+    _run(scenario())
+
+
+def test_content_change_reissues_erid_for_admin_and_remoderates_for_manager(env):
+    async def scenario():
+        conn = await _conn()
+        e = await _Env().setup(conn, geo=["RU"])
+        try:
+            await e.add_contract(conn)
+            admin = _app_as(_admin(e))
+            r = await admin.post("/creatives", json=_banner_body(e))
+            cr = r.json()
+            erid0 = cr["erid"]
+            assert erid0
+
+            # admin меняет картинку: статус остаётся approved, erid перевыдан
+            r = await admin.patch(f"/creatives/{cr['id']}", json={"asset_url": "http://a/new.png"})
+            assert r.status_code == 200, r.text
+            ch = r.json()
+            assert ch["status"] == "approved" and ch["ord"]["status"] == "ok"
+            assert ch["erid"] and ch["erid"] != erid0
+            assert cr["id"] in await _feed_creatives(admin)
+            assert await conn.fetchval(
+                "SELECT status FROM ord_creatives WHERE creative_id = $1", cr["id"]
+            ) == "registered"
+
+            # manager (тот же владелец) меняет картинку: pending, erid снят, superseded, вне фида
+            mgr = _app_as(_manager(e))
+            r = await mgr.patch(f"/creatives/{cr['id']}", json={"asset_url": "http://a/mgr.png"})
+            assert r.status_code == 200, r.text
+            m = r.json()
+            assert m["status"] == "pending" and not m["erid"] and "ord" not in m
+            assert cr["id"] not in await _feed_creatives(mgr)
+            assert await conn.fetchval(
+                "SELECT status FROM ord_creatives WHERE creative_id = $1", cr["id"]
+            ) == "superseded"
+
+            # повторный approve → новый erid на новое содержимое
+            r = await admin.post(f"/moderation/{cr['id']}/approve")
+            assert r.status_code == 200, r.text
+            assert r.json()["erid"] not in (None, erid0, ch["erid"])
         finally:
             await e.teardown(conn)
             await conn.close()

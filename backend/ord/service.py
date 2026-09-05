@@ -102,12 +102,25 @@ async def _kktu_for(pool, creative: dict) -> str | None:
 
 
 def _payload(creative: dict, contract: dict, kktu: str | None) -> dict[str, Any]:
+    # ОРД регистрирует конкретное содержимое: медиа (URL файлов) и тексты.
+    # erid выдаётся на него, поэтому смена картинки/текста = новая регистрация
+    # (см. routers/creatives.py). Без этих полей перерегистрация была бы фикцией.
+    media = [u for u in (
+        creative.get("asset_url"), creative.get("video_url"), creative.get("native_icon_url"),
+    ) if u]
+    texts = [t for t in (
+        creative.get("native_title"), creative.get("native_description"), creative.get("native_cta"),
+    ) if t]
     return {
         "contract_external_id": contract["ord_external_id"],
         "type": creative["type"],
         "name": creative["name"],
         "click_url": creative.get("click_url"),
         "description": creative.get("native_description") or creative["name"],
+        "media_urls": media,
+        "texts": texts,
+        "html_snippet": creative.get("html_snippet"),
+        "vast_xml": creative.get("vast_xml"),
         # Тематика ККТУ: категория товара/услуги для маркировки объявления
         "kktu": kktu,
     }

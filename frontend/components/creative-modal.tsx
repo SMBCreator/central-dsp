@@ -144,16 +144,26 @@ function precheck(file: File, kind: "image" | "video"): string | null {
   return null
 }
 
+/** Результат авто-маркировки: приходит только когда создатель — админ (креатив сразу approved). */
+export interface CreativeOrdResult {
+  name: string
+  erid: string | null
+  status: "ok" | "not_required" | "awaiting_contract" | "failed" | string
+  error: string | null
+}
+
 export function CreativeModal({
   open,
   onClose,
   campaigns,
   defaultCampaignId,
+  onOrdResult,
 }: {
   open: boolean
   onClose: () => void
   campaigns: Campaign[]
   defaultCampaignId?: string
+  onOrdResult?: (r: CreativeOrdResult) => void
 }) {
   const { data: counterparties } = useSWR<Counterparty[]>(open ? "/ord/counterparties" : null, fetcher)
   const { data: contracts } = useSWR<OrdContract[]>(open ? "/ord/contracts" : null, fetcher)
@@ -387,7 +397,13 @@ export function CreativeModal({
           body.width = 640
           body.height = 360
         }
-        await api("/creatives", { method: "POST", body })
+        const created = await api<{ name: string; erid: string | null; ord?: { status: string; error: string | null } }>(
+          "/creatives",
+          { method: "POST", body },
+        )
+        if (created.ord && onOrdResult) {
+          onOrdResult({ name: created.name, erid: created.erid, status: created.ord.status, error: created.ord.error })
+        }
         orphanPaths.current.clear()
       }
       await mutate("/creatives")
@@ -683,7 +699,7 @@ export function CreativeModal({
           {step === "ord" ? (
             <div className="space-y-4">
               <p className="text-xs leading-relaxed text-muted">
-                По 38-ФЗ наименование, ИНН/ОГРН и адрес рекламодателя показываются в инфо-значке на креативе и уходят в ОРД.
+                По 38-ФЗ наименование, ИНН/ОГРН и адрес рекламодателя показываются в инфо-значке на ��реативе и уходят в ОРД.
                 erid присваивается автоматически после одобрения модератором — по договору с контрагентом.
               </p>
               <Field label="Контрагент (рекламодатель)">

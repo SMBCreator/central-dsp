@@ -7,7 +7,7 @@ import { kktuShortLabel } from "@/lib/kktu"
 import { AD_TYPE_LABELS, type Campaign, type Creative } from "@/lib/types"
 import { Button, Card, CardHeader, EmptyState, Spinner, StatusBadge, Table } from "@/components/ui"
 import { CreativeModal } from "@/components/creative-modal"
-import { canWrite } from "@/lib/roles"
+import { canWrite, isAdminRole } from "@/lib/roles"
 import { useMe } from "@/lib/use-me"
 
 export default function CreativesPage() {
@@ -16,11 +16,38 @@ export default function CreativesPage() {
   // analyst/viewer и client без can_manage_creatives — раздел read-only (сервер тоже вернёт 403)
   const { me } = useMe()
   const writable = !me || canWrite(me.role, "creatives", me.permissions)
+  // approved/rejected выставляет только /moderation (админ): там же выдаётся erid.
+  // PATCH /creatives/{id} принимает лишь pending|archived — иначе обход модерации и ОРД.
+  const admin = isAdminRole(me?.role)
 
   const [open, setOpen] = useState(false)
+  const [notice, setNotice] = useState<{ kind: "ok" | "warn"; text: string } | null>(null)
 
-  const moderate = async (c: Creative, status: string) => {
-    await api(`/creatives/${c.id}`, { method: "PATCH", body: { status } })
+  const approve = async (c: Creative) => {
+    setNotice(null)
+    const res = await api<Creative & { ord?: { status: string; error: string | null } }>(
+      `/moderation/${c.id}/approve`,
+      { method: "POST" },
+    )
+    if (res.ord?.status === "ok") setNotice({ kind: "ok", text: `«${c.name}» одобрен, erid ${res.erid} присвоен.` })
+    else if (res.ord?.status === "not_required") setNotice({ kind: "ok", text: `«${c.name}» одобрен. Маркировка не требуется для выбранного гео.` })
+    else if (res.ord)
+      setNotice({
+        kind: "warn",
+        text: `«${c.name}» одобрен, но без erid: ${res.ord.error || "ошибка ОРД"}. До регистрации в разделе «Маркировка (ОРД)» креатив не участвует в показах на РФ.`,
+      })
+    await mutate("/creatives")
+  }
+
+  const reject = async (c: Creative) => {
+    setNotice(null)
+    await api(`/moderation/${c.id}/reject`, { method: "POST", body: { comment: "" } })
+    await mutate("/creatives")
+  }
+
+  const resubmit = async (c: Creative) => {
+    setNotice(null)
+    await api(`/creatives/${c.id}`, { method: "PATCH", body: { status: "pending" } })
     await mutate("/creatives")
   }
 
@@ -38,11 +65,17 @@ export default function CreativesPage() {
         ) : null}
       </div>
 
+      {notice ? (
+        <p role={notice.kind === "ok" ? "status" : "alert"} className={`text-xs ${notice.kind === "ok" ? "text-success" : "text-warning"}`}>
+          {notice.text}
+        </p>
+      ) : null}
+
       <Card>
         <CardHeader title="Все креативы" subtitle={creatives ? `Всего: ${creatives.length}` : undefined} />
         {creatives ? (
           creatives.length > 0 ? (
-            <Table headers={["ID", "Название", "Тип", "Классификатор", "Размер", "Статус", "Кампания", ""]}>
+            <Table headers={["ID", "Название", "Тип", "Классификатор", "Размер", "Статус", "erid", "Кампания", ""]}>
               {creatives.map((c) => {
                 const camp = campaigns?.find((x) => x.id === c.campaign_id)
                 return (
@@ -69,6 +102,17 @@ export default function CreativesPage() {
                         <p className="mt-1 max-w-48 text-[10px] leading-snug text-danger">{c.moderation_comment}</p>
                       ) : null}
                     </td>
+                    <td className="px-4 py-3">
+                      {c.erid ? (
+                        <span className="font-mono text-xs text-foreground">{c.erid}</span>
+                      ) : c.status === "approved" ? (
+                        <span className="text-xs text-warning" title="Одобрен, но не зарегистрирован в ОРД — в показы на РФ не попадает">
+                          нет erid
+                        </span>
+                      ) : (
+                        <span className="text-xs text-muted">—</span>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-muted">{camp?.name || "—"}</td>
                     <td className="px-4 py-3">
                       <div className="flex justify-end gap-2">
@@ -87,17 +131,17 @@ export default function CreativesPage() {
                             </svg>
                           </a>
                         ) : null}
-                        {writable && c.status === "pending" ? (
+                        {admin && c.status === "pending" ? (
                           <>
-                            <Button variant="ghost" onClick={() => moderate(c, "approved")}>
+                            <Button variant="ghost" onClick={() => approve(c)}>
                               Одобрить
                             </Button>
-                            <Button variant="ghost" onClick={() => moderate(c, "rejected")}>
+                            <Button variant="ghost" onClick={() => reject(c)}>
                               Отклонить
                             </Button>
                           </>
                         ) : writable && c.status === "rejected" ? (
-                          <Button variant="ghost" onClick={() => moderate(c, "pending")}>
+                          <Button variant="ghost" onClick={() => resubmit(c)}>
                             На модерацию
                           </Button>
                         ) : null}
@@ -118,7 +162,20 @@ export default function CreativesPage() {
         )}
       </Card>
 
-      <CreativeModal open={open} onClose={() => setOpen(false)} campaigns={campaigns || []} />
+      <CreativeModal
+        open={open}
+        onClose={() => setOpen(false)}
+        campaigns={campaigns || []}
+        onOrdResult={(r) => {
+          if (r.status === "ok") setNotice({ kind: "ok", text: `«${r.name}» одобрен, erid ${r.erid} присвоен.` })
+          else if (r.status === "not_required") setNotice({ kind: "ok", text: `«${r.name}» одобрен. Маркировка не требуется для выбранного гео.` })
+          else
+            setNotice({
+              kind: "warn",
+              text: `«${r.name}» одобрен, но без erid: ${r.error || "ошибка ОРД"}. Зарегистрируйте в разделе «Маркировка (ОРД)» — до этого креатив не участвует в показах на РФ.`,
+            })
+        }}
+      />
     </div>
   )
 }

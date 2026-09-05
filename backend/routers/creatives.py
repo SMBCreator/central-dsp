@@ -10,6 +10,7 @@ from auth import current_user
 from rbac import require_creative_manager, is_admin
 from notify import notify_admins
 from db import get_pool
+from ord.service import campaign_targets_ru, register_creative
 from schemas import CreativeIn, CreativePatch
 
 router = APIRouter(prefix="/creatives", tags=["creatives"])
@@ -34,6 +35,23 @@ def _serialize(row) -> dict:
         if d.get(k) is not None:
             d[k] = str(d[k])
     return d
+
+
+async def _mark_self_approved(pool, row) -> dict:
+    """Маркировка креатива, который админ одобрил сам себе (создание / правка
+    содержимого). Тот же путь, что /moderation/approve: approved без erid для
+    РФ-трафика = креатив молча выпадает из фида. Возвращает сериализованный
+    креатив с полем `ord` для UI."""
+    out = _serialize(row)
+    if not await campaign_targets_ru(pool, str(row["campaign_id"])):
+        out["ord"] = {"status": "not_required", "error": None}
+        return out
+    res = await register_creative(pool, dict(row))
+    if res["outcome"] == "ok":
+        fresh = await pool.fetchrow("SELECT * FROM creatives WHERE id = $1", row["id"])
+        out = _serialize(fresh)
+    out["ord"] = {"status": res["outcome"], "error": res.get("error")}
+    return out
 
 
 def _validate_type_fields(body: CreativeIn) -> None:
@@ -93,13 +111,14 @@ async def create_creative(body: CreativeIn, user: dict = Depends(require_creativ
         body.imp_tracker_url, body.click_tracker_url, status, body.counterparty_id,
         body.kktu_code, body.kktu_label, body.iab_categories, body.attrs, body.contract_id,
     )
-    if status == "pending":
-        await notify_admins(
-            "moderation_pending",
-            f"Новый креатив на модерации: «{body.name}»",
-            f"Пользователь {user['email']} загрузил креатив в кампанию.",
-            "/moderation",
-        )
+    if status == "approved":
+        return await _mark_self_approved(pool, row)
+    await notify_admins(
+        "moderation_pending",
+        f"Новый креатив на модерации: «{body.name}»",
+        f"Пользователь {user['email']} загрузил креатив в кампанию.",
+        "/moderation",
+    )
     return _serialize(row)
 
 
@@ -111,18 +130,21 @@ async def update_creative(creative_id: str, body: CreativePatch, user: dict = De
     pool = await get_pool()
     # Изменение видимого содержимого одобренного креатива (картинка, ссылка,
     # текст, видео) отправляет его обратно на модерацию — иначе после approve
-    # можно подменить баннер. Админ модерирует сам себя, для него не сбрасываем.
+    # можно подменить баннер. Админ модерирует сам себя: статус не сбрасываем,
+    # но erid выдан на конкретное содержимое — снимаем и перерегистрируем.
     remoderate = False
-    if not is_admin(user) and _CONTENT_FIELDS & set(updates) and "status" not in updates:
+    remark = False
+    if _CONTENT_FIELDS & set(updates) and "status" not in updates:
         cur = await pool.fetchrow(
             "SELECT status, erid, name FROM creatives WHERE id = $1 AND user_id = $2", creative_id, user["id"]
         )
         if cur and cur["status"] == "approved":
-            remoderate = True
-            updates["status"] = "pending"
-            # erid выдан на конкретное содержимое; новое содержимое = новая
-            # регистрация в ОРД после повторного одобрения.
             updates["erid"] = None
+            if is_admin(user):
+                remark = True
+            else:
+                remoderate = True
+                updates["status"] = "pending"
     sets, values = [], []
     for i, (k, v) in enumerate(updates.items(), start=3):
         sets.append(f"{k} = ${i}")
@@ -133,11 +155,14 @@ async def update_creative(creative_id: str, body: CreativePatch, user: dict = De
     )
     if not row:
         raise HTTPException(status_code=404, detail="Креатив не найден")
-    if remoderate:
+    if remoderate or remark:
         await pool.execute(
             "UPDATE ord_creatives SET status = 'superseded', updated_at = now() WHERE creative_id = $1 AND status = 'registered'",
             creative_id,
         )
+    if remark:
+        return await _mark_self_approved(pool, row)
+    if remoderate:
         await notify_admins(
             "moderation_pending",
             f"Креатив изменён, повторная модерация: «{row['name']}»",
