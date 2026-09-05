@@ -124,6 +124,9 @@
 - [x] **Runbook — 5 инцидентов.** *Закрыто (D7, 2026-09-05).* Есть: Redis down (`runbooks/rtb_alerts.md#redis-down`), латентность (`#latency`), перерасход (`#spend-anomaly`), **Postgres down (`#postgres-down`), ОРД-выгрузка failed (`#ord-export`)**. Исходное требование (D7): «Postgres down» (что делает Go на снимке фида, как долго можно жить, когда останавливать торги, как поднимать и проверять `--dry-run`) и «ОРД-выгрузка failed» (где смотреть `ord_error`, повтор `/cron/ord-export`, дедлайн подачи в ОРД, кому эскалировать).
 - [ ] **Health для балансировщика.** `GET /healthz` Go и `GET /health` бэкенда — 200 и < 50 мс; в `docker-compose.yml` healthcheck настроен и рестарт-политика `unless-stopped`.
 
+- [x] **Аудит-лог — UI.** *Закрыто 2026-09-05 (8d5298d, CI green 4aa26be):* страница `/audit` (только admin, пункт в навигации по роли): фильтры по действию/пользователю/объекту/периоду, курсорная пагинация, экспорт CSV. Данные — таблица `audit_log` (миграция 013, `AuditMiddleware`). *V:* сделать PATCH кампании → строка появляется в `/audit` с actor, method, path, status.
+- [x] **Контракт UI→API.** *Закрыто 2026-09-05 (4aa26be):* скан всех URL из `api()`/`useSWR()` фронта против маршрутов FastAPI нашёл 3 мёртвых вызова, которые мок-API маскировал (`GET /pixel`→`/pixels`, `POST /supply-partners/{id}/rotate-token`→`/{id}/token`, блокировки скоринга без `campaign_id`) и 500 на `GET /scoring/report` без профиля (asyncpg: text vs int в `($2 || ' days')::interval` → `make_interval`). Тесты-стражи: `tests/test_ui_api_routes_contract.py` (без БД, падает на любом новом расхождении), `tests/test_scoring_report_db.py`. *Правило:* UI проверять на живом бэкенде (`ALLOW_MOCK_FALLBACK=0`), мок-API не является контрактом.
+
 ## 6.11 Предсказание проблем на выпуске и митигации
 
 | Риск | Почему вероятен именно у нас | Как заметить | Митигация (до выпуска / при инциденте) |
