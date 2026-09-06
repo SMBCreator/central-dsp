@@ -12,11 +12,49 @@ ord_status в БД, повторная регистрация не выполн�
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from typing import Any, Protocol
 
 
 class OrdError(Exception):
     """Ошибка ОРД: сохраняется в ord_error/error, статус -> failed."""
+
+
+class OrdNotConfigured(OrdError):
+    """Production без ключа ОРД (audit L-01).
+
+    Mock-адаптер выдаёт фиктивные erid; на боевом трафике это нарушение 38-ФЗ
+    с реальным штрафом. Вместо тихого fallback — явная ошибка: регистрация
+    креатива падает в статус failed с понятной причиной, фид для РФ закрыт.
+    """
+
+
+MOCK_PROVIDER = "mock"
+
+
+def is_production(env: Mapping[str, str] | None = None) -> bool:
+    env = os.environ if env is None else env
+    return env.get("APP_ENV", "").strip().lower() in ("production", "prod")
+
+
+def mock_allowed(env: Mapping[str, str] | None = None) -> bool:
+    """Mock разрешён только вне production. Никакого override-флага: если
+    production-стенд должен работать без ОРД (нет РФ-трафика) — это
+    ORD_REQUIRED=0 в startup_checks, а не фиктивные erid."""
+    return not is_production(env)
+
+
+def mock_erid_accepted(env: Mapping[str, str] | None = None) -> bool:
+    """Пропускать ли креативы с mock-erid через erid-гейт фида/лаунча.
+    Совпадает с mock_allowed: там, где mock не выдаётся, он и не принимается —
+    старые mock-erid из dev-БД не должны попасть в production-торги."""
+    return mock_allowed(env)
+
+
+NOT_CONFIGURED_MESSAGE = (
+    "ОРД не настроен: задайте API-ключ ОРД Озон в Настройках платформы "
+    "(или ORD_OZON_API_KEY). В production фиктивные erid не выдаются."
+)
 
 
 class OrdAdapter(Protocol):
@@ -62,6 +100,8 @@ async def get_ord_adapter() -> OrdAdapter:
         from .ozon import OzonOrdClient
 
         return OzonOrdClient(api_key=cfg["api_key"], base_url=cfg["base_url"])
+    if not mock_allowed():
+        raise OrdNotConfigured(NOT_CONFIGURED_MESSAGE)
     from .mock import MockOrdAdapter
 
     return MockOrdAdapter()

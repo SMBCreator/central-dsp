@@ -16,7 +16,7 @@ import json
 import os
 from typing import Any
 
-from .adapter import OrdError, get_ord_adapter
+from .adapter import MOCK_PROVIDER, OrdError, get_ord_adapter, mock_allowed, mock_erid_accepted
 
 # ---------------------------------------------------------------- feed gate --
 # Условие в WHERE фида: креатив допускается, если у него есть erid ИЛИ группа
@@ -25,28 +25,69 @@ from .adapter import OrdError, get_ord_adapter
 # (campaigns.py, проверка ord_marking) — расходиться они не должны.
 _RU_CODES_SQL = "('RU','RUS')"
 
-ERID_FEED_GATE_SQL = f"""
-    AND (
-        (cr.erid IS NOT NULL AND cr.erid <> '')
-        OR (
+_NOT_RU_ONLY_SQL = f"""
             COALESCE(jsonb_array_length(li.targeting->'geo_countries'), 0) > 0
             AND NOT EXISTS (
                 SELECT 1 FROM jsonb_array_elements_text(li.targeting->'geo_countries') g
                 WHERE upper(g) IN {_RU_CODES_SQL}
             )
+"""
+
+ERID_FEED_GATE_SQL = f"""
+    AND (
+        (cr.erid IS NOT NULL AND cr.erid <> '')
+        OR (
+{_NOT_RU_ONLY_SQL}
+        )
+    )
+"""
+
+# Audit L-01: в production erid, выданный mock-адаптером, — не erid. Строка
+# ord_creatives.ord_provider = 'mock' — источник истины; префикс 'MOCK-' —
+# страховка для erid, проставленных руками/импортом без строки ord_creatives.
+ERID_FEED_GATE_NO_MOCK_SQL = f"""
+    AND (
+        (
+            cr.erid IS NOT NULL AND cr.erid <> ''
+            AND cr.erid NOT LIKE 'MOCK-%'
+            AND NOT EXISTS (
+                SELECT 1 FROM ord_creatives oc
+                WHERE oc.creative_id = cr.id AND oc.ord_provider = '{MOCK_PROVIDER}'
+            )
+        )
+        OR (
+{_NOT_RU_ONLY_SQL}
         )
     )
 """
 
 
+def unmarked_creative_sql(alias: str = "creatives") -> str:
+    """WHERE-предикат «у креатива нет пригодного erid» — для диагностики и
+    launch gate кампании. Тот же критерий, что в feed_gate_sql(): в production
+    mock-erid считается отсутствующим."""
+    base = f"({alias}.erid IS NULL OR {alias}.erid = '')"
+    if mock_erid_accepted():
+        return base
+    return (
+        f"({base} OR {alias}.erid LIKE 'MOCK-%' OR EXISTS ("
+        f"SELECT 1 FROM ord_creatives oc WHERE oc.creative_id = {alias}.id AND oc.ord_provider = '{MOCK_PROVIDER}'))"
+    )
+
+
 def feed_gate_enabled() -> bool:
-    """ORD_FEED_GATE=off отключает erid-гейт фида (только dev/тест-стенды
-    без ОРД). Согласовано с LAUNCH_GATE в campaigns.py."""
+    """ORD_FEED_GATE=off отключает erid-гейт фида — только dev/тест-стенды
+    без ОРД; в production флаг игнорируется (startup_checks его ещё и
+    подсвечивает). Согласовано с LAUNCH_GATE в campaigns.py."""
+    if not mock_allowed():
+        return True
     return os.getenv("ORD_FEED_GATE", "on") != "off"
 
 
 def feed_gate_sql() -> str:
-    return ERID_FEED_GATE_SQL if feed_gate_enabled() else ""
+    if not feed_gate_enabled():
+        return ""
+    return ERID_FEED_GATE_SQL if mock_erid_accepted() else ERID_FEED_GATE_NO_MOCK_SQL
 
 
 async def campaign_targets_ru(pool, campaign_id: str) -> bool:
@@ -200,8 +241,10 @@ async def register_creative(pool, creative: dict, *, contract_id: str | None = N
         return _result("awaiting_kktu", rec, why)
 
     payload = _payload(creative, contract, kktu)
-    adapter = await get_ord_adapter()
     try:
+        # OrdNotConfigured (production без ключа) — тоже OrdError: креатив
+        # уходит в failed с понятной причиной, approve модератора не ломается.
+        adapter = await get_ord_adapter()
         out = await adapter.register_creative(payload)
     except OrdError as e:
         rec = await _mark(pool, creative["id"], contract["id"], "failed", payload, str(e))

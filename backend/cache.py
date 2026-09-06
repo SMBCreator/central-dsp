@@ -464,7 +464,7 @@ async def mark_once(kind: str, token: str, ttl: int = 86400) -> bool:
 # перебор пароля — должен упереться в лимит. Два независимых окна:
 #   login:email — по логину (защищает конкретный аккаунт от перебора с многих IP)
 #   login:ip    — по IP клиента (защищает от перебора многих логинов с одного IP)
-# Успешный вход сбрасывает счётчик по логину. Fail-open при недоступ��ом Redis.
+# Успешный вход сбрасывает счётчик по логину. Fail-open при недоступном Redis.
 
 LOGIN_FAILS_PER_EMAIL = int(os.environ.get("LOGIN_FAILS_PER_EMAIL", "8"))
 LOGIN_FAILS_PER_IP = int(os.environ.get("LOGIN_FAILS_PER_IP", "30"))

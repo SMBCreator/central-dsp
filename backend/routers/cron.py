@@ -323,8 +323,9 @@ async def ord_monthly_export(request: Request, period: str | None = None):
         obs_metrics.set_gauge("ord_export_last_success_timestamp_seconds", time.time())
         return {"period": period, "status": "ok", "rows": 0, "skipped_without_erid": skipped_without_erid}
 
-    adapter = await get_ord_adapter()
     try:
+        # OrdNotConfigured (production без ключа) — подкласс OrdError: лог failed + 502.
+        adapter = await get_ord_adapter()
         out = await adapter.submit_stats(period, stats)
         await pool.execute(
             "UPDATE ord_export_log SET status='ok', response=$2, finished_at=now() WHERE id=$1",

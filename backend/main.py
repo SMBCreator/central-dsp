@@ -68,6 +68,16 @@ async def _lifespan(_app: FastAPI):
         raise
     except Exception as e:  # noqa: BLE001 — недоступный Redis не должен блокировать старт API
         logging.getLogger("startup").warning("redis durability check skipped: %s", e)
+    # Production без ключа ОРД => RuntimeError: mock-erid на боевом трафике запрещены (L-01).
+    try:
+        await asyncio.wait_for(
+            startup_checks.check_ord_configured(production=startup_checks.is_production()),
+            timeout=5,
+        )
+    except RuntimeError:
+        raise
+    except Exception as e:  # noqa: BLE001 — БД недоступна: get_ord_settings уже упал в env-ветку
+        logging.getLogger("startup").warning("ord config check skipped: %s", e)
     try:
         await asyncio.wait_for(seed_gauges_from_db(), timeout=3)
     except Exception as e:  # noqa: BLE001 — БД может быть недоступна; метрика просто absent

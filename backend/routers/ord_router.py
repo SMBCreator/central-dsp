@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from auth import current_user
 from rbac import require_platform_write
 from db import get_pool
-from ord import OrdError, get_ord_adapter
+from ord import OrdError, OrdNotConfigured, get_ord_adapter
 from ord.service import register_creative as ord_register_creative
 
 router = APIRouter(prefix="/ord", tags=["ord"])
@@ -81,6 +81,14 @@ async def create_counterparty(body: CounterpartyIn, user: dict = Depends(require
     return _row(row)
 
 
+async def _adapter_or_503():
+    """Production без ключа ОРД — 503 с инструкцией, не 500 (audit L-01)."""
+    try:
+        return await get_ord_adapter()
+    except OrdNotConfigured as e:
+        raise HTTPException(503, str(e))
+
+
 @router.post("/counterparties/{cp_id}/register")
 async def register_counterparty(cp_id: str, user: dict = Depends(require_platform_write)):
     pool = await get_pool()
@@ -91,7 +99,7 @@ async def register_counterparty(cp_id: str, user: dict = Depends(require_platfor
         raise HTTPException(404, "Контрагент не найден")
     if cp["ord_status"] == "registered":
         return _row(cp)  # идемпотентно
-    adapter = await get_ord_adapter()
+    adapter = await _adapter_or_503()
     try:
         out = await adapter.register_counterparty(
             {"name": cp["name"], "inn": cp["inn"], "ogrn": cp.get("ogrn"), "legal_type": cp["legal_type"],
@@ -163,7 +171,7 @@ async def register_contract(contract_id: str, user: dict = Depends(require_platf
         st = await pool.fetchval("SELECT ord_status FROM counterparties WHERE id = $1", c[side])
         if st != "registered":
             raise HTTPException(409, "Сначала зарегистрируйте обоих контрагентов в ОРД")
-    adapter = await get_ord_adapter()
+    adapter = await _adapter_or_503()
     try:
         out = await adapter.register_contract(
             {

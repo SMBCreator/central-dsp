@@ -95,7 +95,51 @@ def collect_warnings(env: Mapping[str, str] | None = None) -> list[str]:
         warnings.append("RTB_PYTHON_SERVING включён — Python-биддер торгует параллельно Go (двойные биды)")
     if env.get("ALLOW_MOCK_FALLBACK", "").strip() == "1":
         warnings.append("ALLOW_MOCK_FALLBACK=1 — прокси фронта отдаёт мок-данные при недоступном API")
+    if env.get("ORD_FEED_GATE", "").strip().lower() == "off":
+        warnings.append("ORD_FEED_GATE=off игнорируется в production: erid-гейт фида всегда включён (L-01)")
+    if env.get("LAUNCH_GATE", env.get("ORD_LAUNCH_GUARD", "")).strip().lower() == "off":
+        warnings.append("LAUNCH_GATE=off игнорируется в production: launch gate кампаний всегда включён (L-01)")
+    if not _truthy(env.get("ORD_REQUIRED", "1")):
+        warnings.append(
+            "ORD_REQUIRED=0 — production без ОРД: регистрация креативов недоступна, "
+            "фид отдаёт только группы с гео без РФ (L-01)"
+        )
     return warnings
+
+
+def _truthy(value: str | None) -> bool:
+    return (value or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+# --- ОРД (audit L-01) ---------------------------------------------------------
+# Mock-ОРД в production выдаёт фиктивные erid на боевой трафик — это штраф по
+# 38-ФЗ, а не dev-удобство. Production обязан иметь ключ ОРД (БД или env),
+# либо явно объявить ORD_REQUIRED=0 (стенд без РФ-трафика) — тогда фид всё
+# равно закрыт для РФ, просто процесс не падает на старте.
+
+
+def ord_required(env: Mapping[str, str] | None = None) -> bool:
+    env = os.environ if env is None else env
+    return _truthy(env.get("ORD_REQUIRED", "1"))
+
+
+async def check_ord_configured(*, production: bool, env: Mapping[str, str] | None = None) -> None:
+    """В production без ключа ОРД и без ORD_REQUIRED=0 — RuntimeError."""
+    if not production:
+        return
+    from ord.adapter import get_ord_settings
+
+    cfg = await get_ord_settings()
+    if cfg.get("api_key"):
+        log.info("ord configured: provider=ozon source=%s base_url=%s", cfg.get("source"), cfg.get("base_url"))
+        return
+    if not ord_required(env):
+        log.warning("ord: не настроен, ORD_REQUIRED=0 — работаем без маркировки (только не-РФ гео)")
+        return
+    raise RuntimeError(
+        "ОРД не настроен для APP_ENV=production: задайте ORD_OZON_API_KEY (или ключ в Настройках платформы) "
+        "либо ORD_REQUIRED=0, если стенд не торгует РФ-трафиком. Mock-erid в production запрещены (audit L-01)."
+    )
 
 
 # --- Redis durability (audit M-03) -------------------------------------------

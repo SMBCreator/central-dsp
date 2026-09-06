@@ -9,7 +9,8 @@ from business_day import normalize_spent_today
 from cache import reset_available
 from rbac import can_see_all, require_campaign_editor, require_campaign_write
 from db import get_pool
-from ord.service import campaign_targets_ru
+from ord.adapter import mock_allowed
+from ord.service import campaign_targets_ru, unmarked_creative_sql
 from schemas import CampaignIn, CampaignPatch
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
@@ -121,9 +122,10 @@ async def update_campaign(campaign_id: str, body: CampaignPatch, user: dict = De
     # (те же проверки, что и в /diagnostics и в фиде биддера): активный
     # рекламодатель с балансом, период, бюджет, ≥1 активная группа со ставкой,
     # ≥1 одобренный креатив, маркировка ОРД (erid, ФЗ-347) для РФ-трафика.
-    # LAUNCH_GATE=off (или устаревший ORD_LAUNCH_GUARD=off) — только dev.
+    # LAUNCH_GATE=off (или устаревший ORD_LAUNCH_GUARD=off) — только dev;
+    # в production флаг игнорируется (audit L-01/S-04).
     import os as _os
-    gate_on = _os.getenv("LAUNCH_GATE", _os.getenv("ORD_LAUNCH_GUARD", "on")) != "off"
+    gate_on = not mock_allowed() or _os.getenv("LAUNCH_GATE", _os.getenv("ORD_LAUNCH_GUARD", "on")) != "off"
     if updates.get("status") == "active" and gate_on:
         camp = await pool.fetchrow(
             "SELECT * FROM campaigns WHERE id = $1 AND user_id = $2", campaign_id, user["id"]
@@ -388,7 +390,7 @@ async def compute_diagnostics(pool, camp, *, assume_active: bool = False) -> dic
     unmarked = 0
     if ru_relevant and cr_approved:
         unmarked = await pool.fetchval(
-            "SELECT count(*) FROM creatives WHERE campaign_id = $1 AND status = 'approved' AND (erid IS NULL OR erid = '')",
+            f"SELECT count(*) FROM creatives WHERE campaign_id = $1 AND status = 'approved' AND {unmarked_creative_sql()}",
             campaign_id,
         )
     add(

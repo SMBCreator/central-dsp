@@ -38,7 +38,9 @@ const inputCls =
 
 type OrdSettings = {
   configured: boolean
-  provider: string
+  provider: string | null
+  /** production без ключа: регистрация недоступна, РФ-фид закрыт (L-01) */
+  blocking?: boolean
   environment?: string
   api_key_masked?: string
   note?: string
@@ -108,22 +110,32 @@ function OrdCard() {
     <Card>
       <CardHeader
         title="ОРД Озон (маркировка рекламы)"
-        subtitle="API-ключ из кабинета ОРД Озон → Настройки → API. С ключом креативы регистрируются по-настоящему и erid виден в вашем кабинете ОРД; без ключа работает mock-режим с фиктивными erid."
+        subtitle="API-ключ из кабинета ОРД Озон → Настройки → API. С ключом креативы регистрируются по-настоящему и erid виден в вашем кабинете ОРД. Без ключа в production регистрация недоступна и показы в РФ заблокированы; mock-режим с фиктивными erid работает только на dev-стендах."
       />
       <div className="space-y-4 p-4 pt-0">
         {ord ? (
-          <div className="flex flex-wrap items-center gap-2 text-sm">
-            <span
-              className={
-                "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium " +
-                (ord.configured ? "bg-success/10 text-success" : "bg-warning/10 text-warning")
-              }
+          ord.blocking ? (
+            <div
+              role="alert"
+              className="flex flex-col gap-1 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-sm text-danger"
             >
-              {ord.configured ? `Подключено: Ozon (${ord.environment === "sandbox" ? "песочница" : "прод"})` : "Mock-режим"}
-            </span>
-            {ord.configured && <span className="font-mono text-xs text-muted">{ord.api_key_masked}</span>}
-            {!ord.configured && ord.note && <span className="text-xs text-muted">{ord.note}</span>}
-          </div>
+              <span className="font-medium">ОРД не настроен — маркировка не работает</span>
+              <span className="text-xs">{ord.note}</span>
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <span
+                className={
+                  "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium " +
+                  (ord.configured ? "bg-success/10 text-success" : "bg-warning/10 text-warning")
+                }
+              >
+                {ord.configured ? `Подключено: Ozon (${ord.environment === "sandbox" ? "песочница" : "прод"})` : "Mock-режим (dev)"}
+              </span>
+              {ord.configured && <span className="font-mono text-xs text-muted">{ord.api_key_masked}</span>}
+              {!ord.configured && ord.note && <span className="text-xs text-muted">{ord.note}</span>}
+            </div>
+          )
         ) : (
           <Spinner />
         )}
@@ -164,7 +176,7 @@ function OrdCard() {
           </Button>
           {ord?.configured && (
             <Button variant="secondary" onClick={disconnect}>
-              Отключить (вернуть mock)
+              Отключить ключ
             </Button>
           )}
         </div>

@@ -148,12 +148,18 @@ def _mask(key: str) -> str:
 
 @router.get("/ord")
 async def get_ord_settings_api(user: dict = Depends(_require_superadmin)):
-    from ord.adapter import get_ord_settings
+    from ord.adapter import get_ord_settings, mock_allowed
 
     cfg = await get_ord_settings()
     if not cfg:
-        return {"configured": False, "provider": "mock",
-                "note": "Ключ не задан — используется mock-ОРД (фиктивные erid)"}
+        if not mock_allowed():
+            # Production: mock не выдаётся и не принимается (audit L-01) —
+            # регистрация креативов недоступна, РФ-фид закрыт. UI показывает блокер.
+            return {"configured": False, "provider": None, "blocking": True,
+                    "note": "ОРД не настроен: регистрация креативов недоступна, показы в РФ "
+                            "заблокированы. Сохраните API-ключ ОРД Озон."}
+        return {"configured": False, "provider": "mock", "blocking": False,
+                "note": "Ключ не задан — используется mock-ОРД (фиктивные erid, только dev)"}
     env = "sandbox" if "sandbox" in cfg["base_url"] else "production"
     return {"configured": True, "provider": "ozon", "environment": env,
             "base_url": cfg["base_url"], "api_key_masked": _mask(cfg["api_key"]),
@@ -186,9 +192,12 @@ async def delete_ord_settings(user: dict = Depends(_require_superadmin)):
 
 @router.post("/ord/test")
 async def test_ord_connection(user: dict = Depends(_require_superadmin)):
-    from ord.adapter import OrdError, get_ord_adapter
+    from ord.adapter import OrdError, OrdNotConfigured, get_ord_adapter
 
-    adapter = await get_ord_adapter()
+    try:
+        adapter = await get_ord_adapter()
+    except OrdNotConfigured as e:
+        raise HTTPException(503, str(e))
     if adapter.provider == "mock":
         return {"ok": True, "provider": "mock",
                 "note": "Ключ не задан — работает mock. Сохраните ключ и повторите."}
