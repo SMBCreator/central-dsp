@@ -1,8 +1,9 @@
 """Redis client (Upstash) for budget guard, frequency capping, pacing."""
 import os
-from datetime import datetime, timedelta, timezone
 
 import redis.asyncio as redis
+
+from business_day import business_date_str, seconds_until_business_midnight, spend_key, spend_key_date
 
 _client: redis.Redis | None = None
 
@@ -37,11 +38,13 @@ return 1
 """
 
 
-def _seconds_until_utc_midnight() -> int:
-    """Daily spend keys must expire exactly at 00:00 UTC, matching the cron reset."""
-    now = datetime.now(timezone.utc)
-    tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-    return max(int((tomorrow - now).total_seconds()), 60)
+def _daily_key_ttl() -> int:
+    """TTL of a daily spend key created now: until 00:00 Europe/Moscow + grace.
+
+    The key name carries the business date, so the TTL is only garbage
+    collection — the boundary itself is the date in the key (audit M-04).
+    """
+    return seconds_until_business_midnight()
 
 
 async def reserve_budget(scope: str, entity_id: str, amount: float, budget: float) -> bool:
@@ -49,8 +52,8 @@ async def reserve_budget(scope: str, entity_id: str, amount: float, budget: floa
     if budget <= 0:
         return False
     r = get_redis()
-    key = f"spend:{scope}:{entity_id}"
-    ttl = _seconds_until_utc_midnight()
+    key = spend_key(scope, entity_id)
+    ttl = _daily_key_ttl()
     ok = await r.eval(_BUDGET_LUA, 1, key, str(amount), str(budget), str(ttl))
     return bool(ok)
 
@@ -121,38 +124,52 @@ async def gate_and_reserve(
         keys.append(f"freq:{campaign_id}:pad{len(keys)}:{dev}")
         cap_args.append("0")
     r = get_redis()
-    ttl = _seconds_until_utc_midnight()
+    ttl = _daily_key_ttl()
+    day = business_date_str()
     ok = await r.eval(
         _GATE_LUA, 5,
         *keys,
-        f"spend:camp:{campaign_id}",
-        f"spend:li:{li_id}",
+        spend_key("camp", campaign_id, day),
+        spend_key("li", li_id, day),
         *cap_args, str(cost), str(camp_budget),
         str(li_budget), str(ttl),
     )
     return bool(ok)
 
 
-async def clear_daily_spend() -> int:
-    """Delete all daily spend reservations (called by the midnight cron)."""
+async def clear_stale_daily_spend(today: str | None = None) -> int:
+    """Delete spend counters of PREVIOUS business days (and legacy undated keys).
+
+    Safe to run at any time and any number of times: the current day's keys
+    are never touched, so a late or repeated cron cannot re-open a budget.
+    """
     r = get_redis()
+    today = today or business_date_str()
     deleted = 0
     async for key in r.scan_iter(match="spend:*", count=200):
-        await r.delete(key)
-        deleted += 1
+        day = spend_key_date(key)
+        if day is None or day < today:
+            await r.delete(key)
+            deleted += 1
     return deleted
 
 
-async def release_budget(scope: str, entity_id: str, amount: float) -> None:
-    """Refund a reservation (e.g. on loss)."""
-    r = get_redis()
-    key = f"spend:{scope}:{entity_id}"
-    await r.incrbyfloat(key, -amount)
+async def clear_daily_spend() -> int:
+    """Backwards-compatible name; only stale days are cleared (see above)."""
+    return await clear_stale_daily_spend()
 
 
-async def get_spend(scope: str, entity_id: str) -> float:
+async def release_budget(scope: str, entity_id: str, amount: float, day: str | None = None) -> None:
+    """Refund a reservation (e.g. on loss) on the key of the bid's business day."""
     r = get_redis()
-    val = await r.get(f"spend:{scope}:{entity_id}")
+    key = spend_key(scope, entity_id, day)
+    if await r.exists(key):
+        await r.incrbyfloat(key, -amount)
+
+
+async def get_spend(scope: str, entity_id: str, day: str | None = None) -> float:
+    r = get_redis()
+    val = await r.get(spend_key(scope, entity_id, day))
     return float(val) if val else 0.0
 
 

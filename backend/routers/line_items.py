@@ -3,6 +3,7 @@ import json
 from fastapi import APIRouter, Depends, HTTPException
 
 from auth import current_user
+from business_day import normalize_spent_today
 from rbac import require_campaign_editor
 from db import get_pool
 from schemas import LineItemCreativesIn, LineItemIn, LineItemPatch
@@ -12,6 +13,7 @@ router = APIRouter(prefix="/line-items", tags=["line-items"])
 
 def _serialize(row) -> dict:
     d = dict(row)
+    normalize_spent_today(d)
     for k in ("id", "campaign_id", "user_id"):
         d[k] = str(d[k])
     for k in ("bid_price", "max_bid", "daily_budget", "spent_today"):

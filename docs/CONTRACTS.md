@@ -25,8 +25,8 @@
 
 | Ключ | Тип | Пишет | Читает | TTL | Назначение |
 |---|---|---|---|---|---|
-| `spend:camp:{campaign_id}` | string (money) | Go Lua-гейт, Python `cache.py` | оба, `clear_daily_spend` | до полуночи UTC | дневной расход кампании — **единственный источник бюджета на торгах** |
-| `spend:li:{li_id}` | string (money) | Go Lua-гейт, Python | оба | до полуночи UTC | дневной расход группы |
+| `spend:camp:{campaign_id}:{YYYY-MM-DD}` | string (money) | Go Lua-гейт, Python `cache.py` | оба, `clear_stale_daily_spend` | до 00:00 Europe/Moscow + 1 ч grace | дневной расход кампании за бизнес-день (дата МСК в ключе) — **единственный источник бюджета на торгах** |
+| `spend:li:{li_id}:{YYYY-MM-DD}` | string (money) | Go Lua-гейт, Python | оба | до 00:00 Europe/Moscow + 1 ч grace | дневной расход группы за бизнес-день |
 | `bidmeta:{bid_id}` | JSON | Go (`persistBidMeta`), Python-биддер | Python `win/imp/click` (`_find_bid`), Go `loss` | 1 ч | биллинг выигрыша; `is_test` блокирует списание |
 | `bidfreq:{bid_id}` | string `device|caps` | Go, Python-биддер | Python `/imp` | 1 ч | инкремент frequency-cap после показа |
 | `lossdone:{bid_id}` | flag (SETNX) | Go `loss` | Go | 1 ч | идемпотентность возврата бюджета по loss |

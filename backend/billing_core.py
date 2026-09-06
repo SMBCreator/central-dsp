@@ -18,6 +18,7 @@ from decimal import Decimal
 
 import asyncpg
 
+from business_day import business_date
 from money import CURRENCY, ZERO, money
 
 
@@ -82,19 +83,31 @@ async def bill_win(
             "UPDATE transactions SET balance_after = $2 WHERE id = $1",
             ledger_id, balance_after,
         )
+        # spent_today belongs to a business day (Europe/Moscow): the first win
+        # of a new day restarts the counter instead of waiting for a cron reset.
+        today = business_date()
         camp = await conn.fetchrow(
             """
             UPDATE campaigns
-            SET spent_today = spent_today + $2, spent_total = spent_total + $2, updated_at = now()
+            SET spent_today = CASE WHEN spent_today_date = $3 THEN spent_today + $2 ELSE $2 END,
+                spent_today_date = $3,
+                spent_total = spent_total + $2,
+                updated_at = now()
             WHERE id = $1
             RETURNING total_budget, spent_total
             """,
-            campaign_id, cost,
+            campaign_id, cost, today,
         )
         if line_item_id is not None:
             await conn.execute(
-                "UPDATE line_items SET spent_today = spent_today + $2, updated_at = now() WHERE id = $1",
-                line_item_id, cost,
+                """
+                UPDATE line_items
+                SET spent_today = CASE WHEN spent_today_date = $3 THEN spent_today + $2 ELSE $2 END,
+                    spent_today_date = $3,
+                    updated_at = now()
+                WHERE id = $1
+                """,
+                line_item_id, cost, today,
             )
 
         paused = False

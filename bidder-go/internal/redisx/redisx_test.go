@@ -45,6 +45,9 @@ func approxEqual(a, b float64) bool { return math.Abs(a-b) < 1e-6 }
 
 // 1000 параллельных бидов по 1 руб на дневной бюджет кампании 100 руб:
 // ровно 100 разрешений, spend:camp ровно 100, ни копейки сверх.
+// today — бизнес-дата (Europe/Moscow) на момент прогона: ключи spend:* датированы.
+var today = BusinessDate(time.Now())
+
 func TestGateAndReserve_ConcurrentNoOverspend(t *testing.T) {
 	c, mr := newTestClient(t)
 	ctx := context.Background()
@@ -74,10 +77,10 @@ func TestGateAndReserve_ConcurrentNoOverspend(t *testing.T) {
 	if got := allowed.Load(); got != int64(campBudget/cost) {
 		t.Fatalf("allowed = %d, want %d", got, int64(campBudget/cost))
 	}
-	if spent := floatKey(t, mr, "spend:camp:camp-1"); !approxEqual(spent, campBudget) {
+	if spent := floatKey(t, mr, SpendKey("camp", "camp-1", today)); !approxEqual(spent, campBudget) {
 		t.Fatalf("spend:camp = %v, want %v (rejected bids must roll back fully)", spent, campBudget)
 	}
-	if mr.TTL("spend:camp:camp-1") <= 0 {
+	if mr.TTL(SpendKey("camp", "camp-1", today)) <= 0 {
 		t.Fatal("spend:camp must carry a TTL until UTC midnight")
 	}
 }
@@ -104,8 +107,8 @@ func TestGateAndReserve_LineItemBudgetBoundsAndRollsBackBoth(t *testing.T) {
 	if got := allowed.Load(); got != 30 {
 		t.Fatalf("allowed = %d, want 30", got)
 	}
-	camp := floatKey(t, mr, "spend:camp:camp-2")
-	li := floatKey(t, mr, "spend:li:li-2")
+	camp := floatKey(t, mr, SpendKey("camp", "camp-2", today))
+	li := floatKey(t, mr, SpendKey("li", "li-2", today))
 	if !approxEqual(camp, 30) || !approxEqual(li, 30) {
 		t.Fatalf("camp=%v li=%v, want both 30: li-rejection must refund camp too", camp, li)
 	}
@@ -135,7 +138,7 @@ func TestGateAndReserve_FractionalCostNoDrift(t *testing.T) {
 	if want > budget+1e-9 {
 		t.Fatalf("reserved %v > budget %v", want, budget)
 	}
-	if spent := floatKey(t, mr, "spend:camp:camp-3"); math.Abs(spent-want) > 1e-6 {
+	if spent := floatKey(t, mr, SpendKey("camp", "camp-3", today)); math.Abs(spent-want) > 1e-6 {
 		t.Fatalf("spend:camp=%v, want %v", spent, want)
 	}
 }
@@ -155,7 +158,7 @@ func TestGateAndReserve_FreqCapReadOnly(t *testing.T) {
 	if ok {
 		t.Fatal("cap reached must reject")
 	}
-	if mr.Exists("spend:camp:camp-4") || mr.Exists("spend:li:li-4") {
+	if mr.Exists(SpendKey("camp", "camp-4", today)) || mr.Exists(SpendKey("li", "li-4", today)) {
 		t.Fatal("rejected by cap must not touch spend keys")
 	}
 	if v, _ := mr.Get("freq:camp-4:24h:dev-1"); v != "3" {
@@ -211,10 +214,10 @@ func TestReleaseGate_RefundsExactlyAndReopensGate(t *testing.T) {
 	if ok, _ := c.GateAndReserve(ctx, "camp-7", "li-7", 2, 10, 10, "", nil); ok {
 		t.Fatal("budget exhausted, must reject")
 	}
-	if err := c.ReleaseGate(ctx, "camp-7", "li-7", 2); err != nil {
+	if err := c.ReleaseGate(ctx, "camp-7", "li-7", 2, ""); err != nil {
 		t.Fatal(err)
 	}
-	if camp, li := floatKey(t, mr, "spend:camp:camp-7"), floatKey(t, mr, "spend:li:li-7"); !approxEqual(camp, 8) || !approxEqual(li, 8) {
+	if camp, li := floatKey(t, mr, SpendKey("camp", "camp-7", today)), floatKey(t, mr, SpendKey("li", "li-7", today)); !approxEqual(camp, 8) || !approxEqual(li, 8) {
 		t.Fatalf("after release camp=%v li=%v, want 8/8", camp, li)
 	}
 	if ok, _ := c.GateAndReserve(ctx, "camp-7", "li-7", 2, 10, 10, "", nil); !ok {
@@ -233,25 +236,25 @@ func TestReleaseGate_NoLineItemBudgetNeverGoesNegative(t *testing.T) {
 		}
 	}
 	for i := 0; i < 20; i++ {
-		if err := c.ReleaseGate(ctx, "camp-9", "li-9", 1); err != nil {
+		if err := c.ReleaseGate(ctx, "camp-9", "li-9", 1, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if mr.Exists("spend:li:li-9") {
-		t.Fatalf("spend:li must not be created by release, got %v", floatKey(t, mr, "spend:li:li-9"))
+	if mr.Exists(SpendKey("li", "li-9", today)) {
+		t.Fatalf("spend:li must not be created by release, got %v", floatKey(t, mr, SpendKey("li", "li-9", today)))
 	}
-	if got := floatKey(t, mr, "spend:camp:camp-9"); !approxEqual(got, 0) {
+	if got := floatKey(t, mr, SpendKey("camp", "camp-9", today)); !approxEqual(got, 0) {
 		t.Fatalf("spend:camp = %v, want 0", got)
 	}
 	// Даже лишний release (SSP прислал loss на бид, резерв которого уже
 	// сгорел) не уводит счётчик ниже нуля и не снимает TTL.
-	if err := c.ReleaseGate(ctx, "camp-9", "li-9", 1); err != nil {
+	if err := c.ReleaseGate(ctx, "camp-9", "li-9", 1, ""); err != nil {
 		t.Fatal(err)
 	}
-	if got := floatKey(t, mr, "spend:camp:camp-9"); got < 0 {
+	if got := floatKey(t, mr, SpendKey("camp", "camp-9", today)); got < 0 {
 		t.Fatalf("spend:camp went negative: %v", got)
 	}
-	if mr.TTL("spend:camp:camp-9") <= 0 {
+	if mr.TTL(SpendKey("camp", "camp-9", today)) <= 0 {
 		t.Fatal("clamping to 0 must keep the daily TTL")
 	}
 }
@@ -265,13 +268,13 @@ func TestReleaseGate_AfterKeyExpiryIsNoop(t *testing.T) {
 		t.Fatal("reserve failed")
 	}
 	mr.FastForward(48 * time.Hour) // ключи spend:* истекли
-	if mr.Exists("spend:camp:camp-10") {
+	if mr.Exists(SpendKey("camp", "camp-10", today)) {
 		t.Fatal("precondition: key must have expired")
 	}
-	if err := c.ReleaseGate(ctx, "camp-10", "li-10", 1); err != nil {
+	if err := c.ReleaseGate(ctx, "camp-10", "li-10", 1, ""); err != nil {
 		t.Fatal(err)
 	}
-	if mr.Exists("spend:camp:camp-10") || mr.Exists("spend:li:li-10") {
+	if mr.Exists(SpendKey("camp", "camp-10", today)) || mr.Exists(SpendKey("li", "li-10", today)) {
 		t.Fatalf("release after expiry must not recreate keys: %v", mr.Keys())
 	}
 }
@@ -298,7 +301,7 @@ func TestGateAndReserve_ParallelReserveThenReleaseNetsToZero(t *testing.T) {
 				rejected.Add(1)
 				return
 			}
-			if err := c.ReleaseGate(ctx, "camp-8", "li-8", cost); err != nil {
+			if err := c.ReleaseGate(ctx, "camp-8", "li-8", cost, ""); err != nil {
 				t.Errorf("release: %v", err)
 			}
 		}()
@@ -307,7 +310,7 @@ func TestGateAndReserve_ParallelReserveThenReleaseNetsToZero(t *testing.T) {
 	if rejected.Load() != 0 {
 		t.Fatalf("%d reserves rejected under a huge budget", rejected.Load())
 	}
-	for _, k := range []string{"spend:camp:camp-8", "spend:li:li-8"} {
+	for _, k := range []string{SpendKey("camp", "camp-8", today), SpendKey("li", "li-8", today)} {
 		if got := floatKey(t, mr, k); !approxEqual(got, 0) {
 			t.Fatalf("%s = %v, want 0 after every reservation was released", k, got)
 		}

@@ -11,7 +11,8 @@ import time
 from fastapi import APIRouter, HTTPException, Request
 
 import obs_metrics
-from cache import clear_daily_spend
+from business_day import business_date
+from cache import clear_stale_daily_spend
 from db import get_pool
 from optimizer import run_optimizer
 from rules_engine import evaluate_rules_for_user
@@ -89,17 +90,34 @@ async def run_all_rules(request: Request):
 @router.get("/reset-daily")
 @_cron_job("reset_daily")
 async def reset_daily_budgets(request: Request):
-    """Reset daily spend counters in Postgres AND Redis.
+    """Housekeeping for daily spend counters — idempotent, safe at any hour.
 
-    Расписание в vercel.json — 21:00 UTC, что соответствует 00:00 МСК (UTC+3):
-    дневные бюджеты обнуляются по московской полуночи, как в кабинете.
+    Бизнес-день = календарный день Europe/Moscow (business_day.py). Граница
+    задаётся датой в ключе Redis `spend:*:{YYYY-MM-DD}` и колонкой
+    `spent_today_date`, а не моментом запуска этого cron: здесь обнуляются
+    только счётчики ПРОШЛЫХ дней. Повторный или опоздавший запуск не трогает
+    расход текущего дня (audit M-04).
     """
     _check_secret(request)
     pool = await get_pool()
-    campaigns = await pool.execute("UPDATE campaigns SET spent_today = 0 WHERE spent_today > 0")
-    line_items = await pool.execute("UPDATE line_items SET spent_today = 0 WHERE spent_today > 0")
-    redis_keys = await clear_daily_spend()
-    return {"campaigns": campaigns, "line_items": line_items, "redis_keys_cleared": redis_keys}
+    today = business_date()
+    campaigns = await pool.execute(
+        "UPDATE campaigns SET spent_today = 0, spent_today_date = NULL "
+        "WHERE spent_today > 0 AND (spent_today_date IS NULL OR spent_today_date < $1)",
+        today,
+    )
+    line_items = await pool.execute(
+        "UPDATE line_items SET spent_today = 0, spent_today_date = NULL "
+        "WHERE spent_today > 0 AND (spent_today_date IS NULL OR spent_today_date < $1)",
+        today,
+    )
+    redis_keys = await clear_stale_daily_spend(today.isoformat())
+    return {
+        "business_date": today.isoformat(),
+        "campaigns": campaigns,
+        "line_items": line_items,
+        "redis_keys_cleared": redis_keys,
+    }
 
 
 @router.get("/optimize")

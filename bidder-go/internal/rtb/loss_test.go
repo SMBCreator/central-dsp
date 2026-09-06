@@ -15,7 +15,11 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+
+	"github.com/SMBCreator/central-dsp/bidder-go/internal/redisx"
 )
+
+var today = redisx.BusinessDate(time.Now())
 
 func seedBidMeta(t *testing.T, mr *miniredis.Miniredis, bidID string, priceCPM float64, isTest int) {
 	t.Helper()
@@ -91,10 +95,10 @@ func TestLoss_ConcurrentRepeatsReleaseOnce(t *testing.T) {
 	}
 	wg.Wait()
 
-	if got := spendOf(t, mr, "spend:camp:camp-L"); got > 1e-9 || got < -1e-9 {
+	if got := spendOf(t, mr, redisx.SpendKey("camp", "camp-L", today)); got > 1e-9 || got < -1e-9 {
 		t.Fatalf("spend:camp after single release must be 0, got %v (double release = negative)", got)
 	}
-	if got := spendOf(t, mr, "spend:li:li-L"); got > 1e-9 || got < -1e-9 {
+	if got := spendOf(t, mr, redisx.SpendKey("li", "li-L", today)); got > 1e-9 || got < -1e-9 {
 		t.Fatalf("spend:li after single release must be 0, got %v", got)
 	}
 	if n := len(streamEvents(t, mr)); n != 1 {
@@ -109,8 +113,8 @@ func TestLoss_ConcurrentRepeatsReleaseOnce(t *testing.T) {
 // но событие пишем с is_test=1, чтобы отчёт видел тест-трафик отдельно.
 func TestLoss_TestBidDoesNotTouchSpend(t *testing.T) {
 	h, mr := newMiniRedisHandler(t)
-	mr.Set("spend:camp:camp-L", "5")
-	mr.Set("spend:li:li-L", "5")
+	mr.Set(redisx.SpendKey("camp", "camp-L", today), "5")
+	mr.Set(redisx.SpendKey("li", "li-L", today), "5")
 	seedBidMeta(t, mr, "bid-test", 10, 1)
 
 	rec := httptest.NewRecorder()
@@ -118,7 +122,7 @@ func TestLoss_TestBidDoesNotTouchSpend(t *testing.T) {
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status %d", rec.Code)
 	}
-	if got := spendOf(t, mr, "spend:camp:camp-L"); got != 5 {
+	if got := spendOf(t, mr, redisx.SpendKey("camp", "camp-L", today)); got != 5 {
 		t.Fatalf("test bid must not release: spend:camp=%v", got)
 	}
 	msgs := streamEvents(t, mr)
@@ -134,14 +138,14 @@ func TestLoss_TestBidDoesNotTouchSpend(t *testing.T) {
 // событие не пишем — иначе SSP мог бы «возвращать» чужой бюджет.
 func TestLoss_UnknownBidIsNoop(t *testing.T) {
 	h, mr := newMiniRedisHandler(t)
-	mr.Set("spend:camp:camp-L", "5")
+	mr.Set(redisx.SpendKey("camp", "camp-L", today), "5")
 
 	rec := httptest.NewRecorder()
 	h.Loss(rec, lossRequest(t, "ghost"))
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status %d", rec.Code)
 	}
-	if got := spendOf(t, mr, "spend:camp:camp-L"); got != 5 {
+	if got := spendOf(t, mr, redisx.SpendKey("camp", "camp-L", today)); got != 5 {
 		t.Fatalf("unknown bid must not release: %v", got)
 	}
 	if n := len(streamEvents(t, mr)); n != 0 {
@@ -152,13 +156,13 @@ func TestLoss_UnknownBidIsNoop(t *testing.T) {
 // Битый/чужой токен — 403 и ноль побочных эффектов.
 func TestLoss_InvalidTokenForbidden(t *testing.T) {
 	h, mr := newMiniRedisHandler(t)
-	mr.Set("spend:camp:camp-L", "5")
+	mr.Set(redisx.SpendKey("camp", "camp-L", today), "5")
 	rec := httptest.NewRecorder()
 	h.Loss(rec, httptest.NewRequest(http.MethodPost, "/rtb/loss?bid=v1.forged.token", nil))
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status %d, want 403", rec.Code)
 	}
-	if got := spendOf(t, mr, "spend:camp:camp-L"); got != 5 {
+	if got := spendOf(t, mr, redisx.SpendKey("camp", "camp-L", today)); got != 5 {
 		t.Fatalf("forged token must not release: %v", got)
 	}
 }

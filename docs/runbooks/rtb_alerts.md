@@ -42,12 +42,13 @@ Python backend `/metrics` (серии `rtb_*`). Правила: `ops/prometheus/
 **Действия:**
 - Поднять/восстановить Redis. Биддер восстановится сам, рестарт не нужен.
 - После восстановления проверить дневные счётчики расхода: ключи
-  `spend:camp:{id}` / `spend:li:{id}` (TTL до полуночи UTC). Если Redis
+  `spend:camp:{id}:{YYYY-MM-DD}` / `spend:li:{id}:{YYYY-MM-DD}` (дата — бизнес-день
+  Europe/Moscow, TTL до следующей полуночи МСК + 1 ч). Если Redis
   потерял состояние (flush/OOM-эвикция) — счётчики начинают с нуля, а не
   пересобираются из БД: до полуночи возможен перерасход дневного бюджета в
   размере уже потраченного до инцидента. Сверить спенд за окно инцидента с
   `bid_events`; при необходимости выставить ключи руками
-  (`SET spend:camp:<id> <потрачено_сегодня> EX <секунд_до_полуночи_UTC>`).
+  (`SET spend:camp:<id>:<YYYY-MM-DD МСК> <потрачено_сегодня> EX <секунд_до_полуночи_МСК+3600>`).
 
 ## no-traffic — BidderNoTraffic
 
@@ -287,8 +288,9 @@ Vercel Cron; ручки защищены `CRON_SECRET`.
 3. Логи backend: трейсбек задачи.
 
 **Действия:** запустить руками `curl -H "Authorization: Bearer $CRON_SECRET"
-https://<host>/cron/<job>` и прочитать JSON ответа; `reset-daily` — только
-в 00:00 UTC (иначе дневные бюджеты обнулятся среди дня).
+https://<host>/cron/<job>` и прочитать JSON ответа. `reset-daily` идемпотентен и
+безопасен в любое время: он обнуляет только счётчики прошлых бизнес-дней
+(`spent_today_date < сегодня МСК`, ключи `spend:*:<вчера>`), текущий день не трогает.
 
 ## ord-export — OrdExportFailed / OrdExportLag / OrdExportSkippedWithoutErid
 

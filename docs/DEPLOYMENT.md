@@ -245,7 +245,9 @@ CRON_SECRET=<из .env>
 API=https://api.example.com
 
 0 6 * * *   root curl -fsS -H "Authorization: Bearer $CRON_SECRET" $API/cron/rules        >/dev/null
-0 21 * * *  root curl -fsS -H "Authorization: Bearer $CRON_SECRET" $API/cron/reset-daily  >/dev/null
+# reset-daily — только housekeeping (чистит счётчики ПРОШЛЫХ бизнес-дней); граница дня —
+# дата Europe/Moscow в ключах spend:* и spent_today_date, а не этот cron. Безопасно в любое время.
+30 21 * * *  root curl -fsS -H "Authorization: Bearer $CRON_SECRET" $API/cron/reset-daily  >/dev/null
 0 7 * * *   root curl -fsS -H "Authorization: Bearer $CRON_SECRET" $API/cron/optimize     >/dev/null
 0 * * * *   root curl -fsS -H "Authorization: Bearer $CRON_SECRET" $API/cron/shading      >/dev/null
 # ОРД: месячная статистика за предыдущий месяц — 2-е число, 06:00 МСК.

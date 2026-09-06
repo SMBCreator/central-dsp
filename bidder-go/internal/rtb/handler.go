@@ -506,6 +506,9 @@ func (h *Handler) persistBidMeta(ctx interface {
 		"device_type": dt, "geo_country": view.Country, "ad_type": adType,
 		"domain": view.Domain, "os": view.OS, "browser": browser,
 		"is_test": testFlag,
+		// business_date: день (Europe/Moscow), на который резервирован бюджет —
+		// loss после полуночи возвращает резерв в ключ этого дня (audit M-04).
+		"business_date": redisx.BusinessDate(time.Now()),
 	})
 	rdb.Set(ctx, "bidmeta:"+bidID, meta, time.Hour)
 
@@ -652,10 +655,11 @@ func (h *Handler) Loss(w http.ResponseWriter, r *http.Request) {
 				OS              string  `json:"os"`
 				Browser         string  `json:"browser"`
 				IsTest          int     `json:"is_test"`
+				BusinessDate    string  `json:"business_date"`
 			}
 			if json.Unmarshal([]byte(raw), &meta) == nil && meta.CampaignID != "" {
 				if meta.IsTest == 0 {
-					_ = h.redis.ReleaseGate(ctx, meta.CampaignID, meta.LineItemID, meta.Price/1000.0)
+					_ = h.redis.ReleaseGate(ctx, meta.CampaignID, meta.LineItemID, meta.Price/1000.0, meta.BusinessDate)
 				}
 				if h.metrics != nil {
 					h.metrics.IncLossRelease()

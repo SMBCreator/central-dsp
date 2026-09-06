@@ -87,13 +87,13 @@ func (c *Client) EmitEvent(ctx context.Context, fields map[string]any) error {
 // никогда не совпадал с фактическим расходом.
 //
 // KEYS[1..3]: freq:{campaign_id}:{hours}h:{device_id} (pad-keys when <3 caps)
-// KEYS[4]:    spend:camp:{campaign_id}
-// KEYS[5]:    spend:li:{li_id}
+// KEYS[4]:    spend:camp:{campaign_id}:{business_date}
+// KEYS[5]:    spend:li:{li_id}:{business_date}
 // ARGV[1..3]: cap limits aligned with KEYS[1..3] (0 = window disabled)
 // ARGV[4]:    cost (RUB, float) — CPM/1000 for one impression
 // ARGV[5]:    camp daily budget (RUB)
 // ARGV[6]:    line-item daily budget (RUB, 0 = unlimited)
-// ARGV[7]:    TTL seconds until UTC midnight (matches clear_daily_spend cron)
+// ARGV[7]:    TTL seconds until Europe/Moscow midnight + grace (GC only)
 //
 // Frequency windows are checked READ-ONLY here: the counters are incremented
 // by the backend on a confirmed impression (/rtb/imp reads bidfreq:{bid_id}),
@@ -160,24 +160,65 @@ func (w *CapWindow) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// secondsUntilUTCMidnight mirrors cache.py _seconds_until_utc_midnight.
-func secondsUntilUTCMidnight(now time.Time) int64 {
-	utc := now.UTC()
-	next := time.Date(utc.Year(), utc.Month(), utc.Day(), 0, 0, 0, 0, time.UTC).Add(24 * time.Hour)
-	s := int64(next.Sub(utc).Seconds())
-	if s < 60 {
-		return 60
+// ---------------------------------------------------------------------------
+// Business day (mirror of backend/business_day.py, audit M-04).
+//
+// Дневные бюджеты живут по календарному дню Europe/Moscow. Дата бизнес-дня
+// входит в имя ключа spend:*:{YYYY-MM-DD}: граница дня — это смена даты, а не
+// момент запуска cron или истечение TTL. TTL — только сборка мусора (до
+// следующей полуночи МСК + grace), поэтому опоздавший loss возвращает резерв
+// в ключ своего дня и никогда не уменьшает расход нового дня.
+// ---------------------------------------------------------------------------
+
+// keyGraceSeconds keeps yesterday's counter alive for late notices; same
+// value as business_day.KEY_GRACE_SECONDS.
+const keyGraceSeconds = 3600
+
+var businessLoc = loadBusinessLocation()
+
+func loadBusinessLocation() *time.Location {
+	name := "Europe/Moscow"
+	if loc, err := time.LoadLocation(name); err == nil {
+		return loc
 	}
-	return s
+	// Image without tzdata: Moscow has had no DST since 2014, fixed +03:00 is exact.
+	return time.FixedZone("MSK", 3*3600)
+}
+
+// BusinessDate returns the YYYY-MM-DD business date of now.
+func BusinessDate(now time.Time) string {
+	return now.In(businessLoc).Format("2006-01-02")
+}
+
+// secondsUntilBusinessMidnight mirrors business_day.seconds_until_business_midnight.
+func secondsUntilBusinessMidnight(now time.Time) int64 {
+	local := now.In(businessLoc)
+	next := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, businessLoc).AddDate(0, 0, 1)
+	s := int64(next.Sub(local).Seconds())
+	if s < 60 {
+		s = 60
+	}
+	return s + keyGraceSeconds
+}
+
+// SpendKey builds the dated daily spend key. scope: "camp" | "li".
+func SpendKey(scope, entityID, day string) string {
+	return "spend:" + scope + ":" + entityID + ":" + day
 }
 
 // GateAndReserve is the 1:1 port of cache.py gate_and_reserve: checks up to
 // three frequency-cap windows (read-only) and atomically reserves cost RUB on
-// both spend:camp:{campaignID} and spend:li:{liID}. Returns allowed.
+// both spend:camp:{campaignID}:{day} and spend:li:{liID}:{day}. Returns allowed.
 func (c *Client) GateAndReserve(ctx context.Context, campaignID, liID string, cost, campBudget, liBudget float64, deviceID string, caps []CapWindow) (bool, error) {
+	return c.GateAndReserveAt(ctx, time.Now(), campaignID, liID, cost, campBudget, liBudget, deviceID, caps)
+}
+
+// GateAndReserveAt is GateAndReserve with an explicit clock (tests, midnight edge).
+func (c *Client) GateAndReserveAt(ctx context.Context, now time.Time, campaignID, liID string, cost, campBudget, liBudget float64, deviceID string, caps []CapWindow) (bool, error) {
 	if campBudget <= 0 {
 		return false, nil
 	}
+	day := BusinessDate(now)
 	dev := deviceID
 	if dev == "" {
 		dev = "-"
@@ -199,13 +240,13 @@ func (c *Client) GateAndReserve(ctx context.Context, campaignID, liID string, co
 		keys = append(keys, fmt.Sprintf("freq:%s:pad%d:%s", campaignID, len(keys), dev))
 		capArgs = append(capArgs, "0")
 	}
-	keys = append(keys, "spend:camp:"+campaignID, "spend:li:"+liID)
+	keys = append(keys, SpendKey("camp", campaignID, day), SpendKey("li", liID, day))
 	args := []interface{}{
 		capArgs[0], capArgs[1], capArgs[2],
 		strconv.FormatFloat(cost, 'f', -1, 64),
 		strconv.FormatFloat(campBudget, 'f', -1, 64),
 		strconv.FormatFloat(liBudget, 'f', -1, 64),
-		strconv.FormatInt(secondsUntilUTCMidnight(time.Now()), 10),
+		strconv.FormatInt(secondsUntilBusinessMidnight(now), 10),
 	}
 	res, err := c.gateScript.Run(ctx, c.rdb, keys, args...).Int64()
 	if err != nil {
@@ -243,14 +284,19 @@ return 1
 `
 
 // ReleaseGate refunds a gate reservation on spend:camp and spend:li after a
-// lost auction / expired pending bid. See luaReleaseGate for the invariants.
-func (c *Client) ReleaseGate(ctx context.Context, campaignID, liID string, cost float64) error {
+// lost auction / expired pending bid. `day` is the business date the bid was
+// reserved on (from bidmeta); empty means "today". See luaReleaseGate for the
+// invariants.
+func (c *Client) ReleaseGate(ctx context.Context, campaignID, liID string, cost float64, day string) error {
 	if cost <= 0 || campaignID == "" {
 		return nil
 	}
-	keys := []string{"spend:camp:" + campaignID}
+	if day == "" {
+		day = BusinessDate(time.Now())
+	}
+	keys := []string{SpendKey("camp", campaignID, day)}
 	if liID != "" {
-		keys = append(keys, "spend:li:"+liID)
+		keys = append(keys, SpendKey("li", liID, day))
 	}
 	if err := c.releaseScript.Run(ctx, c.rdb, keys, strconv.FormatFloat(cost, 'f', -1, 64)).Err(); err != nil {
 		return fmt.Errorf("redisx: release_gate: %w", err)

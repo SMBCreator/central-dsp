@@ -4,6 +4,7 @@ import json
 from fastapi import APIRouter, Depends, HTTPException
 
 from auth import current_user
+from business_day import normalize_spent_today
 from rbac import can_see_all, require_campaign_editor, require_campaign_write
 from db import get_pool
 from ord.service import campaign_targets_ru
@@ -17,6 +18,7 @@ _DATES = {"start_date", "end_date"}
 
 def _serialize(row) -> dict:
     d = dict(row)
+    normalize_spent_today(d)
     if isinstance(d.get("frequency_caps"), str):
         try:
             d["frequency_caps"] = json.loads(d["frequency_caps"])
@@ -292,7 +294,7 @@ async def compute_diagnostics(pool, camp, *, assume_active: bool = False) -> dic
 
     # 4. Дневной бюджет
     daily_budget = float(camp["daily_budget"] or 0)
-    spent_today = float(camp["spent_today"] or 0)
+    spent_today = float(normalize_spent_today(dict(camp))["spent_today"] or 0)
     daily_ok = daily_budget <= 0 or spent_today < daily_budget
     add(
         "daily_budget",

@@ -6,7 +6,7 @@
     },
     {
       "path": "/api/cron/reset-daily",
-      "schedule": "0 21 * * *"
+      "schedule": "30 21 * * *"
     },
     {
       "path": "/api/cron/optimize",
