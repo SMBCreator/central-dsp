@@ -210,7 +210,7 @@ async def health():
 
 @app.get("/metrics", include_in_schema=False)
 async def metrics_endpoint():
-    """Prometheus text exposition (GAP-011). Процессны�� счётчики, без PII/ID в лейблах."""
+    """Prometheus text exposition (GAP-011). Процессные счётчики, без PII/ID в лейблах."""
     from fastapi.responses import PlainTextResponse
 
     import obs_metrics

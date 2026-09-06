@@ -170,7 +170,7 @@ def observe_bid_latency(sec: float) -> None:
 
 
 def snapshot() -> dict:
-    """Копия текущего состояния (для тестов и д��агностики)."""
+    """Копия текущего состояния (для тестов и диагностики)."""
     with _lock:
         cum = 0
         buckets: list[tuple[float, int]] = []
