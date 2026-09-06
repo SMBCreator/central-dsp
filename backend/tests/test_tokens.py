@@ -50,7 +50,18 @@ def test_garbage_rejected_when_unsigned_disallowed(monkeypatch):
 
 def test_legacy_bare_bid_id_allowed_during_rollout(monkeypatch):
     monkeypatch.setenv("RTB_ALLOW_UNSIGNED_EVENTS", "1")
-    assert verify_event_token("legacy-bid-id") == "legacy-bid-id"
+    monkeypatch.delenv("APP_ENV", raising=False)
+    assert verify_event_token("legacy-bare-bid-id") == "legacy-bare-bid-id"
+
+
+def test_unsigned_escape_hatch_ignored_in_production(monkeypatch):
+    """S-04: даже с RTB_ALLOW_UNSIGNED_EVENTS=1 production не принимает голый bid_id."""
+    monkeypatch.setenv("RTB_ALLOW_UNSIGNED_EVENTS", "1")
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("EVENT_TOKEN_SECRET", "x" * 40)
+    assert verify_event_token("legacy-bare-bid-id") is None
+    tok = sign_event_token("b1")
+    assert verify_event_token(tok) == "b1"  # подписанные — работают
 
 
 def test_secret_change_invalidates_tokens(monkeypatch):
@@ -99,8 +110,20 @@ def test_rtb_python_serving_flag_parsing():
         assert rtb_module._RTB_PYTHON_SERVING is True
 
         os.environ.pop("RTB_PYTHON_SERVING")
-        importlib.reload(rtb_module)
-        assert rtb_module._RTB_PYTHON_SERVING is True  # default: enabled (dev)
+        old_env = os.environ.pop("APP_ENV", None)
+        try:
+            importlib.reload(rtb_module)
+            assert rtb_module._RTB_PYTHON_SERVING is True  # default вне production: enabled (dev)
+
+            # S-04: в production забытая переменная НЕ включает второй биддер
+            os.environ["APP_ENV"] = "production"
+            importlib.reload(rtb_module)
+            assert rtb_module._RTB_PYTHON_SERVING is False
+        finally:
+            os.environ.pop("APP_ENV", None)
+            if old_env is not None:
+                os.environ["APP_ENV"] = old_env
+            importlib.reload(rtb_module)
     finally:
         if old is not None:
             os.environ["RTB_PYTHON_SERVING"] = old

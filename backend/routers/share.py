@@ -5,9 +5,10 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr, Field
 
-from auth import current_user, hash_password
+from auth import current_user, hash_password_async
 from db import get_pool
 from rbac import require_share_manager
+from schemas import PasswordStr
 
 router = APIRouter(prefix="/share", tags=["share"])
 
@@ -187,7 +188,7 @@ async def public_stats(token: str, hours: int = 168):
 
 class GuestIn(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=8, max_length=128)
+    password: PasswordStr
     name: str = Field(min_length=1, max_length=120)
     advertiser_id: str | None = None
     brand_name: str | None = None
@@ -212,7 +213,7 @@ async def create_guest(body: GuestIn, user: dict = Depends(require_share_manager
         INSERT INTO users (email, password_hash, name, role)
         VALUES ($1, $2, $3, 'viewer') RETURNING id, email, name, role
         """,
-        body.email.lower(), hash_password(body.password), body.name,
+        body.email.lower(), await hash_password_async(body.password), body.name,
     )
     await pool.execute(
         """

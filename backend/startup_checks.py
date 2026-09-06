@@ -82,17 +82,56 @@ def collect_problems(env: Mapping[str, str] | None = None) -> list[str]:
     p = _database_url_problem(env.get("DATABASE_URL"))
     if p:
         problems.append(p)
+    p = registration_mode_problem(env)
+    if p:
+        problems.append(p)
+    # Audit S-04: эти флаги — dev-лазейки. В production они не «предупреждение»,
+    # а прямой путь к двойным бидам / поддельным win-нотисам.
+    if _truthy(env.get("RTB_PYTHON_SERVING")):
+        problems.append(
+            "RTB_PYTHON_SERVING включён — Python-биддер торгует параллельно Go (двойные биды на один request); "
+            "в production торгует только bidder-go"
+        )
+    if env.get("RTB_ALLOW_UNSIGNED_EVENTS", "").strip() == "1":
+        problems.append(
+            "RTB_ALLOW_UNSIGNED_EVENTS=1 — принимаются неподписанные win/imp/click (любой может списать бюджет); "
+            "только dev/симулятор"
+        )
     return problems
+
+
+# --- REGISTRATION_MODE (audit S-04) -------------------------------------------
+# Раньше дефолт был `open`, а любое неизвестное значение (`Closed`, `off`,
+# опечатка) тоже вело в ветку «открыто». Теперь: enum, дефолт closed,
+# мусор — fail-fast в production и closed + warning вне его.
+
+REGISTRATION_MODES = ("open", "closed")
+REGISTRATION_MODE_DEFAULT = "closed"
+
+
+def registration_mode_problem(env: Mapping[str, str] | None = None) -> str | None:
+    env = os.environ if env is None else env
+    raw = env.get("REGISTRATION_MODE")
+    if raw is None or not raw.strip():
+        return None
+    if raw.strip().lower() not in REGISTRATION_MODES:
+        return f"REGISTRATION_MODE={raw.strip()!r} не распознан; допустимо: {', '.join(REGISTRATION_MODES)}"
+    return None
+
+
+def registration_mode(env: Mapping[str, str] | None = None) -> str:
+    """Эффективный режим регистрации. Неизвестное значение = closed (fail-closed)."""
+    env = os.environ if env is None else env
+    raw = (env.get("REGISTRATION_MODE") or "").strip().lower()
+    return raw if raw in REGISTRATION_MODES else REGISTRATION_MODE_DEFAULT
 
 
 def collect_warnings(env: Mapping[str, str] | None = None) -> list[str]:
     """Не фатально, но в production стоит знать."""
     env = os.environ if env is None else env
     warnings: list[str] = []
-    if env.get("REGISTRATION_MODE", "").strip().lower() == "open":
+    if registration_mode(env) == "open":
         warnings.append("REGISTRATION_MODE=open — любой может создать аккаунт (чеклист 6.2)")
-    if env.get("RTB_PYTHON_SERVING", "").strip().lower() in ("1", "true", "yes", "on"):
-        warnings.append("RTB_PYTHON_SERVING включён — Python-биддер торгует параллельно Go (двойные биды)")
     if env.get("ALLOW_MOCK_FALLBACK", "").strip() == "1":
         warnings.append("ALLOW_MOCK_FALLBACK=1 — прокси фронта отдаёт мок-данные при недоступном API")
     if env.get("ORD_FEED_GATE", "").strip().lower() == "off":

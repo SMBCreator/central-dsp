@@ -9,9 +9,10 @@ import json
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr, Field
 
-from auth import current_user, hash_password
+from auth import current_user, hash_password_async, revoke_sessions
 from db import get_pool
 from rbac import ADMIN_ROLES, effective_markup_pct, require_roles, visible_user_ids
+from schemas import PasswordStr
 
 # Управлять пользователями могут admin-роли и agency (только своими client);
 # грубый фильтр — здесь, чтобы был виден в матрице RBAC, тонкий — в хендлерах.
@@ -45,7 +46,7 @@ def _user_out(row: dict) -> dict:
 class UserCreate(BaseModel):
     email: EmailStr
     name: str = Field(min_length=1, max_length=200)
-    password: str = Field(min_length=8, max_length=128)
+    password: PasswordStr
     role: str
     parent_user_id: str | None = None
     markup_pct: float = Field(default=0, ge=0, le=500)
@@ -57,7 +58,7 @@ class UserPatch(BaseModel):
     status: str | None = None  # active | blocked
     markup_pct: float | None = Field(default=None, ge=0, le=500)
     permissions: dict | None = None
-    password: str | None = Field(default=None, min_length=8, max_length=128)
+    password: PasswordStr | None = None
 
 
 def _clean_permissions(perms: dict) -> dict:
@@ -121,7 +122,7 @@ async def create_user(body: UserCreate, user: dict = Depends(require_user_manage
         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
         RETURNING id, email, name, role, status, parent_user_id, markup_pct, permissions, created_at
         """,
-        body.email.lower(), hash_password(body.password), body.name, body.role,
+        body.email.lower(), await hash_password_async(body.password), body.name, body.role,
         parent_id, body.markup_pct, json.dumps(_clean_permissions(body.permissions)),
     )
     return _user_out(row)
@@ -157,7 +158,8 @@ async def patch_user(user_id: str, body: UserPatch, user: dict = Depends(require
         sets.append(f"permissions = ${len(values) + 2}::jsonb")
         values.append(json.dumps(_clean_permissions(body.permissions)))
     if body.password is not None:
-        sets.append(f"password_hash = ${len(values) + 2}"); values.append(hash_password(body.password))
+        sets.append(f"password_hash = ${len(values) + 2}")
+        values.append(await hash_password_async(body.password))
     if not sets:
         raise HTTPException(status_code=400, detail="Нет изменений")
 
@@ -166,6 +168,10 @@ async def patch_user(user_id: str, body: UserPatch, user: dict = Depends(require
         "RETURNING id, email, name, role, status, parent_user_id, markup_pct, permissions, created_at",
         user_id, *values,
     )
+    # S-04: сброс пароля админом или блокировка — все активные сессии цели
+    # должны умереть сразу, а не через 30 дней TTL.
+    if body.password is not None or body.status == "blocked":
+        await revoke_sessions(user_id)
     return _user_out(row)
 
 

@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/SMBCreator/central-dsp/bidder-go/internal/config"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/feed"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/metrics"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/redisx"
@@ -42,6 +43,18 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
+	// Audit S-04: секреты проверяются до открытия порта. В production
+	// плейсхолдер/короткий секрет = процесс не стартует, а не «торгует с
+	// подделываемыми event-токенами».
+	if warns, err := config.Assert(config.OSEnv); err != nil {
+		slog.Error("startup config check failed", "err", err.Error())
+		os.Exit(1)
+	} else {
+		for _, w := range warns {
+			slog.Warn("config (dev, not fatal)", "problem", w)
+		}
+	}
+
 	addr := env("BIDDER_ADDR", ":8090")
 
 	store := feed.NewStore(feed.Config{
@@ -53,6 +66,8 @@ func main() {
 	// Redis: бюджеты (Lua), freq caps, QPS, shading-факторы, bidmeta.
 	// Без Redis биддер работает в degraded-режиме (без бюджет/freq-гейтов) —
 	// допустимо только в dev.
+	// Дефолт localhost — только dev: в production REDIS_URL обязателен
+	// (config.Assert выше), иначе биддер и backend считают бюджет в разных Redis.
 	var rc *redisx.Client
 	if url := env("REDIS_URL", "redis://localhost:6379/0"); url != "" {
 		var err error

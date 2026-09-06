@@ -80,13 +80,57 @@ def test_outside_production_problems_only_warn(app_env, caplog):
 
 
 def test_warnings_are_not_fatal_but_logged(caplog):
-    env = dict(PROD_OK, REGISTRATION_MODE="open", RTB_PYTHON_SERVING="1", ALLOW_MOCK_FALLBACK="1")
+    env = dict(PROD_OK, REGISTRATION_MODE="open", ALLOW_MOCK_FALLBACK="1")
     with caplog.at_level("WARNING", logger="startup_checks"):
         sc.assert_production_config(env)
     msgs = "\n".join(r.getMessage() for r in caplog.records)
     assert "REGISTRATION_MODE" in msgs
-    assert "RTB_PYTHON_SERVING" in msgs
     assert "ALLOW_MOCK_FALLBACK" in msgs
+
+
+# --- S-04: dev-лазейки в production фатальны ----------------------------------
+
+
+@pytest.mark.parametrize("value", ["1", "true", "yes", "on", " TRUE "])
+def test_python_serving_enabled_is_fatal_in_production(value):
+    env = dict(PROD_OK, RTB_PYTHON_SERVING=value)
+    with pytest.raises(RuntimeError, match="RTB_PYTHON_SERVING"):
+        sc.assert_production_config(env)
+
+
+def test_python_serving_off_or_unset_is_fine():
+    assert sc.collect_problems(dict(PROD_OK, RTB_PYTHON_SERVING="false")) == []
+    assert sc.collect_problems(PROD_OK) == []
+
+
+def test_unsigned_events_is_fatal_in_production():
+    env = dict(PROD_OK, RTB_ALLOW_UNSIGNED_EVENTS="1")
+    with pytest.raises(RuntimeError, match="RTB_ALLOW_UNSIGNED_EVENTS"):
+        sc.assert_production_config(env)
+
+
+def test_unknown_registration_mode_is_fatal_in_production():
+    env = dict(PROD_OK, REGISTRATION_MODE="Opened")
+    with pytest.raises(RuntimeError, match="REGISTRATION_MODE"):
+        sc.assert_production_config(env)
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [(None, "closed"), ("", "closed"), ("open", "open"), ("OPEN ", "open"), ("closed", "closed"),
+     ("bogus", "closed"), ("Closed", "closed")],
+)
+def test_registration_mode_defaults_closed_and_fails_closed(raw, expected):
+    env = {} if raw is None else {"REGISTRATION_MODE": raw}
+    assert sc.registration_mode(env) == expected
+
+
+def test_unknown_registration_mode_outside_production_is_warning_only(caplog):
+    env = {"APP_ENV": "dev", "REGISTRATION_MODE": "bogus"}
+    with caplog.at_level("WARNING", logger="startup_checks"):
+        sc.assert_production_config(env)
+    assert any("REGISTRATION_MODE" in r.getMessage() for r in caplog.records)
+    assert sc.registration_mode(env) == "closed"
 
 
 def test_prod_detection_variants():

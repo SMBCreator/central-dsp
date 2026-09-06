@@ -43,7 +43,18 @@ router = APIRouter(prefix="/rtb", tags=["rtb"])
 # Python RTB — reference-имплементация и dev/симулятор. Прод-трафик обслуживает
 # Go-биддер (bidder-go/). Флаг выключает bid-эндпоинт в прод-топологии;
 # win/imp/click-нотификации остаются активными для доигрывания in-flight бидов.
-_RTB_PYTHON_SERVING = os.getenv("RTB_PYTHON_SERVING", "true").strip().lower() in {"1", "true", "yes"}
+# Audit S-04: в production дефолт — выключено (забытая переменная не должна
+# включать второй биддер); явное включение там же валит старт (startup_checks).
+
+
+def _python_serving_enabled() -> bool:
+    raw = os.getenv("RTB_PYTHON_SERVING")
+    if raw is None or not raw.strip():
+        return os.getenv("APP_ENV", "").strip().lower() not in {"production", "prod"}
+    return raw.strip().lower() in {"1", "true", "yes"}
+
+
+_RTB_PYTHON_SERVING = _python_serving_enabled()
 
 DEVICE_TYPES = {1: "mobile", 2: "desktop", 3: "ctv", 4: "phone", 5: "tablet", 6: "connected", 7: "settopbox"}
 

@@ -69,6 +69,12 @@ def verify_event_token(token: str) -> str | None:
         if not hmac.compare_digest(sig, _sig(bid_id, exp)):
             return None
         return bid_id
-    if os.environ.get("RTB_ALLOW_UNSIGNED_EVENTS") == "1":
+    if os.environ.get("RTB_ALLOW_UNSIGNED_EVENTS") == "1" and not _is_production():
+        # В production флаг игнорируется (и валит старт в startup_checks):
+        # голый bid_id в nurl = кто угодно списывает бюджет (audit S-04).
         return token or None
     return None
+
+
+def _is_production() -> bool:
+    return os.environ.get("APP_ENV", "").strip().lower() in ("production", "prod")

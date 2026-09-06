@@ -1,7 +1,8 @@
 """Pydantic request/response schemas for the management API."""
 import re
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from targeting_contract import validate_targeting
 
@@ -10,9 +11,23 @@ _IAB_CODE_RE = re.compile(r"^IAB\d{1,2}(-\d{1,2})?$")
 
 
 # --- Auth -------------------------------------------------------------------
+PASSWORD_MAX_BYTES = 72  # предел bcrypt; см. auth.PASSWORD_MAX_BYTES (audit S-04)
+
+
+def validate_password_bytes(value: str) -> str:
+    """max_length=128 считает символы; bcrypt — байты. 73+ байт (например,
+    25 кириллических символов) раньше давали 500 из bcrypt — теперь 422."""
+    if len(value.encode("utf-8")) > PASSWORD_MAX_BYTES:
+        raise ValueError(f"пароль длиннее {PASSWORD_MAX_BYTES} байт в UTF-8")
+    return value
+
+
+PasswordStr = Annotated[str, Field(min_length=8, max_length=128), AfterValidator(validate_password_bytes)]
+
+
 class RegisterIn(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=8, max_length=128)
+    password: PasswordStr
     name: str = Field(min_length=1, max_length=120)
 
 
@@ -31,7 +46,7 @@ class ChangePasswordIn(BaseModel):
     """H9: смена пароля пользователем."""
 
     current_password: str = Field(min_length=1, max_length=128)
-    new_password: str = Field(min_length=8, max_length=128)
+    new_password: PasswordStr
 
 
 # --- Advertisers ------------------------------------------------------------

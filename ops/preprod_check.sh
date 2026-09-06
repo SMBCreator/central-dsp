@@ -56,8 +56,9 @@ for v in SESSION_SECRET EVENT_TOKEN_SECRET RTB_API_TOKEN CRON_SECRET; do
 done
 case "${REGISTRATION_MODE:-}" in
   open) fail "REGISTRATION_MODE=open — в проде регистрация должна быть закрыта/по инвайту" ;;
-  "") skip "REGISTRATION_MODE не задан в .env — проверить дефолт в backend/config" ;;
-  *) pass "REGISTRATION_MODE=$REGISTRATION_MODE" ;;
+  "") pass "REGISTRATION_MODE не задан — default closed (S-04)" ;;
+  closed) pass "REGISTRATION_MODE=closed" ;;
+  *) fail "REGISTRATION_MODE=$REGISTRATION_MODE не распознан (open|closed) — backend не стартует в production" ;;
 esac
 
 section "2. Сервисы живы"

@@ -4,22 +4,62 @@ from datetime import datetime, timedelta, timezone
 
 import bcrypt
 from fastapi import Cookie, Depends, HTTPException
+from starlette.concurrency import run_in_threadpool
 
 from db import get_pool
 
 SESSION_TTL_DAYS = 30
 COOKIE_NAME = "cdsp_session"
 
+# bcrypt работает с первыми 72 байтами: старые версии молча обрезали хвост,
+# bcrypt>=4.1 бросает ValueError (=> 500 в register). Лимит проверяется в
+# схемах (422 с понятным текстом) и здесь — как последняя линия (audit S-04).
+PASSWORD_MAX_BYTES = 72
+PASSWORD_TOO_LONG = f"Пароль длиннее {PASSWORD_MAX_BYTES} байт в UTF-8 — bcrypt не примет"
+
+
+def password_bytes_ok(password: str) -> bool:
+    return len(password.encode("utf-8")) <= PASSWORD_MAX_BYTES
+
 
 def hash_password(password: str) -> str:
+    if not password_bytes_ok(password):
+        raise ValueError(PASSWORD_TOO_LONG)
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 
 def verify_password(password: str, password_hash: str) -> bool:
+    if not password_bytes_ok(password):
+        return False
     try:
         return bcrypt.checkpw(password.encode(), password_hash.encode())
     except ValueError:
         return False
+
+
+async def hash_password_async(password: str) -> str:
+    """bcrypt ~100–300 мс CPU: в event loop это блокирует все RTB/UI-запросы."""
+    return await run_in_threadpool(hash_password, password)
+
+
+async def verify_password_async(password: str, password_hash: str) -> bool:
+    return await run_in_threadpool(verify_password, password, password_hash)
+
+
+async def revoke_sessions(user_id: str, *, keep_token: str | None = None) -> int:
+    """Отзывает сессии пользователя (смена/сброс пароля, блокировка).
+    keep_token — текущая сессия, которую оставляем (сам сменил пароль)."""
+    pool = await get_pool()
+    if keep_token:
+        res = await pool.execute(
+            "DELETE FROM sessions WHERE user_id = $1 AND token <> $2", user_id, keep_token
+        )
+    else:
+        res = await pool.execute("DELETE FROM sessions WHERE user_id = $1", user_id)
+    try:
+        return int(res.split()[-1])
+    except (ValueError, IndexError):
+        return 0
 
 
 async def create_session(user_id: str) -> tuple[str, datetime]:
