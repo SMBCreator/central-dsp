@@ -1,7 +1,7 @@
 """Pydantic request/response schemas for the management API."""
 import re
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from targeting_contract import validate_targeting
 
@@ -36,19 +36,25 @@ class ChangePasswordIn(BaseModel):
 
 # --- Advertisers ------------------------------------------------------------
 class AdvertiserIn(BaseModel):
+    # M-01: balance is NOT part of advertiser CRUD. Money enters only through
+    # /billing/deposit and /billing/adjust (finance roles, ledger, idempotency).
+    # extra="forbid" turns a client that still sends `balance` into a 422
+    # instead of a silently ignored field.
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(min_length=1, max_length=200)
     domain: str | None = None
     category: str | None = None
-    balance: float = Field(default=0, ge=0)
-    currency: str = Field(default="USD", pattern="^(USD|EUR|RUB|KZT|UZS)$")
+    currency: str = Field(default="RUB", pattern="^(USD|EUR|RUB|KZT|UZS)$")
 
 
 class AdvertiserPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str | None = None
     domain: str | None = None
     category: str | None = None
     status: str | None = Field(default=None, pattern="^(active|paused|archived)$")
-    balance: float | None = Field(default=None, ge=0)
 
 
 # --- Campaigns ---------------------------------------------------------------

@@ -31,12 +31,13 @@ async def list_advertisers(user: dict = Depends(current_user)):
 @router.post("", status_code=201)
 async def create_advertiser(body: AdvertiserIn, user: dict = Depends(require_campaign_write)):
     pool = await get_pool()
+    # Balance always starts at 0 (column default); top-ups go through /billing.
     row = await pool.fetchrow(
         """
-        INSERT INTO advertisers (user_id, name, domain, category, balance, currency)
-        VALUES ($1, $2, $3, $4, $5, $6) RETURNING *
+        INSERT INTO advertisers (user_id, name, domain, category, currency)
+        VALUES ($1, $2, $3, $4, $5) RETURNING *
         """,
-        user["id"], body.name, body.domain, body.category, body.balance, body.currency,
+        user["id"], body.name, body.domain, body.category, body.currency,
     )
     return _serialize(row)
 

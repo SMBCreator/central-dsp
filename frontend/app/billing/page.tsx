@@ -39,10 +39,14 @@ export default function BillingPage() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [form, setForm] = useState({ advertiser_id: "", amount: "100", description: "" })
+  // One key per opened form: a retried/double-clicked submit is replayed by the
+  // backend instead of crediting the balance twice.
+  const [idempotencyKey, setIdempotencyKey] = useState("")
 
   const openDeposit = (advertiserId?: string) => {
     setError(null)
     setForm({ advertiser_id: advertiserId || summary?.advertisers[0]?.id || "", amount: "100", description: "" })
+    setIdempotencyKey(crypto.randomUUID())
     setOpen(true)
   }
 
@@ -57,6 +61,7 @@ export default function BillingPage() {
           advertiser_id: form.advertiser_id,
           amount: Number(form.amount),
           description: form.description || undefined,
+          idempotency_key: idempotencyKey,
         },
       })
       await Promise.all([mutate("/billing/summary"), mutate("/billing/transactions?limit=100")])

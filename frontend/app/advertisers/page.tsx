@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import Link from "next/link"
 import useSWR, { mutate } from "swr"
 import { api, fetcher } from "@/lib/api"
 import { fmtMoney, type Advertiser } from "@/lib/types"
@@ -10,20 +11,20 @@ export default function AdvertisersPage() {
   const { data: advertisers } = useSWR<Advertiser[]>("/advertisers", fetcher)
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<Advertiser | null>(null)
-  const [form, setForm] = useState({ name: "", domain: "", category: "", balance: "0" })
+  const [form, setForm] = useState({ name: "", domain: "", category: "" })
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
   const openCreate = () => {
     setEditing(null)
-    setForm({ name: "", domain: "", category: "", balance: "0" })
+    setForm({ name: "", domain: "", category: "" })
     setError(null)
     setOpen(true)
   }
 
   const openEdit = (a: Advertiser) => {
     setEditing(a)
-    setForm({ name: a.name, domain: a.domain || "", category: a.category || "", balance: String(a.balance) })
+    setForm({ name: a.name, domain: a.domain || "", category: a.category || "" })
     setError(null)
     setOpen(true)
   }
@@ -37,7 +38,6 @@ export default function AdvertisersPage() {
         name: form.name,
         domain: form.domain || null,
         category: form.category || null,
-        balance: Number(form.balance) || 0,
       }
       if (editing) {
         await api(`/advertisers/${editing.id}`, { method: "PATCH", body })
@@ -122,9 +122,13 @@ export default function AdvertisersPage() {
           <Field label="Категория">
             <input value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} className={inputCls} placeholder="E-commerce" />
           </Field>
-          <Field label="Баланс, ₽">
-            <input type="number" step="0.01" min="0" value={form.balance} onChange={(e) => setForm({ ...form, balance: e.target.value })} className={inputCls} />
-          </Field>
+          <p className="text-xs text-muted">
+            Баланс нового рекламодателя равен 0. Пополнения и корректировки выполняются в разделе{" "}
+            <Link href="/billing" className="underline">
+              Биллинг
+            </Link>{" "}
+            и попадают в журнал операций.
+          </p>
           {error ? <p className="text-xs text-danger">{error}</p> : null}
           <div className="flex justify-end gap-2">
             <Button variant="secondary" onClick={() => setOpen(false)}>
