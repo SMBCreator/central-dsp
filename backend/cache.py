@@ -58,14 +58,18 @@ async def reserve_budget(scope: str, entity_id: str, amount: float, budget: floa
     return bool(ok)
 
 
-# One roundtrip for the whole bid-time gate: frequency cap check plus
-# atomic budget reservation on campaign AND line-item keys. Rolls back the
-# campaign reservation when the line-item budget is exhausted.
+# One roundtrip for the whole bid-time gate (audit M-05/M-06): frequency cap
+# check plus atomic reservation on campaign daily, line-item daily, advertiser
+# available balance and campaign total-budget remaining, and registration of
+# the bid in pending:bids. Byte-identical to bidder-go luaGateAndReserve
+# (tests/test_redis_contracts.py) — key layout documented there.
 _GATE_LUA = """
 local cost        = tonumber(ARGV[4])
 local camp_budget = tonumber(ARGV[5])
 local li_budget   = tonumber(ARGV[6])
 local ttl         = tonumber(ARGV[7])
+local has_adv     = ARGV[8] ~= ''
+local has_total   = ARGV[10] == '1'
 for i = 1, 3 do
   local cap = tonumber(ARGV[i])
   if cap > 0 then
@@ -73,23 +77,167 @@ for i = 1, 3 do
     if seen >= cap then return 0 end
   end
 end
-local camp = redis.call('INCRBYFLOAT', KEYS[4], cost)
-if redis.call('TTL', KEYS[4]) < 0 then redis.call('EXPIRE', KEYS[4], ttl) end
-if tonumber(camp) > camp_budget then
+local function rollback(stage)
+  if stage >= 4 then redis.call('INCRBYFLOAT', KEYS[7], cost) end
+  if stage >= 3 then redis.call('INCRBYFLOAT', KEYS[6], cost) end
+  if stage >= 2 and li_budget > 0 then redis.call('INCRBYFLOAT', KEYS[5], -cost) end
   redis.call('INCRBYFLOAT', KEYS[4], -cost)
   return 0
 end
+local camp = redis.call('INCRBYFLOAT', KEYS[4], cost)
+if redis.call('TTL', KEYS[4]) < 0 then redis.call('EXPIRE', KEYS[4], ttl) end
+if tonumber(camp) > camp_budget then return rollback(1) end
 if li_budget > 0 then
   local li = redis.call('INCRBYFLOAT', KEYS[5], cost)
   if redis.call('TTL', KEYS[5]) < 0 then redis.call('EXPIRE', KEYS[5], ttl) end
-  if tonumber(li) > li_budget then
-    redis.call('INCRBYFLOAT', KEYS[5], -cost)
-    redis.call('INCRBYFLOAT', KEYS[4], -cost)
-    return 0
+  if tonumber(li) > li_budget then return rollback(2) end
+end
+if has_adv then
+  if redis.call('EXISTS', KEYS[6]) == 0 then redis.call('SET', KEYS[6], ARGV[8]) end
+  local adv = redis.call('INCRBYFLOAT', KEYS[6], -cost)
+  if tonumber(adv) < 0 then return rollback(3) end
+  if has_total then
+    if redis.call('EXISTS', KEYS[7]) == 0 then redis.call('SET', KEYS[7], ARGV[9]) end
+    local tot = redis.call('INCRBYFLOAT', KEYS[7], -cost)
+    if tonumber(tot) < 0 then return rollback(4) end
+    redis.call('INCRBYFLOAT', KEYS[9], cost)
   end
+  redis.call('INCRBYFLOAT', KEYS[8], cost)
+end
+if ARGV[11] ~= '' then redis.call('ZADD', KEYS[10], ARGV[12], ARGV[11]) end
+return 1
+"""
+
+# Terminal states per bid (mirror of bidder-go luaReleaseBid / luaSettleWin).
+_RELEASE_BID_LUA = """
+local reserve = tonumber(ARGV[2])
+if redis.call('SET', KEYS[1], ARGV[1], 'NX', 'EX', tonumber(ARGV[4])) == false then
+  redis.call('ZREM', KEYS[2], ARGV[3])
+  return 0
+end
+redis.call('ZREM', KEYS[2], ARGV[3])
+local function refund(key, amount)
+  if redis.call('EXISTS', key) == 1 then
+    local v = tonumber(redis.call('INCRBYFLOAT', key, -amount))
+    if v < 0 then
+      local ttl = redis.call('TTL', key)
+      if ttl > 0 then redis.call('SET', key, '0', 'EX', ttl) else redis.call('SET', key, '0') end
+    end
+  end
+end
+refund(KEYS[3], reserve)
+if ARGV[6] == '1' then refund(KEYS[4], reserve) end
+if redis.call('EXISTS', KEYS[5]) == 1 then redis.call('INCRBYFLOAT', KEYS[5], reserve) end
+refund(KEYS[7], reserve)
+if ARGV[5] == '1' then
+  if redis.call('EXISTS', KEYS[6]) == 1 then redis.call('INCRBYFLOAT', KEYS[6], reserve) end
+  refund(KEYS[8], reserve)
 end
 return 1
 """
+
+_SETTLE_WIN_LUA = """
+local reserve   = tonumber(ARGV[1])
+local clearing  = tonumber(ARGV[2])
+local spend_ttl = tonumber(ARGV[7])
+local has_total = ARGV[5] == '1'
+local has_li    = ARGV[6] == '1'
+local prev = redis.call('GET', KEYS[1])
+if prev == 'win' then return 0 end
+redis.call('SET', KEYS[1], 'win', 'EX', tonumber(ARGV[4]))
+redis.call('ZREM', KEYS[2], ARGV[3])
+local function refund(key, amount)
+  if redis.call('EXISTS', key) == 1 then
+    local v = tonumber(redis.call('INCRBYFLOAT', key, -amount))
+    if v < 0 then
+      local ttl = redis.call('TTL', key)
+      if ttl > 0 then redis.call('SET', key, '0', 'EX', ttl) else redis.call('SET', key, '0') end
+    end
+  end
+end
+local function charge(key, amount)
+  redis.call('INCRBYFLOAT', key, amount)
+  if redis.call('TTL', key) < 0 then redis.call('EXPIRE', key, spend_ttl) end
+end
+if prev or ARGV[8] == '1' then
+  charge(KEYS[3], clearing)
+  if has_li then charge(KEYS[4], clearing) end
+  if redis.call('EXISTS', KEYS[5]) == 1 then redis.call('INCRBYFLOAT', KEYS[5], -clearing) end
+  if has_total and redis.call('EXISTS', KEYS[6]) == 1 then redis.call('INCRBYFLOAT', KEYS[6], -clearing) end
+  return 2
+end
+local diff = reserve - clearing
+if diff > 0 then
+  refund(KEYS[3], diff)
+  if has_li then refund(KEYS[4], diff) end
+  if redis.call('EXISTS', KEYS[5]) == 1 then redis.call('INCRBYFLOAT', KEYS[5], diff) end
+  if has_total and redis.call('EXISTS', KEYS[6]) == 1 then redis.call('INCRBYFLOAT', KEYS[6], diff) end
+end
+refund(KEYS[7], reserve)
+if has_total then refund(KEYS[8], reserve) end
+return 1
+"""
+
+PENDING_BIDS_KEY = "pending:bids"
+DEFAULT_RESERVE_TTL = 90          # seconds a reservation waits for win/loss (bidder-go DefaultReserveTTL)
+BID_STATE_TTL = 2 * 3600          # bidstate:{bid} lifetime (bidder-go BidStateTTL)
+
+
+def avail_adv_key(advertiser_id: str) -> str:
+    return f"avail:adv:{advertiser_id}"
+
+
+def avail_camp_key(campaign_id: str) -> str:
+    return f"avail:camp:{campaign_id}"
+
+
+def res_adv_key(advertiser_id: str) -> str:
+    return f"res:adv:{advertiser_id}"
+
+
+def res_camp_key(campaign_id: str) -> str:
+    return f"res:camp:{campaign_id}"
+
+
+def bid_state_key(bid_id: str) -> str:
+    return f"bidstate:{bid_id}"
+
+
+def _reservation_keys(bid_id: str, campaign_id: str, li_id: str, advertiser_id: str, day: str) -> list[str]:
+    adv = advertiser_id or "-"
+    return [
+        bid_state_key(bid_id), PENDING_BIDS_KEY,
+        spend_key("camp", campaign_id, day), spend_key("li", li_id or "", day),
+        avail_adv_key(adv), avail_camp_key(campaign_id), res_adv_key(adv), res_camp_key(campaign_id),
+    ]
+
+
+def reservation_from_bidmeta(row) -> dict | None:
+    """Extract the reservation description bidder-go/Python wrote into bidmeta.
+
+    Returns None for test bids and rows without a campaign. Legacy rows
+    (before audit M-06) have no `reserve`: fall back to price/1000 and no
+    advertiser constraint, which matches what the old gate reserved.
+    """
+    if row is None:
+        return None
+    get = row.get if hasattr(row, "get") else (lambda k, d=None: row[k] if k in row.keys() else d)
+    campaign_id = get("campaign_id")
+    if not campaign_id or int(get("is_test") or 0):
+        return None
+    reserve = get("reserve")
+    if reserve is None or float(reserve) <= 0:
+        reserve = float(get("price") or 0) / 1000.0
+    return {
+        "bid_id": str(get("bid_id") or ""),
+        "campaign_id": str(campaign_id),
+        "line_item_id": str(get("line_item_id") or ""),
+        "advertiser_id": str(get("advertiser_id") or ""),
+        "reserve": float(reserve),
+        "business_date": str(get("business_date") or business_date_str()),
+        "has_total": bool(int(get("has_total") or 0)),
+        "has_li": bool(int(get("has_li") or 0)),
+    }
 
 
 async def gate_and_reserve(
@@ -101,14 +249,23 @@ async def gate_and_reserve(
     device_id: str = "",
     freq_cap: int = 0,
     caps: list[tuple[int, int]] | None = None,
+    *,
+    bid_id: str = "",
+    advertiser_id: str = "",
+    adv_balance: float = 0.0,
+    total_remaining: float = 0.0,
+    has_total: bool = False,
+    reserve_ttl: int = DEFAULT_RESERVE_TTL,
 ) -> bool:
     """Bid-time gate in a single Redis roundtrip.
 
     Checks up to 3 frequency-cap windows (read-only) and atomically reserves
-    budget on both the campaign and line-item daily-spend keys. Either both
-    reservations succeed or neither does. `caps` is a list of
-    (impressions, period_hours); the legacy `freq_cap` (24h) is used when
-    `caps` is empty.
+    `cost` on the campaign and line-item daily-spend keys and — when
+    `advertiser_id` is given — on the advertiser's available balance and the
+    campaign's total-budget remaining. All-or-nothing. With `bid_id` the bid
+    is tracked in pending:bids until win/loss/expire (bidder-go sweeper).
+    `caps` is a list of (impressions, period_hours); the legacy `freq_cap`
+    (24h) is used when `caps` is empty.
     """
     if camp_budget <= 0:
         return False
@@ -126,15 +283,76 @@ async def gate_and_reserve(
     r = get_redis()
     ttl = _daily_key_ttl()
     day = business_date_str()
+    adv = advertiser_id or "-"
+    import time as _time
+
     ok = await r.eval(
-        _GATE_LUA, 5,
+        _GATE_LUA, 10,
         *keys,
         spend_key("camp", campaign_id, day),
         spend_key("li", li_id, day),
-        *cap_args, str(cost), str(camp_budget),
-        str(li_budget), str(ttl),
+        avail_adv_key(adv), avail_camp_key(campaign_id), res_adv_key(adv), res_camp_key(campaign_id),
+        PENDING_BIDS_KEY,
+        *cap_args, str(cost), str(camp_budget), str(li_budget), str(ttl),
+        str(adv_balance) if advertiser_id else "",
+        str(total_remaining), "1" if (has_total and advertiser_id) else "0",
+        bid_id or "", str(int(_time.time()) + int(reserve_ttl)),
     )
     return bool(ok)
+
+
+async def release_bid(res: dict, state: str = "loss") -> bool:
+    """Terminal state loss|expired + refund of the whole reservation, atomically.
+    Returns False when the bid already had a terminal state (nothing moved)."""
+    if not res or not res.get("campaign_id"):
+        return False
+    r = get_redis()
+    out = await r.eval(
+        _RELEASE_BID_LUA, 8,
+        *_reservation_keys(res["bid_id"], res["campaign_id"], res.get("line_item_id", ""),
+                           res.get("advertiser_id", ""), res.get("business_date") or business_date_str()),
+        state, str(res["reserve"]), res["bid_id"], str(BID_STATE_TTL),
+        "1" if res.get("has_total") else "0", "1" if res.get("has_li") else "0",
+    )
+    return int(out) == 1
+
+
+async def settle_win(res: dict, clearing_cost: float, *, assume_released: bool = False) -> int:
+    """Reservation -> clearing price. 0 duplicate, 1 converted, 2 re-charged
+    (bid had been released by loss/expire before the win arrived)."""
+    r = get_redis()
+    out = await r.eval(
+        _SETTLE_WIN_LUA, 8,
+        *_reservation_keys(res["bid_id"], res["campaign_id"], res.get("line_item_id", ""),
+                           res.get("advertiser_id", ""), res.get("business_date") or business_date_str()),
+        str(res["reserve"]), str(clearing_cost), res["bid_id"], str(BID_STATE_TTL),
+        "1" if res.get("has_total") else "0", "1" if res.get("has_li") else "0",
+        str(_daily_key_ttl()), "1" if assume_released else "0",
+    )
+    return int(out)
+
+
+async def adjust_available_balance(advertiser_id: str, delta: float) -> None:
+    """Deposit/adjust/refund: move avail:adv by delta if the key exists.
+    A missing key is seeded by the next bid from the feed snapshot, which
+    already contains the new DB balance."""
+    r = get_redis()
+    key = avail_adv_key(advertiser_id)
+    if await r.exists(key):
+        await r.incrbyfloat(key, delta)
+
+
+async def reset_available(advertiser_id: str | None = None, campaign_id: str | None = None) -> None:
+    """Drop avail:* so the next bid re-seeds from the feed (after DB-side
+    edits such as total_budget change or reconcile)."""
+    r = get_redis()
+    keys = []
+    if advertiser_id:
+        keys.append(avail_adv_key(advertiser_id))
+    if campaign_id:
+        keys.append(avail_camp_key(campaign_id))
+    if keys:
+        await r.delete(*keys)
 
 
 async def clear_stale_daily_spend(today: str | None = None) -> int:
@@ -246,7 +464,7 @@ async def mark_once(kind: str, token: str, ttl: int = 86400) -> bool:
 # перебор пароля — должен упереться в лимит. Два независимых окна:
 #   login:email — по логину (защищает конкретный аккаунт от перебора с многих IP)
 #   login:ip    — по IP клиента (защищает от перебора многих логинов с одного IP)
-# Успешный вход сбрасывает счётчик по логину. Fail-open при недоступном Redis.
+# Успешный вход сбрасывает счётчик по логину. Fail-open при недоступ��ом Redis.
 
 LOGIN_FAILS_PER_EMAIL = int(os.environ.get("LOGIN_FAILS_PER_EMAIL", "8"))
 LOGIN_FAILS_PER_IP = int(os.environ.get("LOGIN_FAILS_PER_IP", "30"))

@@ -56,6 +56,7 @@ async def campaigns_feed(authorization: str | None = Header(default=None)):
                c.daily_budget AS camp_budget, c.frequency_cap_impressions, c.frequency_cap_period_hours,
                c.frequency_caps, c.bid_shading,
                c.pacing, c.advertiser_id, adv.domain AS adv_domain,
+               adv.balance AS adv_balance, c.total_budget, c.spent_total,
                cr.id AS creative_id, cr.type, cr.width, cr.height, cr.asset_url, cr.click_url,
                cr.html_snippet, cr.native_title, cr.native_description, cr.native_cta,
                cr.native_icon_url, cr.video_url, cr.video_duration, cr.vast_xml, cr.name,

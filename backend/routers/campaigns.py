@@ -1,10 +1,12 @@
 from datetime import date
 
 import json
+import logging
 from fastapi import APIRouter, Depends, HTTPException
 
 from auth import current_user
 from business_day import normalize_spent_today
+from cache import reset_available
 from rbac import can_see_all, require_campaign_editor, require_campaign_write
 from db import get_pool
 from ord.service import campaign_targets_ru
@@ -148,6 +150,14 @@ async def update_campaign(campaign_id: str, body: CampaignPatch, user: dict = De
     )
     if not row:
         raise HTTPException(status_code=404, detail="Кампания не найдена")
+    if "total_budget" in updates:
+        # Audit M-05: остаток total живёт в Redis (avail:camp) и сеется из фида;
+        # после смены бюджета ключ сбрасываем, чтобы следующий бид пересеял его
+        # актуальным значением (иначе старый остаток держится до reconcile).
+        try:
+            await reset_available(campaign_id=campaign_id)
+        except Exception:  # noqa: BLE001 — Redis недоступен: reconcile догонит
+            logging.getLogger(__name__).exception("reset_available failed for %s", campaign_id)
     return _serialize(row)
 
 

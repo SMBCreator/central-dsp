@@ -21,7 +21,18 @@ import ssp_tokens
 from billing_core import bill_win
 from audiences import check_audiences, store_clid_bridge
 from shading import get_factor as shading_get_factor, should_shade
-from cache import bump_frequency, bump_frequency_multi, check_frequency_cap, check_qps, gate_and_reserve, get_redis, mark_once, reserve_budget
+from cache import (
+    bump_frequency,
+    bump_frequency_multi,
+    check_frequency_cap,
+    check_qps,
+    gate_and_reserve,
+    get_redis,
+    mark_once,
+    reservation_from_bidmeta,
+    reserve_budget,
+    settle_win,
+)
 from db import get_pool
 from money import CURRENCY, clamp_clearing_price, cpm_to_cost
 from ord.service import feed_gate_sql
@@ -763,6 +774,7 @@ async def process_bid_request(
                c.daily_budget AS camp_budget, c.frequency_cap_impressions, c.frequency_cap_period_hours, c.frequency_caps,
                c.pacing, c.advertiser_id, c.bid_shading, c.objective, c.clean_traffic_only,
                adv.domain AS adv_domain,
+               adv.balance AS adv_balance, c.total_budget, c.spent_total,
                cr.id AS creative_id, cr.type, cr.width, cr.height, cr.asset_url, cr.click_url,
                cr.html_snippet, cr.native_title, cr.native_description, cr.native_cta,
                cr.native_icon_url, cr.video_url, cr.video_duration, cr.vast_xml, cr.name,
@@ -969,18 +981,32 @@ async def process_bid_request(
 
         # Multi-window frequency caps (up to 3); legacy pair is the fallback
         caps_list = _parse_freq_caps(c)
-        # Single Redis roundtrip: frequency-cap check + atomic budget
-        # reservation on campaign AND line-item keys (all-or-nothing).
+        bid_id = str(uuid.uuid4())
+        # Single Redis roundtrip (audit M-05/M-06): frequency-cap check +
+        # atomic reservation on campaign daily, line-item daily, advertiser
+        # available balance and total-budget remaining; bid tracked in
+        # pending:bids until win/loss/expire.
+        total_budget = float(c.get("total_budget") or 0)
+        reserve_meta = {
+            "advertiser_id": str(c.get("advertiser_id") or ""),
+            "reserve": cost,
+            "has_total": 1 if total_budget > 0 else 0,
+            "has_li": 1 if float(c["li_budget"] or 0) > 0 else 0,
+            "business_date": business_date_str(),
+        }
         ok = await gate_and_reserve(
             str(c["campaign_id"]), str(c["li_id"]), cost,
             effective_budget, float(c["li_budget"] or 0),
             device_id=device_id or "",
             caps=caps_list,
+            bid_id=bid_id,
+            advertiser_id=reserve_meta["advertiser_id"],
+            adv_balance=float(c.get("adv_balance") or 0),
+            total_remaining=total_budget - float(c.get("spent_total") or 0),
+            has_total=total_budget > 0,
         )
         if not ok:
             continue
-
-        bid_id = str(uuid.uuid4())
         event_token = sign_event_token(bid_id)
         # Retargeting bridge: pixel reports clid == bid_id after the click
         if device_id:
@@ -1010,6 +1036,8 @@ async def process_bid_request(
                 "device_type": DEVICE_TYPES.get(device.get("devicetype", 0), "unknown"),
                 "geo_country": geo.get("country"), "ad_type": ad_type,
                 "domain": site.get("domain"), "os": req_os, "browser": req_browser,
+                "is_test": 0,
+                **reserve_meta,
             }),
             ex=3600,
         )
@@ -1131,6 +1159,25 @@ async def win_notice(bid: str, price: str | None = None):
         )
     if not result.billed:
         return {"ok": True, "duplicate": True}
+
+    # Audit M-06: перевести резерв Redis в фактическое списание. Резерв был
+    # bid price/1000, списан clearing — разница возвращается на дневные ключи,
+    # доступный баланс и остаток total. Если резерв уже вернулся по loss/expire
+    # (или бид пришёл из PG-fallback без bidmeta), clearing досписывается.
+    try:
+        res = reservation_from_bidmeta(row)
+        if res:
+            res["bid_id"] = bid
+            if not res.get("advertiser_id") and result.advertiser_id:
+                # PG-fallback row без advertiser_id: bill_win его знает.
+                res["advertiser_id"] = result.advertiser_id
+            from_pg = not isinstance(row, dict)
+            code = await settle_win(res, float(cost), assume_released=from_pg)
+            obs_metrics.inc({0: "rtb_win_settle_duplicate_total", 2: "rtb_win_settle_recharged_total"}.get(code, "rtb_win_settle_converted_total"))
+    except Exception:
+        # Деньги в БД уже списаны (источник истины); Redis подтянет reconcile.
+        logger.exception("settle_win failed for bid %s", bid)
+        obs_metrics.inc("rtb_settle_win_errors_total")
 
     obs_metrics.inc("rtb_wins_total")
     obs_metrics.inc("rtb_win_spend_rub_sum", float(cost))

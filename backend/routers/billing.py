@@ -12,15 +12,18 @@ Money model (audit M-01/M-02):
   retried request return the original ledger row instead of crediting twice.
   The uniqueness is enforced by ``uq_transactions_idempotency_key``.
 """
+import logging
 from decimal import Decimal, ROUND_HALF_UP
 
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from cache import adjust_available_balance
 from db import get_pool
 from rbac import require_billing_viewer, require_finance_write
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/billing", tags=["billing"])
 
 _KOPECK = Decimal("0.01")
@@ -125,6 +128,14 @@ async def _apply_money_operation(
             if existing is None:
                 raise
             return _replay(existing, advertiser_id, op_type, amount)
+
+    # Audit M-05: биддер режет ставки по avail:adv в Redis — пополнение должно
+    # открыть торги сразу, а не после reconcile. Ошибка Redis не откатывает
+    # проводку: БД — источник истины, ключ пересеется/сверится позже.
+    try:
+        await adjust_available_balance(str(adv["id"]), float(amount))
+    except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).exception("avail:adv adjust failed for %s", adv["id"])
 
     return _ledger_response(row, replayed=False)
 

@@ -38,6 +38,12 @@ _COUNTER_HELP = {
     "rtb_events_consumer_errors_total": "Consumer iterations that failed (Redis/PG error, retried with backoff).",
     "rtb_test_wins_total": "Win notices for OpenRTB test=1 bids (recorded, not billed).",
     "ord_export_failures_total": "Monthly ORD stats exports that ended with status=failed.",
+    # Reservation lifecycle (audit M-05/M-06): исход перевода резерва в clearing на win.
+    "rtb_win_settle_converted_total": "Wins whose bid-time reservation was converted to the clearing price.",
+    "rtb_win_settle_recharged_total": "Late wins re-charged after the reservation had been released (loss/expire).",
+    "rtb_win_settle_duplicate_total": "Win settle calls for bids already in state win (no money moved).",
+    "rtb_settle_win_errors_total": "settle_win Redis failures after a successful DB bill (reconcile fixes drift).",
+    "reserve_reconcile_drift_total": "avail:* keys whose value drifted from DB balance minus outstanding reserves.",
 }
 
 # Gauges (D8): значения, которые нельзя вывести из счётчиков. None = ещё не

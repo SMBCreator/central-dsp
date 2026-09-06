@@ -113,17 +113,58 @@ def test_bidmeta_is_test_flag_present():
 # --- Lua budget gate ----------------------------------------------------------
 
 
+GO_REDISX = (REPO / "bidder-go" / "internal" / "redisx" / "redisx.go").read_text(encoding="utf-8")
+
+
+def _go_lua(const_name: str) -> str:
+    m = re.search(rf"const {const_name} = `(.*?)`", GO_REDISX, re.DOTALL)
+    assert m, f"{const_name} not found in redisx.go"
+    return m.group(1)
+
+
+def _norm(s: str) -> str:
+    return "\n".join(ln.rstrip() for ln in s.strip().splitlines())
+
+
 def test_gate_lua_is_byte_identical_between_python_and_go():
-    """spend:camp/spend:li — общие ключи двух биддеров. Один и тот же Lua
-    гарантирует одинаковую семантику лимитов/TTL/отката; правка одной стороны
-    без другой = расхождение в деньгах."""
+    """spend:camp/spend:li/avail:*/res:* — общие ключи двух биддеров. Один и
+    тот же Lua гарантирует одинаковую семантику лимитов/TTL/отката; правка
+    одной стороны без другой = расхождение в деньгах."""
     from cache import _GATE_LUA
 
-    go_src = (REPO / "bidder-go" / "internal" / "redisx" / "redisx.go").read_text(encoding="utf-8")
-    m = re.search(r"const luaGateAndReserve = `(.*?)`", go_src, re.DOTALL)
-    assert m, "luaGateAndReserve not found in redisx.go"
-    norm = lambda s: "\n".join(ln.rstrip() for ln in s.strip().splitlines())
-    assert norm(_GATE_LUA) == norm(m.group(1))
+    assert _norm(_GATE_LUA) == _norm(_go_lua("luaGateAndReserve"))
+
+
+def test_release_and_settle_lua_are_byte_identical():
+    """Go делает loss/expire (luaReleaseBid), Python — win (luaSettleWin);
+    оба скрипта должны совпадать, иначе терминальные состояния бида и возвраты
+    резерва расходятся между биддером и бэкендом (audit M-06)."""
+    from cache import _RELEASE_BID_LUA, _SETTLE_WIN_LUA
+
+    assert _norm(_RELEASE_BID_LUA) == _norm(_go_lua("luaReleaseBid"))
+    assert _norm(_SETTLE_WIN_LUA) == _norm(_go_lua("luaSettleWin"))
+
+
+def test_reservation_constants_match_go():
+    """TTL/ключи резерва: sweeper (Go) и settle (Python) смотрят на одни значения."""
+    from cache import BID_STATE_TTL, DEFAULT_RESERVE_TTL, PENDING_BIDS_KEY
+
+    assert f'const PendingBidsKey = "{PENDING_BIDS_KEY}"' in GO_REDISX
+    m = re.search(r"const DefaultReserveTTL = (\d+) \* time\.Second", GO_REDISX)
+    assert m and int(m.group(1)) == DEFAULT_RESERVE_TTL
+    m = re.search(r"const BidStateTTL = (\d+) \* time\.Hour", GO_REDISX)
+    assert m and int(m.group(1)) * 3600 == BID_STATE_TTL
+
+
+def test_bidmeta_carries_reservation_fields():
+    """ParseReservation (Go sweeper/loss) и reservation_from_bidmeta (Python win)
+    читают одни поля; оба биддера обязаны их писать."""
+    needed = {"advertiser_id", "reserve", "business_date", "has_total", "has_li", "is_test"}
+    assert needed <= GO_BIDMETA, f"Go bidmeta lacks: {sorted(needed - GO_BIDMETA)}"
+    i = PY_RTB.index("reserve_meta = {")
+    block = PY_RTB[i : PY_RTB.index("}", i)]
+    py_meta = set(re.findall(r'"([a-z_]+)":', block))
+    assert needed - {"is_test"} <= py_meta, f"Python reserve_meta lacks: {sorted(needed - {'is_test'} - py_meta)}"
 
 
 def test_python_bidmeta_writer_matches_go_bidmeta():

@@ -104,8 +104,8 @@ func TestLoss_ConcurrentRepeatsReleaseOnce(t *testing.T) {
 	if n := len(streamEvents(t, mr)); n != 1 {
 		t.Fatalf("rtb:events len = %d, want exactly 1 loss event", n)
 	}
-	if !mr.Exists("lossdone:bid-1") {
-		t.Fatal("idempotency marker lossdone:{bid} must be set")
+	if st, _ := mr.Get(redisx.BidStateKey("bid-1")); st != "loss" {
+		t.Fatalf("terminal state bidstate:{bid} must be 'loss', got %q", st)
 	}
 }
 

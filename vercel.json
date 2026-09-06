@@ -9,6 +9,10 @@
       "schedule": "30 21 * * *"
     },
     {
+      "path": "/api/cron/reconcile-reserves",
+      "schedule": "*/5 * * * *"
+    },
+    {
       "path": "/api/cron/optimize",
       "schedule": "0 7 * * *"
     },

@@ -346,15 +346,24 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 		// кампании И line item в одном Lua-роундтрипе — порт gate_and_reserve.
 		// Инкремент freq-счётчиков делает backend на /imp через bidfreq:{bid_id}.
 		capsList := parseCaps(c)
+		bidID := uuid.NewString()
 		// test=1 (OpenRTB 3.2.1): SSP проверяет интеграцию — отвечаем реальным
 		// бидом, но бюджет не резервируем и деньги не списываем (is_test в bidmeta).
+		var reservation redisx.BidReservation
 		if h.redis != nil && req.Test != 1 {
-			cost := sc.price / 1000.0 // CPM -> цена одного показа
 			liBudget := 0.0
 			if c.LiBudget != nil {
 				liBudget = *c.LiBudget
 			}
-			okRes, err := h.redis.GateAndReserve(rctx, c.CampaignID, c.LiID, cost, c.CampBudget, liBudget, deviceID, capsList)
+			// Audit M-05: одним Lua — дневные бюджеты кампании и группы, доступный
+			// баланс рекламодателя и остаток общего бюджета; бид попадает в
+			// pending:bids до win/loss/expire (M-06).
+			res, okRes, err := h.redis.Reserve(rctx, time.Now(), redisx.ReserveInput{
+				BidID: bidID, CampaignID: c.CampaignID, LiID: c.LiID, AdvertiserID: c.AdvertiserID,
+				Cost: sc.price / 1000.0, CampBudget: c.CampBudget, LiBudget: liBudget,
+				AdvBalance: c.AdvBalance, TotalRemaining: c.TotalBudget - c.SpentTotal, HasTotal: c.TotalBudget > 0,
+				DeviceID: deviceID, Caps: capsList,
+			})
 			if err != nil {
 				if h.metrics != nil {
 					h.metrics.IncGateError()
@@ -368,15 +377,15 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 				}
 				continue
 			}
+			reservation = res
 		}
 
-		bidID := uuid.NewString()
 		token, err := SignEventToken(bidID, DefaultTokenTTL)
 		if err != nil {
 			slog.Error("sign token", "err", err)
 			return nil
 		}
-		h.persistBidMeta(rctx, bidID, imp, c, partner, sc.price, view, adType, deviceID, capsList, req.Test == 1)
+		h.persistBidMeta(rctx, bidID, imp, c, partner, sc.price, view, adType, deviceID, capsList, req.Test == 1, reservation)
 
 		adm := BuildAdm(c, h.base, token)
 		nurl := fmt.Sprintf("%s/api/rtb/win?bid=%s&price=${AUCTION_PRICE}", h.base, token)
@@ -482,7 +491,7 @@ func (h *Handler) persistBidMeta(ctx interface {
 	Err() error
 	Deadline() (time.Time, bool)
 	Value(any) any
-}, bidID string, imp *Imp, c *feed.Candidate, partner *feed.Partner, price float64, view *targeting.RequestView, adType, deviceID string, caps []redisx.CapWindow, isTest bool) {
+}, bidID string, imp *Imp, c *feed.Candidate, partner *feed.Partner, price float64, view *targeting.RequestView, adType, deviceID string, caps []redisx.CapWindow, isTest bool, res redisx.BidReservation) {
 	if h.redis == nil {
 		return
 	}
@@ -496,19 +505,35 @@ func (h *Handler) persistBidMeta(ctx interface {
 	if isTest {
 		testFlag = 1
 	}
+	businessDate := res.BusinessDate
+	if businessDate == "" {
+		businessDate = redisx.BusinessDate(time.Now())
+	}
+	hasTotal, hasLi := 0, 0
+	if res.HasTotal {
+		hasTotal = 1
+	}
+	if res.HasLi {
+		hasLi = 1
+	}
 	// bidmeta читает backend в win/imp/click (rtb.py:_find_bid) — формат Python,
-	// плюс is_test, чтобы win по тестовому запросу не списывал деньги.
+	// плюс is_test, чтобы win по тестовому запросу не списывал деньги, и
+	// описание резерва (audit M-04/M-06): business_date, advertiser_id, reserve,
+	// has_total, has_li — по ним loss/expire/win двигают ровно те ключи, что
+	// были зарезервированы.
 	meta, _ := json.Marshal(map[string]any{
 		"bid_id": bidID, "imp_id": imp.ID,
 		"campaign_id": c.CampaignID, "line_item_id": c.LiID,
 		"creative_id": c.CreativeID, "supply_partner_id": partner.ID,
-		"price":       roundPrice(price),
-		"device_type": dt, "geo_country": view.Country, "ad_type": adType,
+		"advertiser_id": c.AdvertiserID,
+		"price":         roundPrice(price),
+		"reserve":       res.Reserve,
+		"has_total":     hasTotal,
+		"has_li":        hasLi,
+		"device_type":   dt, "geo_country": view.Country, "ad_type": adType,
 		"domain": view.Domain, "os": view.OS, "browser": browser,
-		"is_test": testFlag,
-		// business_date: день (Europe/Moscow), на который резервирован бюджет —
-		// loss после полуночи возвращает резерв в ключ этого дня (audit M-04).
-		"business_date": redisx.BusinessDate(time.Now()),
+		"is_test":       testFlag,
+		"business_date": businessDate,
 	})
 	rdb.Set(ctx, "bidmeta:"+bidID, meta, time.Hour)
 
@@ -633,13 +658,6 @@ func (h *Handler) Loss(w http.ResponseWriter, r *http.Request) {
 	mtw := macroOrEmpty(r.URL.Query().Get("mtw"))
 	if h.redis != nil {
 		ctx := r.Context()
-		// Идемпотентность: SSP может повторить lurl; бюджет возвращаем один раз.
-		// Ключ живёт столько же, сколько bidmeta.
-		first, err := h.redis.Raw().SetNX(ctx, "lossdone:"+bidID, "1", time.Hour).Result()
-		if err == nil && !first {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
 		raw, err := h.redis.Raw().Get(ctx, "bidmeta:"+bidID).Result()
 		if err == nil {
 			var meta struct {
@@ -655,11 +673,35 @@ func (h *Handler) Loss(w http.ResponseWriter, r *http.Request) {
 				OS              string  `json:"os"`
 				Browser         string  `json:"browser"`
 				IsTest          int     `json:"is_test"`
-				BusinessDate    string  `json:"business_date"`
 			}
 			if json.Unmarshal([]byte(raw), &meta) == nil && meta.CampaignID != "" {
+				// Audit M-06: терминальное состояние loss и возврат резерва — один
+				// атомарный Lua. Повторный lurl, loss после win или после expire
+				// ничего не двигают (released=false) и событие не дублируют.
+				released := true
 				if meta.IsTest == 0 {
-					_ = h.redis.ReleaseGate(ctx, meta.CampaignID, meta.LineItemID, meta.Price/1000.0, meta.BusinessDate)
+					res, ok := redisx.ParseReservation(raw)
+					if ok {
+						res.BidID = bidID
+						var rerr error
+						released, rerr = h.redis.ReleaseBid(ctx, res, "loss")
+						if rerr != nil {
+							// Ничего не помечено: SSP может повторить lurl, sweeper
+							// дожмёт expire — резерв не потеряется.
+							slog.Warn("release_bid", "err", rerr, "bid", bidID)
+							if h.metrics != nil {
+								h.metrics.IncGateError()
+							}
+							w.WriteHeader(http.StatusNoContent)
+							return
+						}
+					}
+				} else if first, _ := h.redis.Raw().SetNX(ctx, redisx.BidStateKey(bidID), "loss", redisx.BidStateTTL).Result(); !first {
+					released = false
+				}
+				if !released {
+					w.WriteHeader(http.StatusNoContent)
+					return
 				}
 				if h.metrics != nil {
 					h.metrics.IncLossRelease()

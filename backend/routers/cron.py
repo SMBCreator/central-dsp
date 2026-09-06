@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 import obs_metrics
 from business_day import business_date
-from cache import clear_stale_daily_spend
+from cache import avail_adv_key, avail_camp_key, clear_stale_daily_spend, get_redis, res_adv_key, res_camp_key
 from db import get_pool
 from optimizer import run_optimizer
 from rules_engine import evaluate_rules_for_user
@@ -118,6 +118,55 @@ async def reset_daily_budgets(request: Request):
         "line_items": line_items,
         "redis_keys_cleared": redis_keys,
     }
+
+
+@router.get("/reconcile-reserves")
+@_cron_job("reconcile_reserves")
+async def reconcile_reserves(request: Request):
+    """Сверка Redis-остатков с БД (audit M-05/M-06). Раз в несколько минут.
+
+    Инвариант: avail:adv:{id} == advertisers.balance - res:adv:{id};
+    avail:camp:{id} == total_budget - spent_total - res:camp:{id}.
+    Дрейф возможен после потери событий (orphan pending без bidmeta, сбой
+    Redis между bill_win и settle_win). Ключи, которых нет, не создаём —
+    их посеет следующий бид из снимка фида. Разница считается дрейфом,
+    если превышает копейку.
+    """
+    _check_secret(request)
+    pool = await get_pool()
+    r = get_redis()
+    fixed_adv = fixed_camp = 0
+    advs = await pool.fetch(
+        "SELECT DISTINCT a.id, a.balance FROM advertisers a JOIN campaigns c ON c.advertiser_id = a.id "
+        "WHERE c.status = 'active'"
+    )
+    for a in advs:
+        key = avail_adv_key(str(a["id"]))
+        cur = await r.get(key)
+        if cur is None:
+            continue
+        outstanding = float(await r.get(res_adv_key(str(a["id"]))) or 0)
+        expected = float(a["balance"]) - max(outstanding, 0.0)
+        if abs(float(cur) - expected) > 0.01:
+            await r.set(key, repr(expected))
+            fixed_adv += 1
+    camps = await pool.fetch(
+        "SELECT id, total_budget, spent_total FROM campaigns WHERE status = 'active' AND total_budget > 0"
+    )
+    for c in camps:
+        key = avail_camp_key(str(c["id"]))
+        cur = await r.get(key)
+        if cur is None:
+            continue
+        outstanding = float(await r.get(res_camp_key(str(c["id"]))) or 0)
+        expected = float(c["total_budget"]) - float(c["spent_total"]) - max(outstanding, 0.0)
+        if abs(float(cur) - expected) > 0.01:
+            await r.set(key, repr(expected))
+            fixed_camp += 1
+    if fixed_adv or fixed_camp:
+        obs_metrics.inc("reserve_reconcile_drift_total", fixed_adv + fixed_camp)
+    return {"advertisers_checked": len(advs), "advertisers_fixed": fixed_adv,
+            "campaigns_checked": len(camps), "campaigns_fixed": fixed_camp}
 
 
 @router.get("/optimize")

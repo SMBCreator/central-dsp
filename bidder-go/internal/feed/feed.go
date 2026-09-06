@@ -34,7 +34,13 @@ type Candidate struct {
 	CampaignID string          `json:"campaign_id"`
 	OwnerID    string          `json:"owner_id"`
 
-	CampBudget   float64         `json:"camp_budget"`
+	CampBudget float64 `json:"camp_budget"`
+	// Финансовые снимки для гейта (audit M-05): баланс рекламодателя и остаток
+	// общего бюджета. Сеют avail:* в Redis только при отсутствии ключа — сам
+	// лимит держат Lua-резервы, а не эти числа.
+	AdvBalance   float64         `json:"adv_balance"`
+	TotalBudget  float64         `json:"total_budget"`
+	SpentTotal   float64         `json:"spent_total"`
 	FreqCapImps  *int            `json:"frequency_cap_impressions"`
 	FreqCapHours *int            `json:"frequency_cap_period_hours"`
 	FreqCaps     json.RawMessage `json:"frequency_caps"`

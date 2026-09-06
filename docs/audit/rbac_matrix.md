@@ -52,6 +52,7 @@
 | GET | `/cron/ml-train` | none | Bearer CRON_SECRET |
 | GET | `/cron/optimize` | none | Bearer CRON_SECRET |
 | GET | `/cron/ord-export` | none | Bearer CRON_SECRET |
+| GET | `/cron/reconcile-reserves` | none | Bearer CRON_SECRET |
 | GET | `/cron/reset-daily` | none | Bearer CRON_SECRET |
 | GET | `/cron/retention` | none | Bearer CRON_SECRET |
 | GET | `/cron/rules` | none | Bearer CRON_SECRET |

@@ -138,6 +138,18 @@ func main() {
 
 	go store.Run(ctx)
 
+	// Audit M-06: sweeper резервов. Бид без win/loss дольше DefaultReserveTTL
+	// переводится в expired и возвращает деньги на все ключи. Терминальное
+	// состояние ставит Lua (SET NX), поэтому несколько инстансов безопасны.
+	if rc != nil {
+		reg.RegisterGauge("bidder_reserve_pending", func() float64 {
+			gctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+			defer cancel()
+			return float64(rc.PendingCount(gctx))
+		})
+		go runReserveSweeper(ctx, rc, reg)
+	}
+
 	go func() {
 		slog.Info("bidder-go listening", "addr", addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -150,6 +162,31 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
+}
+
+// runReserveSweeper — каждые 5 с снимает до 2000 истёкших резервов из pending:bids.
+func runReserveSweeper(ctx context.Context, rc *redisx.Client, reg *metrics.Registry) {
+	t := time.NewTicker(5 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			sctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			expired, orphans, err := rc.SweepExpired(sctx, time.Now(), 2000)
+			cancel()
+			if err != nil {
+				slog.Warn("reserve sweeper", "err", err)
+				continue
+			}
+			if expired > 0 || orphans > 0 {
+				reg.IncReserveExpired(expired)
+				reg.IncReserveOrphans(orphans)
+				slog.Info("reserve sweeper", "expired", expired, "orphans", orphans)
+			}
+		}
+	}
 }
 
 // recoverMiddleware не даёт одному кривому bid-запросу (nil в неожиданном
