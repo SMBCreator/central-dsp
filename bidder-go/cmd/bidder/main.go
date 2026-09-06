@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"strings"
 	"syscall"
 	"time"
 
@@ -20,6 +21,15 @@ import (
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/redisx"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/rtb"
 )
+
+// isProduction — как startup_checks.is_production в backend.
+func isProduction() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV"))) {
+	case "production", "prod":
+		return true
+	}
+	return false
+}
 
 func env(key, def string) string {
 	if v := os.Getenv(key); v != "" {
@@ -54,6 +64,25 @@ func main() {
 		pingCtx, cancelPing := context.WithTimeout(context.Background(), 2*time.Second)
 		if err := rc.Ping(pingCtx); err != nil {
 			slog.Warn("redis unreachable at startup (degraded mode)", "err", err)
+		} else {
+			// Audit M-03: Redis хранит деньги торгов. Любая eviction-политика в
+			// production = возможный перерасход бюджета => не стартуем.
+			rep, err := rc.CheckDurability(pingCtx)
+			switch {
+			case err != nil:
+				slog.Warn("redis durability check skipped", "err", err)
+			case rep.Fatal != "":
+				if isProduction() {
+					slog.Error("unsafe redis for production", "problem", rep.Fatal)
+					os.Exit(1)
+				}
+				slog.Warn("unsafe redis (dev, not fatal)", "problem", rep.Fatal)
+			default:
+				if rep.Warning != "" {
+					slog.Warn("redis persistence", "warning", rep.Warning)
+				}
+				slog.Info("redis durability ok", "policy", rep.MaxmemoryPolicy, "appendonly", rep.AppendOnly)
+			}
 		}
 		cancelPing()
 	}

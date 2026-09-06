@@ -56,6 +56,18 @@ async def _lifespan(_app: FastAPI):
     # APP_ENV=production + пустой/плейсхолдерный секрет => RuntimeError,
     # процесс не поднимается (чеклист 6.1 / 6.11).
     startup_checks.assert_production_config()
+    # Redis хранит деньги торгов: eviction-политика в production фатальна (M-03).
+    try:
+        from cache import get_redis
+
+        await asyncio.wait_for(
+            startup_checks.check_redis_durability(get_redis(), production=startup_checks.is_production()),
+            timeout=5,
+        )
+    except RuntimeError:
+        raise
+    except Exception as e:  # noqa: BLE001 — недоступный Redis не должен блокировать старт API
+        logging.getLogger("startup").warning("redis durability check skipped: %s", e)
     try:
         await asyncio.wait_for(seed_gauges_from_db(), timeout=3)
     except Exception as e:  # noqa: BLE001 — БД может быть недоступна; метрика просто absent

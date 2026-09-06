@@ -47,8 +47,11 @@ Python backend `/metrics` (серии `rtb_*`). Правила: `ops/prometheus/
   потерял состояние (flush/OOM-эвикция) — счётчики начинают с нуля, а не
   пересобираются из БД: до полуночи возможен перерасход дневного бюджета в
   размере уже потраченного до инцидента. Сверить спенд за окно инцидента с
-  `bid_events`; при необходимости выставить ключи руками
-  (`SET spend:camp:<id>:<YYYY-MM-DD МСК> <потрачено_сегодня> EX <секунд_до_полуночи_МСК+3600>`).
+  `bid_events`; штатное восстановление — из журнала списаний:
+  `docker compose exec backend python scripts/redis_rebuild_spend.py` (dry-run),
+  затем `--apply` (ключ только повышается до значения ledger; `--force` — перезапись).
+  Compose-Redis: `noeviction` + AOF + volume `redis_data`; в production backend и
+  bidder-go не стартуют с eviction-политикой.
 
 ## no-traffic — BidderNoTraffic
 

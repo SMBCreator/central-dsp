@@ -53,6 +53,42 @@ func (c *Client) Ping(ctx context.Context) error { return c.rdb.Ping(ctx).Err() 
 // Close closes the pool.
 func (c *Client) Close() error { return c.rdb.Close() }
 
+// SafeMaxmemoryPolicy — единственная политика, при которой Redis не может
+// «забыть» ключ spend:*/bidmeta (audit M-03). Зеркало startup_checks.py.
+const SafeMaxmemoryPolicy = "noeviction"
+
+// DurabilityReport — результат CheckDurability.
+type DurabilityReport struct {
+	MaxmemoryPolicy string
+	AppendOnly      bool
+	// Fatal — политика допускает eviction: в production торговать нельзя.
+	Fatal string
+	// Warning — нет AOF: рестарт Redis потеряет расход дня.
+	Warning string
+}
+
+// CheckDurability опрашивает CONFIG GET maxmemory-policy / appendonly.
+// Ошибка запроса (managed Redis без прав на CONFIG) возвращается как err —
+// вызывающая сторона решает, считать ли это фатальным.
+func (c *Client) CheckDurability(ctx context.Context) (DurabilityReport, error) {
+	var rep DurabilityReport
+	pol, err := c.rdb.ConfigGet(ctx, "maxmemory-policy").Result()
+	if err != nil {
+		return rep, fmt.Errorf("redisx: config get maxmemory-policy: %w", err)
+	}
+	rep.MaxmemoryPolicy = pol["maxmemory-policy"]
+	if rep.MaxmemoryPolicy != "" && rep.MaxmemoryPolicy != SafeMaxmemoryPolicy {
+		rep.Fatal = "Redis maxmemory-policy=" + rep.MaxmemoryPolicy + ": eviction may drop spend:*/bidmeta keys and reopen exhausted budgets; require " + SafeMaxmemoryPolicy
+	}
+	if ao, err := c.rdb.ConfigGet(ctx, "appendonly").Result(); err == nil {
+		rep.AppendOnly = ao["appendonly"] == "yes"
+		if !rep.AppendOnly {
+			rep.Warning = "Redis appendonly=no: a restart loses today's spend counters"
+		}
+	}
+	return rep, nil
+}
+
 // ---------------------------------------------------------------------------
 // Event stream (bid events -> backend consumer)
 //

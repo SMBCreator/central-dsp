@@ -98,6 +98,65 @@ def collect_warnings(env: Mapping[str, str] | None = None) -> list[str]:
     return warnings
 
 
+# --- Redis durability (audit M-03) -------------------------------------------
+# Redis хранит деньги торгов (spend:*, резервы, dedup, bidmeta, rtb:events).
+# Любая eviction-политика означает «Redis может забыть расход» => перерасход
+# бюджета. В production допустим только noeviction; AOF/RDB — предупреждение.
+
+SAFE_MAXMEMORY_POLICY = "noeviction"
+
+
+def redis_durability_problems(info: Mapping[str, str], config: Mapping[str, str]) -> tuple[list[str], list[str]]:
+    """(problems, warnings) по результатам INFO persistence и CONFIG GET.
+
+    `info` — словарь INFO (ключи aof_enabled, rdb_last_save_time…),
+    `config` — {'maxmemory-policy': ..., 'maxmemory': ..., 'appendonly': ...}.
+    """
+    problems: list[str] = []
+    warnings: list[str] = []
+    policy = str(config.get("maxmemory-policy", "")).strip().lower()
+    if policy and policy != SAFE_MAXMEMORY_POLICY:
+        problems.append(
+            f"Redis maxmemory-policy={policy}: eviction может удалить ключи spend:*/bidmeta и открыть перерасход "
+            f"бюджета; требуется {SAFE_MAXMEMORY_POLICY}"
+        )
+    aof = str(config.get("appendonly", info.get("aof_enabled", ""))).strip().lower()
+    if aof in ("no", "0", "false", ""):
+        rdb_save = str(info.get("rdb_last_save_time", "")).strip()
+        if not rdb_save or rdb_save == "0":
+            warnings.append("Redis без AOF и без RDB-снапшотов: рестарт обнулит дневные расходы (audit M-03)")
+        else:
+            warnings.append("Redis без AOF (только RDB): при рестарте возможна потеря расхода до последнего снапшота")
+    return problems, warnings
+
+
+async def check_redis_durability(redis_client, *, production: bool) -> None:
+    """Опросить живой Redis. В production при eviction-политике — RuntimeError.
+
+    Ошибка самого опроса (Redis недоступен, CONFIG запрещён у managed-провайдера)
+    не фатальна: логируется, чтобы не блокировать старт из-за прав на CONFIG.
+    """
+    try:
+        cfg: dict[str, str] = {}
+        for name in ("maxmemory-policy", "maxmemory", "appendonly"):
+            got = await redis_client.config_get(name)
+            cfg.update({str(k): str(v) for k, v in dict(got).items()})
+        info = await redis_client.info("persistence")
+    except Exception as exc:  # noqa: BLE001 — managed Redis может запрещать CONFIG
+        log.warning("redis durability check skipped: %s", exc)
+        return
+    problems, warnings = redis_durability_problems({str(k): str(v) for k, v in info.items()}, cfg)
+    for w in warnings:
+        log.warning("redis: %s", w)
+    if problems:
+        if production:
+            raise RuntimeError("Небезопасный Redis для APP_ENV=production:\n  - " + "\n  - ".join(problems))
+        for p in problems:
+            log.warning("redis (dev, не фатально): %s", p)
+    else:
+        log.info("redis durability ok: policy=%s appendonly=%s", cfg.get("maxmemory-policy"), cfg.get("appendonly"))
+
+
 def assert_production_config(env: Mapping[str, str] | None = None) -> None:
     """Вызывать на старте процесса. В production при нарушениях — RuntimeError."""
     env = os.environ if env is None else env

@@ -24,12 +24,31 @@ services:
       - centraldsp
 
   # ─────────────────────────────────────────
-  # REDIS (broker + cache + RTB counters)
+  # REDIS — критическое состояние торгов (audit M-03): дневные расходы
+  # spend:*, резервы, dedup, bidmeta, rtb:events stream, freq caps.
+  # Поэтому:
+  #   * noeviction — потеря ключа spend:* = «новый нулевой расход» и
+  #     перерасход бюджета; при нехватке памяти Redis должен отвечать ошибкой
+  #     (биддер уйдёт в no-bid), а не тихо забывать деньги;
+  #   * AOF everysec + именованный volume — рестарт/пересборка контейнера не
+  #     обнуляет счётчики; RPO ≤ 1 с;
+  #   * один и тот же REDIS_URL у backend и bidder-go (см. ниже) — иначе
+  #     callbacks/consumer читают другую базу.
+  # Backend и Go проверяют maxmemory-policy на старте и в production
+  # отказываются работать с любой eviction-политикой.
   # ─────────────────────────────────────────
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
+    command: >
+      redis-server
+      --maxmemory ${REDIS_MAXMEMORY:-1gb}
+      --maxmemory-policy noeviction
+      --appendonly yes
+      --appendfsync everysec
+      --save ""
+    volumes:
+      - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -124,7 +143,10 @@ services:
     environment:
       BIDDER_ADDR: ":8090"
       BACKEND_INTERNAL_URL: http://backend:8000
-      REDIS_URL: ${REDIS_URL_BIDDER:-redis://redis:6379/0}
+      # Тот же Redis, что у backend: контрактные ключи (bidmeta, spend:*,
+      # rtb:events) должны жить в одной базе. Отдельный REDIS_URL_BIDDER
+      # намеренно убран (audit M-03).
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       RTB_API_TOKEN: ${RTB_API_TOKEN:?set RTB_API_TOKEN in .env}
       EVENT_TOKEN_SECRET: ${EVENT_TOKEN_SECRET:?set EVENT_TOKEN_SECRET in .env (openssl rand -hex 32)}
       EVENT_BASE_URL: ${PUBLIC_BASE_URL:-http://backend:8000}
@@ -214,6 +236,7 @@ services:
 
 volumes:
   postgres_data:
+  redis_data:            # AOF: дневные расходы/резервы/stream — бэкапить вместе с БД
   uploads_data:          # файлы креативов (баннеры/видео); бэкапить вместе с БД
   geoip_data:            # Mount your GeoLite2-City.mmdb here in production
                          # docker run --rm -v centraldsp_geoip_data:/data alpine

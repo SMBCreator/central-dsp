@@ -68,8 +68,11 @@ cat <<EOF
 
 Готово. База: $TARGET
 Переключение приложения:
-  1) docker compose stop backend bidder
+  1) docker compose stop backend bidder-go
   2) DATABASE_URL -> .../$TARGET  (или ALTER DATABASE ... RENAME)
-  3) docker compose up -d backend bidder
-  4) redis-cli FLUSHDB  -- счётчики бюджетов пересчитаются из БД
+  3) docker compose up -d backend bidder-go
+  4) НЕ делать FLUSHDB: Redis-счётчики spend:* сами не пересчитываются.
+     Если Redis потерян/не совпадает с БД — восстановить расход дня из журнала:
+       docker compose exec backend python scripts/redis_rebuild_spend.py          # dry-run
+       docker compose exec backend python scripts/redis_rebuild_spend.py --apply
 EOF
