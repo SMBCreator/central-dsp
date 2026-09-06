@@ -104,6 +104,15 @@ def collect_warnings(env: Mapping[str, str] | None = None) -> list[str]:
             "ORD_REQUIRED=0 — production без ОРД: регистрация креативов недоступна, "
             "фид отдаёт только группы с гео без РФ (L-01)"
         )
+    if not env.get("PUBLIC_ORIGINS", "").strip():
+        warnings.append(
+            "PUBLIC_ORIGINS не задан — Origin-гейт (S-01) сверяет источник только с Host/X-Forwarded-Host; "
+            "задайте публичные origin'ы UI через запятую"
+        )
+    if env.get("AUTH_COOKIE_SAMESITE", "").strip().lower() == "none":
+        warnings.append(
+            "AUTH_COOKIE_SAMESITE=none — сессионная cookie уходит с cross-site запросами (только для iframe-превью)"
+        )
     return warnings
 
 

@@ -44,7 +44,7 @@ async function proxyOrMock(req: Request, params: Promise<{ path: string[] }>) {
     const timer = setTimeout(() => controller.abort(), timeout)
     const backendRes = await fetch(`${BACKEND}${path}${url.search}`, {
       method: req.method,
-      headers: filterHeaders(req.headers),
+      headers: filterHeaders(req.headers, url),
       body: rawBody,
       signal: controller.signal,
       // @ts-expect-error duplex обязателен в Node для стриминга тела
@@ -97,13 +97,17 @@ async function proxyOrMock(req: Request, params: Promise<{ path: string[] }>) {
   return Response.json([], { headers: { "x-dsp-mock": "1" } })
 }
 
-function filterHeaders(headers: Headers): Headers {
+function filterHeaders(headers: Headers, url: URL): Headers {
   const out = new Headers()
   for (const [k, v] of headers.entries()) {
     // host/connection и пр. не пробрасываем
     if (["host", "connection", "content-length"].includes(k.toLowerCase())) continue
     out.set(k, v)
   }
+  // Origin/Referer уходят как есть; Origin-гейт бэкенда (S-01) сверяет их с
+  // origin запроса, который за прокси виден только через X-Forwarded-*.
+  if (!out.has("x-forwarded-host")) out.set("x-forwarded-host", url.host)
+  if (!out.has("x-forwarded-proto")) out.set("x-forwarded-proto", url.protocol.replace(":", ""))
   return out
 }
 

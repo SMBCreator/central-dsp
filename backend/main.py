@@ -38,6 +38,7 @@ from routers.stats import router as stats_router
 from routers.supply_partners import router as supply_partners_router
 
 from audit import AuditMiddleware
+from csrf import OriginGuardMiddleware
 from contextlib import asynccontextmanager
 
 
@@ -97,6 +98,9 @@ app = FastAPI(
 )
 
 app.add_middleware(AuditMiddleware)
+# CSRF (audit S-01): мутирующий запрос с чужим Origin -> 403 до роутера и до
+# audit-лога. Снаружи AuditMiddleware, чтобы отказ не писался как действие.
+app.add_middleware(OriginGuardMiddleware)
 
 app.include_router(auth_router)
 app.include_router(advertisers_router)
@@ -206,7 +210,7 @@ async def health():
 
 @app.get("/metrics", include_in_schema=False)
 async def metrics_endpoint():
-    """Prometheus text exposition (GAP-011). Процессные счётчики, без PII/ID в лейблах."""
+    """Prometheus text exposition (GAP-011). Процессны�� счётчики, без PII/ID в лейблах."""
     from fastapi.responses import PlainTextResponse
 
     import obs_metrics

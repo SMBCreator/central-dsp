@@ -44,6 +44,7 @@ _COUNTER_HELP = {
     "rtb_win_settle_duplicate_total": "Win settle calls for bids already in state win (no money moved).",
     "rtb_settle_win_errors_total": "settle_win Redis failures after a successful DB bill (reconcile fixes drift).",
     "reserve_reconcile_drift_total": "avail:* keys whose value drifted from DB balance minus outstanding reserves.",
+    "csrf_rejected_total": "State-changing requests rejected by the Origin guard (S-01).",
 }
 
 # Gauges (D8): значения, которые нельзя вывести из счётчиков. None = ещё не
@@ -169,7 +170,7 @@ def observe_bid_latency(sec: float) -> None:
 
 
 def snapshot() -> dict:
-    """Копия текущего состояния (для тестов и диагностики)."""
+    """Копия текущего состояния (для тестов и д��агностики)."""
     with _lock:
         cum = 0
         buckets: list[tuple[float, int]] = []

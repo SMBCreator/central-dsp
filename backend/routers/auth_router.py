@@ -11,6 +11,7 @@ from auth import (
     verify_password,
 )
 from cache import clear_login_failures, login_blocked, record_login_failure
+from csrf import cookie_samesite
 from db import get_pool
 from schemas import ChangePasswordIn, LoginIn, ProfilePatch, RegisterIn
 
@@ -18,12 +19,14 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 def _set_cookie(response: Response, token: str) -> None:
+    # SameSite: lax в production (второй слой против CSRF), none — только по
+    # AUTH_COOKIE_SAMESITE=none для UI в чужом iframe (audit S-01).
     response.set_cookie(
         key=COOKIE_NAME,
         value=token,
         httponly=True,
         secure=True,
-        samesite="none",
+        samesite=cookie_samesite(),
         max_age=30 * 86400,
         path="/",
     )
@@ -103,7 +106,8 @@ async def login(body: LoginIn, request: Request, response: Response):
 async def logout(response: Response, cdsp_session: str | None = Cookie(default=None)):
     if cdsp_session:
         await destroy_session(cdsp_session)
-    response.delete_cookie(COOKIE_NAME, path="/")
+    # Атрибуты должны совпадать с set_cookie, иначе браузер не сопоставит cookie.
+    response.delete_cookie(COOKIE_NAME, path="/", secure=True, httponly=True, samesite=cookie_samesite())
     return {"ok": True}
 
 
