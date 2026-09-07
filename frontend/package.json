@@ -7,11 +7,13 @@
   },
   "scripts": {
     "dev": "next dev",
-    "build": "next build"
+    "build": "next build",
+    "test": "vitest run"
   },
   "dependencies": {
     "ai": "^7.0.66",
     "framer-motion": "^13.1.1",
+    "ioredis": "^6.0.0",
     "lucide-react": "^0.469.0",
     "next": "^16.2.0",
     "react": "^19.2.0",
@@ -27,6 +29,7 @@
     "@types/react-dom": "^19.2.7",
     "postcss": "^8.5.0",
     "tailwindcss": "^4.1.0",
-    "typescript": "~5.9.3"
+    "typescript": "~5.9.3",
+    "vitest": "^5.0.0"
   }
 }

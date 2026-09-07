@@ -70,6 +70,9 @@ jobs:
       - name: Typecheck
         working-directory: frontend
         run: pnpm exec tsc --noEmit
+      - name: Unit tests (route handlers, audit S-05)
+        working-directory: frontend
+        run: pnpm test
       - name: Build
         working-directory: frontend
         run: pnpm run build

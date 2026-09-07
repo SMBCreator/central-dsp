@@ -229,8 +229,13 @@ services:
       # Mock-fallback в production-сборке выключен; ALLOW_MOCK_FALLBACK=1 включает осознанно.
       BACKEND_INTERNAL_URL: http://backend:8000
       ALLOW_MOCK_FALLBACK: ${ALLOW_MOCK_FALLBACK:-0}
+      # AI-инструменты (audit S-05): без ключа /ai-api/* отвечает 503; rate limit
+      # per user — общий счётчик в том же Redis, что и у backend.
+      AI_GATEWAY_API_KEY: ${AI_GATEWAY_API_KEY:-}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
     depends_on:
       - backend
+      - redis
     networks:
       - centraldsp
 

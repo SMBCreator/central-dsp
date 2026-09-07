@@ -200,7 +200,7 @@
 - [x] A5 L-01 — `507fe14`
 - [x] A6 S-01 — `5709181`+`8f9caa0`
 - [x] A7 S-04 — `5b3ca1d`
-- [ ] A8 S-05
+- [x] A8 S-05 — `frontend/lib/server-auth.ts` + `frontend/lib/ai-guard.ts`; vitest в CI (`frontend/tests/ai-api.test.ts`)
 - [ ] A9 S-06
 - [ ] B1 R-01
 - [ ] B2 E-01
