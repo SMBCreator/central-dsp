@@ -203,7 +203,7 @@
 - [x] A8 S-05 — `frontend/lib/server-auth.ts` + `frontend/lib/ai-guard.ts`; vitest в CI (`frontend/tests/ai-api.test.ts`)
 - [x] A9 S-06 — миграция 039 (token_prev_hash/valid_until, token_revoked_at); revoke → paused; CIDR-валидация 422; Go: fail-closed без хэша, TRUSTED_PROXIES для XFF, whitelist_invalid; метрики token_not_issued/ip_denied/whitelist_invalid
 - [x] B1 R-01 — `GET /settings/public` (PUBLIC_BIDDER_BASE_URL → fallback PUBLIC_BASE_URL); UI /supply копирует URL Go-биддера, без переменной — предупреждение; startup warning
-- [ ] B2 E-01
+- [x] B2 E-01 — inventory dims (domain/bundle/publisher/tagid/os/browser/geo) наследуются win/imp/click/view из bidmeta через _event_dims; единый контракт spend = win.clear_price (9cb556c)
 - [x] B3 E-02 — таблица `bid_event_once` (040) + `_once_txn`: заявка, bid_events и stats_hourly в одной транзакции; Redis `once:*` только после коммита; bill_win + win-событие + stats — одна транзакция; retention в cron
 - [x] B4 E-03 — `rtb_events_inbox` (041) ON CONFLICT DO NOTHING RETURNING в одной транзакции с bid_events/stats_hourly/cursor; после ошибки чтение `0`; XAUTOCLAIM чужих pending > 60 с; poison → `rtb:events:dead` после 5 доставок; bootstrap с `0`/курсора в retry-loop; gauges stream_length/pending/lag + 5 алертов + runbook
 - [x] B5 E-04 — test=1 сквозь всю воронку: Python bid path не резервирует и не считает bids; click/view/video журнал-only при is_test; conversions.is_test (042) наследуется через clid и отфильтрован в optimizer/scoring/pixel-витринах; симулятор шлёт test=1 через Go (fallback Python) и показывает режим в UI

@@ -86,7 +86,7 @@ def test_test_bid_funnel_is_journal_only(monkeypatch):
         monkeypatch.setattr(rtb_module, "verify_event_token", lambda t: t)
         monkeypatch.setattr(rtb_module, "_fire_and_forget", lambda coro: coro.close())
 
-        pixel_id = goal_id = None
+        pixel_id = goal_id = owner = None
         try:
             # --- Воронка тестового бида ---------------------------------------
             r = await rtb_module.win_notice(bid=test_bid, price=80.0)
@@ -125,7 +125,12 @@ def test_test_bid_funnel_is_journal_only(monkeypatch):
                        VALUES ('bid', $1, $2, $3, $4, $5, 'site.ru', 'desktop', 'RU', true)""",
                     test_bid, camp, li, cr, sp,
                 )
-                owner = await conn.fetchval("SELECT id FROM users ORDER BY created_at LIMIT 1")
+                # CI-база пустая — владельца пикселя создаём сами.
+                owner = await conn.fetchval(
+                    """INSERT INTO users (email, password_hash, name, role)
+                       VALUES ($1, 'x', 'e04', 'advertiser') RETURNING id""",
+                    f"e04-{uuid.uuid4().hex[:8]}@test.local",
+                )
                 pixel_id = await conn.fetchval(
                     "INSERT INTO pixels (user_id, name, domain) VALUES ($1, 'e04', 'site.ru') RETURNING id", owner
                 )
@@ -162,6 +167,8 @@ def test_test_bid_funnel_is_journal_only(monkeypatch):
                 if pixel_id:
                     await conn.execute("DELETE FROM pixel_events WHERE pixel_id = $1", pixel_id)
                     await conn.execute("DELETE FROM pixels WHERE id = $1", pixel_id)
+                if owner:
+                    await conn.execute("DELETE FROM users WHERE id = $1", owner)
             await pool.close()
 
     asyncio.run(main())
