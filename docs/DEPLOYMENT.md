@@ -120,7 +120,9 @@ sudo systemctl reload caddy
 ```
 
 Caddy сам получит и будет продлевать TLS-сертификат Let's Encrypt.
-SSP-партнёру отдаёте URL вида: `https://ваш-домен.ру/rtb/bid/<endpoint_key>`.
+SSP-партнёру отдаёте URL вида: `https://ваш-домен.ру/rtb/bid/<endpoint_key>` — это маршрут на **bidder-go**.
+Пропишите его базу в `.env` как `PUBLIC_BIDDER_BASE_URL=https://ваш-домен.ру`: кабинет (`/supply`, кнопка
+«скопировать URL») берёт адрес из `GET /settings/public`, а не из origin браузера (audit R-01).
 
 ### 5.1. Файлы креативов (баннеры/видео)
 

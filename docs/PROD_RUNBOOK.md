@@ -67,7 +67,9 @@ fly scale count 2            # min 2 реплики, одна зона с Upstas
 ```
 - Health: `GET /health` (liveness), `GET /ready` (DB+Redis, для деплой-гейта).
 - Регион: тот же, что Upstash Redis (RTT < 1ms — иначе p99-бюджет не сходится).
-- SSP получают URL: `https://bidder.<domain>/rtb/bid/{endpoint_key}`
+- SSP получают URL: `${PUBLIC_BIDDER_BASE_URL}/rtb/bid/{endpoint_key}` (например `https://bidder.<domain>/rtb/bid/{endpoint_key}`) —
+  это endpoint **Go-биддера**, не `/api/rtb/bid/...` backend'а (R-01). Переменную `PUBLIC_BIDDER_BASE_URL` задать в `.env`;
+  UI `/supply` копирует ровно этот адрес из `GET /settings/public`.
   + заголовок `X-CentralDSP-Token: <токен партнёра>` (выдаётся один раз при генерации; в БД хранится только sha256-хэш, миграция 032).
 
 ## 4. Мониторинг и алерты

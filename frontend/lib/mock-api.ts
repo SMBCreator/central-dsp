@@ -983,6 +983,12 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
       ],
     }
   if (path === "/settings") return { timezone: "Europe/Moscow", currency: "RUB" }
+  if (path === "/settings/public")
+    return {
+      bidder_base_url: "https://bidder.example.ru",
+      rtb_bid_url_template: "https://bidder.example.ru/rtb/bid/{endpoint_key}",
+      ssp_token_header: "X-CentralDSP-Token",
+    }
   if (path === "/audiences" && method === "GET") return mockAudiences
   const audCrud = crud(method, path, body, "/audiences", mockAudiences, {
     prefix: "aud",

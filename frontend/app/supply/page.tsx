@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react"
 import useSWR, { mutate } from "swr"
 import { api, ApiError, fetcher } from "@/lib/api"
-import { AD_TYPE_LABELS, type SspCheckResult, type SupplyPartner } from "@/lib/types"
+import { AD_TYPE_LABELS, type PublicSettings, type SspCheckResult, type SupplyPartner } from "@/lib/types"
 import { SspPartnerStats } from "@/components/ssp-partner-stats"
 import {
   Button,
@@ -96,6 +96,11 @@ function formToPayload(f: FormState) {
 
 export default function SupplyPage() {
   const { data: partners } = useSWR<SupplyPartner[]>("/supply-partners", fetcher)
+  // Публичный URL Go-биддера (audit R-01): SSP должны получать адрес bidder-go,
+  // а не /api/rtb/bid/... backend'а — Python-биддер в production выключен.
+  const { data: publicSettings } = useSWR<PublicSettings>("/settings/public", fetcher)
+  const bidderBase = publicSettings?.bidder_base_url ?? null
+  const bidUrl = (p: SupplyPartner) => (bidderBase ? `${bidderBase}/rtb/bid/${p.endpoint_key}` : null)
 
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<SupplyPartner | null>(null)
@@ -233,7 +238,14 @@ export default function SupplyPage() {
   }
 
   const copyEndpoint = (p: SupplyPartner) => {
-    navigator.clipboard?.writeText(`${window.location.origin}/api/rtb/bid/${p.endpoint_key}`)
+    const url = bidUrl(p)
+    if (!url) {
+      setActionError(
+        "PUBLIC_BIDDER_BASE_URL не настроен на сервере — публичный URL биддера неизвестен. Задайте переменную в .env и перезапустите backend.",
+      )
+      return
+    }
+    navigator.clipboard?.writeText(url)
     setCopied(p.id)
     setTimeout(() => setCopied(null), 1500)
   }
@@ -276,7 +288,13 @@ export default function SupplyPage() {
         </div>
         <div className="border-t border-border px-6 py-3 text-sm text-muted">
           Мы в ответ выдаём: <span className="font-medium text-foreground">bid-эндпоинт</span>{" "}
-          <code className="rounded bg-panel px-1.5 py-0.5 font-mono text-xs">POST /api/rtb/bid/{"{key}"}</code> и{" "}
+          <code className="rounded bg-panel px-1.5 py-0.5 font-mono text-xs">
+            POST {bidderBase ?? "https://<bidder>"}/rtb/bid/{"{key}"}
+          </code>{" "}
+          {!publicSettings || bidderBase ? null : (
+            <span className="text-danger">(PUBLIC_BIDDER_BASE_URL не настроен — URL для SSP неизвестен)</span>
+          )}{" "}
+          и{" "}
           <span className="font-medium text-foreground">секретный токен</span> (заголовок{" "}
           <code className="rounded bg-panel px-1.5 py-0.5 font-mono text-xs">X-CentralDSP-Token</code>). Win-notice —
           макрос <code className="rounded bg-panel px-1.5 py-0.5 font-mono text-xs">{"${AUCTION_PRICE}"}</code> в nurl.

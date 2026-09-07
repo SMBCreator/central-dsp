@@ -221,6 +221,14 @@ export interface SspCheckResult {
   checks: SspCheckItem[]
 }
 
+/** GET /settings/public — не-секретные параметры деплоя для UI (audit R-01). */
+export interface PublicSettings {
+  /** Публичный базовый URL Go-биддера (PUBLIC_BIDDER_BASE_URL); null = не настроен. */
+  bidder_base_url: string | null
+  rtb_bid_url_template: string | null
+  ssp_token_header: string
+}
+
 export interface SupplyPartner {
   id: string
   display_id: number

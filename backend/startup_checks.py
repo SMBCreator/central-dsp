@@ -152,6 +152,11 @@ def collect_warnings(env: Mapping[str, str] | None = None) -> list[str]:
         warnings.append(
             "AUTH_COOKIE_SAMESITE=none — сессионная cookie уходит с cross-site запросами (только для iframe-превью)"
         )
+    if not (env.get("PUBLIC_BIDDER_BASE_URL") or env.get("PUBLIC_BASE_URL") or "").strip():
+        warnings.append(
+            "PUBLIC_BIDDER_BASE_URL/PUBLIC_BASE_URL не заданы — UI не может выдать SSP публичный URL "
+            "Go-биддера (/rtb/bid/{key}); партнёры получат неверный адрес (R-01)"
+        )
     return warnings
 
 
