@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"time"
 
@@ -367,6 +368,27 @@ func loadBusinessLocation() *time.Location {
 // BusinessDate returns the YYYY-MM-DD business date of now.
 func BusinessDate(now time.Time) string {
 	return now.In(businessLoc).Format("2006-01-02")
+}
+
+// PacingBurst — доля дневного бюджета «вперёд графика» при pacing=even, чтобы
+// выдача не замирала в 00:00 МСК. Зеркало business_day.PACING_BURST.
+const PacingBurst = 0.1
+
+// BusinessDayFraction — доля бизнес-дня (Europe/Moscow), прошедшая к now, в [0, 1).
+// Зеркало business_day.business_day_fraction: считать по UTC нельзя — тогда
+// ровная кампания получила бы 87.5% бюджета в первые минуты бизнес-дня.
+func BusinessDayFraction(now time.Time) float64 {
+	local := now.In(businessLoc)
+	return float64(local.Hour()*3600+local.Minute()*60+local.Second()) / 86400
+}
+
+// EvenPacingBudget — эффективный дневной бюджет кампании с pacing=even:
+// daily × min(1, fraction + PacingBurst). Зеркало business_day.even_pacing_budget.
+func EvenPacingBudget(daily float64, now time.Time) float64 {
+	if daily <= 0 {
+		return daily
+	}
+	return daily * math.Min(1.0, BusinessDayFraction(now)+PacingBurst)
 }
 
 // secondsUntilBusinessMidnight mirrors business_day.seconds_until_business_midnight.

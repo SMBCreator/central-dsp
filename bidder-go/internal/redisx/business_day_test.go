@@ -43,6 +43,37 @@ func TestSecondsUntilBusinessMidnight_TTLCoversWholeBusinessDay(t *testing.T) {
 	}
 }
 
+// Audit R-03: even pacing считается по бизнес-дню (МСК), не по UTC — иначе в
+// 21:00 UTC (00:00 МСК) кампания получила бы 87.5% дневного бюджета сразу.
+// Числа — те же, что в backend/tests/test_business_day.py.
+func TestEvenPacingBudget_MirrorsPython(t *testing.T) {
+	at := func(s string) time.Time { n, _ := time.Parse(time.RFC3339, s); return n }
+	near := func(a, b float64) bool { d := a - b; return d < 1e-9 && d > -1e-9 }
+
+	if f := BusinessDayFraction(at("2026-09-06T21:00:00Z")); f != 0 {
+		t.Fatalf("00:00 MSK fraction = %v, want 0", f)
+	}
+	if f := BusinessDayFraction(at("2026-09-07T09:00:00Z")); !near(f, 0.5) {
+		t.Fatalf("12:00 MSK fraction = %v, want 0.5", f)
+	}
+	if f := BusinessDayFraction(at("2026-09-07T20:59:59Z")); !near(f, 86399.0/86400) {
+		t.Fatalf("23:59:59 MSK fraction = %v", f)
+	}
+
+	if b := EvenPacingBudget(1000, at("2026-09-06T21:00:00Z")); !near(b, 100) {
+		t.Fatalf("budget at business midnight = %v, want burst 100", b)
+	}
+	if b := EvenPacingBudget(1000, at("2026-09-07T09:00:00Z")); !near(b, 600) {
+		t.Fatalf("budget at noon MSK = %v, want 600", b)
+	}
+	if b := EvenPacingBudget(1000, at("2026-09-07T20:00:00Z")); b != 1000 {
+		t.Fatalf("budget at 23:00 MSK = %v, want cap 1000", b)
+	}
+	if b := EvenPacingBudget(0, at("2026-09-07T09:00:00Z")); b != 0 {
+		t.Fatalf("zero budget must stay zero, got %v", b)
+	}
+}
+
 func TestGateAndReserve_NewBusinessDayReopensBudgetExactlyOnce(t *testing.T) {
 	c, mr := newTestClient(t)
 	ctx := context.Background()

@@ -423,12 +423,20 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 			if c.LiBudget != nil {
 				liBudget = *c.LiBudget
 			}
+			now := time.Now()
+			// Even pacing (audit R-03): дневной бюджет кампании открывается
+			// пропорционально прошедшей доле бизнес-дня (+10% burst) — та же
+			// формула, что в rtb.py/business_day.even_pacing_budget.
+			campBudget := c.CampBudget
+			if c.Pacing == "even" {
+				campBudget = redisx.EvenPacingBudget(campBudget, now)
+			}
 			// Audit M-05: одним Lua — дневные бюджеты кампании и группы, доступный
 			// баланс рекламодателя и остаток общего бюджета; бид попадает в
 			// pending:bids до win/loss/expire (M-06).
-			res, okRes, err := h.redis.Reserve(rctx, time.Now(), redisx.ReserveInput{
+			res, okRes, err := h.redis.Reserve(rctx, now, redisx.ReserveInput{
 				BidID: bidID, CampaignID: c.CampaignID, LiID: c.LiID, AdvertiserID: c.AdvertiserID,
-				Cost: sc.price / 1000.0, CampBudget: c.CampBudget, LiBudget: liBudget,
+				Cost: sc.price / 1000.0, CampBudget: campBudget, LiBudget: liBudget,
 				AdvBalance: c.AdvBalance, TotalRemaining: c.TotalBudget - c.SpentTotal, HasTotal: c.TotalBudget > 0,
 				DeviceID: deviceID, Caps: capsList,
 			})

@@ -41,6 +41,58 @@ def test_business_date_moscow_midnight_only(utc, expected):
     assert bd.business_date_str(_utc(utc)) == expected
 
 
+@pytest.mark.parametrize("utc,fraction", [
+    ("2026-09-06T21:00:00Z", 0.0),          # 00:00 MSK — allowance resets with spend:*
+    ("2026-09-07T03:00:00Z", 0.25),         # 06:00 MSK
+    ("2026-09-07T09:00:00Z", 0.5),          # 12:00 MSK
+    ("2026-09-07T20:59:59Z", 86399 / 86400),
+])
+def test_business_day_fraction_is_measured_in_moscow(utc, fraction):
+    # Audit R-03: pacing on a UTC fraction gave an "even" campaign 87.5% of
+    # its budget in the first minutes of the business day (21:00 UTC).
+    assert bd.business_day_fraction(_utc(utc)) == pytest.approx(fraction)
+
+
+def test_even_pacing_budget_burst_and_cap():
+    daily = 1000.0
+    at_midnight = _utc("2026-09-06T21:00:00Z")
+    noon = _utc("2026-09-07T09:00:00Z")
+    late = _utc("2026-09-07T20:00:00Z")  # 23:00 MSK -> fraction+burst > 1
+    assert bd.even_pacing_budget(daily, at_midnight) == pytest.approx(daily * bd.PACING_BURST)
+    assert bd.even_pacing_budget(daily, noon) == pytest.approx(daily * 0.6)
+    assert bd.even_pacing_budget(daily, late) == pytest.approx(daily)
+    assert bd.even_pacing_budget(0.0, noon) == 0.0  # unlimited stays unlimited
+
+
+def test_rtb_router_has_no_undefined_module_names():
+    # Regression (audit R-03 follow-up): rtb.py called business_date_str()
+    # without importing it — every real bid would die with NameError inside
+    # the try/except and look like a plain no-bid.
+    import ast
+    import builtins
+
+    src = (REPO / "backend" / "routers" / "rtb.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    loads = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
+    bound: set[str] = set(dir(builtins))
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.Import, ast.ImportFrom)):
+            bound |= {(a.asname or a.name).split(".")[0] for a in n.names}
+        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(n.name)
+            bound |= {a.arg for a in n.args.args + n.args.kwonlyargs + n.args.posonlyargs}
+            bound |= {a.arg for a in (n.args.vararg, n.args.kwarg) if a}
+        elif isinstance(n, ast.Lambda):
+            bound |= {a.arg for a in n.args.args + n.args.kwonlyargs}
+        elif isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
+            bound.add(n.id)
+        elif isinstance(n, ast.Global):
+            bound |= set(n.names)
+        elif isinstance(n, ast.ExceptHandler) and n.name:
+            bound.add(n.name)
+    assert loads - bound == set(), f"undefined names in routers/rtb.py: {sorted(loads - bound)}"
+
+
 def test_ttl_covers_whole_business_day_plus_grace():
     at_midnight = _utc("2026-09-06T21:00:00Z")
     assert bd.seconds_until_business_midnight(at_midnight) == 24 * 3600 + bd.KEY_GRACE_SECONDS
@@ -56,6 +108,38 @@ def test_go_and_python_share_grace_and_timezone():
     assert '"Europe/Moscow"' in go_src and bd.BUSINESS_TZ_NAME == "Europe/Moscow"
     assert '"spend:" + scope + ":" + entityID + ":" + day' in go_src
     assert bd.spend_key("camp", "X", "2026-01-02") == "spend:camp:X:2026-01-02"
+
+
+@pytest.mark.parametrize("utc,fraction", [
+    ("2026-09-06T21:00:00Z", 0.0),      # 00:00 MSK — new business day, allowance reopens
+    ("2026-09-07T03:00:00Z", 0.25),     # 06:00 MSK
+    ("2026-09-07T09:00:00Z", 0.5),      # 12:00 MSK
+    ("2026-09-07T20:59:59Z", 86399 / 86400),
+])
+def test_business_day_fraction_is_measured_in_moscow(utc, fraction):
+    assert bd.business_day_fraction(_utc(utc)) == pytest.approx(fraction)
+
+
+def test_even_pacing_budget_follows_business_day_with_burst():
+    # Audit R-03: UTC-fraction let an even campaign spend 87.5% right after
+    # 00:00 MSK (21:00 UTC). Business-day fraction gives only the 10% burst.
+    at_midnight = _utc("2026-09-06T21:00:00Z")
+    assert bd.even_pacing_budget(1000.0, at_midnight) == pytest.approx(100.0)
+    noon = _utc("2026-09-07T09:00:00Z")
+    assert bd.even_pacing_budget(1000.0, noon) == pytest.approx(600.0)
+    late = _utc("2026-09-07T20:00:00Z")   # 23:00 MSK: 0.958 + 0.1 -> capped at 1
+    assert bd.even_pacing_budget(1000.0, late) == 1000.0
+    assert bd.even_pacing_budget(0.0, noon) == 0.0
+    assert bd.even_pacing_budget(-5.0, noon) == -5.0
+
+
+def test_go_mirrors_even_pacing():
+    go_src = (REPO / "bidder-go" / "internal" / "redisx" / "redisx.go").read_text(encoding="utf-8")
+    m = re.search(r"const PacingBurst = ([0-9.]+)", go_src)
+    assert m and float(m.group(1)) == bd.PACING_BURST
+    assert "func EvenPacingBudget(daily float64, now time.Time) float64" in go_src
+    rtb_src = (REPO / "backend" / "routers" / "rtb.py").read_text(encoding="utf-8")
+    assert "even_pacing_budget(" in rtb_src
 
 
 def test_spend_key_date_parsing():

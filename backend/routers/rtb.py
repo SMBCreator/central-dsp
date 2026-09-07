@@ -23,6 +23,7 @@ import prefilter
 import ssp_check
 import ssp_tokens
 from billing_core import bill_win
+from business_day import business_date_str, even_pacing_budget
 from audiences import check_audiences, store_clid_bridge
 from shading import get_factor as shading_get_factor, should_shade
 from cache import (
@@ -1086,14 +1087,12 @@ async def process_bid_request(
         price, c = best
         cost = price / 1000.0  # CPM -> cost per impression
 
-        # Even pacing: cap the effective daily budget by the share of day elapsed
+        # Even pacing: cap the effective daily budget by the share of the
+        # BUSINESS day elapsed (Europe/Moscow — the same boundary as spend:*).
+        # Shared helper; Go mirrors it in redisx.EvenPacingBudget (audit R-03).
         effective_budget = float(c["camp_budget"])
         if (c.get("pacing") or "asap") == "even" and effective_budget > 0:
-            from datetime import datetime, timezone
-            now_utc = datetime.now(timezone.utc)
-            day_fraction = (now_utc.hour * 3600 + now_utc.minute * 60 + now_utc.second) / 86400
-            # Allow a small burst ahead of schedule (10%) so delivery never stalls at 00:00
-            effective_budget = effective_budget * min(1.0, day_fraction + 0.1)
+            effective_budget = even_pacing_budget(effective_budget)
 
         # Multi-window frequency caps (up to 3); legacy pair is the fallback
         caps_list = _parse_freq_caps(c)
