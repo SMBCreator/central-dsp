@@ -125,11 +125,19 @@ def test_test_bid_funnel_is_journal_only(monkeypatch):
                        VALUES ('bid', $1, $2, $3, $4, $5, 'site.ru', 'desktop', 'RU', true)""",
                     test_bid, camp, li, cr, sp,
                 )
-                # CI-база пустая — владельца пикселя создаём сами.
+                # CI-база пустая — владельца пикселя создаём сами. Кампания бида должна
+                # принадлежать ему же: иначе (E-05) конверсия не атрибутируется.
                 owner = await conn.fetchval(
                     """INSERT INTO users (email, password_hash, name, role)
                        VALUES ($1, 'x', 'e04', 'advertiser') RETURNING id""",
                     f"e04-{uuid.uuid4().hex[:8]}@test.local",
+                )
+                adv = await conn.fetchval(
+                    "INSERT INTO advertisers (user_id, name) VALUES ($1, 'e04') RETURNING id", owner
+                )
+                await conn.execute(
+                    "INSERT INTO campaigns (id, advertiser_id, user_id, name) VALUES ($1, $2, $3, 'e04')",
+                    camp, adv, owner,
                 )
                 pixel_id = await conn.fetchval(
                     "INSERT INTO pixels (user_id, name, domain) VALUES ($1, 'e04', 'site.ru') RETURNING id", owner
@@ -141,7 +149,7 @@ def test_test_bid_funnel_is_journal_only(monkeypatch):
                 )
 
             await pixel_module._match_goals(
-                pool, str(pixel_id), "sess-e04", "event", "lead", "https://site.ru/thanks", test_bid,
+                pool, str(pixel_id), str(owner), "sess-e04", "event", "lead", "https://site.ru/thanks", test_bid,
             )
 
             async with pool.acquire() as conn:
@@ -168,6 +176,7 @@ def test_test_bid_funnel_is_journal_only(monkeypatch):
                     await conn.execute("DELETE FROM pixel_events WHERE pixel_id = $1", pixel_id)
                     await conn.execute("DELETE FROM pixels WHERE id = $1", pixel_id)
                 if owner:
+                    # campaigns/advertisers каскадом от users
                     await conn.execute("DELETE FROM users WHERE id = $1", owner)
             await pool.close()
 

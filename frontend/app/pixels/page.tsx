@@ -3,6 +3,7 @@
 import { useState } from "react"
 import useSWR from "swr"
 import { api, fetcher } from "@/lib/api"
+import type { PublicSettings } from "@/lib/types"
 import { Button, Card, CardHeader, Field, Modal, EmptyState, Spinner, inputCls } from "@/components/ui"
 import { ConfirmDialog } from "@/components/confirm-dialog"
 
@@ -45,6 +46,7 @@ const GOAL_TYPES = [
 
 export default function PixelsPage() {
   const { data: pixels, mutate } = useSWR<Pixel[]>("/pixels", fetcher)
+  const { data: publicSettings } = useSWR<PublicSettings>("/settings/public", fetcher)
   const [createModal, setCreateModal] = useState(false)
   const [selected, setSelected] = useState<Pixel | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -86,11 +88,17 @@ export default function PixelsPage() {
     }
   }
 
+  // Адрес скрипта берём из настроек деплоя (PUBLIC_API_BASE_URL), а не из
+  // window.location: за прокси origin кабинета и публичный API могут различаться,
+  // и скрипт с неверного адреса шлёт beacon мимо backend (audit E-05).
+  const scriptTemplate = publicSettings?.pixel_script_url_template ?? null
   const snippet = (id: string) =>
-    `<script async src="${typeof window !== "undefined" ? window.location.origin : ""}/api/pixel/script/${id}.js"></script>`
+    scriptTemplate ? `<script async src="${scriptTemplate.replace("{pixel_id}", id)}"></script>` : null
 
   const copySnippet = (id: string) => {
-    navigator.clipboard.writeText(snippet(id))
+    const s = snippet(id)
+    if (!s) return
+    navigator.clipboard.writeText(s)
     setCopied(true)
     setTimeout(() => setCopied(false), 1500)
   }
@@ -158,12 +166,19 @@ export default function PixelsPage() {
                 </div>
               </div>
               <div className="mt-4 rounded-xl bg-panel p-3">
-                <div className="flex items-center justify-between gap-2">
-                  <code className="truncate font-mono text-[11px] text-muted">{snippet(p.id)}</code>
-                  <Button variant="secondary" onClick={() => copySnippet(p.id)}>
-                    {copied ? "Скопировано" : "Копировать"}
-                  </Button>
-                </div>
+                {snippet(p.id) ? (
+                  <div className="flex items-center justify-between gap-2">
+                    <code className="truncate font-mono text-[11px] text-muted">{snippet(p.id)}</code>
+                    <Button variant="secondary" onClick={() => copySnippet(p.id)}>
+                      {copied ? "Скопировано" : "Копировать"}
+                    </Button>
+                  </div>
+                ) : (
+                  <p className="text-xs text-warning">
+                    Публичный адрес API не настроен (PUBLIC_API_BASE_URL или PUBLIC_BASE_URL на сервере) —
+                    код вставки недоступен, скрипт не будет доставлять события.
+                  </p>
+                )}
               </div>
             </Card>
           ))}

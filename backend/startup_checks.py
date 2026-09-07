@@ -157,6 +157,11 @@ def collect_warnings(env: Mapping[str, str] | None = None) -> list[str]:
             "PUBLIC_BIDDER_BASE_URL/PUBLIC_BASE_URL не заданы — UI не может выдать SSP публичный URL "
             "Go-биддера (/rtb/bid/{key}); партнёры получат неверный адрес (R-01)"
         )
+    if not (env.get("PUBLIC_API_BASE_URL") or env.get("PUBLIC_BASE_URL") or "").strip():
+        warnings.append(
+            "PUBLIC_API_BASE_URL/PUBLIC_BASE_URL не заданы — pixel-скрипт не выдаётся (404): "
+            "beacon'у нужен внешний HTTPS-адрес /api/pixel/collect (E-05)"
+        )
     return warnings
 
 

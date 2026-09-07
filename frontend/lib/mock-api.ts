@@ -988,6 +988,8 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
       bidder_base_url: "https://bidder.example.ru",
       rtb_bid_url_template: "https://bidder.example.ru/rtb/bid/{endpoint_key}",
       ssp_token_header: "X-CentralDSP-Token",
+      api_base_url: "https://dsp.example.ru/api",
+      pixel_script_url_template: "https://dsp.example.ru/api/pixel/script/{pixel_id}.js",
     }
   if (path === "/audiences" && method === "GET") return mockAudiences
   const audCrud = crud(method, path, body, "/audiences", mockAudiences, {

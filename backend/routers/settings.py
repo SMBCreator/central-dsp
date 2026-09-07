@@ -40,14 +40,39 @@ def public_bidder_base_url(env=None) -> str | None:
     return None
 
 
+def public_api_base_url(env=None) -> str | None:
+    """Публичный базовый URL backend-API, как его видит браузер (audit E-05).
+
+    Pixel-скрипт на сайте клиента шлёт sendBeacon на `${base}/pixel/collect`, и
+    этот адрес обязан быть внешним HTTPS-адресом, который прокси заводит в
+    backend. Раньше брался `request.base_url`: за Caddy это внутренний
+    `http://backend:8000` или домен без `/api` — beacon уходил во frontend.
+
+    Порядок: `PUBLIC_API_BASE_URL` (например `https://dsp.example/api`), иначе
+    `PUBLIC_BASE_URL` + `/api` (штатный Caddy: `handle /api/*` → backend).
+    None = не настроено: скрипт не выдаём (404), UI показывает предупреждение.
+    """
+    env = os.environ if env is None else env
+    explicit = (env.get("PUBLIC_API_BASE_URL") or "").strip().rstrip("/")
+    if explicit:
+        return explicit
+    base = (env.get("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    if base:
+        return f"{base}/api"
+    return None
+
+
 @router.get("/public")
 async def get_public_settings(user: dict = Depends(current_user)):
     """Не-секретные параметры деплоя, нужные UI (любая роль)."""
     base = public_bidder_base_url()
+    api_base = public_api_base_url()
     return {
         "bidder_base_url": base,
         "rtb_bid_url_template": f"{base}/rtb/bid/{{endpoint_key}}" if base else None,
         "ssp_token_header": "X-CentralDSP-Token",
+        "api_base_url": api_base,
+        "pixel_script_url_template": f"{api_base}/pixel/script/{{pixel_id}}.js" if api_base else None,
     }
 
 

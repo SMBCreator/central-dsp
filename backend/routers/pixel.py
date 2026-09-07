@@ -6,19 +6,41 @@ CRUD /pixel/*                     <- pixels + goals management
 GET  /pixel/{id}/stats            <- traffic quality overview
 """
 import json
+import logging
+import os
 import uuid
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 import pixel_guard
 from audiences import process_pixel_event
 from auth import current_user
 from rbac import require_campaign_write
 from db import get_pool
+from routers.settings import public_api_base_url
+
+log = logging.getLogger("pixel")
 
 router = APIRouter(prefix="/pixel", tags=["pixel"])
+
+# Полезная нагрузка beacon'а — ~600 байт; всё, что больше 16 КБ, — не наш скрипт.
+# Проверяется по Content-Length ДО чтения тела и ещё раз по факту (audit E-05).
+MAX_COLLECT_BODY = 16 * 1024
+# Окно атрибуции клик → конверсия: bid старше окна к кампании не привязывается.
+ATTRIBUTION_WINDOW_DAYS = int(os.environ.get("PIXEL_ATTRIBUTION_WINDOW_DAYS", "30"))
+
+_CORS = {"Access-Control-Allow-Origin": "*"}
+
+
+def _noop(reason: str | None = None) -> Response:
+    """204 на любой мусор: скрипту на сайте клиента причина не нужна, а
+    отличать «принято» от «отброшено» снаружи нельзя (anti-enumeration)."""
+    headers = dict(_CORS)
+    if reason:
+        headers["X-Pixel-Drop"] = reason
+    return Response(status_code=204, headers=headers)
 
 
 def _client_ip(request: Request) -> str | None:
@@ -78,16 +100,27 @@ _SCRIPT_TEMPLATE = """(function(){
 })();"""
 
 
+def render_script(pixel_id: str, api_base: str) -> str:
+    return _SCRIPT_TEMPLATE.replace("__PIXEL_ID__", pixel_id).replace("__API_BASE__", api_base.rstrip("/"))
+
+
 @router.get("/script/{pixel_id}.js")
-async def tracking_script(pixel_id: str, request: Request):
-    pool = await get_pool()
-    exists = await pool.fetchval("SELECT 1 FROM pixels WHERE id = $1", pixel_id)
-    if not exists:
+async def tracking_script(pixel_id: str):
+    try:
+        uuid.UUID(pixel_id)
+    except ValueError:
         raise HTTPException(status_code=404)
-    base = str(request.base_url).rstrip("/")
-    js = _SCRIPT_TEMPLATE.replace("__PIXEL_ID__", pixel_id).replace("__API_BASE__", base)
-    return Response(content=js, media_type="application/javascript",
-                    headers={"Cache-Control": "public, max-age=3600", "Access-Control-Allow-Origin": "*"})
+    # Адрес приёма — только канонический публичный URL API (E-05). request.base_url
+    # за прокси даёт внутренний host или домен без /api, и beacon уходит мимо backend.
+    api_base = public_api_base_url()
+    if not api_base:
+        log.error("pixel script requested but PUBLIC_API_BASE_URL/PUBLIC_BASE_URL are not set")
+        raise HTTPException(status_code=404)
+    pool = await get_pool()
+    if not await pool.fetchval("SELECT 1 FROM pixels WHERE id = $1", pixel_id):
+        raise HTTPException(status_code=404)
+    return Response(content=render_script(pixel_id, api_base), media_type="application/javascript",
+                    headers={"Cache-Control": "public, max-age=3600", **_CORS})
 
 
 # ---------------------------------------------------------------------------
@@ -114,12 +147,42 @@ def _parse_device(ua: str, sw: int) -> tuple[str, str, str]:
     return device, browser, os_name
 
 
-async def _match_goals(pool, pixel_id: str, session_id: str, event_type: str,
+async def _attributed_bid(pool, pixel_owner_id: str, clid: str) -> dict | None:
+    """Бид для атрибуции конверсии по clid (audit E-05).
+
+    Привязываем только если кампания бида принадлежит владельцу пикселя (или его
+    поддереву agency → client) и бид не старше окна атрибуции. Чужой/просроченный
+    clid → конверсия записывается как органическая, без campaign_id.
+    """
+    row = await pool.fetchrow(
+        """
+        WITH RECURSIVE owners AS (
+            SELECT id FROM users WHERE id = $2
+            UNION ALL
+            SELECT u.id FROM users u JOIN owners o ON u.parent_user_id = o.id
+        )
+        SELECT be.campaign_id, be.line_item_id, be.creative_id, be.supply_partner_id,
+               be.domain, be.device_type, be.geo_country, be.is_test
+        FROM bid_events be
+        JOIN campaigns c ON c.id = be.campaign_id
+        WHERE be.bid_id = $1 AND be.event_type = 'bid'
+          AND be.created_at >= now() - make_interval(days => $3)
+          AND c.user_id IN (SELECT id FROM owners)
+        ORDER BY be.created_at DESC
+        LIMIT 1
+        """,
+        clid, pixel_owner_id, ATTRIBUTION_WINDOW_DAYS,
+    )
+    return dict(row) if row else None
+
+
+async def _match_goals(pool, pixel_id: str, pixel_owner_id: str, session_id: str, event_type: str,
                        event_name: str | None, url: str | None, clid: str | None) -> None:
     """Check active goals for this pixel against the incoming event and record conversions."""
     goals = await pool.fetch("SELECT * FROM goals WHERE pixel_id = $1", pixel_id)
     if not goals:
         return
+    bid = await _attributed_bid(pool, pixel_owner_id, clid) if clid else None
     for g in goals:
         hit = False
         if g["goal_type"] == "event" and event_type == "event" and event_name == g["match_value"]:
@@ -138,21 +201,12 @@ async def _match_goals(pool, pixel_id: str, session_id: str, event_type: str,
                 continue
         if not hit:
             continue
-        # Attribute to the bid (campaign / SSP / domain / device) via clid
-        attrib = {}
-        is_test = False
-        if clid:
-            row = await pool.fetchrow(
-                """SELECT campaign_id, line_item_id, creative_id, supply_partner_id, domain, device_type, geo_country,
-                          is_test
-                   FROM bid_events WHERE bid_id = $1 AND event_type = 'bid' LIMIT 1""",
-                clid,
-            )
-            if row:
-                attrib = dict(row)
-                # E-04: конверсия по тестовому биду (OpenRTB test=1) наследует флаг —
-                # в журнале остаётся, в hourly/CPA/ML не попадает.
-                is_test = bool(attrib.pop("is_test", False))
+        # Attribute to the bid (campaign / SSP / domain / device) via clid —
+        # только свой и в окне атрибуции (E-05), иначе organic.
+        attrib = dict(bid) if bid else {}
+        # E-04: конверсия по тестовому биду (OpenRTB test=1) наследует флаг —
+        # в журнале остаётся, в hourly/CPA/ML не попадает.
+        is_test = bool(attrib.pop("is_test", False))
         inserted = await pool.fetchrow(
             """INSERT INTO conversions (goal_id, pixel_id, session_id, clid, campaign_id, line_item_id,
                                         creative_id, supply_partner_id, domain, device_type, geo_country, value,
@@ -176,61 +230,105 @@ async def _match_goals(pool, pixel_id: str, session_id: str, event_type: str,
             )
 
 
+class CollectIn(BaseModel):
+    """Beacon от tracking-скрипта. Строгая схема до любой работы с БД (audit E-05):
+    неверный тип поля / лишний размер / не-объект → 204 без побочных эффектов."""
+
+    model_config = {"extra": "ignore", "str_max_length": 2048}
+
+    pid: uuid.UUID
+    sid: str = Field(min_length=1, max_length=64)
+    type: Literal["pageview", "event", "heartbeat"] = "pageview"
+    name: str | None = Field(default=None, max_length=120)
+    url: str | None = Field(default=None, max_length=500)
+    ref: str | None = Field(default=None, max_length=500)
+    clid: str | None = Field(default=None, max_length=64)
+    dur: int = Field(default=0, ge=0, le=60)
+    sp: int = Field(default=0, ge=0, le=100)
+    sw: int = Field(default=0, ge=0, le=20000)
+    ua: str = Field(default="", max_length=512)
+    lang: str | None = Field(default=None, max_length=32)
+
+    @field_validator("name", "url", "ref", "clid", "lang", mode="before")
+    @classmethod
+    def _empty_to_none(cls, v):
+        return None if v in ("", 0, False) else v
+
+    @field_validator("dur", "sp", "sw", mode="before")
+    @classmethod
+    def _clamp_numbers(cls, v, info):
+        """Скрипт может прислать float/строку/мусор — клэмпим, а не отвергаем весь beacon."""
+        if v is None or isinstance(v, bool):
+            return 0
+        try:
+            n = int(float(v))
+        except (TypeError, ValueError):
+            return 0
+        hi = {"dur": 60, "sp": 100, "sw": 20000}[info.field_name]
+        return min(max(n, 0), hi)
+
+
+def parse_collect(raw: bytes) -> CollectIn | None:
+    """bytes → CollectIn или None на любой мусор (не JSON, не объект, неверные типы)."""
+    if len(raw) > MAX_COLLECT_BODY:
+        return None
+    try:
+        body = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(body, dict):
+        return None
+    try:
+        return CollectIn.model_validate(body)
+    except ValidationError:
+        return None
+
+
 @router.post("/collect")
 async def collect(request: Request):
-    try:
-        body = json.loads(await request.body())
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return Response(status_code=204)
-    pixel_id = str(body.get("pid") or "")
-    session_id = str(body.get("sid") or "")[:64]
-    event_type = str(body.get("type") or "pageview")
-    if event_type not in ("pageview", "event", "heartbeat") or not pixel_id or not session_id:
-        return Response(status_code=204)
-    pool = await get_pool()
-    try:
-        uuid.UUID(pixel_id)
-    except ValueError:
-        return Response(status_code=204)
-    if not await pool.fetchval("SELECT 1 FROM pixels WHERE id = $1", pixel_id):
-        return Response(status_code=204)
+    # 1) Размер — по заголовку, до чтения тела.
+    cl = request.headers.get("content-length")
+    if cl and (not cl.isdigit() or int(cl) > MAX_COLLECT_BODY):
+        return _noop("too_large")
+    raw = await request.body()
+    # 2) Схема — до любой работы с БД/Redis.
+    ev = parse_collect(raw)
+    if ev is None:
+        return _noop("invalid")
+    pixel_id = str(ev.pid)
 
-    device, browser, os_name = _parse_device(str(body.get("ua") or ""), int(body.get("sw") or 0))
-    event_name = (str(body.get("name"))[:120] if body.get("name") else None)
-    url = (str(body.get("url"))[:500] if body.get("url") else None)
-    clid = (str(body.get("clid"))[:64] if body.get("clid") else None)
-
-    # Дедуп/антифлуд (R10): дубли sendBeacon, зациклившийся track(), боты с новыми sid.
-    # Отвечаем всё равно 204 — скрипту на сайте клиента знать причину не нужно.
+    # 3) Дедуп/антифлуд (R10) — до первого запроса в БД: боты с новыми sid и
+    #    несуществующими pid не должны стоить нам SELECT'ов.
     drop = await pixel_guard.should_accept(
-        pixel_id=pixel_id, session_id=session_id, event_type=event_type,
-        event_name=event_name, url=url, client_ip=_client_ip(request),
+        pixel_id=pixel_id, session_id=ev.sid, event_type=ev.type,
+        event_name=ev.name, url=ev.url, client_ip=_client_ip(request),
     )
     if drop:
-        return Response(status_code=204, headers={"Access-Control-Allow-Origin": "*", "X-Pixel-Drop": drop})
-    dur = min(max(int(body.get("dur") or 0), 0), 60)
-    try:
-        scroll_pct = min(max(int(body.get("sp") or 0), 0), 100)
-    except (ValueError, TypeError):
-        scroll_pct = 0
+        return _noop(drop)
 
+    # 4) Только теперь — БД.
+    pool = await get_pool()
+    owner_id = await pool.fetchval("SELECT user_id FROM pixels WHERE id = $1", pixel_id)
+    if not owner_id:
+        return _noop("unknown_pixel")
+
+    device, browser, os_name = _parse_device(ev.ua, ev.sw)
     await pool.execute(
         """INSERT INTO pixel_events (pixel_id, session_id, event_type, event_name, url, referrer,
                                      device_type, browser, os, duration_sec, scroll_pct, clid)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)""",
-        pixel_id, session_id, event_type, event_name, url,
-        (str(body.get("ref"))[:500] if body.get("ref") else None),
-        device, browser, os_name, dur, scroll_pct, clid,
+        pixel_id, ev.sid, ev.type, ev.name, ev.url, ev.ref,
+        device, browser, os_name, ev.dur, ev.sp, ev.clid,
     )
-    await _match_goals(pool, pixel_id, session_id, event_type, event_name, url, clid)
-    await process_pixel_event(pool, pixel_id, clid, event_type, event_name, url)
-    return Response(status_code=204, headers={"Access-Control-Allow-Origin": "*"})
+    await _match_goals(pool, pixel_id, str(owner_id), ev.sid, ev.type, ev.name, ev.url, ev.clid)
+    await process_pixel_event(pool, pixel_id, ev.clid, ev.type, ev.name, ev.url)
+    return _noop()
 
 
 @router.options("/collect")
 async def collect_options():
     return Response(status_code=204, headers={
-        "Access-Control-Allow-Origin": "*",
+        **_CORS,
         "Access-Control-Allow-Methods": "POST, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type",
     })

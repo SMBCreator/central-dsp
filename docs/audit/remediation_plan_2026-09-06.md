@@ -207,7 +207,7 @@
 - [x] B3 E-02 — таблица `bid_event_once` (040) + `_once_txn`: заявка, bid_events и stats_hourly в одной транзакции; Redis `once:*` только после коммита; bill_win + win-событие + stats — одна транзакция; retention в cron
 - [x] B4 E-03 — `rtb_events_inbox` (041) ON CONFLICT DO NOTHING RETURNING в одной транзакции с bid_events/stats_hourly/cursor; после ошибки чтение `0`; XAUTOCLAIM чужих pending > 60 с; poison → `rtb:events:dead` после 5 доставок; bootstrap с `0`/курсора в retry-loop; gauges stream_length/pending/lag + 5 алертов + runbook
 - [x] B5 E-04 — test=1 сквозь всю воронку: Python bid path не резервирует и не считает bids; click/view/video журнал-only при is_test; conversions.is_test (042) наследуется через clid и отфильтрован в optimizer/scoring/pixel-витринах; симулятор шлёт test=1 через Go (fallback Python) и показывает режим в UI
-- [ ] B6 E-05
+- [x] B6 E-05 — pixel: канонический PUBLIC_API_BASE_URL (или PUBLIC_BASE_URL+/api) в скрипте и коде вставки (/settings/public), 404 без него; collect: Content-Length/16 КБ → Pydantic-схема → rate limit → БД, 204 на любой мусор; атрибуция clid только по кампаниям владельца пикселя (+ поддерево agency) и в окне PIXEL_ATTRIBUTION_WINDOW_DAYS; test exclusion из B5
 - [ ] B7 R-02
 - [ ] B8 R-03
 - [ ] B9 R-04

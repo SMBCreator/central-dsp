@@ -227,6 +227,10 @@ export interface PublicSettings {
   bidder_base_url: string | null
   rtb_bid_url_template: string | null
   ssp_token_header: string
+  /** Публичный URL backend-API для браузера (PUBLIC_API_BASE_URL | PUBLIC_BASE_URL + /api); null = не настроен. */
+  api_base_url: string | null
+  /** `${api_base_url}/pixel/script/{pixel_id}.js` — код вставки на странице /pixels (audit E-05). */
+  pixel_script_url_template: string | null
 }
 
 export interface SupplyPartner {
