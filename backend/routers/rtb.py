@@ -40,6 +40,7 @@ from cache import (
     settle_win,
 )
 import fx
+import rtb_compat
 from db import get_pool
 from money import clamp_clearing_price, cpm_to_cost
 from ord.service import feed_gate_sql
@@ -347,17 +348,6 @@ def _match_imp_targeting(targeting: dict, imp: dict) -> bool:
     return True
 
 
-def _matched_deal(targeting: dict, imp: dict) -> str | None:
-    """Return the first configured deal ID present on the impression, if any."""
-    deal_ids = [str(d) for d in (targeting.get("deal_ids") or [])]
-    if not deal_ids:
-        return None
-    for d in (imp.get("pmp") or {}).get("deals") or []:
-        if str(d.get("id")) in deal_ids:
-            return str(d.get("id"))
-    return None
-
-
 def _creative_fits_imp(creative: dict, imp: dict, ad_type: str) -> bool:
     # push creatives can also fill plain native inventory (push IS native in RTB terms);
     # a dedicated push imp (ext.push) accepts only push creatives.
@@ -375,9 +365,10 @@ def _creative_fits_imp(creative: dict, imp: dict, ad_type: str) -> bool:
                 if not any(f.get("w") == creative["width"] and f.get("h") == creative["height"] for f in formats):
                     return False
     if ad_type == "video":
-        video = imp.get("video") or {}
-        maxdur = video.get("maxduration")
-        if maxdur and creative.get("video_duration") and creative["video_duration"] > maxdur:
+        # MIME / VAST protocol / min-max duration (audit R-04, rtb_compat).
+        reason = rtb_compat.video_incompat(imp.get("video"), creative)
+        if reason:
+            obs_metrics.inc_openrtb_incompat(reason)
             return False
     return True
 
@@ -385,6 +376,12 @@ def _creative_fits_imp(creative: dict, imp: dict, ad_type: str) -> bool:
 def _html_escape(s: str) -> str:
     out = str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     return out.replace('"', "&quot;").replace("'", "&#39;")
+
+
+def _xml_escape(s) -> str:
+    """Спецсимволы XML для текстовых узлов VAST (&apos; вместо &#39;)."""
+    out = str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return out.replace('"', "&quot;").replace("'", "&apos;")
 
 
 def _build_ad_info_badge(creative: dict) -> str:
@@ -488,7 +485,9 @@ def _build_adm(creative: dict, base: str, bid_id: str) -> str:
                 # OpenRTB Native 1.2: event=2 (viewable MRC 50%), method=1 (img-пиксель).
                 # Площадка дёргает URL, когда карточка проходит порог видимости.
                 "eventtrackers": [{"event": 2, "methods": [1], "url": view_url}],
-                "assets": [
+                # assets — по imp.native.request (rtb_compat.build_native_assets,
+                # audit R-04); без request — legacy фиксированный набор 1–5.
+                "assets": creative.get("_native_assets") or [
                     {"id": 1, "title": {"text": creative.get("native_title") or ""}},
                     {"id": 2, "data": {"type": 2, "value": creative.get("native_description") or ""}},
                     {"id": 3, "img": {"type": 3, "url": creative.get("asset_url") or ""}},
@@ -510,13 +509,16 @@ def _build_adm(creative: dict, base: str, bid_id: str) -> str:
     # video: VAST with quartile tracking
     if creative.get("vast_xml"):
         return creative["vast_xml"]
-    duration = creative.get("video_duration") or 15
+    # MIME — по расширению video_url (то же значение проверяет
+    # rtb_compat.video_incompat против imp.video.mimes), Duration — HH:MM:SS.
+    duration = rtb_compat.vast_duration(creative.get("video_duration") or 15)
+    media_mime = rtb_compat.creative_video_mime(creative)
     vevent = f"{base}/api/rtb/vevent?bid={bid_id}"
     creative_id = creative.get("creative_id") or creative.get("id") or ""
     return f"""<VAST version="3.0"><Ad id="{creative_id}"><InLine>
-<AdSystem>CentralDSP</AdSystem>{_build_vast_extensions(creative, erid)}<AdTitle>{creative['name']}</AdTitle>
+<AdSystem>CentralDSP</AdSystem>{_build_vast_extensions(creative, erid)}<AdTitle>{_xml_escape(creative['name'])}</AdTitle>
 <Impression><![CDATA[{imp_pixel}]]></Impression>{f'<Impression><![CDATA[{third_imp}]]></Impression>' if third_imp else ''}
-<Creatives><Creative><Linear><Duration>00:00:{duration:02d}</Duration>
+<Creatives><Creative><Linear><Duration>{duration}</Duration>
 <TrackingEvents>
 <Tracking event="start"><![CDATA[{vevent}&e=start]]></Tracking>
 <Tracking event="firstQuartile"><![CDATA[{vevent}&e=firstQuartile]]></Tracking>
@@ -527,7 +529,7 @@ def _build_adm(creative: dict, base: str, bid_id: str) -> str:
 </TrackingEvents>
 <VideoClicks><ClickThrough><![CDATA[{creative.get('click_url') or ''}]]></ClickThrough>
 <ClickTracking><![CDATA[{click_url}]]></ClickTracking>{f'<ClickTracking><![CDATA[{third_click}]]></ClickTracking>' if third_click else ''}</VideoClicks>
-<MediaFiles><MediaFile delivery="progressive" type="video/mp4" width="640" height="360"><![CDATA[{creative.get('video_url') or ''}]]></MediaFile></MediaFiles>
+<MediaFiles><MediaFile delivery="progressive" type="{media_mime}" width="640" height="360"><![CDATA[{creative.get('video_url') or ''}]]></MediaFile></MediaFiles>
 </Linear></Creative></Creatives></InLine></Ad></VAST>"""
 
 
@@ -1036,6 +1038,15 @@ async def process_bid_request(
             continue
         imp_floor_raw = float(imp.get("bidfloor") or 0)
         floor_cur = fx.floor_currency(imp.get("bidfloorcur"), req.get("cur"), partner_cur)
+        # OpenRTB-совместимость (audit R-04). Native: assets собираем по
+        # imp.native.request; нечитаемый request — весь imp не торгуется.
+        try:
+            native_req = rtb_compat.parse_native_request(imp.get("native")) if ad_type == "native" else None
+        except rtb_compat.NativeRequestError:
+            obs_metrics.inc_openrtb_incompat(rtb_compat.INCOMPAT_NATIVE_MALFORMED)
+            continue
+        # private_auction=1: SSP принимает только ставки по сделкам (§3.2.11).
+        private_only = rtb_compat.private_auction_only(imp)
 
         best = None
         for cand in candidates:
@@ -1045,16 +1056,35 @@ async def process_bid_request(
                 targeting = json.loads(targeting)
             if not _creative_fits_imp(c, imp, ad_type):
                 continue
+            deal = rtb_compat.matched_deal(imp, targeting.get("deal_ids"))
+            if private_only and deal is None:
+                obs_metrics.inc_openrtb_incompat(rtb_compat.INCOMPAT_PRIVATE_AUCTION)
+                continue
+            native_assets = None
+            if native_req is not None:
+                native_assets = rtb_compat.build_native_assets(native_req, c)
+                if native_assets is None:
+                    obs_metrics.inc_openrtb_incompat(rtb_compat.INCOMPAT_NATIVE_ASSET)
+                    continue
+            # Ставка по сделке: floor и тип аукциона из deal (§3.2.12);
+            # deal.bidfloorcur -> bidfloorcur imp -> валюта партнёра.
+            cand_floor_raw, cand_floor_cur, cand_auction = imp_floor_raw, floor_cur, auction_type
+            if deal is not None:
+                if float(deal.get("bidfloor") or 0) > 0:
+                    cand_floor_raw = float(deal["bidfloor"])
+                    cand_floor_cur = fx.floor_currency(deal.get("bidfloorcur"), [floor_cur], partner_cur)
+                if int(deal.get("at") or 0):
+                    cand_auction = int(deal["at"])
             # Курсы с наценкой владельца кампании: floor -> RUB, цена -> валюта
             # ответа. Нет курса — кандидат не торгуется в этой валюте.
             markup = _fx_markup_of(c)
-            rate_floor = fx.effective_rate(floor_cur, fx_rates, markup)
+            rate_floor = fx.effective_rate(cand_floor_cur, fx_rates, markup)
             rate_pfloor = fx.effective_rate(partner_cur, fx_rates, markup)
             rate_resp = fx.effective_rate(resp_cur, fx_rates, markup)
             if rate_floor is None or rate_pfloor is None or rate_resp is None:
                 obs_metrics.inc("rtb_nobid_fx_rate_missing_total")
                 continue
-            floor = max(imp_floor_raw * rate_floor, partner_floor_raw * rate_pfloor)
+            floor = max(cand_floor_raw * rate_floor, partner_floor_raw * rate_pfloor)
             ssp_allow = targeting.get("ssp_allowlist") or []
             if ssp_allow and str(partner["id"]) not in [str(s) for s in ssp_allow]:
                 continue
@@ -1154,14 +1184,15 @@ async def process_bid_request(
             # Bid shading (opt-in, first-price only): pay closer to the
             # clearing price, never below floor. Second-price auctions are
             # excluded: shading there cuts win rate without saving money.
-            if should_shade(c["bid_shading"], auction_type):
+            if should_shade(c["bid_shading"], cand_auction):
                 _sf = await shading_get_factor(str(c["campaign_id"]), str(partner["id"]))
                 if _sf < 1.0:
                     price = max(floor * 1.01, price * _sf)
                     if c["max_bid"] and c["_bid_type"] != "cpc":
                         price = min(price, float(c["max_bid"]))
             if best is None or price > best[0]:
-                c["_deal_id"] = _matched_deal(targeting, imp)
+                c["_deal_id"] = str(deal["id"]) if deal is not None else None
+                c["_native_assets"] = native_assets
                 c["_fx_rate"] = rate_resp
                 best = (price, c)
 

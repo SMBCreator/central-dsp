@@ -1,0 +1,6 @@
+{
+  "name": "video: 90s spot into maxduration=30 -> video_duration; Duration would render as 00:01:30",
+  "imp": {"id": "1", "video": {"mimes": ["video/mp4"], "maxduration": 30}},
+  "creative": {"type": "video", "video_url": "https://cdn.example/long.MP4", "video_duration": 90},
+  "expect": {"incompat": "video_duration", "video_mime": "video/mp4", "vast_duration": "00:01:30"}
+}

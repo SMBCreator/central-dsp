@@ -1,0 +1,13 @@
+{
+  "name": "PMP: deal matched in deal_ids order (D-2 before D-1); deal floor 3.5 USD and at=1 override imp floor/at",
+  "imp": {
+    "id": "1",
+    "banner": {"w": 300, "h": 250},
+    "bidfloor": 0.5,
+    "bidfloorcur": "RUB",
+    "pmp": {"private_auction": 1, "deals": [{"id": "D-1", "bidfloor": 2.0, "at": 3}, {"id": "D-2", "bidfloor": 3.5, "bidfloorcur": "USD", "at": 1}]}
+  },
+  "creative": {"type": "banner", "width": 300, "height": 250},
+  "deal_ids": ["D-2", "D-1"],
+  "expect": {"incompat": null, "deal": {"id": "D-2", "bidfloor": 3.5, "bidfloorcur": "USD", "at": 1}}
+}

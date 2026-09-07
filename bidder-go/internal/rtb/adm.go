@@ -14,7 +14,14 @@ import (
 
 // BuildAdm собирает разметку креатива (banner HTML / native JSON / VAST XML).
 // base — базовый URL backend'а, eventToken — подписанный HMAC-токен бида.
+// Native — с фиксированными assets 1–5 (запрос без imp.native.request).
 func BuildAdm(c *feed.Candidate, base, eventToken string) string {
+	return BuildAdmAssets(c, base, eventToken, nil)
+}
+
+// BuildAdmAssets — как BuildAdm, но native assets заданы по imp.native.request
+// (buildNativeAssets, audit R-04); nil = legacy фиксированный набор.
+func BuildAdmAssets(c *feed.Candidate, base, eventToken string, nativeAssets []map[string]any) string {
 	thirdImp := c.ImpTrackerURL
 	thirdImpPx := ""
 	if thirdImp != "" {
@@ -59,16 +66,20 @@ func BuildAdm(c *feed.Candidate, base, eventToken string) string {
 		if cta == "" {
 			cta = "Подробнее"
 		}
-		native := map[string]any{
-			"link":        link,
-			"imptrackers": imptrackers,
-			"assets": []map[string]any{
+		assets := nativeAssets
+		if assets == nil {
+			assets = []map[string]any{
 				{"id": 1, "title": map[string]any{"text": c.NativeTitle}},
 				{"id": 2, "data": map[string]any{"type": 2, "value": c.NativeDesc}},
 				{"id": 3, "img": map[string]any{"type": 3, "url": c.AssetURL}},
 				{"id": 4, "img": map[string]any{"type": 1, "url": c.NativeIconURL}},
 				{"id": 5, "data": map[string]any{"type": 12, "value": cta}},
-			},
+			}
+		}
+		native := map[string]any{
+			"link":        link,
+			"imptrackers": imptrackers,
+			"assets":      assets,
 		}
 		ext := map[string]any{}
 		if erid != "" {
@@ -108,10 +119,12 @@ func BuildAdm(c *feed.Candidate, base, eventToken string) string {
 		if thirdClick != "" {
 			thirdClickNode = fmt.Sprintf("<ClickTracking><![CDATA[%s]]></ClickTracking>", thirdClick)
 		}
+		// MIME — по расширению video_url (то же значение проверяет videoIncompat
+		// против imp.video.mimes), Duration — HH:MM:SS (VAST 3 §2.3.1.3).
 		return fmt.Sprintf(`<VAST version="3.0"><Ad id="%s"><InLine>
 <AdSystem>CentralDSP</AdSystem>%s<AdTitle>%s</AdTitle>
 <Impression><![CDATA[%s]]></Impression>%s
-<Creatives><Creative><Linear><Duration>00:00:%02d</Duration>
+<Creatives><Creative><Linear><Duration>%s</Duration>
 <TrackingEvents>
 <Tracking event="start"><![CDATA[%s&e=start]]></Tracking>
 <Tracking event="firstQuartile"><![CDATA[%s&e=firstQuartile]]></Tracking>
@@ -122,12 +135,20 @@ func BuildAdm(c *feed.Candidate, base, eventToken string) string {
 </TrackingEvents>
 <VideoClicks><ClickThrough><![CDATA[%s]]></ClickThrough>
 <ClickTracking><![CDATA[%s]]></ClickTracking>%s</VideoClicks>
-<MediaFiles><MediaFile delivery="progressive" type="video/mp4" width="640" height="360"><![CDATA[%s]]></MediaFile></MediaFiles>
+<MediaFiles><MediaFile delivery="progressive" type="%s" width="640" height="360"><![CDATA[%s]]></MediaFile></MediaFiles>
 </Linear></Creative></Creatives></InLine></Ad></VAST>`,
-			c.CreativeID, eridExt, c.Name, impPixel, thirdImpNode, duration,
+			c.CreativeID, eridExt, xmlEscape(c.Name), impPixel, thirdImpNode, vastDuration(duration),
 			vevent, vevent, vevent, vevent, vevent, vevent,
-			c.ClickURL, clickURL, thirdClickNode, c.VideoURL)
+			c.ClickURL, clickURL, thirdClickNode, creativeVideoMIME(c), c.VideoURL)
 	}
+}
+
+// vastDuration — секунды -> HH:MM:SS.
+func vastDuration(sec int) string {
+	if sec < 0 {
+		sec = 0
+	}
+	return fmt.Sprintf("%02d:%02d:%02d", sec/3600, sec%3600/60, sec%60)
 }
 
 // injectVastExtensions вставляет блок erid/AdvertiserInfo в пользовательский

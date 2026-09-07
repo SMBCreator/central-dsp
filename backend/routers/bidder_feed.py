@@ -43,9 +43,11 @@ async def partners_feed(authorization: str | None = Header(default=None)):
     # SSP её принимает (fx.choose_currency). fx_rates — курсы ЦБ RUB/валюта без
     # наценки; наценку владельца кампании Go применяет сам (candidate.fx_markup_percent).
     # Нет курса — нет ключа — Go не биддит в этой валюте (no-bid fx_rate_missing).
+    # seat_id — seat, присвоенный нам SSP при onboarding (audit R-04): Go ставит
+    # его в seatbid.seat, как Python (_seat).
     rows = await pool.fetch(
         """SELECT id, endpoint_key, auth_token_hash, qps_limit, bid_floor, status,
-                  allowed_ad_types, ip_whitelist, currency,
+                  allowed_ad_types, ip_whitelist, currency, seat_id,
                   CASE WHEN token_prev_valid_until > now() THEN token_prev_hash END AS token_prev_hash,
                   CASE WHEN token_prev_valid_until > now() THEN token_prev_valid_until END AS token_prev_valid_until
            FROM supply_partners WHERE status IN ('active', 'testing')"""

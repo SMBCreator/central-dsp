@@ -101,12 +101,25 @@ PREFILTER_REASONS = (
     "other",
 )
 
+# Причины несовместимости кандидата с OpenRTB-слотом (audit R-04): кандидат
+# пропущен явно, а не отдан заведомо невалидной ставкой. Строки — те же, что в
+# Go (rtb/openrtb.go, bidder_openrtb_incompat_total).
+OPENRTB_INCOMPAT_REASONS = (
+    "native_request_malformed",
+    "native_asset_missing",
+    "video_mime",
+    "video_protocol",
+    "video_duration",
+    "private_auction",
+)
+
 _lock = threading.Lock()
 _started_at = time.time()
 
 _counters: dict[str, float] = {name: 0.0 for name in _COUNTER_HELP}
 _no_bid: dict[str, int] = {r: 0 for r in NO_BID_REASONS}
 _prefilter: dict[str, int] = {r: 0 for r in PREFILTER_REASONS}
+_openrtb_incompat: dict[str, int] = {r: 0 for r in OPENRTB_INCOMPAT_REASONS}
 _lat_counts = [0] * (len(_LATENCY_BUCKETS) + 1)
 _lat_sum = 0.0
 _lat_total = 0
@@ -136,6 +149,16 @@ def inc_prefilter(reason: str) -> None:
     key = reason if reason in _prefilter else "other"
     with _lock:
         _prefilter[key] += 1
+
+
+def inc_openrtb_incompat(reason: str) -> None:
+    """Кандидат пропущен: несовместим с OpenRTB-слотом (audit R-04).
+
+    Неизвестная причина — KeyError (fail fast: список общий с Go)."""
+    if reason not in _openrtb_incompat:
+        raise KeyError(f"unknown openrtb incompat reason: {reason}")
+    with _lock:
+        _openrtb_incompat[reason] += 1
 
 
 def set_gauge(name: str, value: float) -> None:
@@ -190,6 +213,7 @@ def snapshot() -> dict:
             "counters": dict(_counters),
             "no_bid": dict(_no_bid),
             "prefilter": dict(_prefilter),
+            "openrtb_incompat": dict(_openrtb_incompat),
             "bid_latency": {"count": _lat_total, "sum": _lat_sum, "buckets": buckets},
             "gauges": dict(_gauges),
             "cron_runs": dict(_cron_runs),
@@ -216,6 +240,11 @@ def render_prometheus() -> str:
         lines.append("# TYPE rtb_prefilter_drops_total counter")
         for reason in PREFILTER_REASONS:
             lines.append(f'rtb_prefilter_drops_total{{reason="{reason}"}} {_prefilter[reason]}')
+
+        lines.append("# HELP rtb_openrtb_incompat_total Candidates skipped as incompatible with the OpenRTB slot (R-04).")
+        lines.append("# TYPE rtb_openrtb_incompat_total counter")
+        for reason in OPENRTB_INCOMPAT_REASONS:
+            lines.append(f'rtb_openrtb_incompat_total{{reason="{reason}"}} {_openrtb_incompat[reason]}')
 
         lines.append("# HELP rtb_bid_latency_seconds Bid request handling latency.")
         lines.append("# TYPE rtb_bid_latency_seconds histogram")
@@ -274,6 +303,8 @@ def reset_for_tests() -> None:
             _no_bid[r] = 0
         for r in _prefilter:
             _prefilter[r] = 0
+        for r in _openrtb_incompat:
+            _openrtb_incompat[r] = 0
         for i in range(len(_lat_counts)):
             _lat_counts[i] = 0
         _lat_sum = 0.0

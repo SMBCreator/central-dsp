@@ -163,6 +163,17 @@ type scoredCandidate struct {
 	// fxRate — RUB за единицу валюты ответа с наценкой владельца (1 для RUB).
 	// bid.price = price / fxRate; Python win() умножает ${AUCTION_PRICE} на него.
 	fxRate float64
+	// deal — сделка imp.pmp.deals, по которой торгуемся (nil = открытый аукцион);
+	// nativeAssets — assets по imp.native.request (nil = legacy фиксированные 1–5).
+	deal         *Deal
+	nativeAssets []map[string]any
+}
+
+// incIncompat — кандидат пропущен как несовместимый со слотом (audit R-04).
+func (h *Handler) incIncompat(reason string) {
+	if h.metrics != nil {
+		h.metrics.IncOpenRTBIncompat(reason)
+	}
 }
 
 // Bid — POST /rtb/bid/{endpointKey}. Пайплайн — паритет с Python:
@@ -186,7 +197,7 @@ func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 	}
 	// Audit R-02: снапшот старше FEED_MAX_AGE — не торгуем. Иначе пауза кампании,
 	// исчерпанный бюджет, блокировка SSP или отозванный токен не применяются,
-	// пока backend недоступен. 503 — SSP видит недоступность и снижает трафик.
+	// пока backend нед��ступен. 503 — SSP видит недоступность и снижает трафик.
 	if !h.store.Fresh() {
 		h.mNoBid(metrics.ReasonFeedStale)
 		http.Error(w, "feed stale", http.StatusServiceUnavailable)
@@ -332,10 +343,16 @@ func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 		h.metrics.IncBidResponse(len(bids), rubSum)
 		h.metrics.IncPartnerBids(endpointKey, len(bids))
 	}
+	// seat — ID, присвоенный нам этим SSP при onboarding (supply_partners.seat_id);
+	// без него — дефолт биддера. Паритет с rtb.py (_seat).
+	seat := partner.SeatID
+	if seat == "" {
+		seat = h.seat
+	}
 	resp := BidResponse{
 		ID:      req.ID,
 		Cur:     respCur,
-		SeatBid: []SeatBid{{Seat: h.seat, Bid: bids}},
+		SeatBid: []SeatBid{{Seat: seat, Bid: bids}},
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
@@ -377,6 +394,16 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 	partnerCur := partner.Currency
 	floorCur := fx.FloorCurrency(imp.BidFloorCur, req.Cur, partnerCur)
 
+	// OpenRTB-совместимость (audit R-04). Native: assets собираем по
+	// imp.native.request; нечитаемый request — весь imp не торгуется.
+	nativeReq, err := parseNativeRequest(imp.Native)
+	if err != nil {
+		h.incIncompat(IncompatNativeMalformed)
+		return nil, 0
+	}
+	// private_auction=1: SSP принимает только ставки по сделкам (§3.2.11).
+	privateOnly := privateAuctionOnly(imp)
+
 	// Собираем прошедших таргетинг кандидатов, сортируем по цене (desc).
 	impView := buildImpView(imp)
 	var scored []scoredCandidate
@@ -391,6 +418,29 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 		if c.T != nil && !targeting.MatchImp(feedImpTargeting(c.T), impView) {
 			continue
 		}
+		var deal *Deal
+		if c.T != nil {
+			deal = matchedDealObj(imp, c.T.DealIDs)
+		}
+		if privateOnly && deal == nil {
+			h.incIncompat(IncompatPrivateAuction)
+			continue
+		}
+		if adType == "video" {
+			if reason := videoIncompat(imp.Video, c); reason != "" {
+				h.incIncompat(reason)
+				continue
+			}
+		}
+		var nativeAssets []map[string]any
+		if adType == "native" && nativeReq != nil {
+			assets, ok := buildNativeAssets(nativeReq, c)
+			if !ok {
+				h.incIncompat(IncompatNativeAsset)
+				continue
+			}
+			nativeAssets = assets
+		}
 		// Ретаргетинг-сегменты — единственный Redis-вызов среди фильтров, поэтому
 		// после всех in-memory проверок; у большинства line items сегментов нет.
 		if c.T != nil && !h.audienceOK(rctx, c.T.AudienceInclude, c.T.AudienceExclude, deviceID) {
@@ -398,7 +448,19 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 		}
 		// Курсы с наценкой владельца: floor -> RUB, цена RUB -> валюта ответа.
 		// Нет курса — кандидат в этой валюте не торгуется (никогда «как в рублях»).
-		rateFloor, ok1 := fx.EffectiveRate(floorCur, snap.FXRates, c.FXMarkupPercent)
+		// Ставка по сделке: floor и тип аукциона берутся из deal (§3.2.12),
+		// deal.bidfloorcur -> bidfloorcur imp -> валюта партнёра.
+		impFloor, impFloorCur, candAuction := imp.BidFloor, floorCur, auctionType
+		if deal != nil {
+			if deal.BidFloor > 0 {
+				impFloor = deal.BidFloor
+				impFloorCur = fx.FloorCurrency(deal.BidFloorCur, []string{floorCur}, partnerCur)
+			}
+			if deal.At != 0 {
+				candAuction = deal.At
+			}
+		}
+		rateFloor, ok1 := fx.EffectiveRate(impFloorCur, snap.FXRates, c.FXMarkupPercent)
 		ratePFloor, ok2 := fx.EffectiveRate(partnerCur, snap.FXRates, c.FXMarkupPercent)
 		rateResp, ok3 := fx.EffectiveRate(respCur, snap.FXRates, c.FXMarkupPercent)
 		if !ok1 || !ok2 || !ok3 {
@@ -407,7 +469,7 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 			}
 			continue
 		}
-		floor := math.Max(imp.BidFloor*rateFloor, partner.BidFloor*ratePFloor)
+		floor := math.Max(impFloor*rateFloor, partner.BidFloor*ratePFloor)
 		// CPC (audit R-03, порт rtb.py): ставка за клик -> эквивалентная CPM
 		// через ожидаемый CTR (модель из фида, иначе консервативный fallback).
 		// max_bid у CPC — потолок клика, а не CPM; поэтому CPM-клампы ниже
@@ -449,14 +511,14 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 				pctrUsed = pred.PCTR
 			}
 		}
-		if h.shading != nil && shading.ShouldShade(c.BidShading, auctionType) {
+		if h.shading != nil && shading.ShouldShade(c.BidShading, candAuction) {
 			factor := h.shading.GetFactor(rctx, c.CampaignID, partner.ID)
 			price = shading.Apply(price, factor, floor)
 		}
 		if price < floor || price <= 0 {
 			continue
 		}
-		scored = append(scored, scoredCandidate{c: c, price: price, raw: raw, pctr: pctrUsed, bidCPC: bidCPC, fxRate: rateResp})
+		scored = append(scored, scoredCandidate{c: c, price: price, raw: raw, pctr: pctrUsed, bidCPC: bidCPC, fxRate: rateResp, deal: deal, nativeAssets: nativeAssets})
 	}
 	sort.Slice(scored, func(i, j int) bool { return scored[i].price > scored[j].price })
 
@@ -527,7 +589,7 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 			return nil, 0
 		}
 
-		adm := BuildAdm(c, h.base, token)
+		adm := BuildAdmAssets(c, h.base, token, sc.nativeAssets)
 		nurl := fmt.Sprintf("%s/api/rtb/win?bid=%s&price=${AUCTION_PRICE}", h.base, token)
 		// lurl (OpenRTB 2.5 §4.2.3): SSP сообщает о проигрыше с кодом причины и
 		// ценой, которой не хватило. Идёт в Go (/rtb/* -> биддер): освобождаем
@@ -542,8 +604,8 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 		}
 		ext, _ := json.Marshal(map[string]string{"erid": c.Erid})
 		dealID := ""
-		if c.T != nil {
-			dealID = targeting.MatchedDeal(c.T.DealIDs, impView.DealIDs)
+		if sc.deal != nil {
+			dealID = sc.deal.ID
 		}
 		// RUB -> валюта ответа тем же курсом, что записан в bidmeta.fx_rate.
 		return &Bid{

@@ -1,0 +1,6 @@
+{
+  "name": "native: no request -> legacy fixed assets 1..5 (nil from builder, adm falls back)",
+  "imp": {"id": "1", "native": {"ver": "1.1"}},
+  "creative": {"type": "native", "native_title": "x", "asset_url": "https://cdn.example/a.jpg"},
+  "expect": {"native_assets": null}
+}

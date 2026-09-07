@@ -1,0 +1,11 @@
+{
+  "name": "video: custom VAST 2.0 (MediaFile type from XML) but SSP wants VAST 4 only -> video_protocol",
+  "imp": {"id": "1", "video": {"mimes": ["video/mp4"], "protocols": [7, 8]}},
+  "creative": {
+    "type": "video",
+    "video_url": "",
+    "video_duration": null,
+    "vast_xml": "<VAST version=\"2.0\"><Ad><InLine><MediaFiles><MediaFile delivery=\"progressive\" type=\"video/mp4\"><![CDATA[https://x/y.bin]]></MediaFile></MediaFiles></InLine></Ad></VAST>"
+  },
+  "expect": {"incompat": "video_protocol", "video_mime": "video/mp4", "vast_protocols": [2, 5]}
+}

@@ -1,0 +1,12 @@
+{
+  "name": "PMP: private_auction=1, line item has no matching deal -> private_auction incompat",
+  "imp": {
+    "id": "1",
+    "banner": {"w": 300, "h": 250},
+    "bidfloor": 1.0,
+    "pmp": {"private_auction": 1, "deals": [{"id": "D-777", "bidfloor": 5.0}]}
+  },
+  "creative": {"type": "banner", "width": 300, "height": 250},
+  "deal_ids": ["D-1", "D-2"],
+  "expect": {"incompat": "private_auction", "deal": null}
+}

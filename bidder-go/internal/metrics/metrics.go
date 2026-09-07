@@ -64,6 +64,11 @@ type Registry struct {
 	// datacenter_ip) — отдельно от no-bid, как rtb_prefilter_drops_total в Python.
 	prefilterDrops sync.Map // reason -> *atomic.Int64
 
+	// Audit R-04: кандидат пропущен из-за несовместимости с OpenRTB-слотом
+	// (native asset/MIME/protocol/duration/private auction) — явный отказ вместо
+	// заведомо невалидной ставки. = rtb_openrtb_incompat_total в Python.
+	openrtbIncompat sync.Map // reason -> *atomic.Int64
+
 	gateRejects     atomic.Int64 // gate_and_reserve: отказ (бюджет/freq cap)
 	gateErrors      atomic.Int64 // gate_and_reserve: ошибка Redis
 	lossReleases    atomic.Int64 // /rtb/loss: освобождение резерва
@@ -109,6 +114,9 @@ func New() *Registry {
 	for _, reason := range PrefilterReasons {
 		r.prefilterDrops.Store(reason, new(atomic.Int64))
 	}
+	for _, reason := range OpenRTBIncompatReasons {
+		r.openrtbIncompat.Store(reason, new(atomic.Int64))
+	}
 	return r
 }
 
@@ -116,9 +124,24 @@ func New() *Registry {
 // Дублируется строками, чтобы metrics не зависел от prefilter.
 var PrefilterReasons = []string{"bot_ua", "geo_unserved", "no_device_id", "datacenter_ip"}
 
+// OpenRTBIncompatReasons — bounded enum причин несовместимости (см. rtb/openrtb.go,
+// те же строки в backend/rtb_compat.py). Дублируется, чтобы metrics не зависел от rtb.
+var OpenRTBIncompatReasons = []string{
+	"native_request_malformed", "native_asset_missing",
+	"video_mime", "video_protocol", "video_duration",
+	"private_auction",
+}
+
 // IncPrefilterDrop — запрос отсечён предфильтром до таргетинга/аукциона.
 func (r *Registry) IncPrefilterDrop(reason string) {
 	if v, ok := r.prefilterDrops.Load(reason); ok {
+		v.(*atomic.Int64).Add(1)
+	}
+}
+
+// IncOpenRTBIncompat — кандидат пропущен: несовместим со слотом OpenRTB.
+func (r *Registry) IncOpenRTBIncompat(reason string) {
+	if v, ok := r.openrtbIncompat.Load(reason); ok {
 		v.(*atomic.Int64).Add(1)
 	}
 }
@@ -245,6 +268,12 @@ func (r *Registry) write(w http.ResponseWriter) {
 	for _, reason := range PrefilterReasons {
 		v, _ := r.prefilterDrops.Load(reason)
 		fmt.Fprintf(w, "bidder_prefilter_drops_total{reason=%q} %d\n", reason, v.(*atomic.Int64).Load())
+	}
+
+	fmt.Fprintf(w, "# HELP bidder_openrtb_incompat_total Candidates skipped as incompatible with the OpenRTB slot (native assets, video MIME/protocol/duration, private auction).\n# TYPE bidder_openrtb_incompat_total counter\n")
+	for _, reason := range OpenRTBIncompatReasons {
+		v, _ := r.openrtbIncompat.Load(reason)
+		fmt.Fprintf(w, "bidder_openrtb_incompat_total{reason=%q} %d\n", reason, v.(*atomic.Int64).Load())
 	}
 
 	c("bidder_gate_rejects_total", "gate_and_reserve rejections (budget or frequency cap).", r.gateRejects.Load())

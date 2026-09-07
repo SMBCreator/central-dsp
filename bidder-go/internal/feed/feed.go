@@ -167,7 +167,10 @@ type Partner struct {
 	AllowedAdTypes json.RawMessage `json:"allowed_ad_types"`
 	// Currency — валюта расчётов с SSP (миграция 030; "" = RUB). Биддим в ней,
 	// если req.cur её допускает (fx.ChooseCurrency).
-	Currency    string          `json:"currency"`
+	Currency string `json:"currency"`
+	// SeatID — seat, присвоенный нам этим SSP при onboarding (миграция 030);
+	// уходит в seatbid.seat. "" = дефолт биддера (audit R-04).
+	SeatID      string          `json:"seat_id"`
 	IPWhitelist json.RawMessage `json:"ip_whitelist"` // JSON-массив IP/CIDR серверов SSP; пусто = любой IP
 
 	// Окно безразрывной ротации токена (миграция 039, audit S-06): предыдущий

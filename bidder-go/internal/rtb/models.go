@@ -113,9 +113,34 @@ type Metric struct {
 }
 
 type Native struct {
-	Request string          `json:"request,omitempty"`
+	Request string          `json:"request,omitempty"` // по спецификации — строка JSON
 	Ver     string          `json:"ver,omitempty"`
 	Ext     json.RawMessage `json:"ext,omitempty"`
+	// RequestObj — request, присланный объектом (нарушение спецификации,
+	// встречается у SSP). Заполняется UnmarshalJSON; читается parseNativeRequest.
+	RequestObj json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON принимает request и строкой, и объектом — иначе один такой
+// imp ронял бы разбор всего BidRequest.
+func (n *Native) UnmarshalJSON(b []byte) error {
+	var raw struct {
+		Request json.RawMessage `json:"request"`
+		Ver     string          `json:"ver"`
+		Ext     json.RawMessage `json:"ext"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	n.Ver, n.Ext = raw.Ver, raw.Ext
+	if len(raw.Request) == 0 || string(raw.Request) == "null" {
+		return nil
+	}
+	if raw.Request[0] == '"' {
+		return json.Unmarshal(raw.Request, &n.Request)
+	}
+	n.RequestObj = raw.Request
+	return nil
 }
 
 type Site struct {
