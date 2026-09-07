@@ -159,6 +159,9 @@ services:
       # прокси). Дефолт в бинаре — loopback + приватные сети; за внешним LB
       # перечислите его адреса. Пусто = XFF игнорируется всегда.
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.0/8,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7}
+      # Audit R-02: предел торговли по устаревшему снапшоту фида; дальше
+      # no-bid (feed_stale) и /healthz 503 -> контейнер unhealthy.
+      FEED_MAX_AGE: ${FEED_MAX_AGE:-120s}
     depends_on:
       redis:
         condition: service_healthy
@@ -176,7 +179,7 @@ services:
     networks:
       - centraldsp
 
-  # ───────────────────���─────────────────────
+  # ─────────────────────────────────────────
   # CELERY WORKER
   # ─────────────────────────────────────────
   worker:

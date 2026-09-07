@@ -208,7 +208,7 @@
 - [x] B4 E-03 — `rtb_events_inbox` (041) ON CONFLICT DO NOTHING RETURNING в одной транзакции с bid_events/stats_hourly/cursor; после ошибки чтение `0`; XAUTOCLAIM чужих pending > 60 с; poison → `rtb:events:dead` после 5 доставок; bootstrap с `0`/курсора в retry-loop; gauges stream_length/pending/lag + 5 алертов + runbook
 - [x] B5 E-04 — test=1 сквозь всю воронку: Python bid path не резервирует и не считает bids; click/view/video журнал-only при is_test; conversions.is_test (042) наследуется через clid и отфильтрован в optimizer/scoring/pixel-витринах; симулятор шлёт test=1 через Go (fallback Python) и показывает режим в UI
 - [x] B6 E-05 — pixel: канонический PUBLIC_API_BASE_URL (или PUBLIC_BASE_URL+/api) в скрипте и коде вставки (/settings/public), 404 без него; collect: Content-Length/16 КБ → Pydantic-схема → rate limit → БД, 204 на любой мусор; атрибуция clid только по кампаниям владельца пикселя (+ поддерево agency) и в окне PIXEL_ATTRIBUTION_WINDOW_DAYS; test exclusion из B5
-- [ ] B7 R-02
+- [x] B7 R-02 — Go: `FEED_MAX_AGE` (120s) → no-bid `feed_stale` + 503; до первой загрузки `feed_not_loaded` 503; `/healthz` 503 при stale/not loaded (compose healthcheck выводит из ротации); `/internal/feed/reload` возвращает реальный результат (502 + error); bidmeta/XADD обязательны — ошибка → no-bid, резерв возвращён, `bidder_bookkeeping_errors_total`; gauges feed_stale/max_age/refresh_errors; алерты FeedAging/FeedStale/BookkeepingErrors + runbook
 - [ ] B8 R-03
 - [ ] B9 R-04
 - [ ] B10 R-05

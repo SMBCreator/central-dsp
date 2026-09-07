@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/feed"
+	"github.com/SMBCreator/central-dsp/bidder-go/internal/metrics"
 )
 
 // newTestHandler создаёт handler без Redis (degraded mode: QPS/freq/budget
@@ -77,13 +78,67 @@ func doBid(t *testing.T, h *Handler, body string) *httptest.ResponseRecorder {
 	return w
 }
 
-func TestBidEmptyFeedUnknownEndpoint(t *testing.T) {
-	// NewStore стартует с пустым снапшотом: неизвестный endpointKey -> 404
-	// (паритет с Python: партнёр не найден).
+func TestBidFeedNotLoaded503(t *testing.T) {
+	// Audit R-02: до первой успешной загрузки фида биддер не знает партнёров и
+	// кампаний -> 503 feed_not_loaded (а не 404 «партнёр не найден»), чтобы
+	// балансировщик не считал инстанс здоровым.
 	h := newTestHandler(nil)
 	w := doBid(t, h, `{"id":"r1","imp":[{"id":"1"}]}`)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("want 503, got %d", w.Code)
+	}
+	hw := httptest.NewRecorder()
+	h.Healthz(hw, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if hw.Code != http.StatusServiceUnavailable {
+		t.Fatalf("healthz: want 503, got %d", hw.Code)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(hw.Body.Bytes(), &body)
+	if body["status"] != "feed_not_loaded" {
+		t.Fatalf("healthz status: want feed_not_loaded, got %v", body["status"])
+	}
+}
+
+func TestBidUnknownEndpoint404(t *testing.T) {
+	// Фид загружен, но такого endpointKey нет -> 404 (паритет с Python).
+	h := newTestHandler(testSnapshot())
+	w := httptest.NewRecorder()
+	h.Bid(w, bidRequest("no-such-key", `{"id":"r1","imp":[{"id":"1"}]}`))
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("want 404, got %d", w.Code)
+	}
+}
+
+func TestBidStaleFeed503(t *testing.T) {
+	// Audit R-02: снапшот старше FEED_MAX_AGE -> no-bid feed_stale + /healthz 503.
+	// Иначе биддер торговал бы по бюджетам/статусам возрастом в часы.
+	store := feed.NewStore(feed.Config{BackendURL: "http://localhost:0", MaxAge: time.Minute})
+	snap := testSnapshot()
+	snap.LoadedAt = time.Now().Add(-2 * time.Minute)
+	store.SetSnapshot(snap)
+	h := NewHandler(store, nil)
+
+	w := doBid(t, h, `{"id":"r1","imp":[{"id":"1","banner":{"w":300,"h":250}}]}`)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("stale feed: want 503, got %d", w.Code)
+	}
+	hw := httptest.NewRecorder()
+	h.Healthz(hw, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if hw.Code != http.StatusServiceUnavailable {
+		t.Fatalf("healthz: want 503, got %d", hw.Code)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(hw.Body.Bytes(), &body)
+	if body["status"] != "feed_stale" {
+		t.Fatalf("healthz status: want feed_stale, got %v", body["status"])
+	}
+
+	// Свежий снапшот возвращает торговлю и 200 на /healthz.
+	store.SetSnapshot(testSnapshot())
+	hw = httptest.NewRecorder()
+	h.Healthz(hw, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if hw.Code != http.StatusOK {
+		t.Fatalf("healthz after refresh: want 200, got %d", hw.Code)
 	}
 }
 
@@ -309,6 +364,41 @@ func TestFeedReloadAuth(t *testing.T) {
 	h.FeedReload(w, httptest.NewRequest(http.MethodPost, "/internal/feed/reload", nil))
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("missing header: want 403, got %d", w.Code)
+	}
+}
+
+func TestFeedReloadReportsRefreshFailure(t *testing.T) {
+	// Audit R-02: backend недоступен -> reload не маскирует ошибку «ok: true»;
+	// backend (ssp_check) по этому ответу понимает, что кампания не в снапшоте.
+	h := newTestHandler(testSnapshot()) // BackendURL localhost:0 -> connection refused
+	h.SetInternalToken("s")
+	r := httptest.NewRequest(http.MethodPost, "/internal/feed/reload", nil)
+	r.Header.Set(internalCheckHeader, "s")
+	w := httptest.NewRecorder()
+	h.FeedReload(w, r)
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("want 502, got %d: %s", w.Code, w.Body.String())
+	}
+	var body map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &body)
+	if body["ok"] != false || body["error"] == nil || body["error"] == "" {
+		t.Fatalf("want ok=false with error, got %v", body)
+	}
+}
+
+func TestStaleFeedCountsNoBidReason(t *testing.T) {
+	store := feed.NewStore(feed.Config{BackendURL: "http://localhost:0", MaxAge: time.Minute})
+	snap := testSnapshot()
+	snap.LoadedAt = time.Now().Add(-2 * time.Minute)
+	store.SetSnapshot(snap)
+	h := NewHandler(store, nil)
+	reg := metrics.New()
+	h.SetMetrics(reg)
+	doBid(t, h, `{"id":"r1","imp":[{"id":"1","banner":{"w":300,"h":250}}]}`)
+	rec := httptest.NewRecorder()
+	reg.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if !strings.Contains(rec.Body.String(), `bidder_no_bid_total{reason="feed_stale"} 1`) {
+		t.Fatalf("expected feed_stale no-bid reason, got:\n%s", rec.Body.String())
 	}
 }
 

@@ -11,17 +11,45 @@ groups:
   - name: centraldsp-bidder-go
     rules:
       # --- Доступность и свежесть конфигурации -------------------------------
+      - alert: BidderFeedAging
+        expr: bidder_feed_age_seconds > 60 and bidder_feed_stale == 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Фид биддера не обновлялся {{ $value | printf \"%.0f\" }}s"
+          description: >-
+            Backend не отдаёт /rtb-feed (или отдаёт ошибку) — биддер пока
+            торгует по последнему снапшоту, но через FEED_MAX_AGE
+            (bidder_feed_max_age_seconds, по умолчанию 120 с) перейдёт в
+            no-bid. См. bidder_feed_refresh_errors_total и логи backend.
+            Runbook: rtb_alerts.md#feed-stale
+
       - alert: BidderFeedStale
-        expr: bidder_feed_age_seconds > 120
-        for: 2m
+        expr: bidder_feed_stale == 1
+        for: 1m
         labels:
           severity: critical
         annotations:
-          summary: "Фид биддера устарел ({{ $value | printf \"%.0f\" }}s)"
+          summary: "Фид биддера устарел — биддер в no-bid"
           description: >-
-            Go-биддер не получал свежий снапшот кампаний дольше 2 минут.
-            Биддинг продолжается на устаревшей конфигурации: возможен спенд
-            по остановленным кампаниям. Runbook: rtb_alerts.md#feed-stale
+            Audit R-02: снапшот старше FEED_MAX_AGE, биддер отвечает 503
+            feed_stale на все bid-запросы и /healthz -> 503 (инстанс выведен из
+            ротации). Доставка остановлена, спенда по устаревшим бюджетам нет.
+            Причина — backend /rtb-feed недоступен: чинить backend/БД.
+            Runbook: rtb_alerts.md#feed-stale
+
+      - alert: BidderBookkeepingErrors
+        expr: increase(bidder_bookkeeping_errors_total[5m]) > 10
+        labels:
+          severity: warning
+        annotations:
+          summary: "Биддер отменил {{ $value | printf \"%.0f\" }} бидов: Redis не принял bidmeta"
+          description: >-
+            Audit R-02: бид не отдаётся, если bidmeta/событие bid не записались
+            в Redis — иначе показ прошёл бы без списания и учёта. Резерв
+            возвращён, денег не потеряно, но упущены показы. Проверить Redis
+            (latency, maxmemory, сеть). Runbook: rtb_alerts.md#redis-down
 
       - alert: BidderRedisDown
         expr: bidder_redis_up == 0

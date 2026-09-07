@@ -25,6 +25,7 @@ type NoBidReason string
 
 const (
 	ReasonFeedNotLoaded   NoBidReason = "feed_not_loaded"
+	ReasonFeedStale       NoBidReason = "feed_stale" // audit R-02: снапшот старше FEED_MAX_AGE
 	ReasonUnknownEndpoint NoBidReason = "unknown_endpoint"
 	ReasonBadAuth         NoBidReason = "bad_auth" // токен не совпал
 	// Audit S-06: раздельные причины отказа на auth-фазе, чтобы алерт
@@ -43,7 +44,7 @@ const (
 // AllNoBidReasons — полный список для инициализации серий (нулевые значения
 // видны в Prometheus сразу, rate() не «прыгает» при первом инкременте).
 var AllNoBidReasons = []NoBidReason{
-	ReasonFeedNotLoaded, ReasonUnknownEndpoint, ReasonBadAuth,
+	ReasonFeedNotLoaded, ReasonFeedStale, ReasonUnknownEndpoint, ReasonBadAuth,
 	ReasonTokenNotIssued, ReasonIPDenied, ReasonWhitelistInvalid, ReasonQPSExceeded,
 	ReasonParseError, ReasonEmptyRequest, ReasonCurrency, ReasonNoCandidates,
 }
@@ -65,7 +66,10 @@ type Registry struct {
 	reserveExpired  atomic.Int64 // sweeper: резерв истёк без win/loss
 	reserveOrphans  atomic.Int64 // sweeper: pending без bidmeta
 	eventEmitErrors atomic.Int64 // XADD в rtb:events не удался (событие потеряно для статистики)
-	panics          atomic.Int64 // паники хендлеров, перехваченные recover-middleware
+	// Audit R-02: bidmeta/XADD не записались -> бид отменён, резерв возвращён.
+	// Каждая единица — упущенный показ из-за Redis, а не потерянные деньги.
+	bookkeepingErrors atomic.Int64
+	panics            atomic.Int64 // паники хендлеров, перехваченные recover-middleware
 
 	// Per-partner (endpoint_key): запросы и биды. Кардинальность = число SSP
 	// (единицы-десятки), поэтому безопасно для Prometheus.
@@ -127,6 +131,9 @@ func (r *Registry) IncReserveOrphans(n int) { r.reserveOrphans.Add(int64(n)) }
 
 // IncEventEmitError — не удалось положить событие в Redis Stream.
 func (r *Registry) IncEventEmitError() { r.eventEmitErrors.Add(1) }
+
+// IncBookkeepingError — бид отменён: bidmeta или событие bid не записались (R-02).
+func (r *Registry) IncBookkeepingError() { r.bookkeepingErrors.Add(1) }
 
 // IncPanic — хендлер упал с паникой, процесс выжил благодаря recover.
 func (r *Registry) IncPanic() { r.panics.Add(1) }
@@ -216,6 +223,7 @@ func (r *Registry) write(w http.ResponseWriter) {
 	c("bidder_reserve_expired_total", "Reservations expired by the sweeper (no win/loss in time).", r.reserveExpired.Load())
 	c("bidder_reserve_orphans_total", "pending:bids entries whose bidmeta was already gone.", r.reserveOrphans.Load())
 	c("bidder_event_emit_errors_total", "Bid events that failed to be written to the rtb:events Redis stream.", r.eventEmitErrors.Load())
+	c("bidder_bookkeeping_errors_total", "Bids withdrawn because bidmeta/bid event could not be written to Redis (reservation released).", r.bookkeepingErrors.Load())
 	c("bidder_panics_total", "Handler panics recovered by the HTTP middleware (process kept alive).", r.panics.Load())
 
 	writeLabeled(w, &r.partnerRequests, "bidder_partner_requests_total", "Bid requests by SSP endpoint_key.")

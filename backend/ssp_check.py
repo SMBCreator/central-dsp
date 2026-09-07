@@ -87,19 +87,34 @@ def go_bidder_caller(client=None):
 async def request_feed_reload(client=None) -> bool:
     """Просит Go немедленно перечитать фид (draft->testing должен попасть в
     снапшот до проверки, а не через 30 с). Ошибка — не фатальна."""
+    ok, _ = await request_feed_reload_detail(client)
+    return ok
+
+
+async def request_feed_reload_detail(client=None) -> tuple[bool, str]:
+    """То же, но с причиной отказа (audit R-02): Go возвращает 502 + error, если
+    рефреш реально не удался, — проверка SSP показывает это вместо загадочного
+    «No-bid: нет активной кампании»."""
     import httpx
 
     token = os.environ.get("RTB_API_TOKEN", "")
     if not token:
-        return False
+        return False, "RTB_API_TOKEN не задан — принудительный рефреш фида недоступен"
     own = client is None
     c = client or httpx.AsyncClient(timeout=httpx.Timeout(6.0, connect=1.0))
     try:
         try:
             r = await c.post(f"{BIDDER_URL}/internal/feed/reload", headers={INTERNAL_CHECK_HEADER: token})
-            return r.status_code == 200
-        except httpx.HTTPError:
-            return False
+        except httpx.HTTPError as e:
+            return False, f"биддер недоступен: {type(e).__name__}"
+        if r.status_code == 200:
+            return True, ""
+        detail = ""
+        try:
+            detail = str((r.json() or {}).get("error") or "")
+        except ValueError:
+            pass
+        return False, f"HTTP {r.status_code}" + (f": {detail}" if detail else "")
     finally:
         if own:
             await c.aclose()

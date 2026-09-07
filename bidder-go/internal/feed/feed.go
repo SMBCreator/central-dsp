@@ -12,12 +12,14 @@ package feed
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -218,7 +220,18 @@ type Config struct {
 	BackendURL string
 	FeedToken  string // RTB_API_TOKEN
 	Refresh    time.Duration
+	// MaxAge — предельный возраст снапшота (audit R-02). Пока backend недоступен,
+	// биддер торгует по старому слепку не дольше MaxAge: дальше pause, бюджет,
+	// блокировка SSP или ротация токена в нём могут быть уже неверны → no-bid и
+	// /healthz 503. 0 = DefaultMaxAge.
+	MaxAge time.Duration
 }
+
+// DefaultMaxAge — FEED_MAX_AGE по умолчанию: четыре интервала рефреша.
+const DefaultMaxAge = 120 * time.Second
+
+// ErrNoToken — RTB_API_TOKEN пуст: фид не грузится, снапшот никогда не станет свежим.
+var ErrNoToken = errors.New("feed: RTB_API_TOKEN not set")
 
 // Snapshot — иммутабельный слепок фида для hot path (читается без блокировки).
 type Snapshot struct {
@@ -229,17 +242,37 @@ type Snapshot struct {
 	LoadedAt   time.Time
 }
 
+// Status — состояние фида для /healthz и /internal/feed/reload.
+type Status struct {
+	Loaded      bool          // хотя бы один успешный рефреш
+	Age         time.Duration // с последней успешной загрузки
+	MaxAge      time.Duration
+	Stale       bool // !Loaded || Age > MaxAge
+	LastError   string
+	LastAttempt time.Time
+	Candidates  int
+	Partners    int
+}
+
 type Store struct {
 	cfg    Config
 	client *http.Client
 
 	mu   sync.RWMutex
 	snap *Snapshot
+
+	lastErr     string
+	lastAttempt time.Time
+
+	refreshErrors atomic.Int64
 }
 
 func NewStore(cfg Config) *Store {
 	if cfg.Refresh <= 0 {
 		cfg.Refresh = 30 * time.Second
+	}
+	if cfg.MaxAge <= 0 {
+		cfg.MaxAge = DefaultMaxAge
 	}
 	return &Store{
 		cfg:    cfg,
@@ -249,11 +282,13 @@ func NewStore(cfg Config) *Store {
 }
 
 // Refresh — немедленный рефреш снапшота (POST /internal/feed/reload).
-func (s *Store) Refresh(ctx context.Context) { s.refresh(ctx) }
+// Возвращает реальный результат: backend по нему решает, попала ли кампания в
+// снапшот перед автопроверкой SSP (audit R-02).
+func (s *Store) Refresh(ctx context.Context) error { return s.refresh(ctx) }
 
 // Run — цикл рефреша; завершение по ctx.
 func (s *Store) Run(ctx context.Context) {
-	s.refresh(ctx)
+	_ = s.refresh(ctx)
 	t := time.NewTicker(s.cfg.Refresh)
 	defer t.Stop()
 	for {
@@ -261,9 +296,21 @@ func (s *Store) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			s.refresh(ctx)
+			_ = s.refresh(ctx)
 		}
 	}
+}
+
+// RefreshErrors — число неудачных рефрешей с запуска (метрика).
+func (s *Store) RefreshErrors() int64 { return s.refreshErrors.Load() }
+
+func (s *Store) recordError(err error) error {
+	s.refreshErrors.Add(1)
+	s.mu.Lock()
+	s.lastErr = err.Error()
+	s.lastAttempt = time.Now()
+	s.mu.Unlock()
+	return err
 }
 
 type feedError struct {
@@ -292,10 +339,10 @@ func (s *Store) get(ctx context.Context, path string, out any) error {
 	return dec.Decode(out)
 }
 
-func (s *Store) refresh(ctx context.Context) {
+func (s *Store) refresh(ctx context.Context) error {
 	if s.cfg.FeedToken == "" {
 		slog.Warn("RTB_API_TOKEN not set; feed disabled")
-		return
+		return s.recordError(ErrNoToken)
 	}
 	var camps struct {
 		Candidates  []Candidate  `json:"candidates"`
@@ -303,14 +350,14 @@ func (s *Store) refresh(ctx context.Context) {
 	}
 	if err := s.get(ctx, "/rtb-feed/campaigns", &camps); err != nil {
 		slog.Error("feed campaigns refresh failed", "err", err)
-		return
+		return s.recordError(fmt.Errorf("campaigns: %w", err))
 	}
 	var parts struct {
 		Partners []Partner `json:"partners"`
 	}
 	if err := s.get(ctx, "/rtb-feed/partners", &parts); err != nil {
 		slog.Error("feed partners refresh failed", "err", err)
-		return
+		return s.recordError(fmt.Errorf("partners: %w", err))
 	}
 
 	snap := &Snapshot{
@@ -352,8 +399,11 @@ func (s *Store) refresh(ctx context.Context) {
 
 	s.mu.Lock()
 	s.snap = snap
+	s.lastErr = ""
+	s.lastAttempt = snap.LoadedAt
 	s.mu.Unlock()
 	slog.Info("feed refreshed", "candidates", len(snap.Candidates), "partners", len(snap.Partners))
+	return nil
 }
 
 // ParseTargeting разбирает targeting JSONB (объект или строку с объектом).
@@ -415,4 +465,32 @@ func (s *Store) Age() time.Duration {
 		return 0
 	}
 	return time.Since(snap.LoadedAt)
+}
+
+// MaxAge — действующий предел возраста снапшота.
+func (s *Store) MaxAge() time.Duration { return s.cfg.MaxAge }
+
+// Fresh — можно ли торговать по текущему снапшоту (audit R-02): фид загружен
+// хотя бы раз и не старше MaxAge. Hot path зовёт на каждый запрос — только
+// чтение времени, без блокировки сверх RLock снапшота.
+func (s *Store) Fresh() bool {
+	snap := s.Snapshot()
+	return snap != nil && !snap.LoadedAt.IsZero() && time.Since(snap.LoadedAt) <= s.cfg.MaxAge
+}
+
+// Status — состояние фида для /healthz и /internal/feed/reload.
+func (s *Store) Status() Status {
+	s.mu.RLock()
+	snap, lastErr, lastAttempt := s.snap, s.lastErr, s.lastAttempt
+	s.mu.RUnlock()
+	st := Status{MaxAge: s.cfg.MaxAge, LastError: lastErr, LastAttempt: lastAttempt}
+	if snap != nil {
+		st.Candidates, st.Partners = len(snap.Candidates), len(snap.Partners)
+		if !snap.LoadedAt.IsZero() {
+			st.Loaded = true
+			st.Age = time.Since(snap.LoadedAt)
+		}
+	}
+	st.Stale = !st.Loaded || st.Age > s.cfg.MaxAge
+	return st
 }

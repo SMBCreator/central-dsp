@@ -107,8 +107,9 @@ const EventStreamKey = "rtb:events"
 // пикового трафика), чтобы лежащий consumer не съел память Redis.
 const eventStreamMaxLen = 200_000
 
-// EmitEvent добавляет событие в стрим. Fire-and-forget: ошибка логируется
-// вызывающей стороной, торги не блокируются.
+// EmitEvent добавляет событие в стрим. Для события bid ошибка фатальна для
+// бида (handler отзывает резерв и не отвечает SSP, audit R-02); для loss/win
+// событие вторично и ошибка только логируется.
 func (c *Client) EmitEvent(ctx context.Context, fields map[string]any) error {
 	return c.rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: EventStreamKey,
@@ -208,8 +209,9 @@ return 1
 // ---------------------------------------------------------------------------
 // Per-bid terminal states (audit M-06).
 //
-// bidstate:{bid_id} = win | loss | expired — ставится атомарно в том же
-// Lua-скрипте, что и движение денег, поэтому:
+// bidstate:{bid_id} = win | loss | expired | aborted — ставится атомарно в том
+// же Lua-скрипте, что и движение денег ('aborted' — биддер сам отозвал бид, не
+// сумев записать bidmeta/событие, audit R-02), поэтому:
 //   * повторный/поздний lurl не возвращает резерв дважды;
 //   * loss после win не «размораживает» уже списанные деньги;
 //   * win после loss/expired (SSP прислал уведомления не в том порядке или

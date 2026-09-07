@@ -152,9 +152,17 @@ func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 	// 1. Auth: endpointKey -> supply partner (+ опциональный X-CentralDSP-Token,
 	//    сверяется по sha256-хэшу из фида, см. partner_auth.go).
 	snap := h.store.Snapshot()
-	if snap == nil {
+	if snap == nil || snap.LoadedAt.IsZero() {
 		h.mNoBid(metrics.ReasonFeedNotLoaded)
 		http.Error(w, "feed not loaded", http.StatusServiceUnavailable)
+		return
+	}
+	// Audit R-02: снапшот старше FEED_MAX_AGE — не торгуем. Иначе пауза кампании,
+	// исчерпанный бюджет, блокировка SSP или отозванный токен не применяются,
+	// пока backend недоступен. 503 — SSP видит недоступность и снижает трафик.
+	if !h.store.Fresh() {
+		h.mNoBid(metrics.ReasonFeedStale)
+		http.Error(w, "feed stale", http.StatusServiceUnavailable)
 		return
 	}
 	// Паритет с Python (rtb.py): партнёр торгуется в статусах active и testing.
@@ -401,9 +409,21 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 		token, err := SignEventToken(bidID, DefaultTokenTTL)
 		if err != nil {
 			slog.Error("sign token", "err", err)
+			h.abortReservation(rctx, reservation)
 			return nil
 		}
-		h.persistBidMeta(rctx, bidID, imp, c, partner, sc.price, view, adType, deviceID, capsList, req.Test == 1, reservation)
+		// Audit R-02: bidmeta + событие bid — обязательный bookkeeping. Без bidmeta
+		// backend не опознает win/imp/click (rtb.py:_find_bid) — платный показ
+		// пройдёт без списания и без учёта. Не удалось записать — резерв
+		// возвращаем и бид не отдаём.
+		if err := h.persistBidMeta(rctx, bidID, imp, c, partner, sc.price, view, adType, deviceID, capsList, req.Test == 1, reservation); err != nil {
+			slog.Error("bid bookkeeping failed; no-bid", "bid_id", bidID, "err", err)
+			if h.metrics != nil {
+				h.metrics.IncBookkeepingError()
+			}
+			h.abortReservation(rctx, reservation)
+			return nil
+		}
 
 		adm := BuildAdm(c, h.base, token)
 		nurl := fmt.Sprintf("%s/api/rtb/win?bid=%s&price=${AUCTION_PRICE}", h.base, token)
@@ -509,9 +529,11 @@ func (h *Handler) persistBidMeta(ctx interface {
 	Err() error
 	Deadline() (time.Time, bool)
 	Value(any) any
-}, bidID string, imp *Imp, c *feed.Candidate, partner *feed.Partner, price float64, view *targeting.RequestView, adType, deviceID string, caps []redisx.CapWindow, isTest bool, res redisx.BidReservation) {
+}, bidID string, imp *Imp, c *feed.Candidate, partner *feed.Partner, price float64, view *targeting.RequestView, adType, deviceID string, caps []redisx.CapWindow, isTest bool, res redisx.BidReservation) error {
 	if h.redis == nil {
-		return
+		// Без Redis биддер в degraded-режиме (только dev): bookkeeping невозможен,
+		// но и резервов нет — бид уходит как раньше.
+		return nil
 	}
 	rdb := h.redis.Raw()
 	dt := targeting.DeviceTypes[view.DeviceType]
@@ -557,7 +579,9 @@ func (h *Handler) persistBidMeta(ctx interface {
 		"is_test":       testFlag,
 		"business_date": businessDate,
 	})
-	rdb.Set(ctx, "bidmeta:"+bidID, meta, time.Hour)
+	if err := rdb.Set(ctx, "bidmeta:"+bidID, meta, time.Hour).Err(); err != nil {
+		return fmt.Errorf("set bidmeta: %w", err)
+	}
 
 	// Событие «bid» -> Redis Stream -> backend/events_consumer.py -> bid_events +
 	// stats_hourly.bids. Расширенные поля (tagid/publisher/bundle/city/region)
@@ -587,22 +611,45 @@ func (h *Handler) persistBidMeta(ctx interface {
 		"is_test":           strconv.Itoa(testFlag),
 		"ts":                strconv.FormatInt(time.Now().Unix(), 10),
 	}
+	// Событие bid — единственный путь бида в bid_events/stats_hourly; без него
+	// win/imp/click повиснут без «родителя», а отчёт win-rate/CPA поедет (R-02).
 	if err := h.redis.EmitEvent(ctx, ev); err != nil {
-		slog.Warn("emit bid event", "err", err)
 		if h.metrics != nil {
 			h.metrics.IncEventEmitError()
 		}
+		return fmt.Errorf("xadd bid event: %w", err)
 	}
+	// bidfreq/clidmap — вторичны: их отсутствие лишь ослабляет freq cap/ретаргетинг
+	// для одного бида, а не теряет деньги. Логируем, бид не отменяем.
 	if deviceID != "" && len(caps) > 0 {
 		capsJSON, _ := json.Marshal(caps)
-		rdb.Set(ctx, "bidfreq:"+bidID, deviceID+"|"+string(capsJSON), time.Hour)
+		if err := rdb.Set(ctx, "bidfreq:"+bidID, deviceID+"|"+string(capsJSON), time.Hour).Err(); err != nil {
+			slog.Warn("set bidfreq", "bid_id", bidID, "err", err)
+		}
 	}
 	// Retargeting bridge: clid == bid_id после клика. Ключ и TTL — контракт с
 	// backend/audiences.py (resolve_clid читает clidmap:{bid_id}, CLIDMAP_TTL 7d):
 	// пиксель на лендинге может сработать через дни после клика. Раньше Go писал
 	// clid:{bid} на 24h — пиксель его не находил, сегменты с Go-трафика не росли.
 	if deviceID != "" {
-		rdb.Set(ctx, clidMapPrefix+bidID, deviceID, clidMapTTL)
+		if err := rdb.Set(ctx, clidMapPrefix+bidID, deviceID, clidMapTTL).Err(); err != nil {
+			slog.Warn("set clidmap", "bid_id", bidID, "err", err)
+		}
+	}
+	return nil
+}
+
+// abortReservation возвращает резерв бида, который решили не отдавать SSP
+// (bookkeeping не записался). Идёт по тому же Lua, что loss/expired, поэтому
+// идемпотентен и переводит bidstate в терминальное 'aborted'. Пустой резерв
+// (test=1, Redis nil) — no-op. Ошибку только логируем: если и это не удалось,
+// pending:bids подберёт sweeper (expired) — деньги вернутся, пусть и позже.
+func (h *Handler) abortReservation(ctx context.Context, res redisx.BidReservation) {
+	if h.redis == nil || res.BidID == "" {
+		return
+	}
+	if _, err := h.redis.ReleaseBid(ctx, res, "aborted"); err != nil {
+		slog.Error("abort reservation", "bid_id", res.BidID, "err", err)
 	}
 }
 
@@ -786,25 +833,58 @@ func (h *Handler) FeedReload(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	h.store.Refresh(ctx)
+	// Audit R-02: возвращаем реальный результат. Backend (ssp_check) по нему
+	// понимает, попала ли новая кампания в снапшот, а не получает «ok: true»
+	// при упавшем рефреше.
+	err := h.store.Refresh(ctx)
+	st := h.store.Status()
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"ok": true, "campaigns": h.store.Len(), "feed_age_seconds": h.store.Age().Seconds(),
-	})
+	body := map[string]any{
+		"ok":               err == nil,
+		"campaigns":        h.store.Len(),
+		"feed_age_seconds": st.Age.Seconds(),
+		"stale":            st.Stale,
+	}
+	if err != nil {
+		body["error"] = err.Error()
+		w.WriteHeader(http.StatusBadGateway)
+	}
+	_ = json.NewEncoder(w).Encode(body)
 }
 
+// Healthz — GET /healthz. 200 только когда биддер реально способен торговать:
+// фид загружен и не старше FEED_MAX_AGE. Иначе 503 — оркестратор/балансировщик
+// выводит инстанс из ротации вместо того, чтобы SSP получали no-bid (R-02).
+// Redis отражается в теле, но не валит liveness: без него биддер деградирует
+// (нет резервов/freq cap), а не ломается.
 func (h *Handler) Healthz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	redisOK := false
 	if h.redis != nil && h.redis.Ping(r.Context()) == nil {
 		redisOK = true
 	}
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"status":       "ok",
-		"campaigns":    h.store.Len(),
-		"feed_age_sec": int(h.store.Age().Seconds()),
-		"redis":        redisOK,
-	})
+	st := h.store.Status()
+	status := "ok"
+	if st.Stale {
+		status = "feed_stale"
+		if !st.Loaded {
+			status = "feed_not_loaded"
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+	body := map[string]any{
+		"status":           status,
+		"campaigns":        st.Candidates,
+		"partners":         st.Partners,
+		"feed_age_sec":     int(st.Age.Seconds()),
+		"feed_max_age_sec": int(st.MaxAge.Seconds()),
+		"feed_loaded":      st.Loaded,
+		"redis":            redisOK,
+	}
+	if st.LastError != "" {
+		body["feed_error"] = st.LastError
+	}
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 // --- helpers ---

@@ -62,10 +62,22 @@ func main() {
 
 	addr := env("BIDDER_ADDR", ":8090")
 
+	// Audit R-02: FEED_MAX_AGE — сколько торговать по старому снапшоту, когда
+	// backend недоступен. Дальше — no-bid (feed_stale) и /healthz 503.
+	feedMaxAge := feed.DefaultMaxAge
+	if raw := os.Getenv("FEED_MAX_AGE"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil || d <= 0 {
+			slog.Error("startup config check failed", "err", "FEED_MAX_AGE must be a positive duration like 120s", "got", raw)
+			os.Exit(1)
+		}
+		feedMaxAge = d
+	}
 	store := feed.NewStore(feed.Config{
 		BackendURL: env("BACKEND_INTERNAL_URL", "http://backend:8000"),
 		FeedToken:  env("RTB_API_TOKEN", os.Getenv("INTERNAL_FEED_TOKEN")), // Bearer для GET /rtb-feed/*
 		Refresh:    30 * time.Second,
+		MaxAge:     feedMaxAge,
 	})
 
 	// Redis: бюджеты (Lua), freq caps, QPS, shading-факторы, bidmeta.
@@ -134,6 +146,14 @@ func main() {
 	h.SetMetrics(reg)
 	reg.RegisterGauge("bidder_feed_age_seconds", func() float64 { return store.Age().Seconds() })
 	reg.RegisterGauge("bidder_feed_campaigns", func() float64 { return float64(store.Len()) })
+	reg.RegisterGauge("bidder_feed_max_age_seconds", func() float64 { return store.MaxAge().Seconds() })
+	reg.RegisterGauge("bidder_feed_stale", func() float64 {
+		if store.Fresh() {
+			return 0
+		}
+		return 1
+	})
+	reg.RegisterGauge("bidder_feed_refresh_errors_total", func() float64 { return float64(store.RefreshErrors()) })
 	reg.RegisterGauge("bidder_redis_up", func() float64 {
 		if rc == nil {
 			return 0
