@@ -6,12 +6,21 @@ backend'а из PUBLIC_BIDDER_BASE_URL (fallback PUBLIC_BASE_URL), а если �
 настроен — UI видит null и показывает предупреждение вместо выдуманного URL.
 """
 
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-import main
 from auth import current_user
-from routers.settings import public_bidder_base_url
+from routers.settings import public_bidder_base_url, router as settings_router
 from startup_checks import collect_warnings
+
+
+def _app(user: dict | None) -> FastAPI:
+    """Только settings-роутер, без lifespan main.app (не требует Redis/Postgres)."""
+    app = FastAPI()
+    app.include_router(settings_router)
+    if user is not None:
+        app.dependency_overrides[current_user] = lambda: user
+    return app
 
 
 def test_public_bidder_base_url_prefers_dedicated_var():
@@ -36,12 +45,7 @@ def test_startup_warns_when_bidder_url_missing():
 def test_endpoint_returns_template(monkeypatch):
     monkeypatch.setenv("PUBLIC_BIDDER_BASE_URL", "https://bidder.example.com")
     monkeypatch.delenv("PUBLIC_BASE_URL", raising=False)
-    main.app.dependency_overrides[current_user] = lambda: {"id": "u1", "role": "viewer"}
-    try:
-        with TestClient(main.app) as c:
-            r = c.get("/settings/public")
-    finally:
-        main.app.dependency_overrides.pop(current_user, None)
+    r = TestClient(_app({"id": "u1", "role": "viewer"})).get("/settings/public")
     assert r.status_code == 200
     body = r.json()
     assert body["bidder_base_url"] == "https://bidder.example.com"
@@ -49,20 +53,16 @@ def test_endpoint_returns_template(monkeypatch):
     assert body["ssp_token_header"] == "X-CentralDSP-Token"
 
 
-def test_endpoint_requires_auth():
-    with TestClient(main.app) as c:
-        assert c.get("/settings/public").status_code == 401
+def test_endpoint_requires_auth(monkeypatch):
+    # Без сессии current_user отдаёт 401 — эндпоинт не публичен для анонимов.
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    assert TestClient(_app(None)).get("/settings/public").status_code == 401
 
 
 def test_endpoint_null_when_unset(monkeypatch):
     monkeypatch.delenv("PUBLIC_BIDDER_BASE_URL", raising=False)
     monkeypatch.delenv("PUBLIC_BASE_URL", raising=False)
-    main.app.dependency_overrides[current_user] = lambda: {"id": "u1", "role": "viewer"}
-    try:
-        with TestClient(main.app) as c:
-            r = c.get("/settings/public")
-    finally:
-        main.app.dependency_overrides.pop(current_user, None)
+    r = TestClient(_app({"id": "u1", "role": "viewer"})).get("/settings/public")
     assert r.status_code == 200
     assert r.json()["bidder_base_url"] is None
     assert r.json()["rtb_bid_url_template"] is None
