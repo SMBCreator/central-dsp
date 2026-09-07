@@ -1,7 +1,7 @@
 """GET /supply-partners/{id}/stats — карточка SSP на реальном Postgres (нужен DATABASE_URL).
 
 Фиксируем: метрики считаются из bid_events только по своему партнёру и без is_test,
-win_rate/ctr в процентах, spend = sum(clear_price по показам)/1000 (как в /stats/report),
+win_rate/ctr в процентах, spend = sum(clear_price по win)/1000 (stats_math.spend_expr, как в /stats/report),
 loss_reasons с русскими подписями и долями, чужой партнёр -> 404.
 """
 
@@ -77,10 +77,11 @@ def test_partner_stats_totals_losses_and_isolation(env):
             # 4 ставки, 2 выигрыша, 2 показа (clear 1500 + 500 CPM), 1 клик, 2 лосса разных причин
             for _ in range(4):
                 await _event(conn, partner, camp, li, cr, "bid", price=120.0, bidfloor=50.0)
+            # Договор о расходе (stats_math): clear_price несёт win, показы — нет.
+            await _event(conn, partner, camp, li, cr, "win", clear_price=1500.0)
+            await _event(conn, partner, camp, li, cr, "win", clear_price=500.0)
             for _ in range(2):
-                await _event(conn, partner, camp, li, cr, "win")
-            await _event(conn, partner, camp, li, cr, "impression", clear_price=1500.0)
-            await _event(conn, partner, camp, li, cr, "impression", clear_price=500.0)
+                await _event(conn, partner, camp, li, cr, "impression")
             await _event(conn, partner, camp, li, cr, "click")
             await _event(conn, partner, camp, li, cr, "loss", loss_reason="102", min_to_win=140.0)
             await _event(conn, partner, camp, li, cr, "loss", loss_reason="100")

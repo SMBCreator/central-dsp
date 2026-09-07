@@ -36,6 +36,7 @@ from cache import (
 from db import get_pool
 from money import CURRENCY, clamp_clearing_price, cpm_to_cost
 from ord.service import feed_gate_sql
+from stats_math import INVENTORY_DIMENSIONS
 from tokens import sign_event_token, verify_event_token
 
 router = APIRouter(prefix="/rtb", tags=["rtb"])
@@ -552,18 +553,57 @@ def _is_test_bid(row) -> bool:
     return v in (1, "1", True)
 
 
+def _row_get(row, key: str):
+    """bidmeta (dict из Redis) или asyncpg.Record (PG-fallback) — единый доступ."""
+    if row is None:
+        return None
+    if hasattr(row, "get"):
+        return row.get(key)
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        return None
+
+
+def _event_dims(row) -> dict[str, Any]:
+    """Измерения бида, наследуемые win/imp/click/view/loss (audit E-01).
+
+    Раньше win/imp/click писались без bundle/publisher/tagid/region/city —
+    в группировках «по площадкам» они попадали в «—», CTR/win-rate по
+    конкретному inventory были недостоверны.
+    """
+    out: dict[str, Any] = {
+        "imp_id": _row_get(row, "imp_id"),
+        "campaign_id": _row_get(row, "campaign_id"),
+        "line_item_id": _row_get(row, "line_item_id"),
+        "creative_id": _row_get(row, "creative_id"),
+        "supply_partner_id": _row_get(row, "supply_partner_id"),
+    }
+    for col in INVENTORY_DIMENSIONS:
+        v = _row_get(row, col)
+        if isinstance(v, str):
+            v = v.strip() or None
+            if v and col == "domain":
+                v = v.lower()
+        out[col] = v
+    return out
+
+
 async def _log_event(pool, event_type: str, **kw: Any) -> None:
+    """Строка bid_events. Договор о расходе (stats_math): clear_price несёт
+    только событие win — impression/click его не дублируют."""
     await pool.execute(
         """
         INSERT INTO bid_events (event_type, bid_id, imp_id, campaign_id, line_item_id, creative_id,
-                                supply_partner_id, price, clear_price, device_type, geo_country, ad_type, domain, os, browser, pctr,
-                                is_test)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+                                supply_partner_id, price, clear_price, device_type, geo_country, geo_region, geo_city,
+                                ad_type, domain, bundle, publisher_id, tagid, os, browser, pctr, is_test)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
         """,
         event_type, kw.get("bid_id", ""), kw.get("imp_id"), kw.get("campaign_id"),
         kw.get("line_item_id"), kw.get("creative_id"), kw.get("supply_partner_id"),
-        kw.get("price"), kw.get("clear_price"), kw.get("device_type"),
-        kw.get("geo_country"), kw.get("ad_type"), kw.get("domain"),
+        kw.get("price"), kw.get("clear_price") if event_type == "win" else None,
+        kw.get("device_type"), kw.get("geo_country"), kw.get("geo_region"), kw.get("geo_city"),
+        kw.get("ad_type"), kw.get("domain"), kw.get("bundle"), kw.get("publisher_id"), kw.get("tagid"),
         kw.get("os"), kw.get("browser"), kw.get("pctr"),
         bool(kw.get("is_test", False)),
     )
@@ -1045,6 +1085,19 @@ async def process_bid_request(
         # Synchronously cache bid metadata in Redis (sub-ms) so win/imp/click
         # handlers can resolve the bid immediately; the Postgres insert below
         # is fire-and-forget and may land after the SSP's win notice (GAP-011).
+        # Одни и те же inventory-измерения идут в bidmeta и в событие bid —
+        # win/imp/click наследуют их через _event_dims (audit E-01). Формат
+        # полей — контракт с Go persistBidMeta.
+        _site_or_app = req.get("site") or req.get("app") or {}
+        bid_dims = {
+            "device_type": DEVICE_TYPES.get(device.get("devicetype", 0), "unknown"),
+            "geo_country": geo.get("country"), "geo_region": geo.get("region"), "geo_city": geo.get("city"),
+            "ad_type": ad_type,
+            "domain": site.get("domain"), "bundle": (req.get("app") or {}).get("bundle"),
+            "publisher_id": str((_site_or_app.get("publisher") or {}).get("id") or "") or None,
+            "tagid": imp.get("tagid"),
+            "os": req_os, "browser": req_browser,
+        }
         await get_redis().set(
             f"bidmeta:{bid_id}",
             json.dumps({
@@ -1052,9 +1105,7 @@ async def process_bid_request(
                 "campaign_id": str(c["campaign_id"]), "line_item_id": str(c["li_id"]),
                 "creative_id": str(c["creative_id"]), "supply_partner_id": str(partner["id"]),
                 "price": price,
-                "device_type": DEVICE_TYPES.get(device.get("devicetype", 0), "unknown"),
-                "geo_country": geo.get("country"), "ad_type": ad_type,
-                "domain": site.get("domain"), "os": req_os, "browser": req_browser,
+                **bid_dims,
                 "is_test": 0,
                 **reserve_meta,
             }),
@@ -1063,10 +1114,8 @@ async def process_bid_request(
         _fire_and_forget(_log_event(
             pool, "bid", bid_id=bid_id, imp_id=imp.get("id"),
             campaign_id=c["campaign_id"], line_item_id=c["li_id"], creative_id=c["creative_id"],
-            supply_partner_id=partner["id"], price=price,
-            device_type=DEVICE_TYPES.get(device.get("devicetype", 0), "unknown"),
-            geo_country=geo.get("country"), ad_type=ad_type, domain=site.get("domain"),
-            os=req_os, browser=req_browser, pctr=c.get("_pctr"),
+            supply_partner_id=partner["id"], price=price, pctr=c.get("_pctr"),
+            **bid_dims,
         ))
         _fire_and_forget(_bump_stats(pool, "bids", 0, c["campaign_id"], c["li_id"], c["creative_id"], partner["id"]))
 
@@ -1159,12 +1208,8 @@ async def win_notice(bid: str, price: str | None = None):
         if await mark_once("testwin", bid):
             obs_metrics.inc("rtb_test_wins_total")
             await _log_event(
-                pool, "win", bid_id=bid, imp_id=row["imp_id"], campaign_id=row["campaign_id"],
-                line_item_id=row["line_item_id"], creative_id=row["creative_id"],
-                supply_partner_id=row["supply_partner_id"], price=row["price"],
-                clear_price=clear_price, device_type=row["device_type"],
-                geo_country=row["geo_country"], ad_type=row["ad_type"], domain=row["domain"],
-                os=row["os"], browser=row["browser"], is_test=True,
+                pool, "win", bid_id=bid, price=row["price"], clear_price=clear_price,
+                is_test=True, **_event_dims(row),
             )
         return {"ok": True, "test": True}
 
@@ -1201,12 +1246,8 @@ async def win_notice(bid: str, price: str | None = None):
     obs_metrics.inc("rtb_wins_total")
     obs_metrics.inc("rtb_win_spend_rub_sum", float(cost))
     await _log_event(
-        pool, "win", bid_id=bid, imp_id=row["imp_id"], campaign_id=row["campaign_id"],
-        line_item_id=row["line_item_id"], creative_id=row["creative_id"],
-        supply_partner_id=row["supply_partner_id"], price=row["price"],
-        clear_price=clear_price, device_type=row["device_type"],
-        geo_country=row["geo_country"], ad_type=row["ad_type"], domain=row["domain"],
-        os=row["os"], browser=row["browser"],
+        pool, "win", bid_id=bid, price=row["price"], clear_price=clear_price,
+        **_event_dims(row),
     )
     await _bump_domain_stats(pool, row, "wins", result.cost if result else 0)
     await _bump_stats(pool, "wins", cost, row["campaign_id"], row["line_item_id"], row["creative_id"], row["supply_partner_id"])
@@ -1226,11 +1267,7 @@ async def impression(bid: str):
         is_test = _is_test_bid(row)
         obs_metrics.inc("rtb_imps_total")
         await _log_event(
-            pool, "impression", bid_id=bid, imp_id=row["imp_id"], campaign_id=row["campaign_id"],
-            line_item_id=row["line_item_id"], creative_id=row["creative_id"],
-            supply_partner_id=row["supply_partner_id"], device_type=row["device_type"],
-            geo_country=row["geo_country"], ad_type=row["ad_type"], domain=row["domain"],
-            os=row["os"], browser=row["browser"], is_test=is_test,
+            pool, "impression", bid_id=bid, is_test=is_test, **_event_dims(row),
         )
         if is_test:
             # Тестовый показ SSP: в журнале есть, в статистике клиента — нет.
@@ -1272,11 +1309,7 @@ async def viewable_impression(bid: str):
     if row:
         obs_metrics.inc("rtb_viewable_imps_total")
         await _log_event(
-            pool, "viewable", bid_id=bid, imp_id=row["imp_id"], campaign_id=row["campaign_id"],
-            line_item_id=row["line_item_id"], creative_id=row["creative_id"],
-            supply_partner_id=row["supply_partner_id"], device_type=row["device_type"],
-            geo_country=row["geo_country"], ad_type=row["ad_type"], domain=row["domain"],
-            os=row["os"], browser=row["browser"],
+            pool, "viewable", bid_id=bid, **_event_dims(row),
         )
         await _bump_domain_stats(pool, row, "viewable_imps")
         await _bump_stats(pool, "viewable_imps", 0, row["campaign_id"], row["line_item_id"], row["creative_id"], row["supply_partner_id"])
@@ -1300,11 +1333,7 @@ async def video_event(bid: str, e: str):
     row = await _find_bid(pool, bid)
     if row:
         await _log_event(
-            pool, f"video_{e}", bid_id=bid, imp_id=row["imp_id"], campaign_id=row["campaign_id"],
-            line_item_id=row["line_item_id"], creative_id=row["creative_id"],
-            supply_partner_id=row["supply_partner_id"], device_type=row["device_type"],
-            geo_country=row["geo_country"], ad_type=row["ad_type"], domain=row["domain"],
-            os=row["os"], browser=row["browser"],
+            pool, f"video_{e}", bid_id=bid, **_event_dims(row),
         )
         if e == "start":
             await _bump_stats(pool, "video_starts", 0, row["campaign_id"], row["line_item_id"], row["creative_id"], row["supply_partner_id"])
@@ -1330,11 +1359,7 @@ async def click(bid: str, r: str = ""):
         if row:
             obs_metrics.inc("rtb_clicks_total")
             await _log_event(
-                pool, "click", bid_id=bid, imp_id=row["imp_id"], campaign_id=row["campaign_id"],
-                line_item_id=row["line_item_id"], creative_id=row["creative_id"],
-                supply_partner_id=row["supply_partner_id"], device_type=row["device_type"],
-                geo_country=row["geo_country"], ad_type=row["ad_type"], domain=row["domain"],
-                os=row["os"], browser=row["browser"],
+                pool, "click", bid_id=bid, **_event_dims(row),
             )
             await _bump_domain_stats(pool, row, "clicks")
             await _bump_stats(pool, "clicks", 0, row["campaign_id"], row["line_item_id"], row["creative_id"], row["supply_partner_id"])

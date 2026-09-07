@@ -538,7 +538,9 @@ func (h *Handler) persistBidMeta(ctx interface {
 	// плюс is_test, чтобы win по тестовому запросу не списывал деньги, и
 	// описание резерва (audit M-04/M-06): business_date, advertiser_id, reserve,
 	// has_total, has_li — по ним loss/expire/win двигают ровно те ключи, что
-	// были зарезервированы.
+	// были зарезервированы. Inventory-измерения (bundle/publisher/tagid/
+	// region/city) — audit E-01: win/imp/click/loss наследуют их от бида,
+	// иначе в группировках «по площадкам» они попадают в «—».
 	meta, _ := json.Marshal(map[string]any{
 		"bid_id": bidID, "imp_id": imp.ID,
 		"campaign_id": c.CampaignID, "line_item_id": c.LiID,
@@ -549,7 +551,9 @@ func (h *Handler) persistBidMeta(ctx interface {
 		"has_total":     hasTotal,
 		"has_li":        hasLi,
 		"device_type":   dt, "geo_country": view.Country, "ad_type": adType,
-		"domain": view.Domain, "os": view.OS, "browser": browser,
+		"geo_region": view.Region, "geo_city": view.City,
+		"domain": view.Domain, "bundle": view.Bundle, "publisher_id": view.PubID, "tagid": imp.TagID,
+		"os": view.OS, "browser": browser,
 		"is_test":       testFlag,
 		"business_date": businessDate,
 	})
@@ -687,7 +691,12 @@ func (h *Handler) Loss(w http.ResponseWriter, r *http.Request) {
 				DeviceType      string  `json:"device_type"`
 				GeoCountry      string  `json:"geo_country"`
 				AdType          string  `json:"ad_type"`
+				GeoRegion       string  `json:"geo_region"`
+				GeoCity         string  `json:"geo_city"`
 				Domain          string  `json:"domain"`
+				Bundle          string  `json:"bundle"`
+				PublisherID     string  `json:"publisher_id"`
+				TagID           string  `json:"tagid"`
 				OS              string  `json:"os"`
 				Browser         string  `json:"browser"`
 				IsTest          int     `json:"is_test"`
@@ -731,7 +740,10 @@ func (h *Handler) Loss(w http.ResponseWriter, r *http.Request) {
 					"price":       strconv.FormatFloat(meta.Price, 'f', 4, 64),
 					"loss_reason": reason, "min_to_win": mtw,
 					"device_type": meta.DeviceType, "geo_country": meta.GeoCountry,
-					"ad_type": meta.AdType, "domain": meta.Domain, "os": meta.OS, "browser": meta.Browser,
+					"geo_region": meta.GeoRegion, "geo_city": meta.GeoCity,
+					"ad_type": meta.AdType, "domain": meta.Domain, "bundle": meta.Bundle,
+					"publisher_id": meta.PublisherID, "tagid": meta.TagID,
+					"os": meta.OS, "browser": meta.Browser,
 					"is_test": strconv.Itoa(meta.IsTest),
 					"ts":      strconv.FormatInt(time.Now().Unix(), 10),
 				}); err != nil {

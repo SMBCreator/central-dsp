@@ -128,6 +128,7 @@
 | GET | `/settings/ord` | roles | superadmin |
 | **PUT** | `/settings/ord` | roles | superadmin |
 | **POST** | `/settings/ord/test` | roles | superadmin |
+| GET | `/settings/public` | session | любая роль (scope внутри хендлера) |
 | **DELETE** | `/settings/throttle/subnets` | roles | admin, superadmin |
 | GET | `/settings/throttle/subnets` | roles | admin, superadmin |
 | **POST** | `/settings/throttle/subnets` | roles | admin, superadmin |

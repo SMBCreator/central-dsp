@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from auth import current_user
 from db import get_pool
 from rbac import effective_markup_pct, visible_user_ids
+from stats_math import spend_expr
 
 router = APIRouter(prefix="/stats", tags=["stats"])
 
@@ -482,7 +483,7 @@ async def report(body: ReportRequest, user: dict = Depends(current_user)):
                    count(*) FILTER (WHERE e.event_type = 'impression') AS impressions,
                    count(*) FILTER (WHERE e.event_type = 'click')      AS clicks,
                    count(*) FILTER (WHERE e.event_type = 'viewable')   AS viewable_imps,
-                   COALESCE(sum(e.clear_price) FILTER (WHERE e.event_type = 'impression'), 0) / 1000.0 AS spend,
+                   {spend_expr("e")} AS spend,
                    0::bigint AS conversions,
                    count(*) FILTER (WHERE e.event_type = 'loss')       AS losses,
                    avg(e.price)      FILTER (WHERE e.event_type = 'bid')  AS avg_bid,

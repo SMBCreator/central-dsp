@@ -7,7 +7,8 @@
 
 Что сравнивает (по часам, в UTC, окно [since, until)):
   bid_events  count(bid) / count(win) / count(impression) / count(click) /
-              sum(clear_price по impression)/1000   (та же формула, что /stats/report)
+              sum(clear_price по win)/1000   (stats_math.spend_expr — та же формула,
+              что /stats/report и карточка SSP; деньги списываются на win — E-01)
   stats_hourly sum(bids) / sum(wins) / sum(impressions) / sum(clicks) / sum(spend)
   --api-url    GET /stats/summary?from=&to= для того же окна (расход/показы/клики).
 
@@ -25,17 +26,22 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 
+from pathlib import Path
+
 import asyncpg
 
-_EVENTS_SQL = """
-SELECT date_trunc('hour', created_at) AS ts_hour,
-       count(*) FILTER (WHERE event_type = 'bid')        AS bids,
-       count(*) FILTER (WHERE event_type = 'win')        AS wins,
-       count(*) FILTER (WHERE event_type = 'impression') AS impressions,
-       count(*) FILTER (WHERE event_type = 'click')      AS clicks,
-       COALESCE(sum(clear_price) FILTER (WHERE event_type = 'impression'), 0) / 1000.0 AS spend
-FROM bid_events
-WHERE created_at >= $1 AND created_at < $2 AND NOT is_test
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from stats_math import spend_expr  # noqa: E402
+
+_EVENTS_SQL = f"""
+SELECT date_trunc('hour', e.created_at) AS ts_hour,
+       count(*) FILTER (WHERE e.event_type = 'bid')        AS bids,
+       count(*) FILTER (WHERE e.event_type = 'win')        AS wins,
+       count(*) FILTER (WHERE e.event_type = 'impression') AS impressions,
+       count(*) FILTER (WHERE e.event_type = 'click')      AS clicks,
+       {spend_expr("e")} AS spend
+FROM bid_events e
+WHERE e.created_at >= $1 AND e.created_at < $2 AND NOT e.is_test
 GROUP BY 1
 """
 

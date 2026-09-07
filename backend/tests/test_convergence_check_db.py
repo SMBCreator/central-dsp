@@ -46,26 +46,35 @@ async def _seed(conn, t: _Tenant, lost_impressions: int):
                VALUES ('bid', $1, $2, $3, $4, 100, false, $5)""",
             str(uuid.uuid4()), ids["camp"], ids["li"], ids["cr"], HOUR,
         )
+    # Как пишут реальные win_notice/impression (E-01): clear_price несёт win,
+    # показ — событие доставки без цены.
     for _ in range(2):
+        bid_id = str(uuid.uuid4())
         await conn.execute(
             """INSERT INTO bid_events (event_type, bid_id, campaign_id, line_item_id, creative_id,
                                        clear_price, is_test, created_at)
-               VALUES ('impression', $1, $2, $3, $4, 900, false, $5)""",
-            str(uuid.uuid4()), ids["camp"], ids["li"], ids["cr"], HOUR,
+               VALUES ('win', $1, $2, $3, $4, 900, false, $5)""",
+            bid_id, ids["camp"], ids["li"], ids["cr"], HOUR,
         )
-    # тестовое событие — не должно учитываться ни с одной стороны
+        await conn.execute(
+            """INSERT INTO bid_events (event_type, bid_id, campaign_id, line_item_id, creative_id,
+                                       is_test, created_at)
+               VALUES ('impression', $1, $2, $3, $4, false, $5)""",
+            bid_id, ids["camp"], ids["li"], ids["cr"], HOUR,
+        )
+    # тестовый win — не должен учитываться ни с одной стороны
     await conn.execute(
         """INSERT INTO bid_events (event_type, bid_id, campaign_id, line_item_id, creative_id,
                                    clear_price, is_test, created_at)
-           VALUES ('impression', $1, $2, $3, $4, 900, true, $5)""",
+           VALUES ('win', $1, $2, $3, $4, 900, true, $5)""",
         str(uuid.uuid4()), ids["camp"], ids["li"], ids["cr"], HOUR,
     )
     imps = 2 - lost_impressions
     await conn.execute(
         """INSERT INTO stats_hourly (ts_hour, campaign_id, line_item_id, creative_id,
                                      bids, wins, impressions, clicks, spend)
-           VALUES ($1, $2, $3, $4, 5, 0, $5, 0, $6)""",
-        HOUR, ids["camp"], ids["li"], ids["cr"], imps, imps * 900 / 1000,
+           VALUES ($1, $2, $3, $4, 5, 2, $5, 0, $6)""",
+        HOUR, ids["camp"], ids["li"], ids["cr"], imps, 2 * 900 / 1000,
     )
 
 

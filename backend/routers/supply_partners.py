@@ -14,6 +14,7 @@ from auth import current_user
 from rbac import require_admin
 from db import get_pool
 from schemas import SupplyPartnerIn, SupplyPartnerPatch
+from stats_math import spend_expr
 import ssp_check
 import ssp_tokens
 
@@ -251,13 +252,13 @@ _PARTNER_WHERE = """
     AND NOT e.is_test
 """
 
-_METRIC_COLS = """
+_METRIC_COLS = f"""
     count(*) FILTER (WHERE e.event_type = 'bid')        AS bids,
     count(*) FILTER (WHERE e.event_type = 'win')        AS wins,
     count(*) FILTER (WHERE e.event_type = 'impression') AS impressions,
     count(*) FILTER (WHERE e.event_type = 'click')      AS clicks,
     count(*) FILTER (WHERE e.event_type = 'loss')       AS losses,
-    COALESCE(sum(e.clear_price) FILTER (WHERE e.event_type = 'impression'), 0) / 1000.0 AS spend
+    {spend_expr("e")} AS spend
 """
 
 
