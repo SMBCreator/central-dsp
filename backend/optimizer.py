@@ -15,13 +15,15 @@ Rules (each requires minimum volume to avoid noise):
   7. CPV overrun (video): target_cpv set AND spend / completed views > 2x target
   8. Low VTR (video): >= 100 video starts AND completion rate < 15%
 
-Spend per dimension comes from win events (clear_price), conversions from the
-Central Pixel joined back through cdsp_clid -> bid_id, so every rule works on
-every dimension uniformly.
+Spend per dimension comes from the paid events (stats_math.spend_expr: CPM win
+clear_price / 1000 + CPC click clear_price), conversions from the Central Pixel
+joined back through cdsp_clid -> bid_id, so every rule works on every dimension
+uniformly.
 """
 import json as _json
 
 from db import get_pool
+from stats_math import spend_expr
 
 MIN_IMPS_FOR_CTR = 500
 MIN_IMPS_FOR_FRAUD = 200
@@ -101,7 +103,7 @@ async def optimize_campaign(campaign: dict) -> list[dict]:
                        count(*) FILTER (WHERE be.event_type = 'click') AS clicks,
                        count(*) FILTER (WHERE be.event_type = 'video_start') AS vstarts,
                        count(*) FILTER (WHERE be.event_type = 'video_complete') AS vcompletes,
-                       COALESCE(SUM(be.clear_price) FILTER (WHERE be.event_type = 'win'), 0) / 1000.0 AS spend
+                       {spend_expr("be")} AS spend
                 FROM bid_events be
                 WHERE be.campaign_id = $1 AND {dim_expr} IS NOT NULL
                   AND NOT be.is_test

@@ -54,6 +54,27 @@ const (
 	MultMax = 1.3
 )
 
+// CPCFallbackCTR — ожидаемый CTR для CPC-ставок, когда модели нет вовсе
+// (bootstrap). Зеркало ml/pctr.py CPC_FALLBACK_CTR.
+const CPCFallbackCTR = 0.002
+
+// ExpectedCTR — CTR для конвертации CPC -> CPM: прогноз модели (при отсутствии
+// совпавших сегментов — её глобальный CTR), без модели — CPCFallbackCTR.
+// Никогда не 0. Зеркало ml/pctr.py expected_ctr; m может быть nil.
+func (m *Model) ExpectedCTR(domain, creativeID, deviceType string, hour int) float64 {
+	if m == nil {
+		return CPCFallbackCTR
+	}
+	p := m.Predict(domain, creativeID, deviceType, hour).PCTR
+	if p <= 0 {
+		return CPCFallbackCTR
+	}
+	return p
+}
+
+// CPCToCPM — ставка за клик -> эквивалентная CPM: bid_cpc × CTR × 1000.
+func CPCToCPM(bidCPC, ctr float64) float64 { return bidCPC * ctr * 1000 }
+
 // FromFeed строит модель; nil, если фид её не отдал или global_ctr вне (0,1)
 // (та же валидация, что _load_active_model).
 func FromFeed(fm *FeedModel) *Model {

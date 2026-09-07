@@ -12,6 +12,7 @@ import os
 import time
 import uuid
 from contextlib import asynccontextmanager
+from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -569,6 +570,20 @@ def _row_get(row, key: str):
         return None
 
 
+def _cpc_of(row) -> float | None:
+    """Цена клика CPC-бида из bidmeta (пишут оба биддера), иначе None = CPM.
+
+    PG-fallback строка bid_events этих полей не несёт: клик по биду старше
+    TTL bidmeta (1 ч) не биллится — недосписание, никогда не пересписание."""
+    if (_row_get(row, "bid_type") or "cpm") != "cpc":
+        return None
+    try:
+        cpc = float(_row_get(row, "bid_cpc") or 0)
+    except (TypeError, ValueError):
+        return None
+    return cpc if cpc > 0 else None
+
+
 def _event_dims(row) -> dict[str, Any]:
     """Измерения бида, наследуемые win/imp/click/view/loss (audit E-01).
 
@@ -595,7 +610,8 @@ def _event_dims(row) -> dict[str, Any]:
 
 async def _log_event(pool, event_type: str, **kw: Any) -> None:
     """Строка bid_events. Договор о расходе (stats_math): clear_price несёт
-    только событие win — impression/click его не дублируют."""
+    только оплаченное событие — win (CPM) или click (CPC, audit R-03);
+    impression/viewable/video его не дублируют."""
     await pool.execute(
         """
         INSERT INTO bid_events (event_type, bid_id, imp_id, campaign_id, line_item_id, creative_id,
@@ -605,7 +621,7 @@ async def _log_event(pool, event_type: str, **kw: Any) -> None:
         """,
         event_type, kw.get("bid_id", ""), kw.get("imp_id"), kw.get("campaign_id"),
         kw.get("line_item_id"), kw.get("creative_id"), kw.get("supply_partner_id"),
-        kw.get("price"), kw.get("clear_price") if event_type == "win" else None,
+        kw.get("price"), kw.get("clear_price") if event_type in ("win", "click") else None,
         kw.get("device_type"), kw.get("geo_country"), kw.get("geo_region"), kw.get("geo_city"),
         kw.get("ad_type"), kw.get("domain"), kw.get("bundle"), kw.get("publisher_id"), kw.get("tagid"),
         kw.get("os"), kw.get("browser"), kw.get("pctr"),
@@ -1043,9 +1059,26 @@ async def process_bid_request(
             if (_aud_inc or _aud_exc) and not await check_audiences(
                     device_id or "", [str(x) for x in _aud_inc], [str(x) for x in _aud_exc]):
                 continue
-            price = float(c["bid_price"])
-            if c["max_bid"]:
-                price = min(price, float(c["max_bid"]))
+            # CPC (audit R-03): ставка за клик -> эквивалентная CPM через
+            # ожидаемый CTR (pCTR-модель, иначе консервативный fallback).
+            # Списание — по клику ровно bid_cpc (см. click()); win не списывает.
+            # max_bid для CPC — потолок клика, а не CPM.
+            c["_bid_type"] = (c.get("bid_type") or "cpm")
+            c["_bid_cpc"] = None
+            if c["_bid_type"] == "cpc":
+                bid_cpc = float(c["bid_price"])
+                if c["max_bid"]:
+                    bid_cpc = min(bid_cpc, float(c["max_bid"]))
+                ctr = await ml_pctr.expected_ctr(
+                    pool, domain=req_domain or None, creative_id=str(c["creative_id"]),
+                    device_type=req_device, hour=int(req_hour),
+                )
+                price = ml_pctr.cpc_to_cpm(bid_cpc, ctr)
+                c["_bid_cpc"] = bid_cpc
+            else:
+                price = float(c["bid_price"])
+                if c["max_bid"]:
+                    price = min(price, float(c["max_bid"]))
             if price < floor:
                 continue
             # Value-based биддинг (Часть B): для performance-целей корректируем
@@ -1075,7 +1108,7 @@ async def process_bid_request(
                 _sf = await shading_get_factor(str(c["campaign_id"]), str(partner["id"]))
                 if _sf < 1.0:
                     price = max(floor * 1.01, price * _sf)
-                    if c["max_bid"]:
+                    if c["max_bid"] and c["_bid_type"] != "cpc":
                         price = min(price, float(c["max_bid"]))
             if best is None or price > best[0]:
                 c["_deal_id"] = _matched_deal(targeting, imp)
@@ -1169,6 +1202,9 @@ async def process_bid_request(
                 "price": price,
                 **bid_dims,
                 "is_test": 1 if is_test_req else 0,
+                # CPC (R-03): win() не списывает, click() списывает bid_cpc.
+                "bid_type": c["_bid_type"],
+                "bid_cpc": c["_bid_cpc"],
                 **reserve_meta,
             }),
             ex=3600,
@@ -1284,6 +1320,29 @@ async def win_notice(bid: str, price: str | None = None):
                     is_test=True, **_event_dims(row),
                 )
         return {"ok": True, "test": True}
+
+    # CPC (audit R-03): win — событие доставки, не оплаты. Деньги списывает
+    # click() ровно на bid_cpc; здесь только журнал (без clear_price — договор
+    # stats_math) и счётчик wins. Резерв Redis (ожидаемая стоимость показа)
+    # переводится в «потрачено» как есть: дневные лимиты и pacing работают по
+    # ожиданию, источник истины по деньгам — ledger.
+    if _cpc_of(row) is not None:
+        async with _once_txn(pool, "win", bid) as conn:
+            if conn is not None:
+                await _log_event(conn, "win", bid_id=bid, price=row["price"], **_event_dims(row))
+                await _bump_stats(conn, "wins", 0, *_stat_ids(row))
+                await _bump_domain_stats(conn, row, "wins")
+                obs_metrics.inc("rtb_wins_total")
+                obs_metrics.inc("rtb_cpc_wins_total")
+        try:
+            res = reservation_from_bidmeta(row)
+            if res:
+                res["bid_id"] = bid
+                await settle_win(res, float(res.get("reserve") or 0), assume_released=not isinstance(row, dict))
+        except Exception:
+            logger.exception("settle_win (cpc) failed for bid %s", bid)
+            obs_metrics.inc("rtb_settle_win_errors_total")
+        return {"ok": True, "cpc": True}
 
     # Audit E-02: списание, событие win и stats_hourly — одна транзакция.
     # bill_win внутри открывает свою transaction() -> под внешней это savepoint.
@@ -1449,13 +1508,32 @@ async def click(bid: str, r: str = ""):
     row = await _find_bid(pool, bid)
     if row:
         is_test = _is_test_bid(row)
+        cpc = None if is_test else _cpc_of(row)
         async with _once_txn(pool, "click", bid) as conn:
             if conn is not None:
-                await _log_event(conn, "click", bid_id=bid, is_test=is_test, **_event_dims(row))
+                # CPC (audit R-03): оплаченное событие — первый клик по биду.
+                # bill_win идемпотентен по bid_id (ledger type='spend'), поэтому
+                # один показ оплачивается не более одного раза, сколько бы
+                # кликов ни пришло; clear_price клика = цена клика (stats_math).
+                charged = None
+                if cpc is not None:
+                    result = await bill_win(
+                        conn, bid_id=bid, campaign_id=row["campaign_id"],
+                        line_item_id=row["line_item_id"], cost=Decimal(str(cpc)),
+                        description=f"Click bid={bid}",
+                    )
+                    if result.billed:
+                        charged = result.cost
+                        obs_metrics.inc("rtb_cpc_clicks_billed_total")
+                        obs_metrics.inc("rtb_win_spend_rub_sum", float(charged))
+                await _log_event(
+                    conn, "click", bid_id=bid, is_test=is_test,
+                    clear_price=charged, **_event_dims(row),
+                )
                 if not is_test:
                     # Тестовый клик SSP (E-04): в журнале есть, в статистике клиента — нет.
-                    await _bump_stats(conn, "clicks", 0, *_stat_ids(row))
-                    await _bump_domain_stats(conn, row, "clicks")
+                    await _bump_stats(conn, "clicks", float(charged or 0), *_stat_ids(row))
+                    await _bump_domain_stats(conn, row, "clicks", float(charged or 0))
                     obs_metrics.inc("rtb_clicks_total")
     # Redirect target: explicit r param, else fall back to the creative's click_url
     if not (r and r.startswith(("http://", "https://"))):

@@ -23,6 +23,7 @@ from auth import current_user
 from db import get_pool
 from rbac import require_platform_write
 from schemas import ScoringProfileIn, ScoringProfilePatch
+from stats_math import spend_expr
 
 router = APIRouter(prefix="/scoring", tags=["scoring"])
 
@@ -440,7 +441,7 @@ async def _ssp_rows(pool, user, profile, campaign_id) -> list[dict]:
                    count(*) FILTER (WHERE e.event_type = 'impression') AS impressions,
                    count(*) FILTER (WHERE e.event_type = 'click')      AS clicks,
                    count(*) FILTER (WHERE e.event_type = 'viewable')   AS viewable_imps,
-                   COALESCE(sum(e.clear_price) FILTER (WHERE e.event_type = 'impression'),0)/1000.0 AS spend
+                   {spend_expr("e")} AS spend
             FROM bid_events e
             JOIN campaigns c        ON c.id = e.campaign_id
             JOIN supply_partners p  ON p.id = e.supply_partner_id

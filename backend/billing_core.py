@@ -38,10 +38,14 @@ async def bill_win(
     campaign_id,
     line_item_id,
     cost: Decimal,
+    description: str | None = None,
 ) -> BillResult:
-    """Bill one won impression. `conn` must be a dedicated connection
+    """Bill one paid event of a bid: the won impression for CPM line items,
+    the first click for CPC ones (audit R-03). Either way there is exactly one
+    'spend' ledger row per bid_id. `conn` must be a dedicated connection
     (not a pool) -- the function opens its own transaction."""
     cost = money(cost)
+    description = description or f"Win notice bid={bid_id}"
     if cost < ZERO:
         raise ValueError(f"negative cost {cost} for bid {bid_id}")
 
@@ -70,7 +74,7 @@ async def bill_win(
             RETURNING id
             """,
             owner["user_id"], owner["advertiser_id"], campaign_id, bid_id,
-            -cost, CURRENCY, f"Win notice bid={bid_id}",
+            -cost, CURRENCY, description,
         )
         if ledger_id is None:
             return BillResult(False, cost, None, str(owner["advertiser_id"]), False)

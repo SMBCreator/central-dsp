@@ -1,8 +1,11 @@
 """Audit E-01 / R-02: единая семантика расхода и наследование измерений.
 
 Договор (stats_math.spend_expr):
-  spend = sum(clear_price) по событиям win / 1000.
-  impression/click clear_price не несут (в _log_event принудительно NULL).
+  spend = sum(clear_price по win) / 1000 + sum(clear_price по click).
+  Оплаченное событие одно на бид: win для CPM, первый click для CPC (R-03).
+  impression/viewable/video clear_price не несут (в _log_event принудительно
+  NULL); у CPM-бида click его тоже не получает — click() передаёт clear_price
+  только когда сам списал деньги.
 
 Наследование (_event_dims): win/impression/click получают bundle/publisher_id/
 tagid/geo_region/geo_city/domain от бида — иначе в группировках «по площадкам»
@@ -71,11 +74,11 @@ def test_event_dims_normalises_go_bidmeta():
     assert _event_dims(None)["bundle"] is None
 
 
-def test_spend_expr_counts_only_wins():
+def test_spend_expr_counts_only_paid_events():
     sql = spend_expr("e")
-    assert "e.event_type = 'win'" in sql
+    assert "e.event_type = 'win'" in sql and "/ 1000.0" in sql
+    assert "e.event_type = 'click'" in sql  # CPC: цена клика, без /1000
     assert "'impression'" not in sql
-    assert "/ 1000.0" in sql
 
 
 def test_win_chain_inherits_dims_and_spend_is_win_only():
@@ -89,9 +92,10 @@ def test_win_chain_inherits_dims_and_spend_is_win_only():
             dims = _event_dims(meta)
             await _log_event(pool, "bid", bid_id=bid_id, price=120.0, **dims)
             await _log_event(pool, "win", bid_id=bid_id, price=120.0, clear_price=95.0, **dims)
-            # impression/click приносят clear_price — по договору он должен обнулиться.
+            # impression приносит clear_price — по договору он должен обнулиться.
             await _log_event(pool, "impression", bid_id=bid_id, clear_price=95.0, **dims)
-            await _log_event(pool, "click", bid_id=bid_id, clear_price=95.0, **dims)
+            # CPM-клик: click() не списывал -> clear_price не передаёт (None).
+            await _log_event(pool, "click", bid_id=bid_id, clear_price=None, **dims)
 
             rows = await conn.fetch(
                 "SELECT event_type, clear_price, bundle, publisher_id, tagid, geo_region, geo_city, domain "

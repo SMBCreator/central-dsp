@@ -25,6 +25,7 @@ import (
 
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/feed"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/metrics"
+	"github.com/SMBCreator/central-dsp/bidder-go/internal/pctr"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/prefilter"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/redisx"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/shading"
@@ -155,6 +156,9 @@ type scoredCandidate struct {
 	price float64 // эффективная цена после shading
 	raw   float64 // цена до shading
 	pctr  float64 // pCTR, если модель повлияла на цену (decision log); 0 = нет
+	// bidCPC — цена клика CPC line item (0 = CPM). Едет в bidmeta: Python
+	// win() такой бид не биллит, click() списывает ровно bidCPC.
+	bidCPC float64
 }
 
 // Bid — POST /rtb/bid/{endpointKey}. Пайплайн — паритет с Python:
@@ -381,9 +385,24 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 		if c.T != nil && !h.audienceOK(rctx, c.T.AudienceInclude, c.T.AudienceExclude, deviceID) {
 			continue
 		}
-		raw := c.BidPrice
-		if c.MaxBid != nil && *c.MaxBid > 0 && raw > *c.MaxBid {
-			raw = *c.MaxBid
+		// CPC (audit R-03, порт rtb.py): ставка за клик -> эквивалентная CPM
+		// через ожидаемый CTR (модель из фида, иначе консервативный fallback).
+		// max_bid у CPC — потолок клика, а не CPM; поэтому CPM-клампы ниже
+		// (pCTR-множитель, shading) для CPC не применяются.
+		var raw, bidCPC float64
+		isCPC := c.BidType == "cpc"
+		if isCPC {
+			bidCPC = c.BidPrice
+			if c.MaxBid != nil && *c.MaxBid > 0 && bidCPC > *c.MaxBid {
+				bidCPC = *c.MaxBid
+			}
+			ctr := snap.PCTR.ExpectedCTR(view.Domain, c.CreativeID, deviceTypeName(view.DeviceType), view.Now.UTC().Hour())
+			raw = pctr.CPCToCPM(bidCPC, ctr)
+		} else {
+			raw = c.BidPrice
+			if c.MaxBid != nil && *c.MaxBid > 0 && raw > *c.MaxBid {
+				raw = *c.MaxBid
+			}
 		}
 		// Python отсекает price < floor до pCTR и shading: множитель не может
 		// «спасти» ставку ниже пола.
@@ -414,7 +433,7 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 		if price < floor || price <= 0 {
 			continue
 		}
-		scored = append(scored, scoredCandidate{c: c, price: price, raw: raw, pctr: pctrUsed})
+		scored = append(scored, scoredCandidate{c: c, price: price, raw: raw, pctr: pctrUsed, bidCPC: bidCPC})
 	}
 	sort.Slice(scored, func(i, j int) bool { return scored[i].price > scored[j].price })
 
@@ -476,7 +495,7 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 		// backend не опознает win/imp/click (rtb.py:_find_bid) — платный показ
 		// пройдёт без списания и без учёта. Не удалось записать — резерв
 		// возвращаем и бид не отдаём.
-		if err := h.persistBidMeta(rctx, bidID, imp, c, partner, sc.price, sc.pctr, view, adType, deviceID, capsList, req.Test == 1, reservation); err != nil {
+		if err := h.persistBidMeta(rctx, bidID, imp, c, partner, sc.price, sc.pctr, sc.bidCPC, view, adType, deviceID, capsList, req.Test == 1, reservation); err != nil {
 			slog.Error("bid bookkeeping failed; no-bid", "bid_id", bidID, "err", err)
 			if h.metrics != nil {
 				h.metrics.IncBookkeepingError()
@@ -615,7 +634,7 @@ func (h *Handler) persistBidMeta(ctx interface {
 	Err() error
 	Deadline() (time.Time, bool)
 	Value(any) any
-}, bidID string, imp *Imp, c *feed.Candidate, partner *feed.Partner, price, pctrUsed float64, view *targeting.RequestView, adType, deviceID string, caps []redisx.CapWindow, isTest bool, res redisx.BidReservation) error {
+}, bidID string, imp *Imp, c *feed.Candidate, partner *feed.Partner, price, pctrUsed, bidCPC float64, view *targeting.RequestView, adType, deviceID string, caps []redisx.CapWindow, isTest bool, res redisx.BidReservation) error {
 	if h.redis == nil {
 		// Без Redis биддер в degraded-режиме (только dev): bookkeeping невозможен,
 		// но и резервов нет — бид уходит как раньше.
@@ -661,6 +680,9 @@ func (h *Handler) persistBidMeta(ctx interface {
 		"os": view.OS, "browser": browser,
 		"is_test":       testFlag,
 		"business_date": businessDate,
+		// CPC (R-03): Python win() такой бид не биллит, click() списывает bid_cpc.
+		"bid_type": bidTypeName(c.BidType),
+		"bid_cpc":  bidCPCMeta(bidCPC),
 	})
 	if err := rdb.Set(ctx, "bidmeta:"+bidID, meta, time.Hour).Err(); err != nil {
 		return fmt.Errorf("set bidmeta: %w", err)
@@ -1288,6 +1310,23 @@ func admomains(c *feed.Candidate) []string {
 
 func roundPrice(p float64) float64 {
 	return float64(int64(p*10000+0.5)) / 10000
+}
+
+// bidTypeName — bid_type для bidmeta: пустое значение фида = cpm (как
+// `c.get("bid_type") or "cpm"` в rtb.py).
+func bidTypeName(t string) string {
+	if t == "" {
+		return "cpm"
+	}
+	return t
+}
+
+// bidCPCMeta — bid_cpc для bidmeta: null для CPM (Python пишет None).
+func bidCPCMeta(cpc float64) any {
+	if cpc <= 0 {
+		return nil
+	}
+	return roundPrice(cpc)
 }
 
 func containsStr(list []string, v string) bool {

@@ -2,19 +2,29 @@
 
 Договор о расходе
 -----------------
-**spend = clearing price оплаченного win.** Деньги списываются в `win_notice`
-(`billing_core.bill_win`) по `clear_price`, туда же пишется `stats_hourly.spend`
-и событие `win` с `clear_price`. Impression/click clearing не несут — это
-события доставки, а не оплаты. Любой отчёт по сырым событиям обязан считать
-расход через `SPEND_FROM_EVENTS_SQL`, иначе hourly-агрегат и raw-отчёт
-расходятся (в raw был ноль при ненулевом hourly — E-01).
+**spend = clear_price оплаченного события.** Оплаченное событие одно на бид
+(`billing_core.bill_win`, ledger `transactions(bid_id) WHERE type='spend'`):
+
+* CPM line item — событие `win`, `clear_price` в CPM (за 1000 показов),
+  списывается `clear_price / 1000` в `win_notice`;
+* CPC line item (audit R-03) — событие `click`, `clear_price` = цена клика в
+  валюте, списывается в `click`; `win` такого бида пишется без `clear_price`
+  и денег не несёт.
+
+Туда же пишется `stats_hourly.spend`. Impression/viewable/video clearing не
+несут — это события доставки, а не оплаты. Любой отчёт по сырым событиям
+обязан считать расход через `SPEND_FROM_EVENTS_SQL`, иначе hourly-агрегат и
+raw-отчёт расходятся (в raw был ноль при ненулевом hourly — E-01).
 
 Тестовые события (`is_test`) в деньги не входят: фильтр `NOT is_test`
 накладывает вызывающий SQL.
 """
 
 # Алиас таблицы bid_events в запросе — подставляется в выражение.
-SPEND_FROM_EVENTS_SQL = "COALESCE(sum({e}.clear_price) FILTER (WHERE {e}.event_type = 'win'), 0) / 1000.0"
+SPEND_FROM_EVENTS_SQL = (
+    "(COALESCE(sum({e}.clear_price) FILTER (WHERE {e}.event_type = 'win'), 0) / 1000.0"
+    " + COALESCE(sum({e}.clear_price) FILTER (WHERE {e}.event_type = 'click'), 0))"
+)
 
 
 def spend_expr(alias: str = "e") -> str:

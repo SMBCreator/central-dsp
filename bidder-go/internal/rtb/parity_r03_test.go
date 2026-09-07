@@ -189,13 +189,16 @@ func TestParity_PCTRMultiplier(t *testing.T) {
 			}
 		}
 	})
-	t.Run("cpc line item -> model ignored", func(t *testing.T) {
+	t.Run("cpc line item -> no multiplier, only CTR conversion", func(t *testing.T) {
+		// R-03: у CPC pCTR — не множитель 0.7..1.3, а CTR в формуле
+		// bid_cpc × CTR × 1000 (см. cpc_test.go). Multiplier не применяется.
 		snap := testSnapshot()
 		snap.Candidates[0].Objective = "traffic"
 		snap.Candidates[0].BidType = "cpc"
 		snap.PCTR = model(0.03)
-		if got := priceFor(t, snap, parityReq); got != base {
-			t.Fatalf("cpc must not use pCTR: want %v, got %v", base, got)
+		want := roundPrice(pctr.CPCToCPM(base, 0.03))
+		if got := priceFor(t, snap, parityReq); math.Abs(got-want) > 1e-6 {
+			t.Fatalf("cpc must be bid_cpc*ctr*1000 without multiplier: want %v, got %v", want, got)
 		}
 	})
 	t.Run("traffic+cpm -> clamped up 1.3", func(t *testing.T) {

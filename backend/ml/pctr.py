@@ -153,6 +153,29 @@ async def predict(pool, *, domain: str | None, creative_id: str | None,
     return {"pctr": pctr, "baseline": g, "version": model["version"], "matched": matched}
 
 
+# --------------------------------------------------------------------- cpc --
+
+# Ожидаемый CTR для CPC-ставок, когда pCTR-модели нет вовсе (bootstrap):
+# 0.2% — консервативный display-CTR. Зеркало bidder-go pctr.CPCFallbackCTR.
+CPC_FALLBACK_CTR = 0.002
+
+
+async def expected_ctr(pool, *, domain: str | None, creative_id: str | None,
+                       device_type: str | None, hour: int | None) -> float:
+    """CTR для конвертации CPC -> CPM: прогноз модели (при matched=0 — её
+    глобальный CTR), без модели — CPC_FALLBACK_CTR. Никогда не 0."""
+    pred = await predict(pool, domain=domain, creative_id=creative_id,
+                         device_type=device_type, hour=hour)
+    if pred is None or pred["pctr"] <= 0:
+        return CPC_FALLBACK_CTR
+    return pred["pctr"]
+
+
+def cpc_to_cpm(bid_cpc: float, ctr: float) -> float:
+    """Ставка за клик -> эквивалентная CPM-ставка: bid_cpc × CTR × 1000."""
+    return bid_cpc * ctr * 1000.0
+
+
 # ------------------------------------------------------------------- train --
 
 async def train(pool) -> dict:

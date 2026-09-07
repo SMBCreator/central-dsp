@@ -123,7 +123,7 @@
 - Ошибка SET bidmeta/XADD → no-bid (не отправлять оплачиваемый bid без bookkeeping).
 
 ### B8. R-03 — паритет настроек UI ↔ Go
-- **CPC**: цена bid = `bid_cpc × pCTR × 1000`, резерв = ожидаемая стоимость; списание по клику (`bill_click`), win не списывает.
+- **CPC** ✅: цена bid = `min(bid_price, max_bid) × CTR × 1000` (CTR — pCTR-модель, без неё `CPC_FALLBACK_CTR` = 0.002; общие helper'ы `ml.pctr.expected_ctr/cpc_to_cpm` ↔ `pctr.ExpectedCTR/CPCToCPM`), резерв = ожидаемая стоимость; win — только журнал/wins (без clear_price), первый click списывает `bid_cpc` через `bill_win` (идемпотентно по bid_id), повторные — нет. Оба биддера пишут `bid_type`/`bid_cpc` в bidmeta. Договор расхода `stats_math.SPEND_FROM_EVENTS_SQL` = win/1000 + click; optimizer и scoring переведены на него (в scoring формула суммировала clear_price по impression — всегда 0).
 - **Pacing even** ✅ (da933ac +): общий helper `business_day.even_pacing_budget` (доля бизнес-дня МСК + 10% burst) в rtb.py; Go — `redisx.EvenPacingBudget` подменяет дневной бюджет в Lua-резерве. Детерминированная формула вместо вероятностного throttle: обе стороны считают одинаково без общего состояния.
 - **Валюта**: feed отдаёт `currency` и `fx_rate`; Go матчится с `cur`/`bidfloorcur`, конвертирует; ответ в валюте запроса.
 - **Optimizer/scoring/clean_traffic/prefilter** ✅ (df2594f, f3ef583): feed переносит `optimizer_blocks[]`, `scoring_blocks[]`, `dirty_domains[]`, `clean_traffic_only`; Go применяет в `matchCandidate`; предфильтр — порт `backend/prefilter.py` в `internal/prefilter` (THROTTLE_*, shared Redis SET `prefilter:dc_subnets`).
