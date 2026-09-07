@@ -18,6 +18,10 @@ interface SimResult {
     errors: number
   }
   sample: { request: unknown; response: unknown } | null
+  /** Какой биддер отвечал: боевой Go по HTTP или встроенный Python (dev). */
+  mode?: "go" | "python"
+  /** Все запросы шли с OpenRTB test=1 — деньги и статистика клиента не затронуты. */
+  test?: boolean
 }
 
 export default function RtbTestPage() {
@@ -153,6 +157,13 @@ export default function RtbTestPage() {
             <Spinner />
           ) : result ? (
             <div className="p-5">
+              {result.test ? (
+                <p className="mb-3 rounded-md border border-border bg-surface px-3 py-2 text-xs text-muted">
+                  Тестовый режим (OpenRTB test=1): ставки, выигрыши и клики записаны в журнал с пометкой
+                  «тест», но не списывают бюджет и не попадают в статистику кампаний.
+                  {result.mode ? ` Биддер: ${result.mode === "go" ? "боевой Go" : "встроенный Python"}.` : ""}
+                </p>
+              ) : null}
               <div className="space-y-2">
                 {(
                   [

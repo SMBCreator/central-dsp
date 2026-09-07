@@ -1103,26 +1103,32 @@ async def process_bid_request(
         # available balance and total-budget remaining; bid tracked in
         # pending:bids until win/loss/expire.
         total_budget = float(c.get("total_budget") or 0)
+        # OpenRTB test=1 (§3.2.1, audit E-04): SSP проверяет интеграцию. Отвечаем
+        # реальным бидом, но бюджет не резервируем, bids не считаем, а is_test
+        # едет в bidmeta и bid_events — win/imp/click по нему не тронут ни деньги,
+        # ни stats_hourly. Зеркало Go handler.go (req.Test == 1).
+        is_test_req = req.get("test") in (1, "1", True)
         reserve_meta = {
             "advertiser_id": str(c.get("advertiser_id") or ""),
-            "reserve": cost,
+            "reserve": 0 if is_test_req else cost,
             "has_total": 1 if total_budget > 0 else 0,
             "has_li": 1 if float(c["li_budget"] or 0) > 0 else 0,
             "business_date": business_date_str(),
         }
-        ok = await gate_and_reserve(
-            str(c["campaign_id"]), str(c["li_id"]), cost,
-            effective_budget, float(c["li_budget"] or 0),
-            device_id=device_id or "",
-            caps=caps_list,
-            bid_id=bid_id,
-            advertiser_id=reserve_meta["advertiser_id"],
-            adv_balance=float(c.get("adv_balance") or 0),
-            total_remaining=total_budget - float(c.get("spent_total") or 0),
-            has_total=total_budget > 0,
-        )
-        if not ok:
-            continue
+        if not is_test_req:
+            ok = await gate_and_reserve(
+                str(c["campaign_id"]), str(c["li_id"]), cost,
+                effective_budget, float(c["li_budget"] or 0),
+                device_id=device_id or "",
+                caps=caps_list,
+                bid_id=bid_id,
+                advertiser_id=reserve_meta["advertiser_id"],
+                adv_balance=float(c.get("adv_balance") or 0),
+                total_remaining=total_budget - float(c.get("spent_total") or 0),
+                has_total=total_budget > 0,
+            )
+            if not ok:
+                continue
         event_token = sign_event_token(bid_id)
         # Retargeting bridge: pixel reports clid == bid_id after the click
         if device_id:
@@ -1163,7 +1169,7 @@ async def process_bid_request(
                 "creative_id": str(c["creative_id"]), "supply_partner_id": str(partner["id"]),
                 "price": price,
                 **bid_dims,
-                "is_test": 0,
+                "is_test": 1 if is_test_req else 0,
                 **reserve_meta,
             }),
             ex=3600,
@@ -1172,9 +1178,10 @@ async def process_bid_request(
             pool, "bid", bid_id=bid_id, imp_id=imp.get("id"),
             campaign_id=c["campaign_id"], line_item_id=c["li_id"], creative_id=c["creative_id"],
             supply_partner_id=partner["id"], price=price, pctr=c.get("_pctr"),
-            **bid_dims,
+            is_test=is_test_req, **bid_dims,
         ))
-        _fire_and_forget(_bump_stats(pool, "bids", 0, c["campaign_id"], c["li_id"], c["creative_id"], partner["id"]))
+        if not is_test_req:
+            _fire_and_forget(_bump_stats(pool, "bids", 0, c["campaign_id"], c["li_id"], c["creative_id"], partner["id"]))
 
         bid_obj = {
             "id": bid_id,
@@ -1389,14 +1396,17 @@ async def viewable_impression(bid: str):
 
 async def _record_viewable(pool, bid: str, row) -> None:
     """Событие viewable + viewable_imps ровно один раз на бид (общее для
-    /rtb/view и video start)."""
+    /rtb/view и video start). Тестовый бид (E-04): журнал — да, статистика — нет."""
+    is_test = _is_test_bid(row)
     async with _once_txn(pool, "view", bid) as conn:
         if conn is None:
             return
-        await _log_event(conn, "viewable", bid_id=bid, **_event_dims(row))
-        await _bump_stats(conn, "viewable_imps", 0, *_stat_ids(row))
-        await _bump_domain_stats(conn, row, "viewable_imps")
-    obs_metrics.inc("rtb_viewable_imps_total")
+        await _log_event(conn, "viewable", bid_id=bid, is_test=is_test, **_event_dims(row))
+        if not is_test:
+            await _bump_stats(conn, "viewable_imps", 0, *_stat_ids(row))
+            await _bump_domain_stats(conn, row, "viewable_imps")
+    if not is_test:
+        obs_metrics.inc("rtb_viewable_imps_total")
 
 
 _VIDEO_EVENTS = {"start", "firstQuartile", "midpoint", "thirdQuartile", "complete", "skip"}
@@ -1414,10 +1424,13 @@ async def video_event(bid: str, e: str):
     row = await _find_bid(pool, bid)
     if not row:
         return Response(content=_PIXEL, media_type="image/gif")
+    is_test = _is_test_bid(row)
     async with _once_txn(pool, f"vev:{e}", bid) as conn:
         if conn is not None:
-            await _log_event(conn, f"video_{e}", bid_id=bid, **_event_dims(row))
-            if e == "start":
+            await _log_event(conn, f"video_{e}", bid_id=bid, is_test=is_test, **_event_dims(row))
+            if is_test:
+                pass   # тестовый бид (E-04): в журнале есть, в статистике нет
+            elif e == "start":
                 await _bump_stats(conn, "video_starts", 0, *_stat_ids(row))
             elif e == "complete":
                 await _bump_stats(conn, "video_completes", 0, *_stat_ids(row))
@@ -1436,12 +1449,15 @@ async def click(bid: str, r: str = ""):
     pool = await get_pool()
     row = await _find_bid(pool, bid)
     if row:
+        is_test = _is_test_bid(row)
         async with _once_txn(pool, "click", bid) as conn:
             if conn is not None:
-                await _log_event(conn, "click", bid_id=bid, **_event_dims(row))
-                await _bump_stats(conn, "clicks", 0, *_stat_ids(row))
-                await _bump_domain_stats(conn, row, "clicks")
-                obs_metrics.inc("rtb_clicks_total")
+                await _log_event(conn, "click", bid_id=bid, is_test=is_test, **_event_dims(row))
+                if not is_test:
+                    # Тестовый клик SSP (E-04): в журнале есть, в статистике клиента — нет.
+                    await _bump_stats(conn, "clicks", 0, *_stat_ids(row))
+                    await _bump_domain_stats(conn, row, "clicks")
+                    obs_metrics.inc("rtb_clicks_total")
     # Redirect target: explicit r param, else fall back to the creative's click_url
     if not (r and r.startswith(("http://", "https://"))):
         if row and row["creative_id"]:

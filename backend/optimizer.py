@@ -116,6 +116,7 @@ async def optimize_campaign(campaign: dict) -> list[dict]:
                 FROM conversions cv
                 JOIN bid_events be ON be.bid_id = cv.clid AND be.event_type = 'bid'
                 WHERE be.campaign_id = $1 AND {dim_expr} IS NOT NULL
+                  AND NOT cv.is_test
                   AND cv.created_at >= now() - interval '{WINDOW}'
                 GROUP BY {dim_expr}""",
             cid,

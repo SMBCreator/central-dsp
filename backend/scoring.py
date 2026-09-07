@@ -163,7 +163,7 @@ async def domain_metrics(pool, user_id: str, profile: dict, campaign_id: str | N
         c_rows = await pool.fetch(
             """SELECT lower(domain) AS domain, count(*) AS conv, COALESCE(SUM(value),0) AS val
                FROM conversions
-               WHERE goal_id = $1 AND domain IS NOT NULL
+               WHERE goal_id = $1 AND domain IS NOT NULL AND NOT is_test
                  AND created_at >= now() - make_interval(days => $2)
                GROUP BY 1""",
             profile["goal_id"], window_days,

@@ -140,26 +140,32 @@ async def _match_goals(pool, pixel_id: str, session_id: str, event_type: str,
             continue
         # Attribute to the bid (campaign / SSP / domain / device) via clid
         attrib = {}
+        is_test = False
         if clid:
             row = await pool.fetchrow(
-                """SELECT campaign_id, line_item_id, creative_id, supply_partner_id, domain, device_type, geo_country
+                """SELECT campaign_id, line_item_id, creative_id, supply_partner_id, domain, device_type, geo_country,
+                          is_test
                    FROM bid_events WHERE bid_id = $1 AND event_type = 'bid' LIMIT 1""",
                 clid,
             )
             if row:
                 attrib = dict(row)
+                # E-04: конверсия по тестовому биду (OpenRTB test=1) наследует флаг —
+                # в журнале остаётся, в hourly/CPA/ML не попадает.
+                is_test = bool(attrib.pop("is_test", False))
         inserted = await pool.fetchrow(
             """INSERT INTO conversions (goal_id, pixel_id, session_id, clid, campaign_id, line_item_id,
-                                        creative_id, supply_partner_id, domain, device_type, geo_country, value)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+                                        creative_id, supply_partner_id, domain, device_type, geo_country, value,
+                                        is_test)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
                ON CONFLICT (goal_id, session_id) DO NOTHING RETURNING id""",
             g["id"], pixel_id, session_id, clid,
             attrib.get("campaign_id"), attrib.get("line_item_id"), attrib.get("creative_id"),
             attrib.get("supply_partner_id"), attrib.get("domain"), attrib.get("device_type"),
-            attrib.get("geo_country"), float(g["value"] or 0),
+            attrib.get("geo_country"), float(g["value"] or 0), is_test,
         )
         # bump hourly conversions for CPA math
-        if inserted and attrib.get("campaign_id"):
+        if inserted and attrib.get("campaign_id") and not is_test:
             await pool.execute(
                 """INSERT INTO stats_hourly (ts_hour, campaign_id, line_item_id, creative_id, supply_partner_id, conversions)
                    VALUES (date_trunc('hour', now()), $1, $2, $3, $4, 1)
@@ -255,7 +261,8 @@ async def list_pixels(user: dict = Depends(current_user)):
                   (SELECT count(DISTINCT session_id) FROM pixel_events e
                     WHERE e.pixel_id = p.id AND e.created_at >= now() - interval '24 hours') AS sessions_24h,
                   (SELECT count(*) FROM conversions c
-                    WHERE c.pixel_id = p.id AND c.created_at >= now() - interval '24 hours') AS conversions_24h
+                    WHERE c.pixel_id = p.id AND NOT c.is_test
+                      AND c.created_at >= now() - interval '24 hours') AS conversions_24h
            FROM pixels p WHERE p.user_id = $1 ORDER BY p.created_at DESC""",
         user["id"],
     )
@@ -287,7 +294,7 @@ async def delete_pixel(pixel_id: str, user: dict = Depends(require_campaign_writ
 async def list_goals(pixel_id: str, user: dict = Depends(current_user)):
     pool = await get_pool()
     rows = await pool.fetch(
-        """SELECT g.*, (SELECT count(*) FROM conversions c WHERE c.goal_id = g.id) AS conversions_total
+        """SELECT g.*, (SELECT count(*) FROM conversions c WHERE c.goal_id = g.id AND NOT c.is_test) AS conversions_total
            FROM goals g JOIN pixels p ON p.id = g.pixel_id
            WHERE g.pixel_id = $1 AND p.user_id = $2 ORDER BY g.created_at""",
         pixel_id, user["id"],
@@ -354,7 +361,8 @@ async def pixel_stats(pixel_id: str, hours: int = 168, user: dict = Depends(curr
         pixel_id, str(hours),
     )
     conv = await pool.fetchval(
-        "SELECT count(*) FROM conversions WHERE pixel_id = $1 AND created_at >= now() - ($2 || ' hours')::interval",
+        """SELECT count(*) FROM conversions
+           WHERE pixel_id = $1 AND NOT is_test AND created_at >= now() - ($2 || ' hours')::interval""",
         pixel_id, str(hours),
     )
     by_source = await pool.fetch(
@@ -362,7 +370,7 @@ async def pixel_stats(pixel_id: str, hours: int = 168, user: dict = Depends(curr
                   count(*) AS conversions,
                   COALESCE(SUM(c.value),0) AS value
            FROM conversions c
-           WHERE c.pixel_id = $1 AND c.created_at >= now() - ($2 || ' hours')::interval
+           WHERE c.pixel_id = $1 AND NOT c.is_test AND c.created_at >= now() - ($2 || ' hours')::interval
            GROUP BY 1 ORDER BY 2 DESC LIMIT 20""",
         pixel_id, str(hours),
     )
