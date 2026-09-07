@@ -129,6 +129,17 @@ def test_normalize_loss_keeps_reason_and_mtw():
     assert row["min_to_win"] == Decimal("52.1")
 
 
+def test_normalize_pctr_decision_log():
+    # Go-биддер шлёт pctr только когда модель повлияла на цену (R-03, Часть B);
+    # отсутствие/мусор/значение вне (0,1) -> NULL, а не падение батча.
+    assert ec.normalize(_bid_fields())["pctr"] is None
+    assert ec.normalize(_bid_fields(pctr="0.036032"))["pctr"] == 0.036032
+    assert ec.normalize(_bid_fields(pctr=""))["pctr"] is None
+    assert ec.normalize(_bid_fields(pctr="nan?"))["pctr"] is None
+    assert ec.normalize(_bid_fields(pctr="1.5"))["pctr"] is None
+    assert "pctr" in ec._INSERT_COLS and ec._INSERT_SQL.count("$") == len(ec._INSERT_COLS)
+
+
 def test_normalize_rejects_unknown_or_empty():
     assert ec.normalize({"type": "win", "bid_id": "x"}) is None
     assert ec.normalize(_bid_fields(bid_id="")) is None

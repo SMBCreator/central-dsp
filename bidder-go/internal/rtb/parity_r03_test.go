@@ -6,6 +6,8 @@ package rtb
 // Строки матрицы: docs/audit/parity_matrix.md (раздел R-03).
 
 import (
+	"encoding/json"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/feed"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/metrics"
+	"github.com/SMBCreator/central-dsp/bidder-go/internal/pctr"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/prefilter"
 )
 
@@ -143,6 +146,115 @@ func TestParity_ScoringBlocklist(t *testing.T) {
 	if !bidsOn(t, snap) {
 		t.Fatal("scoring blocklist of another campaign must not block")
 	}
+}
+
+// pCTR value-based биддинг (Часть B, порт rtb.py): цена умножается на
+// clamp(pctr/baseline, 0.7, 1.3) только для objective traffic/conversions на
+// CPM; floor и max_bid соблюдаются; без модели/совпадений — базовая цена.
+func TestParity_PCTRMultiplier(t *testing.T) {
+	priceFor := func(t *testing.T, snap *feed.Snapshot, req string) float64 {
+		t.Helper()
+		w := doBid(t, newTestHandler(snap), req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("want bid, got %d: %s", w.Code, w.Body.String())
+		}
+		var resp BidResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		return resp.SeatBid[0].Bid[0].Price
+	}
+	// Модель с одним доменным сегментом (pub.example — домен parityReq):
+	// ctr/0.01 = множитель до клампа.
+	model := func(ctr float64) *pctr.Model {
+		return pctr.FromFeed(&pctr.FeedModel{Version: 1, GlobalCTR: 0.01,
+			Segments: []pctr.Segment{{Type: "domain", Key: "pub.example", CTR: ctr}}})
+	}
+	base := priceFor(t, testSnapshot(), parityReq)
+
+	t.Run("no model -> base price", func(t *testing.T) {
+		snap := testSnapshot()
+		snap.Candidates[0].Objective = "traffic"
+		if got := priceFor(t, snap, parityReq); got != base {
+			t.Fatalf("without model price must stay %v, got %v", base, got)
+		}
+	})
+	t.Run("objective clicks/ctr/empty -> model ignored", func(t *testing.T) {
+		for _, obj := range []string{"", "clicks", "ctr"} {
+			snap := testSnapshot()
+			snap.Candidates[0].Objective = obj
+			snap.PCTR = model(0.03)
+			if got := priceFor(t, snap, parityReq); got != base {
+				t.Fatalf("objective %q must not use pCTR: want %v, got %v", obj, base, got)
+			}
+		}
+	})
+	t.Run("cpc line item -> model ignored", func(t *testing.T) {
+		snap := testSnapshot()
+		snap.Candidates[0].Objective = "traffic"
+		snap.Candidates[0].BidType = "cpc"
+		snap.PCTR = model(0.03)
+		if got := priceFor(t, snap, parityReq); got != base {
+			t.Fatalf("cpc must not use pCTR: want %v, got %v", base, got)
+		}
+	})
+	t.Run("traffic+cpm -> clamped up 1.3", func(t *testing.T) {
+		snap := testSnapshot()
+		snap.Candidates[0].Objective = "traffic"
+		snap.PCTR = model(0.03)
+		want := roundPrice(base * pctr.MultMax)
+		if got := priceFor(t, snap, parityReq); math.Abs(got-want) > 1e-6 {
+			t.Fatalf("want %v (x1.3), got %v", want, got)
+		}
+	})
+	t.Run("conversions+cpm -> clamped down 0.7", func(t *testing.T) {
+		snap := testSnapshot()
+		snap.Candidates[0].Objective = "conversions"
+		snap.PCTR = model(0.002)
+		want := roundPrice(base * pctr.MultMin)
+		if got := priceFor(t, snap, parityReq); math.Abs(got-want) > 1e-6 {
+			t.Fatalf("want %v (x0.7), got %v", want, got)
+		}
+	})
+	t.Run("in-range multiplier 1.2", func(t *testing.T) {
+		snap := testSnapshot()
+		snap.Candidates[0].Objective = "traffic"
+		snap.PCTR = model(0.012)
+		want := roundPrice(base * 1.2)
+		if got := priceFor(t, snap, parityReq); math.Abs(got-want) > 1e-6 {
+			t.Fatalf("want %v (x1.2), got %v", want, got)
+		}
+	})
+	t.Run("max_bid caps the boosted price", func(t *testing.T) {
+		snap := testSnapshot()
+		snap.Candidates[0].Objective = "traffic"
+		capPrice := base * 1.1
+		snap.Candidates[0].MaxBid = &capPrice
+		snap.PCTR = model(0.03)
+		if got := priceFor(t, snap, parityReq); math.Abs(got-roundPrice(capPrice)) > 1e-6 {
+			t.Fatalf("want max_bid %v, got %v", capPrice, got)
+		}
+	})
+	t.Run("floor holds under a downward multiplier", func(t *testing.T) {
+		snap := testSnapshot()
+		snap.Candidates[0].Objective = "traffic"
+		snap.PCTR = model(0.002)
+		// floor = 90% базовой: 0.7x ушёл бы ниже, Python поднимает до floor.
+		floor := base * 0.9
+		req := strings.Replace(parityReq, `"bidfloor":1`, `"bidfloor":`+strconv.FormatFloat(floor, 'f', 4, 64), 1)
+		if got := priceFor(t, snap, req); math.Abs(got-roundPrice(floor)) > 1e-3 {
+			t.Fatalf("want floor %v, got %v", floor, got)
+		}
+	})
+	t.Run("segment miss -> base price", func(t *testing.T) {
+		snap := testSnapshot()
+		snap.Candidates[0].Objective = "traffic"
+		snap.PCTR = pctr.FromFeed(&pctr.FeedModel{Version: 1, GlobalCTR: 0.01,
+			Segments: []pctr.Segment{{Type: "domain", Key: "someone-else.example", CTR: 0.5}}})
+		if got := priceFor(t, snap, parityReq); got != base {
+			t.Fatalf("matched=0 must keep base %v, got %v", base, got)
+		}
+	})
 }
 
 // Предфильтр (Часть C): бот-UA отсекается до таргетинга и аукциона, считается

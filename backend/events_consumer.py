@@ -106,25 +106,38 @@ def normalize(fields: dict[str, Any]) -> dict[str, Any] | None:
         "min_to_win": _dec(fields.get("min_to_win")),
         "is_test": str(fields.get("is_test", "0")) == "1",
         "created_at": _ts(fields.get("ts")),
+        # Decision log Go-биддера (audit R-03): pCTR, повлиявший на цену; Python
+        # пишет ту же колонку напрямую в log_bid_event.
+        "pctr": _float_or_none(fields.get("pctr")),
     }
     for f in _UUID_FIELDS:
         row[f] = _uuid_or_none(fields.get(f))
     return row
 
 
+def _float_or_none(v: Any) -> float | None:
+    if v in (None, ""):
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if 0.0 < f < 1.0 else None
+
+
 _INSERT_SQL = """
 INSERT INTO bid_events (event_type, bid_id, imp_id, campaign_id, line_item_id, creative_id,
                         supply_partner_id, price, device_type, geo_country, geo_region, geo_city,
                         ad_type, domain, bundle, publisher_id, tagid, os, browser, bidfloor,
-                        loss_reason, min_to_win, is_test, created_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
+                        loss_reason, min_to_win, is_test, created_at, pctr)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
 """
 
 _INSERT_COLS = (
     "event_type", "bid_id", "imp_id", "campaign_id", "line_item_id", "creative_id",
     "supply_partner_id", "price", "device_type", "geo_country", "geo_region", "geo_city",
     "ad_type", "domain", "bundle", "publisher_id", "tagid", "os", "browser", "bidfloor",
-    "loss_reason", "min_to_win", "is_test", "created_at",
+    "loss_reason", "min_to_win", "is_test", "created_at", "pctr",
 )
 
 # stats_hourly.bids — знаменатель win-rate. Пишем агрегатом по батчу (один upsert

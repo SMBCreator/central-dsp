@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -143,6 +144,7 @@ type scoredCandidate struct {
 	c     *feed.Candidate
 	price float64 // эффективная цена после shading
 	raw   float64 // цена до shading
+	pctr  float64 // pCTR, если модель повлияла на цену (decision log); 0 = нет
 }
 
 // Bid — POST /rtb/bid/{endpointKey}. Пайплайн — паритет с Python:
@@ -373,15 +375,36 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 		if c.MaxBid != nil && *c.MaxBid > 0 && raw > *c.MaxBid {
 			raw = *c.MaxBid
 		}
+		// Python отсекает price < floor до pCTR и shading: множитель не может
+		// «спасти» ставку ниже пола.
+		if raw < floor {
+			continue
+		}
 		price := raw
+		// Value-based биддинг (Часть B, порт rtb.py): только objective
+		// traffic/conversions и bid_type CPM; множитель pctr/baseline зажат
+		// в [0.7, 1.3]; floor и max_bid соблюдаются; нет модели/совпадений —
+		// базовая цена.
+		var pctrUsed float64
+		if snap.PCTR != nil && (c.Objective == "traffic" || c.Objective == "conversions") &&
+			(c.BidType == "" || c.BidType == "cpm") {
+			pred := snap.PCTR.Predict(view.Domain, c.CreativeID, deviceTypeName(view.DeviceType), view.Now.UTC().Hour())
+			if mult, ok := pred.Multiplier(); ok {
+				price = math.Max(floor, price*mult)
+				if c.MaxBid != nil && *c.MaxBid > 0 && price > *c.MaxBid {
+					price = *c.MaxBid
+				}
+				pctrUsed = pred.PCTR
+			}
+		}
 		if h.shading != nil && shading.ShouldShade(c.BidShading, auctionType) {
 			factor := h.shading.GetFactor(rctx, c.CampaignID, partner.ID)
-			price = shading.Apply(raw, factor, floor)
+			price = shading.Apply(price, factor, floor)
 		}
 		if price < floor || price <= 0 {
 			continue
 		}
-		scored = append(scored, scoredCandidate{c: c, price: price, raw: raw})
+		scored = append(scored, scoredCandidate{c: c, price: price, raw: raw, pctr: pctrUsed})
 	}
 	sort.Slice(scored, func(i, j int) bool { return scored[i].price > scored[j].price })
 
@@ -435,7 +458,7 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 		// backend не опознает win/imp/click (rtb.py:_find_bid) — платный показ
 		// пройдёт без списания и без учёта. Не удалось записать — резерв
 		// возвращаем и бид не отдаём.
-		if err := h.persistBidMeta(rctx, bidID, imp, c, partner, sc.price, view, adType, deviceID, capsList, req.Test == 1, reservation); err != nil {
+		if err := h.persistBidMeta(rctx, bidID, imp, c, partner, sc.price, sc.pctr, view, adType, deviceID, capsList, req.Test == 1, reservation); err != nil {
 			slog.Error("bid bookkeeping failed; no-bid", "bid_id", bidID, "err", err)
 			if h.metrics != nil {
 				h.metrics.IncBookkeepingError()
@@ -574,7 +597,7 @@ func (h *Handler) persistBidMeta(ctx interface {
 	Err() error
 	Deadline() (time.Time, bool)
 	Value(any) any
-}, bidID string, imp *Imp, c *feed.Candidate, partner *feed.Partner, price float64, view *targeting.RequestView, adType, deviceID string, caps []redisx.CapWindow, isTest bool, res redisx.BidReservation) error {
+}, bidID string, imp *Imp, c *feed.Candidate, partner *feed.Partner, price, pctrUsed float64, view *targeting.RequestView, adType, deviceID string, caps []redisx.CapWindow, isTest bool, res redisx.BidReservation) error {
 	if h.redis == nil {
 		// Без Redis биддер в degraded-режиме (только dev): bookkeeping невозможен,
 		// но и резервов нет — бид уходит как раньше.
@@ -652,6 +675,11 @@ func (h *Handler) persistBidMeta(ctx interface {
 		"browser":           browser,
 		"is_test":           strconv.Itoa(testFlag),
 		"ts":                strconv.FormatInt(time.Now().Unix(), 10),
+	}
+	// Decision log (bid_events.pctr): какой pCTR повлиял на цену — для offline-
+	// оценки модели. Пустое поле = базовый биддинг, consumer пишет NULL.
+	if pctrUsed > 0 {
+		ev["pctr"] = strconv.FormatFloat(pctrUsed, 'f', 6, 64)
 	}
 	// Событие bid — единственный путь бида в bid_events/stats_hourly; без него
 	// win/imp/click повиснут без «родителя», а отчёт win-rate/CPA поедет (R-02).

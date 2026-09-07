@@ -131,13 +131,58 @@ async def campaigns_feed(authorization: str | None = Header(default=None)):
                 "SELECT domain FROM domain_quality WHERE score < $1", CLEAN_SCORE_THRESHOLD
             )
         ]
+    # Активная pCTR-модель (ml/pctr.py): Go считает тот же лог-odds predict
+    # in-process. Отдаём только если хотя бы одна кампания с performance-целью
+    # на CPM — иначе множитель всё равно не применяется (guardrail Части B).
+    pctr_model = None
+    if any(
+        c["objective"] in ("traffic", "conversions") and (c["bid_type"] or "cpm") == "cpm"
+        for c in cands
+    ):
+        pctr_model = await _load_pctr_model(pool)
+
     return {
         "candidates": out,
         "domain_lists": [dict(r) for r in dl_rows],
+        "pctr_model": pctr_model,
         "optimizer_blocks": [
             {"campaign_id": str(r["campaign_id"]), "block_type": r["block_type"], "block_value": r["block_value"]}
             for r in block_rows
         ],
         "scoring_blocks": [{"campaign_id": str(r["campaign_id"]), "domain": r["domain"]} for r in scoring_rows],
         "dirty_domains": dirty_domains,
+    }
+
+
+async def _load_pctr_model(pool) -> dict | None:
+    """Активная pCTR-модель в формате для Go: тот же отбор, что ml.pctr._load_active_model.
+
+    None, если модели нет или global_ctr вне (0,1) — Go тогда биддит базовой
+    ценой (fail-safe, как Python при predict() -> None).
+    """
+    import json
+
+    row = await pool.fetchrow(
+        "SELECT version, metrics FROM ml_models "
+        "WHERE model_type = 'pctr' AND status = 'active' ORDER BY version DESC LIMIT 1"
+    )
+    if not row:
+        return None
+    metrics = row["metrics"]
+    if isinstance(metrics, str):
+        metrics = json.loads(metrics or "{}")
+    global_ctr = float((metrics or {}).get("global_ctr") or 0)
+    if global_ctr <= 0 or global_ctr >= 1:
+        return None
+    segs = await pool.fetch(
+        "SELECT segment_type, segment_key, ctr_smoothed FROM ml_pctr_segments WHERE model_version = $1",
+        row["version"],
+    )
+    return {
+        "version": int(row["version"]),
+        "global_ctr": global_ctr,
+        "segments": [
+            {"type": s["segment_type"], "key": s["segment_key"], "ctr": float(s["ctr_smoothed"])}
+            for s in segs
+        ],
     }

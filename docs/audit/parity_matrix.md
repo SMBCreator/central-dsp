@@ -68,7 +68,7 @@ Go-биддер (`bidder-go/`) доведён до функциональног�
 | Scoring-профиль (enforce) | `scoring_blocklist` | feed `scoring_blocks[]` → `Snapshot.ScoringBlocks` | `TestParity_ScoringBlocklist` | ✅ |
 | Глобальные white/blacklist аккаунта | `domain_lists` | feed `domain_lists[]` | targeting `parity_test.go` | ✅ (ранее) |
 | Предфильтр: bot UA / geo_unserved / no_device_id / datacenter_ip | env `THROTTLE_*`, Redis SET `prefilter:dc_subnets` (`backend/prefilter.py`) | порт `bidder-go/internal/prefilter` (тот же порядок проверок, те же причины, fail-open); `bidder_prefilter_drops_total{reason}` | `prefilter/prefilter_test.go`, `TestParity_PrefilterDropsBotBeforeAuction` | ✅ |
-| pCTR value-множитель (objective traffic/conversions, CPM) | `ml_models` + `ml_pctr_segments` | — | — | ⏳ B8.2 |
+| pCTR value-множитель (objective traffic/conversions, CPM): цена × clamp(pctr/global, 0.7, 1.3), floor/max_bid соблюдаются | `ml_models` (active pctr) + `ml_pctr_segments`; Python `ml.pctr.predict` | feed `pctr_model{version, global_ctr, segments[]}` → `internal/pctr` (тот же лог-odds predict in-process, без сети); `bid_events.pctr` через stream-поле `pctr` → `events_consumer` | `pctr/pctr_test.go` (эталон из Python), `TestParity_PCTRMultiplier` (9 кейсов) | ✅ |
 | Pacing even | `campaigns.pacing` | feed `pacing` (уже есть), Go не применяет | — | ⏳ B8.3 |
 | Тип ставки CPC | `line_items.bid_type` | feed `bid_type` (уже есть), Go считает как CPM | — | ⏳ B8.4 |
 | Валюта партнёра | `supply_partners.currency` | — | — | ⏳ B8.5 |

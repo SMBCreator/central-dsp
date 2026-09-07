@@ -112,6 +112,52 @@ def test_feed_carries_optimizer_scoring_and_dirty_domains(env):
     asyncio.run(scenario())
 
 
+def test_feed_carries_active_pctr_model(env):
+    # Часть B: активная pCTR-модель едет в Go тем же отбором, что ml.pctr
+    # (_load_active_model): последняя active-версия, global_ctr в (0,1), все
+    # сегменты версии. Retired-версия и её сегменты не попадают.
+    async def scenario():
+        conn = await asyncpg.connect(DATABASE_URL)
+        ids = await _seed(conn, clean_traffic=False)  # objective=traffic, bid_type cpm -> модель нужна
+        await conn.execute("UPDATE ml_models SET status = 'retired' WHERE model_type = 'pctr' AND status = 'active'")
+        base = await conn.fetchval("SELECT coalesce(max(version), 0) FROM ml_models WHERE model_type = 'pctr'")
+        v_old, v_new = base + 1, base + 2
+        try:
+            await conn.execute(
+                """INSERT INTO ml_models (model_type, version, status, metrics)
+                   VALUES ('pctr', $1, 'retired', '{"global_ctr": 0.05}'::jsonb),
+                          ('pctr', $2, 'active',  '{"global_ctr": 0.01}'::jsonb)""",
+                v_old, v_new,
+            )
+            await conn.execute(
+                """INSERT INTO ml_pctr_segments (model_version, segment_type, segment_key, imps, clicks, ctr_smoothed)
+                   VALUES ($1,'domain','old.example',100,5,0.05),
+                          ($2,'domain','pub.example',100,3,0.03), ($2,'hour','14',200,3,0.012)""",
+                v_old, v_new,
+            )
+            body = await _fetch_feed()
+            model = body["pctr_model"]
+            assert model is not None
+            assert model["version"] == v_new
+            assert model["global_ctr"] == 0.01
+            segs = {(s["type"], s["key"]): s["ctr"] for s in model["segments"]}
+            assert segs == {("domain", "pub.example"): 0.03, ("hour", "14"): 0.012}
+
+            # global_ctr вне (0,1) -> модель невалидна -> null (Go биддит базовой ценой).
+            await conn.execute(
+                "UPDATE ml_models SET metrics = '{\"global_ctr\": 1.0}'::jsonb WHERE model_type='pctr' AND version=$1", v_new
+            )
+            assert (await _fetch_feed())["pctr_model"] is None
+        finally:
+            await conn.execute("DELETE FROM ml_pctr_segments WHERE model_version IN ($1,$2)", v_old, v_new)
+            await conn.execute("DELETE FROM ml_models WHERE model_type='pctr' AND version IN ($1,$2)", v_old, v_new)
+            await conn.execute("DELETE FROM users WHERE id = $1", ids["user"])
+            await conn.execute("DELETE FROM domain_quality WHERE domain IN ('dirty.example','clean.example')")
+            await conn.close()
+
+    asyncio.run(scenario())
+
+
 def test_dirty_domains_omitted_when_no_campaign_opts_in(env):
     # Список «грязных» доменов может быть большим — отдаём его только если хоть
     # одна кампания в фиде включила clean_traffic_only.

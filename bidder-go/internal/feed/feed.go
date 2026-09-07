@@ -21,6 +21,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/SMBCreator/central-dsp/bidder-go/internal/pctr"
 )
 
 // Candidate — строка кандидата, паритет с SQL-выборкой Python hot path
@@ -253,7 +255,10 @@ type Snapshot struct {
 	OptBlocks     map[string]map[string]map[string]bool
 	ScoringBlocks map[string]map[string]bool
 	DirtyDomains  map[string]bool
-	LoadedAt      time.Time
+	// PCTR — активная pCTR-модель (nil = нет; биддим базовой ценой). Порт
+	// ml/pctr.py, модель приезжает фидом, predict считается in-process.
+	PCTR     *pctr.Model
+	LoadedAt time.Time
 }
 
 // Blocked — есть ли у кампании блок оптимизатора (block_type, block_value).
@@ -389,6 +394,7 @@ func (s *Store) refresh(ctx context.Context) error {
 		OptBlocks     []OptimizerBlock `json:"optimizer_blocks"`
 		ScoringBlocks []ScoringBlock   `json:"scoring_blocks"`
 		DirtyDomains  []string         `json:"dirty_domains"`
+		PCTRModel     *pctr.FeedModel  `json:"pctr_model"`
 	}
 	if err := s.get(ctx, "/rtb-feed/campaigns", &camps); err != nil {
 		slog.Error("feed campaigns refresh failed", "err", err)
@@ -457,6 +463,7 @@ func (s *Store) refresh(ctx context.Context) error {
 		}
 		snap.ScoringBlocks[b.CampaignID][strings.ToLower(b.Domain)] = true
 	}
+	snap.PCTR = pctr.FromFeed(camps.PCTRModel)
 	snap.DirtyDomains = make(map[string]bool, len(camps.DirtyDomains))
 	for _, d := range camps.DirtyDomains {
 		snap.DirtyDomains[strings.ToLower(d)] = true
