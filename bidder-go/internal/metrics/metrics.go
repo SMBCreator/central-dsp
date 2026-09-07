@@ -73,7 +73,10 @@ type Registry struct {
 	// Audit R-02: bidmeta/XADD не записались -> бид отменён, резерв возвращён.
 	// Каждая единица — упущенный показ из-за Redis, а не потерянные деньги.
 	bookkeepingErrors atomic.Int64
-	panics            atomic.Int64 // паники хендлеров, перехваченные recover-middleware
+	// Audit R-03: кандидат пропущен — нет курса ЦБ для валюты floor/ответа
+	// (= rtb_nobid_fx_rate_missing_total в Python). Не no-bid запроса целиком.
+	fxRateMissing atomic.Int64
+	panics        atomic.Int64 // паники хендлеров, перехваченные recover-middleware
 
 	// Per-partner (endpoint_key): запросы и биды. Кардинальность = число SSP
 	// (единицы-десятки), поэтому безопасно для Prometheus.
@@ -152,6 +155,9 @@ func (r *Registry) IncEventEmitError() { r.eventEmitErrors.Add(1) }
 
 // IncBookkeepingError — бид отменён: bidmeta или событие bid не записались (R-02).
 func (r *Registry) IncBookkeepingError() { r.bookkeepingErrors.Add(1) }
+
+// IncFXRateMissing — кандидат пропущен: нет курса для валюты floor/ответа (R-03).
+func (r *Registry) IncFXRateMissing() { r.fxRateMissing.Add(1) }
 
 // IncPanic — хендлер упал с паникой, процесс выжил благодаря recover.
 func (r *Registry) IncPanic() { r.panics.Add(1) }
@@ -248,6 +254,7 @@ func (r *Registry) write(w http.ResponseWriter) {
 	c("bidder_reserve_orphans_total", "pending:bids entries whose bidmeta was already gone.", r.reserveOrphans.Load())
 	c("bidder_event_emit_errors_total", "Bid events that failed to be written to the rtb:events Redis stream.", r.eventEmitErrors.Load())
 	c("bidder_bookkeeping_errors_total", "Bids withdrawn because bidmeta/bid event could not be written to Redis (reservation released).", r.bookkeepingErrors.Load())
+	c("bidder_nobid_fx_rate_missing_total", "Candidates skipped: no CBR rate for the floor/response currency (R-03).", r.fxRateMissing.Load())
 	c("bidder_panics_total", "Handler panics recovered by the HTTP middleware (process kept alive).", r.panics.Load())
 
 	writeLabeled(w, &r.partnerRequests, "bidder_partner_requests_total", "Bid requests by SSP endpoint_key.")

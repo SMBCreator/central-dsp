@@ -31,6 +31,7 @@ _COUNTER_HELP = {
     "rtb_win_spend_rub_sum": "Billed spend (RUB): CPM win notices + CPC billed clicks.",
     "rtb_cpc_wins_total": "Win notifications of CPC bids (not billed; the click is).",
     "rtb_cpc_clicks_billed_total": "First clicks of CPC bids that were billed (audit R-03).",
+    "rtb_nobid_fx_rate_missing_total": "Candidates skipped: no CBR rate for the floor/response currency (R-03).",
     "rtb_imps_total": "Impression events accepted.",
     "rtb_viewable_imps_total": "Viewable impression events (MRC 50%/1s) accepted.",
     "rtb_clicks_total": "Click events accepted.",

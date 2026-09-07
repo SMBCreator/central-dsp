@@ -39,8 +39,9 @@ from cache import (
     reserve_budget,
     settle_win,
 )
+import fx
 from db import get_pool
-from money import CURRENCY, clamp_clearing_price, cpm_to_cost
+from money import clamp_clearing_price, cpm_to_cost
 from ord.service import feed_gate_sql
 from stats_math import INVENTORY_DIMENSIONS
 from tokens import sign_event_token, verify_event_token
@@ -584,6 +585,31 @@ def _cpc_of(row) -> float | None:
     return cpc if cpc > 0 else None
 
 
+def _fx_markup_of(cand) -> float | None:
+    """fx_markup_percent владельца кампании из app_settings (JSONB: число,
+    строка или уже распакованное значение). None -> fx.DEFAULT_MARKUP_PERCENT."""
+    raw = cand.get("fx_markup_percent")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    try:
+        return float(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_rub_price(reported, row):
+    """${AUCTION_PRICE} в валюте ответа -> RUB курсом бида (bidmeta.fx_rate).
+    Мусор/отсутствие цены оставляем как есть — clamp_clearing_price решит."""
+    try:
+        rate = float(_row_get(row, "fx_rate") or 1.0)
+        return float(reported) * rate if rate > 0 else reported
+    except (TypeError, ValueError):
+        return reported
+
+
 def _event_dims(row) -> dict[str, Any]:
     """Измерения бида, наследуемые win/imp/click/view/loss (audit E-01).
 
@@ -764,7 +790,6 @@ async def bid(endpoint_key: str, request: Request):
     bids = [b for sb in result.get("seatbid", []) for b in sb.get("bid", [])]
     obs_metrics.inc("rtb_bid_responses_total")
     obs_metrics.inc("rtb_bids_total", len(bids))
-    obs_metrics.inc("rtb_bid_price_cpm_rub_sum", sum(float(b.get("price") or 0) for b in bids))
     return result
 
 
@@ -896,6 +921,18 @@ async def process_bid_request(
     if isinstance(allowed_types, str):
         allowed_types = json.loads(allowed_types)
 
+    # Валюта (audit R-03, договор в fx.py; паритет bidder-go internal/fx).
+    # Внутри всё в RUB; в ответе — валюта расчётов партнёра, если SSP её
+    # принимает, иначе RUB, иначе no-bid. Курс — ЦБ + наценка владельца
+    # кампании, один на весь бид (floor, цена, ${AUCTION_PRICE} при win).
+    partner_cur = ((partner["currency"] if "currency" in partner.keys() else None) or fx.RUB).upper()
+    resp_cur = fx.choose_currency(req.get("cur"), partner_cur)
+    if resp_cur is None:
+        obs_metrics.inc_no_bid("currency")
+        return None
+    fx_rates = await fx.rates_snapshot()
+    partner_floor_raw = float(partner["bid_floor"] or 0)
+
     # Candidate line items: active campaign within budget & dates, active LI, approved creative
     candidates, _fresh = _cache_get("candidates")
     if candidates is None or (not _fresh and _claim_refresh("candidates")):
@@ -912,7 +949,8 @@ async def process_bid_request(
                cr.html_snippet, cr.native_title, cr.native_description, cr.native_cta,
                cr.native_icon_url, cr.video_url, cr.video_duration, cr.vast_xml, cr.name,
                cr.imp_tracker_url, cr.click_tracker_url, cr.erid,
-               cp.name AS adv_name, cp.inn AS adv_inn, cp.ogrn AS adv_ogrn, cp.address AS adv_address
+               cp.name AS adv_name, cp.inn AS adv_inn, cp.ogrn AS adv_ogrn, cp.address AS adv_address,
+               fxs.value AS fx_markup_percent
         FROM line_items li
         JOIN campaigns c ON c.id = li.campaign_id AND c.status = 'active'
              AND (c.start_date IS NULL OR c.start_date <= CURRENT_DATE)
@@ -922,6 +960,7 @@ async def process_bid_request(
         JOIN creatives cr ON cr.campaign_id = c.id AND cr.status = 'approved'
              AND (cr.line_item_id IS NULL OR cr.line_item_id = li.id)
         LEFT JOIN counterparties cp ON cp.id = cr.counterparty_id
+        LEFT JOIN app_settings fxs ON fxs.user_id = li.user_id AND fxs.key = 'fx_markup_percent'
         WHERE li.status = 'active' AND li.bid_price > 0
         {feed_gate_sql()}
         """
@@ -995,7 +1034,8 @@ async def process_bid_request(
         ad_type = _imp_ad_type(imp)
         if not ad_type or ad_type not in allowed_types:
             continue
-        floor = max(float(imp.get("bidfloor") or 0), float(partner["bid_floor"]))
+        imp_floor_raw = float(imp.get("bidfloor") or 0)
+        floor_cur = fx.floor_currency(imp.get("bidfloorcur"), req.get("cur"), partner_cur)
 
         best = None
         for cand in candidates:
@@ -1005,6 +1045,16 @@ async def process_bid_request(
                 targeting = json.loads(targeting)
             if not _creative_fits_imp(c, imp, ad_type):
                 continue
+            # Курсы с наценкой владельца кампании: floor -> RUB, цена -> валюта
+            # ответа. Нет курса — кандидат не торгуется в этой валюте.
+            markup = _fx_markup_of(c)
+            rate_floor = fx.effective_rate(floor_cur, fx_rates, markup)
+            rate_pfloor = fx.effective_rate(partner_cur, fx_rates, markup)
+            rate_resp = fx.effective_rate(resp_cur, fx_rates, markup)
+            if rate_floor is None or rate_pfloor is None or rate_resp is None:
+                obs_metrics.inc("rtb_nobid_fx_rate_missing_total")
+                continue
+            floor = max(imp_floor_raw * rate_floor, partner_floor_raw * rate_pfloor)
             ssp_allow = targeting.get("ssp_allowlist") or []
             if ssp_allow and str(partner["id"]) not in [str(s) for s in ssp_allow]:
                 continue
@@ -1112,6 +1162,7 @@ async def process_bid_request(
                         price = min(price, float(c["max_bid"]))
             if best is None or price > best[0]:
                 c["_deal_id"] = _matched_deal(targeting, imp)
+                c["_fx_rate"] = rate_resp
                 best = (price, c)
 
         if not best:
@@ -1205,6 +1256,10 @@ async def process_bid_request(
                 # CPC (R-03): win() не списывает, click() списывает bid_cpc.
                 "bid_type": c["_bid_type"],
                 "bid_cpc": c["_bid_cpc"],
+                # Валюта ответа и курс бида: win() переводит ${AUCTION_PRICE}
+                # (в cur) в RUB тем же курсом — без дрейфа к моменту нотиса.
+                "cur": resp_cur,
+                "fx_rate": c["_fx_rate"],
                 **reserve_meta,
             }),
             ex=3600,
@@ -1217,11 +1272,13 @@ async def process_bid_request(
         ))
         if not is_test_req:
             _fire_and_forget(_bump_stats(pool, "bids", 0, c["campaign_id"], c["li_id"], c["creative_id"], partner["id"]))
+        # Метрика в RUB — до перевода в валюту ответа.
+        obs_metrics.inc("rtb_bid_price_cpm_rub_sum", price)
 
         bid_obj = {
             "id": bid_id,
             "impid": imp.get("id"),
-            "price": round(price, 4),
+            "price": round(price / c["_fx_rate"], 4),  # RUB -> валюта ответа
             "nurl": nurl,
             "adm": adm,
             "crid": str(c["creative_id"]),
@@ -1239,12 +1296,11 @@ async def process_bid_request(
     if not seatbids:
         return None
 
-    # cur: валюта из онбординг-анкеты партнёра (миграция 030), иначе платформенная
-    _cur = (partner["currency"] if "currency" in partner.keys() else None) or CURRENCY
+    # cur: валюта, в которой реально выставлены цены (fx.choose_currency)
     return {
         "id": req_id,
         "bidid": str(uuid.uuid4()),
-        "cur": _cur,
+        "cur": resp_cur,
         "seatbid": seatbids,
     }
 
@@ -1305,7 +1361,10 @@ async def win_notice(bid: str, price: str | None = None):
     row = await _find_bid(pool, bid)
     if not row:
         raise HTTPException(status_code=404, detail="Unknown bid")
-    clear_price = clamp_clearing_price(price, row["price"] or 0)
+    # ${AUCTION_PRICE} приходит в валюте ответа (bidmeta.cur); в RUB — курсом
+    # самого бида (bidmeta.fx_rate), затем clamp к нашей рублёвой цене.
+    # Нет fx_rate (PG-fallback / старый бид) = RUB, курс 1.
+    clear_price = clamp_clearing_price(_to_rub_price(price, row), row["price"] or 0)
     cost = cpm_to_cost(clear_price)
 
     # OpenRTB test=1 (bidmeta.is_test от Go-биддера): SSP проверяет интеграцию.

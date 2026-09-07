@@ -59,6 +59,9 @@ type Candidate struct {
 	// с низким quality score (Snapshot.DirtyDomains).
 	Objective        string `json:"objective"`
 	CleanTrafficOnly bool   `json:"clean_traffic_only"`
+	// FXMarkupPercent — наценка к курсу ЦБ владельца кампании (app_settings
+	// fx_markup_percent); nil = fx.DefaultMarkupPercent. См. internal/fx.
+	FXMarkupPercent *float64 `json:"fx_markup_percent"`
 
 	CreativeID      string `json:"creative_id"`
 	Type            string `json:"type"`
@@ -159,10 +162,13 @@ type Partner struct {
 	EndpointKey    string          `json:"endpoint_key"`
 	AuthTokenHash  string          `json:"auth_token_hash"` // hex(sha256(token)), миграция 032; "" = токен не выдан
 	QPSLimit       int             `json:"qps_limit"`
-	BidFloor       float64         `json:"bid_floor"`
+	BidFloor       float64         `json:"bid_floor"` // в валюте расчётов партнёра (Currency)
 	Status         string          `json:"status"`
 	AllowedAdTypes json.RawMessage `json:"allowed_ad_types"`
-	IPWhitelist    json.RawMessage `json:"ip_whitelist"` // JSON-массив IP/CIDR серверов SSP; пусто = любой IP
+	// Currency — валюта расчётов с SSP (миграция 030; "" = RUB). Биддим в ней,
+	// если req.cur её допускает (fx.ChooseCurrency).
+	Currency    string          `json:"currency"`
+	IPWhitelist json.RawMessage `json:"ip_whitelist"` // JSON-массив IP/CIDR серверов SSP; пусто = любой IP
 
 	// Окно безразрывной ротации токена (миграция 039, audit S-06): предыдущий
 	// хэш принимается, пока now < TokenPrevValidUntil. Backend отдаёт поля
@@ -257,7 +263,10 @@ type Snapshot struct {
 	DirtyDomains  map[string]bool
 	// PCTR — активная pCTR-модель (nil = нет; биддим базовой ценой). Порт
 	// ml/pctr.py, модель приезжает фидом, predict считается in-process.
-	PCTR     *pctr.Model
+	PCTR *pctr.Model
+	// FXRates — курсы ЦБ RUB за единицу валюты без наценки (fx_rates.rate),
+	// из /rtb-feed/partners. Пусто = биддим только в RUB.
+	FXRates  map[string]float64
 	LoadedAt time.Time
 }
 
@@ -401,7 +410,8 @@ func (s *Store) refresh(ctx context.Context) error {
 		return s.recordError(fmt.Errorf("campaigns: %w", err))
 	}
 	var parts struct {
-		Partners []Partner `json:"partners"`
+		Partners []Partner          `json:"partners"`
+		FXRates  map[string]float64 `json:"fx_rates"`
 	}
 	if err := s.get(ctx, "/rtb-feed/partners", &parts); err != nil {
 		slog.Error("feed partners refresh failed", "err", err)
@@ -412,7 +422,11 @@ func (s *Store) refresh(ctx context.Context) error {
 		Partners: make(map[string]*Partner, len(parts.Partners)),
 		GBlack:   map[string]map[string]bool{},
 		GWhite:   map[string]map[string]bool{},
+		FXRates:  make(map[string]float64, len(parts.FXRates)),
 		LoadedAt: time.Now(),
+	}
+	for cur, rate := range parts.FXRates {
+		snap.FXRates[strings.ToUpper(cur)] = rate
 	}
 	for i := range parts.Partners {
 		p := &parts.Partners[i]

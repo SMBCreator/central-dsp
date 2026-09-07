@@ -24,6 +24,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/feed"
+	"github.com/SMBCreator/central-dsp/bidder-go/internal/fx"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/metrics"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/pctr"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/prefilter"
@@ -159,6 +160,9 @@ type scoredCandidate struct {
 	// bidCPC — цена клика CPC line item (0 = CPM). Едет в bidmeta: Python
 	// win() такой бид не биллит, click() списывает ровно bidCPC.
 	bidCPC float64
+	// fxRate — RUB за единицу валюты ответа с наценкой владельца (1 для RUB).
+	// bid.price = price / fxRate; Python win() умножает ${AUCTION_PRICE} на него.
+	fxRate float64
 }
 
 // Bid — POST /rtb/bid/{endpointKey}. Пайплайн — паритет с Python:
@@ -294,8 +298,12 @@ func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 		auctionType = 2 // OpenRTB default: second price
 	}
 
-	// Central DSP биддит только в RUB.
-	if len(req.Cur) > 0 && !containsStr(req.Cur, "RUB") {
+	// Валюта ответа (audit R-03, порт fx.py / rtb.py): валюта расчётов
+	// партнёра, если SSP её принимает, иначе RUB, иначе no-bid. Внутри всё в
+	// RUB; в валюту переводится только bid.price по курсу ЦБ + наценка
+	// владельца кампании (internal/fx).
+	respCur := fx.ChooseCurrency(req.Cur, partner.Currency)
+	if respCur == "" {
 		h.mNoBid(metrics.ReasonCurrency)
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -305,10 +313,12 @@ func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 	deviceID := deviceIDOf(&req)
 
 	var bids []Bid
+	var rubSum float64
 	for i := range req.Imp {
 		imp := &req.Imp[i]
-		if b := h.bidOnImp(ctx, &req, imp, view, deviceID, partner, snap, auctionType); b != nil {
+		if b, rub := h.bidOnImp(ctx, &req, imp, view, deviceID, partner, snap, auctionType, respCur); b != nil {
 			bids = append(bids, *b)
+			rubSum += rub
 		}
 	}
 
@@ -318,16 +328,13 @@ func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.metrics != nil {
-		var sum float64
-		for i := range bids {
-			sum += bids[i].Price
-		}
-		h.metrics.IncBidResponse(len(bids), sum)
+		// Сумма цен в RUB (метрика rtb_bid_price_cpm_rub_sum) — до конверсии.
+		h.metrics.IncBidResponse(len(bids), rubSum)
 		h.metrics.IncPartnerBids(endpointKey, len(bids))
 	}
 	resp := BidResponse{
 		ID:      req.ID,
-		Cur:     "RUB",
+		Cur:     respCur,
 		SeatBid: []SeatBid{{Seat: h.seat, Bid: bids}},
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -342,7 +349,9 @@ func partnerBiddable(status string) bool {
 }
 
 // bidOnImp — кандидаты одного impression: фильтры + выбор лучшей цены.
-func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequest, imp *Imp, view *targeting.RequestView, deviceID string, partner *feed.Partner, snap *feed.Snapshot, auctionType int) *Bid {
+// bidOnImp возвращает бид (price уже в respCur) и его цену в RUB (для
+// метрик); nil, 0 — нет бида на этот imp.
+func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequest, imp *Imp, view *targeting.RequestView, deviceID string, partner *feed.Partner, snap *feed.Snapshot, auctionType int, respCur string) (*Bid, float64) {
 	rctx, ok := ctx.(interface {
 		Done() <-chan struct{}
 		Err() error
@@ -350,21 +359,23 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 		Value(any) any
 	})
 	if !ok {
-		return nil
+		return nil, 0
 	}
 
 	adType := impAdType(imp)
 	if adType == "" {
-		return nil
+		return nil, 0
 	}
 	if partner.AllowedTypes != nil && len(partner.AllowedTypes) > 0 && !partner.AllowedTypes[adType] {
-		return nil
+		return nil, 0
 	}
 
-	floor := imp.BidFloor
-	if partner.BidFloor > floor {
-		floor = partner.BidFloor
-	}
+	// Валюты (порт fx.py): imp.bidfloor — в bidfloorcur / req.cur[0] / валюте
+	// партнёра; partner.bid_floor — в валюте расчётов партнёра. В RUB они
+	// переводятся курсом с наценкой владельца кампании, поэтому floor —
+	// per-candidate (ниже); здесь только исходные числа.
+	partnerCur := partner.Currency
+	floorCur := fx.FloorCurrency(imp.BidFloorCur, req.Cur, partnerCur)
 
 	// Собираем прошедших таргетинг кандидатов, сортируем по цене (desc).
 	impView := buildImpView(imp)
@@ -385,6 +396,18 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 		if c.T != nil && !h.audienceOK(rctx, c.T.AudienceInclude, c.T.AudienceExclude, deviceID) {
 			continue
 		}
+		// Курсы с наценкой владельца: floor -> RUB, цена RUB -> валюта ответа.
+		// Нет курса — кандидат в этой валюте не торгуется (никогда «как в рублях»).
+		rateFloor, ok1 := fx.EffectiveRate(floorCur, snap.FXRates, c.FXMarkupPercent)
+		ratePFloor, ok2 := fx.EffectiveRate(partnerCur, snap.FXRates, c.FXMarkupPercent)
+		rateResp, ok3 := fx.EffectiveRate(respCur, snap.FXRates, c.FXMarkupPercent)
+		if !ok1 || !ok2 || !ok3 {
+			if h.metrics != nil {
+				h.metrics.IncFXRateMissing()
+			}
+			continue
+		}
+		floor := math.Max(imp.BidFloor*rateFloor, partner.BidFloor*ratePFloor)
 		// CPC (audit R-03, порт rtb.py): ставка за клик -> эквивалентная CPM
 		// через ожидаемый CTR (модель из фида, иначе консервативный fallback).
 		// max_bid у CPC — потолок клика, а не CPM; поэтому CPM-клампы ниже
@@ -433,7 +456,7 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 		if price < floor || price <= 0 {
 			continue
 		}
-		scored = append(scored, scoredCandidate{c: c, price: price, raw: raw, pctr: pctrUsed, bidCPC: bidCPC})
+		scored = append(scored, scoredCandidate{c: c, price: price, raw: raw, pctr: pctrUsed, bidCPC: bidCPC, fxRate: rateResp})
 	}
 	sort.Slice(scored, func(i, j int) bool { return scored[i].price > scored[j].price })
 
@@ -489,19 +512,19 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 		if err != nil {
 			slog.Error("sign token", "err", err)
 			h.abortReservation(rctx, reservation)
-			return nil
+			return nil, 0
 		}
 		// Audit R-02: bidmeta + событие bid — обязательный bookkeeping. Без bidmeta
 		// backend не опознает win/imp/click (rtb.py:_find_bid) — платный показ
 		// пройдёт без списания и без учёта. Не удалось записать — резерв
 		// возвращаем и бид не отдаём.
-		if err := h.persistBidMeta(rctx, bidID, imp, c, partner, sc.price, sc.pctr, sc.bidCPC, view, adType, deviceID, capsList, req.Test == 1, reservation); err != nil {
+		if err := h.persistBidMeta(rctx, bidID, imp, c, partner, sc.price, sc.pctr, sc.bidCPC, respCur, sc.fxRate, view, adType, deviceID, capsList, req.Test == 1, reservation); err != nil {
 			slog.Error("bid bookkeeping failed; no-bid", "bid_id", bidID, "err", err)
 			if h.metrics != nil {
 				h.metrics.IncBookkeepingError()
 			}
 			h.abortReservation(rctx, reservation)
-			return nil
+			return nil, 0
 		}
 
 		adm := BuildAdm(c, h.base, token)
@@ -522,14 +545,15 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 		if c.T != nil {
 			dealID = targeting.MatchedDeal(c.T.DealIDs, impView.DealIDs)
 		}
+		// RUB -> валюта ответа тем же курсом, что записан в bidmeta.fx_rate.
 		return &Bid{
-			ID: bidID, ImpID: imp.ID, Price: roundPrice(sc.price),
+			ID: bidID, ImpID: imp.ID, Price: roundPrice(sc.price / sc.fxRate),
 			AdM: adm, ADomain: admomains(c), CrID: c.CreativeID,
 			Cat: c.IABCategories, Attr: c.Attrs,
 			NURL: nurl, LURL: lurl, W: w, H: hgt, DealID: dealID, Ext: ext,
-		}
+		}, sc.price
 	}
-	return nil
+	return nil, 0
 }
 
 // matchCandidate — таргетинг line item + SSP allowlist + глобальные домен-листы
@@ -634,7 +658,7 @@ func (h *Handler) persistBidMeta(ctx interface {
 	Err() error
 	Deadline() (time.Time, bool)
 	Value(any) any
-}, bidID string, imp *Imp, c *feed.Candidate, partner *feed.Partner, price, pctrUsed, bidCPC float64, view *targeting.RequestView, adType, deviceID string, caps []redisx.CapWindow, isTest bool, res redisx.BidReservation) error {
+}, bidID string, imp *Imp, c *feed.Candidate, partner *feed.Partner, price, pctrUsed, bidCPC float64, respCur string, fxRate float64, view *targeting.RequestView, adType, deviceID string, caps []redisx.CapWindow, isTest bool, res redisx.BidReservation) error {
 	if h.redis == nil {
 		// Без Redis биддер в degraded-режиме (только dev): bookkeeping невозможен,
 		// но и резервов нет — бид уходит как раньше.
@@ -683,6 +707,10 @@ func (h *Handler) persistBidMeta(ctx interface {
 		// CPC (R-03): Python win() такой бид не биллит, click() списывает bid_cpc.
 		"bid_type": bidTypeName(c.BidType),
 		"bid_cpc":  bidCPCMeta(bidCPC),
+		// Валюта ответа и курс бида: win() переводит ${AUCTION_PRICE} в RUB
+		// тем же курсом (rtb.py:_to_rub_price) — без дрейфа к моменту нотиса.
+		"cur":     respCur,
+		"fx_rate": fxRate,
 	})
 	if err := rdb.Set(ctx, "bidmeta:"+bidID, meta, time.Hour).Err(); err != nil {
 		return fmt.Errorf("set bidmeta: %w", err)
@@ -1327,13 +1355,4 @@ func bidCPCMeta(cpc float64) any {
 		return nil
 	}
 	return roundPrice(cpc)
-}
-
-func containsStr(list []string, v string) bool {
-	for _, x := range list {
-		if strings.EqualFold(x, v) {
-			return true
-		}
-	}
-	return false
 }

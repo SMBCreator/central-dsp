@@ -13,6 +13,7 @@ import os
 
 from fastapi import APIRouter, Header, HTTPException
 
+import fx
 from db import get_pool
 from ord.service import feed_gate_sql
 
@@ -38,14 +39,31 @@ async def partners_feed(authorization: str | None = Header(default=None)):
     # token_prev_hash/token_prev_valid_until — окно безразрывной ротации токена
     # (миграция 039, audit S-06): Go принимает старый токен до этого момента.
     # Протухшее окно в фид не отдаём, чтобы старый хэш не жил в памяти биддера.
+    # currency — валюта расчётов партнёра (миграция 030): Go биддит в ней, если
+    # SSP её принимает (fx.choose_currency). fx_rates — курсы ЦБ RUB/валюта без
+    # наценки; наценку владельца кампании Go применяет сам (candidate.fx_markup_percent).
+    # Нет курса — нет ключа — Go не биддит в этой валюте (no-bid fx_rate_missing).
     rows = await pool.fetch(
         """SELECT id, endpoint_key, auth_token_hash, qps_limit, bid_floor, status,
-                  allowed_ad_types, ip_whitelist,
+                  allowed_ad_types, ip_whitelist, currency,
                   CASE WHEN token_prev_valid_until > now() THEN token_prev_hash END AS token_prev_hash,
                   CASE WHEN token_prev_valid_until > now() THEN token_prev_valid_until END AS token_prev_valid_until
            FROM supply_partners WHERE status IN ('active', 'testing')"""
     )
-    return {"partners": [dict(r) for r in rows]}
+    return {"partners": [dict(r) for r in rows], "fx_rates": await fx.rates_snapshot()}
+
+
+def _num_or_none(raw) -> float | None:
+    """JSONB-значение настройки -> float или None (мусор = None = дефолт)."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    try:
+        return float(raw) if raw is not None and not isinstance(raw, bool) else None
+    except (TypeError, ValueError):
+        return None
 
 
 @router.get("/campaigns")
@@ -68,7 +86,8 @@ async def campaigns_feed(authorization: str | None = Header(default=None)):
                cr.native_icon_url, cr.video_url, cr.video_duration, cr.vast_xml, cr.name,
                cr.imp_tracker_url, cr.click_tracker_url, cr.erid,
                cr.iab_categories, cr.attrs,
-               cp.name AS adv_name, cp.inn AS adv_inn, cp.ogrn AS adv_ogrn, cp.address AS adv_address
+               cp.name AS adv_name, cp.inn AS adv_inn, cp.ogrn AS adv_ogrn, cp.address AS adv_address,
+               fxs.value AS fx_markup_percent
         FROM line_items li
         JOIN campaigns c ON c.id = li.campaign_id AND c.status = 'active'
              AND (c.start_date IS NULL OR c.start_date <= CURRENT_DATE)
@@ -78,6 +97,7 @@ async def campaigns_feed(authorization: str | None = Header(default=None)):
         JOIN creatives cr ON cr.campaign_id = c.id AND cr.status = 'approved'
              AND (cr.line_item_id IS NULL OR cr.line_item_id = li.id)
         LEFT JOIN counterparties cp ON cp.id = cr.counterparty_id
+        LEFT JOIN app_settings fxs ON fxs.user_id = li.user_id AND fxs.key = 'fx_markup_percent'
         WHERE li.status = 'active' AND li.bid_price > 0
         {feed_gate_sql()}
         """
@@ -97,6 +117,8 @@ async def campaigns_feed(authorization: str | None = Header(default=None)):
                 d["frequency_caps"] = json.loads(fc)
             except ValueError:
                 d["frequency_caps"] = []
+        # app_settings.value — JSONB; Go ждёт число или null (null = дефолт fx.py).
+        d["fx_markup_percent"] = _num_or_none(d.get("fx_markup_percent"))
         out.append(d)
 
     owner_ids = list({c["owner_id"] for c in cands})
