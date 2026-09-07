@@ -253,3 +253,68 @@ groups:
             зарегистрированного erid — реклама без маркировки (ФЗ-347).
             Список — в ответе /cron/ord-export (skipped_without_erid) и в
             ord_export_log.request. Runbook: rtb_alerts.md#ord-export
+
+      # --- Consumer событий Go-биддера (audit E-03) ---------------------------
+      # Стрим rtb:events ограничен MAXLEN ~200k на стороне Go. Если consumer не
+      # успевает, старые события обрезаются — win-rate/eCPM в кабинете теряют
+      # знаменатель. Lag близкий к длине стрима = потеря неизбежна.
+      - alert: RtbEventsConsumerLagHigh
+        expr: rtb_events_lag > 50000
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Consumer rtb:events отстаёт на {{ $value }} событий"
+          description: >-
+            Backend не успевает переносить bid/loss из Redis Stream в
+            bid_events/stats_hourly. Проверить PG (latency, locks) и
+            rtb_events_consumer_errors_total. При lag > 150k события начнут
+            теряться по MAXLEN. Runbook: rtb_alerts.md#events-consumer
+
+      - alert: RtbEventsConsumerLagCritical
+        expr: rtb_events_lag > 150000
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Consumer rtb:events на грани потери событий (lag {{ $value }})"
+          description: >-
+            До обрезки стрима по MAXLEN осталось < 50k событий. Немедленно:
+            масштабировать backend / проверить PG. Runbook: rtb_alerts.md#events-consumer
+
+      - alert: RtbEventsPendingStuck
+        expr: rtb_events_pending > 1000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} событий rtb:events доставлены, но не подтверждены > 5 мин"
+          description: >-
+            PEL consumer-группы не сокращается: батчи читаются, но запись в PG
+            падает (см. rtb_events_consumer_errors_total) или poison-события
+            крутятся до MAX_DELIVERIES. Проверить rtb:events:dead.
+            Runbook: rtb_alerts.md#events-consumer
+
+      - alert: RtbEventsConsumerErrors
+        expr: increase(rtb_events_consumer_errors_total[10m]) > 20
+        labels:
+          severity: warning
+        annotations:
+          summary: "Consumer rtb:events: {{ $value }} ошибок за 10 мин"
+          description: >-
+            Итерации consumer-а падают и повторяются с backoff. Обычно — PG
+            недоступен или битые события. Runbook: rtb_alerts.md#events-consumer
+
+      - alert: RtbEventsConsumerSilent
+        expr: >-
+          rate(rtb_events_consumed_total[10m]) == 0
+          and rate(bidder_bid_requests_total[10m]) > 1
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Go-биддер торгует, а consumer rtb:events ничего не пишет"
+          description: >-
+            Есть bid-трафик, но bid_events/stats_hourly.bids не пополняются —
+            consumer не запущен (RTB_EVENTS_CONSUMER=0? REDIS_URL?) или завис на
+            bootstrap группы. Runbook: rtb_alerts.md#events-consumer

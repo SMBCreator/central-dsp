@@ -36,6 +36,7 @@ _COUNTER_HELP = {
     # Consumer событий Go-биддера (events_consumer.py): rtb:events -> bid_events/stats_hourly.
     "rtb_events_consumed_total": "Bid/loss events consumed from the Go bidder Redis stream.",
     "rtb_events_consumer_errors_total": "Consumer iterations that failed (Redis/PG error, retried with backoff).",
+    "rtb_events_claimed_total": "Stale pending events taken over from other consumers via XAUTOCLAIM (E-03).",
     "rtb_test_wins_total": "Win notices for OpenRTB test=1 bids (recorded, not billed).",
     "ord_export_failures_total": "Monthly ORD stats exports that ended with status=failed.",
     # Reservation lifecycle (audit M-05/M-06): исход перевода резерва в clearing на win.
@@ -61,6 +62,11 @@ _GAUGE_HELP = {
         "Creatives with impressions in the last exported period but no registered erid "
         "(should be 0; >0 = ads served without ORD marking). Refreshed by GET /cron/ord-export."
     ),
+    # Consumer событий Go-биддера (E-03). Стрим ограничен MAXLEN ~200k на стороне
+    # Go: lag, приближающийся к длине стрима, означает скорую потерю событий.
+    "rtb_events_stream_length": "Entries currently in the rtb:events Redis stream (XLEN).",
+    "rtb_events_pending": "Delivered-but-unacked entries in the backend consumer group (PEL size).",
+    "rtb_events_lag": "Entries in rtb:events not yet delivered to the backend group (XINFO GROUPS lag).",
 }
 
 # Фиксированный список cron-задач (routers/cron.py) — bounded label `job`.

@@ -333,6 +333,59 @@ https://<host>/cron/<job>` и прочитать JSON ответа. `reset-daily
 
 ---
 
+## events-consumer — RtbEventsConsumerLagHigh / LagCritical / PendingStuck / Errors / Silent
+
+**Что это.** Go-биддер не пишет в Postgres: события `bid`/`loss` он складывает в
+Redis Stream `rtb:events` (MAXLEN ~200k). Backend-consumer (`events_consumer.py`,
+группа `backend`) переносит их в `bid_events` и `stats_hourly.bids` — это
+знаменатель win-rate и eCPM в кабинете. Надёжность (audit E-03): XACK только
+после COMMIT; stream id каждого события пишется в `rtb_events_inbox` в той же
+транзакции (повтор батча не задваивает агрегаты); после ошибки consumer
+перечитывает свой pending (`0`) прежде чем брать новое; pending чужих
+consumer-ов (старый HOSTNAME) забирается XAUTOCLAIM через 60 с; событие, не
+записавшееся 5 раз, уходит в `rtb:events:dead` и подтверждается.
+
+**Метрики.** `rtb_events_stream_length` (XLEN), `rtb_events_pending` (PEL),
+`rtb_events_lag` (ещё не доставлено группе), `rtb_events_consumed_total`,
+`rtb_events_claimed_total`, `rtb_events_consumer_errors_total`.
+
+**LagHigh / LagCritical** — consumer не успевает. При lag → 200k Redis начнёт
+обрезать стрим и события потеряются безвозвратно (win-rate в кабинете уедет
+вверх, `bids` в отчётах занижены).
+1. `rtb_events_consumer_errors_total` растёт? → смотреть логи backend
+   `events consumer iteration failed` — обычно PG (latency, locks на
+   `stats_hourly`, закончились соединения пула).
+2. Ошибок нет, но lag растёт → чистая пропускная способность. Временно
+   поднять `RTB_EVENTS_BATCH` (500 → 2000) или запустить второй backend с
+   `RTB_EVENTS_CONSUMER=1` (группа общая, consumer-ы делят поток).
+3. После ликвидации: сверить `SELECT sum(bids) FROM stats_hourly` за час с
+   `bidder_bid_requests_total` — разница = потерянные события (если стрим
+   обрезался).
+
+**PendingStuck** — батчи читаются, но не подтверждаются > 5 мин.
+1. `errors_total` растёт → запись в PG падает на каждом повторе. Смотреть
+   текст ошибки: constraint/тип → битое событие (уйдёт в dead через
+   MAX_DELIVERIES=5 доставок); connection → PG.
+2. `XPENDING rtb:events backend - + 10` → если consumer-имя не совпадает с
+   текущим HOSTNAME, ждать XAUTOCLAIM (60 с) или проверить, что процесс жив.
+3. `XLEN rtb:events:dead` → poison-события. Разобрать (`XRANGE rtb:events:dead - +`),
+   починить нормализацию, при необходимости переложить обратно `XADD rtb:events`.
+
+**Errors** — > 20 падений итераций за 10 мин. См. пункт 1 выше; каждая ошибка
+повторяется с backoff 1→30 с, pending не теряется.
+
+**Silent** — биддер торгует, а consumer не пишет ничего. Проверить: backend
+запущен с `REDIS_URL`; `RTB_EVENTS_CONSUMER` не `0`; в логах нет
+`events consumer group bootstrap failed` (ретраится, но если Redis недоступен —
+будет молчать); `XINFO GROUPS rtb:events` показывает группу `backend` с живыми
+consumers.
+
+**Redis пересоздан / flush.** Группа стартует с курсора в `rtb_events_cursor`
+(пишется атомарно с каждым батчем); если курсора нет — с `0` (всё, что есть в
+стриме). Ничего руками делать не нужно.
+
+---
+
 ## Куда смотреть в первую очередь при любом алерте
 
 1. `bidder :8090/metrics` и `backend /metrics` — снапшот всех счётчиков.

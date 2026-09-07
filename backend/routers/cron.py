@@ -375,6 +375,12 @@ async def bid_events_retention(request: Request):
         "DELETE FROM bid_event_once WHERE created_at < now() - interval '3 days'"
     )
     once_deleted = int(once_status.rsplit(" ", 1)[-1] or 0)
+    # Inbox consumer-а Redis Stream (E-03): стрим на стороне Go живёт минуты,
+    # 3 суток inbox — с запасом на любой replay/XAUTOCLAIM.
+    inbox_status = await pool.execute(
+        "DELETE FROM rtb_events_inbox WHERE created_at < now() - interval '3 days'"
+    )
+    inbox_deleted = int(inbox_status.rsplit(" ", 1)[-1] or 0)
 
     partitioned = await pool.fetchval(
         """SELECT EXISTS (
@@ -382,7 +388,11 @@ async def bid_events_retention(request: Request):
                WHERE n.nspname = 'public' AND c.relname = 'bid_events' AND c.relkind = 'p')"""
     )
     if not partitioned:
-        return {"skipped": "bid_events is not partitioned (apply migration 033)", "once_deleted": once_deleted}
+        return {
+            "skipped": "bid_events is not partitioned (apply migration 033)",
+            "once_deleted": once_deleted,
+            "inbox_deleted": inbox_deleted,
+        }
 
     created = await pool.fetchval(
         "SELECT bid_events_ensure_partitions(current_date, current_date + 7)"
@@ -397,4 +407,5 @@ async def bid_events_retention(request: Request):
         "partitions_dropped": list(dropped or []),
         "rows_in_default_partition": in_default,
         "once_deleted": once_deleted,
+        "inbox_deleted": inbox_deleted,
     }
