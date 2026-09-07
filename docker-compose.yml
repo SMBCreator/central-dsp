@@ -91,8 +91,11 @@ services:
       - ./backend:/app                        # hot reload dev
       - geoip_data:/data:ro                   # GeoLite2 DB (read-only)
       - uploads_data:/data/uploads            # креативы (persistent)
+    # Audit S-06: наружу публикует только реверс-прокси (Caddy, docs/DEPLOYMENT.md §5).
+    # Прямой доступ к сервисам с публичного адреса закрыт — иначе TRUSTED_PROXIES
+    # и IP-whitelist SSP обходятся запросом мимо прокси.
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     networks:
       - centraldsp
 
@@ -122,8 +125,8 @@ services:
     volumes:
       - geoip_data:/data:ro                   # GeoLite2 DB
     ports:
-      - "8080:8080"                           # OpenRTB endpoint
-      - "9090:9090"                           # Prometheus metrics
+      - "127.0.0.1:8080:8080"                 # OpenRTB endpoint (loopback only)
+      - "127.0.0.1:9090:9090"                 # Prometheus metrics (loopback only)
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
       interval: 15s
@@ -161,8 +164,10 @@ services:
         condition: service_healthy
       backend:
         condition: service_started
+    # Только loopback: SSP ходят через Caddy (rtb.<domain> -> localhost:8090),
+    # поэтому RemoteAddr у биддера всегда прокси, а реальный IP — в XFF.
     ports:
-      - "8090:8090"
+      - "127.0.0.1:8090:8090"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8090/healthz || exit 1"]
       interval: 15s
@@ -226,7 +231,7 @@ services:
     build: ./frontend
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
       # Штатно /api/* до Next.js не доходит (Caddy -> backend:8000). Если всё же
       # дошёл — проксируем в backend по сети compose, а не в 127.0.0.1 контейнера.
