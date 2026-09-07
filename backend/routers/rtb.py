@@ -7,12 +7,16 @@ Flow:
   GET  /rtb/click               <- click tracker
 """
 import json
+import logging
 import os
 import time
 import uuid
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response
+
+logger = logging.getLogger("rtb")
 
 import obs_metrics
 import prefilter
@@ -538,8 +542,7 @@ def _fire_and_forget(coro) -> None:
     def _swallow(t: asyncio.Task) -> None:
         exc = t.exception()
         if exc is not None:
-            import logging
-            logging.getLogger("rtb").warning("background bookkeeping failed: %s", exc)
+            logger.warning("background bookkeeping failed: %s", exc)
 
     task.add_done_callback(_swallow)
 
@@ -609,8 +612,8 @@ async def _log_event(pool, event_type: str, **kw: Any) -> None:
     )
 
 
-async def _bump_stats(pool, col: str, spend: float, campaign_id, line_item_id, creative_id, supply_partner_id) -> None:
-    await pool.execute(
+async def _bump_stats(db, col: str, spend: float, campaign_id, line_item_id, creative_id, supply_partner_id) -> None:
+    await db.execute(
         f"""
         INSERT INTO stats_hourly (ts_hour, campaign_id, line_item_id, creative_id, supply_partner_id, {col}, spend)
         VALUES (date_trunc('hour', now()), $1, $2, $3, $4, 1, $5)
@@ -619,6 +622,60 @@ async def _bump_stats(pool, col: str, spend: float, campaign_id, line_item_id, c
         """,
         campaign_id, line_item_id, creative_id, supply_partner_id, spend,
     )
+
+
+# --- Идемпотентность трекинг-событий (audit E-02) -----------------------------
+#
+# Источник истины — строка bid_event_once(bid_id, kind), вставляемая в ОДНОЙ
+# транзакции с INSERT bid_events и UPSERT stats_hourly. Если любой шаг падает,
+# откатывается и заявка — повтор пикселя дописывает всё целиком. Redis
+# `once:*` — только fast-path для отсечения дублей, и ставится ПОСЛЕ коммита:
+# ключ никогда не переживёт неудавшуюся запись.
+
+
+async def _seen_fast(kind: str, bid: str) -> bool:
+    try:
+        return bool(await get_redis().exists(f"once:{kind}:{bid}"))
+    except Exception:
+        return False  # Redis недоступен — решает БД
+
+
+async def _remember_fast(kind: str, bid: str) -> None:
+    try:
+        await mark_once(kind, bid)
+    except Exception:
+        logger.warning("once fast-path not cached for %s:%s", kind, bid)
+
+
+async def _claim_once(conn, kind: str, bid: str) -> bool:
+    return bool(await conn.fetchval(
+        "INSERT INTO bid_event_once (bid_id, kind) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING true",
+        bid, kind,
+    ))
+
+
+@asynccontextmanager
+async def _once_txn(pool, kind: str, bid: str):
+    """Транзакция «ровно один раз» для (bid, kind).
+
+    Отдаёт соединение с открытой транзакцией и уже вставленной заявкой, либо
+    None, если событие уже учтено. Коммит — на выходе из блока; исключение в
+    теле откатывает и заявку, и все записи внутри.
+    """
+    if await _seen_fast(kind, bid):
+        yield None
+        return
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            if not await _claim_once(conn, kind, bid):
+                yield None
+                return
+            yield conn
+    await _remember_fast(kind, bid)
+
+
+def _stat_ids(row) -> tuple:
+    return (row["campaign_id"], row["line_item_id"], row["creative_id"], row["supply_partner_id"])
 
 
 
@@ -1150,22 +1207,30 @@ async def process_bid_request(
     }
 
 
-async def _bump_domain_stats(pool, row, col: str, spend=0):
-    """Upsert domain_stats_hourly from a found bid_events row. Best-effort."""
+async def _bump_domain_stats(db, row, col: str, spend=0):
+    """Upsert domain_stats_hourly from a found bid_events row. Best-effort.
+
+    `db` — пул или соединение с открытой транзакцией. Во втором случае запрос
+    идёт под savepoint: проглоченная ошибка не должна переводить внешнюю
+    транзакцию (событие + stats_hourly) в состояние aborted.
+    """
     domain = (row.get("domain") or "").strip().lower() if hasattr(row, "get") else (row["domain"] or "").strip().lower()
     if not domain:
         return
+    sql = f"""
+        INSERT INTO domain_stats_hourly (ts_hour, campaign_id, supply_partner_id, domain, {col}, spend)
+        VALUES (date_trunc('hour', now()), $1, $2, $3, 1, $4)
+        ON CONFLICT (ts_hour, campaign_id, supply_partner_id, domain)
+        DO UPDATE SET {col} = domain_stats_hourly.{col} + 1,
+                      spend = domain_stats_hourly.spend + $4
+    """
+    args = (row["campaign_id"], row["supply_partner_id"], domain, spend or 0)
     try:
-        await pool.execute(
-            f"""
-            INSERT INTO domain_stats_hourly (ts_hour, campaign_id, supply_partner_id, domain, {col}, spend)
-            VALUES (date_trunc('hour', now()), $1, $2, $3, 1, $4)
-            ON CONFLICT (ts_hour, campaign_id, supply_partner_id, domain)
-            DO UPDATE SET {col} = domain_stats_hourly.{col} + 1,
-                          spend = domain_stats_hourly.spend + $4
-            """,
-            row["campaign_id"], row["supply_partner_id"], domain, spend or 0,
-        )
+        if hasattr(db, "transaction"):
+            async with db.transaction():
+                await db.execute(sql, *args)
+        else:
+            await db.execute(sql, *args)
     except Exception:
         logger.exception("domain stats bump failed (non-fatal)")
 
@@ -1205,24 +1270,36 @@ async def win_notice(bid: str, price: str | None = None):
     # Фиксируем win в журнале (видно в отчёте с флагом), но не списываем деньги
     # и не трогаем stats_hourly — иначе тест SSP исказит расход клиента.
     if _is_test_bid(row):
-        if await mark_once("testwin", bid):
-            obs_metrics.inc("rtb_test_wins_total")
-            await _log_event(
-                pool, "win", bid_id=bid, price=row["price"], clear_price=clear_price,
-                is_test=True, **_event_dims(row),
-            )
+        async with _once_txn(pool, "testwin", bid) as conn:
+            if conn is not None:
+                obs_metrics.inc("rtb_test_wins_total")
+                await _log_event(
+                    conn, "win", bid_id=bid, price=row["price"], clear_price=clear_price,
+                    is_test=True, **_event_dims(row),
+                )
         return {"ok": True, "test": True}
 
+    # Audit E-02: списание, событие win и stats_hourly — одна транзакция.
+    # bill_win внутри открывает свою transaction() -> под внешней это savepoint.
+    # Дедуп — transactions(bid_id) WHERE type='spend': повтор после падения
+    # любого шага снова проходит весь путь целиком, а не «duplicate».
     async with pool.acquire() as conn:
-        result = await bill_win(
-            conn,
-            bid_id=bid,
-            campaign_id=row["campaign_id"],
-            line_item_id=row["line_item_id"],
-            cost=cost,
-        )
-    if not result.billed:
-        return {"ok": True, "duplicate": True}
+        async with conn.transaction():
+            result = await bill_win(
+                conn,
+                bid_id=bid,
+                campaign_id=row["campaign_id"],
+                line_item_id=row["line_item_id"],
+                cost=cost,
+            )
+            if not result.billed:
+                return {"ok": True, "duplicate": True}
+            await _log_event(
+                conn, "win", bid_id=bid, price=row["price"], clear_price=clear_price,
+                **_event_dims(row),
+            )
+            await _bump_stats(conn, "wins", cost, *_stat_ids(row))
+            await _bump_domain_stats(conn, row, "wins", result.cost)
 
     # Audit M-06: перевести резерв Redis в фактическое списание. Резерв был
     # bid price/1000, списан clearing — разница возвращается на дневные ключи,
@@ -1245,12 +1322,6 @@ async def win_notice(bid: str, price: str | None = None):
 
     obs_metrics.inc("rtb_wins_total")
     obs_metrics.inc("rtb_win_spend_rub_sum", float(cost))
-    await _log_event(
-        pool, "win", bid_id=bid, price=row["price"], clear_price=clear_price,
-        **_event_dims(row),
-    )
-    await _bump_domain_stats(pool, row, "wins", result.cost if result else 0)
-    await _bump_stats(pool, "wins", cost, row["campaign_id"], row["line_item_id"], row["creative_id"], row["supply_partner_id"])
     return {"ok": True}
 
 
@@ -1260,23 +1331,30 @@ async def impression(bid: str):
     if not bid:
         return Response(content=_PIXEL, media_type="image/gif")
     pool = await get_pool()
-    if not await mark_once("imp", bid):
-        return Response(content=_PIXEL, media_type="image/gif")
+    # Бид ищем до заявки на дедуп: неизвестный bid не должен «сжигать» ключ
+    # (bidmeta мог ещё не долететь в Redis, а PG-fallback — быть за партицией).
     row = await _find_bid(pool, bid)
-    if row:
-        is_test = _is_test_bid(row)
+    if not row:
+        return Response(content=_PIXEL, media_type="image/gif")
+    is_test = _is_test_bid(row)
+    counted = False
+    async with _once_txn(pool, "imp", bid) as conn:
+        if conn is not None:
+            await _log_event(conn, "impression", bid_id=bid, is_test=is_test, **_event_dims(row))
+            if not is_test:
+                # Тестовый показ SSP: в журнале есть, в статистике клиента — нет.
+                await _bump_stats(conn, "impressions", 0, *_stat_ids(row))
+                await _bump_domain_stats(conn, row, "impressions")
+            counted = True
+    if counted:
         obs_metrics.inc("rtb_imps_total")
-        await _log_event(
-            pool, "impression", bid_id=bid, is_test=is_test, **_event_dims(row),
-        )
-        if is_test:
-            # Тестовый показ SSP: в журнале есть, в статистике клиента — нет.
-            return Response(content=_PIXEL, media_type="image/gif")
-        await _bump_domain_stats(pool, row, "impressions")
-        await _bump_stats(pool, "impressions", 0, row["campaign_id"], row["line_item_id"], row["creative_id"], row["supply_partner_id"])
-        # Count the impression against the frequency cap
-        r = get_redis()
-        meta = await r.get(f"bidfreq:{bid}")
+    if counted and not is_test:
+        # Count the impression against the frequency cap (после коммита: Redis
+        # не откатить, а недосчитанный кап безопаснее пересчитанного).
+        try:
+            meta = await get_redis().get(f"bidfreq:{bid}")
+        except Exception:
+            meta = None
         if meta:
             device_id, _, payload = meta.partition("|")
             try:
@@ -1297,23 +1375,28 @@ async def viewable_impression(bid: str):
 
     Дёргается скриптом-замером из разметки баннера (IntersectionObserver),
     eventtrackers-пикселем натива/пуша или событием start видео. Идемпотентен
-    через mark_once — повторные срабатывания не задваивают статистику.
+    через _once_txn — повторные срабатывания не задваивают статистику.
     """
     bid = verify_event_token(bid)
     if not bid:
         return Response(content=_PIXEL, media_type="image/gif")
     pool = await get_pool()
-    if not await mark_once("view", bid):
-        return Response(content=_PIXEL, media_type="image/gif")
     row = await _find_bid(pool, bid)
     if row:
-        obs_metrics.inc("rtb_viewable_imps_total")
-        await _log_event(
-            pool, "viewable", bid_id=bid, **_event_dims(row),
-        )
-        await _bump_domain_stats(pool, row, "viewable_imps")
-        await _bump_stats(pool, "viewable_imps", 0, row["campaign_id"], row["line_item_id"], row["creative_id"], row["supply_partner_id"])
+        await _record_viewable(pool, bid, row)
     return Response(content=_PIXEL, media_type="image/gif")
+
+
+async def _record_viewable(pool, bid: str, row) -> None:
+    """Событие viewable + viewable_imps ровно один раз на бид (общее для
+    /rtb/view и video start)."""
+    async with _once_txn(pool, "view", bid) as conn:
+        if conn is None:
+            return
+        await _log_event(conn, "viewable", bid_id=bid, **_event_dims(row))
+        await _bump_stats(conn, "viewable_imps", 0, *_stat_ids(row))
+        await _bump_domain_stats(conn, row, "viewable_imps")
+    obs_metrics.inc("rtb_viewable_imps_total")
 
 
 _VIDEO_EVENTS = {"start", "firstQuartile", "midpoint", "thirdQuartile", "complete", "skip"}
@@ -1328,22 +1411,20 @@ async def video_event(bid: str, e: str):
     if not bid:
         return Response(content=_PIXEL, media_type="image/gif")
     pool = await get_pool()
-    if not await mark_once(f"vev:{e}", bid):
-        return Response(content=_PIXEL, media_type="image/gif")
     row = await _find_bid(pool, bid)
-    if row:
-        await _log_event(
-            pool, f"video_{e}", bid_id=bid, **_event_dims(row),
-        )
-        if e == "start":
-            await _bump_stats(pool, "video_starts", 0, row["campaign_id"], row["line_item_id"], row["creative_id"], row["supply_partner_id"])
-            # Видео-viewability: старт плеера = объявление в зоне видимости.
-            # Идемпотентно через mark_once("view") — не задвоится с /rtb/view.
-            if await mark_once("view", bid):
-                await _bump_domain_stats(pool, row, "viewable_imps")
-                await _bump_stats(pool, "viewable_imps", 0, row["campaign_id"], row["line_item_id"], row["creative_id"], row["supply_partner_id"])
-        elif e == "complete":
-            await _bump_stats(pool, "video_completes", 0, row["campaign_id"], row["line_item_id"], row["creative_id"], row["supply_partner_id"])
+    if not row:
+        return Response(content=_PIXEL, media_type="image/gif")
+    async with _once_txn(pool, f"vev:{e}", bid) as conn:
+        if conn is not None:
+            await _log_event(conn, f"video_{e}", bid_id=bid, **_event_dims(row))
+            if e == "start":
+                await _bump_stats(conn, "video_starts", 0, *_stat_ids(row))
+            elif e == "complete":
+                await _bump_stats(conn, "video_completes", 0, *_stat_ids(row))
+    if e == "start":
+        # Видео-viewability: старт плеера = объявление в зоне видимости.
+        # Отдельная заявка "view" — не задвоится с /rtb/view.
+        await _record_viewable(pool, bid, row)
     return Response(content=_PIXEL, media_type="image/gif")
 
 
@@ -1353,20 +1434,16 @@ async def click(bid: str, r: str = ""):
     if not bid:
         raise HTTPException(status_code=403, detail="Invalid event token")
     pool = await get_pool()
-    row = None
-    if await mark_once("click", bid):
-        row = await _find_bid(pool, bid)
-        if row:
-            obs_metrics.inc("rtb_clicks_total")
-            await _log_event(
-                pool, "click", bid_id=bid, **_event_dims(row),
-            )
-            await _bump_domain_stats(pool, row, "clicks")
-            await _bump_stats(pool, "clicks", 0, row["campaign_id"], row["line_item_id"], row["creative_id"], row["supply_partner_id"])
+    row = await _find_bid(pool, bid)
+    if row:
+        async with _once_txn(pool, "click", bid) as conn:
+            if conn is not None:
+                await _log_event(conn, "click", bid_id=bid, **_event_dims(row))
+                await _bump_stats(conn, "clicks", 0, *_stat_ids(row))
+                await _bump_domain_stats(conn, row, "clicks")
+                obs_metrics.inc("rtb_clicks_total")
     # Redirect target: explicit r param, else fall back to the creative's click_url
     if not (r and r.startswith(("http://", "https://"))):
-        if row is None:
-            row = await _find_bid(pool, bid)
         if row and row["creative_id"]:
             r = await pool.fetchval("SELECT click_url FROM creatives WHERE id = $1", row["creative_id"]) or ""
     if r and r.startswith(("http://", "https://")):

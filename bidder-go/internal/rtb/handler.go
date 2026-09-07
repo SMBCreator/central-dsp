@@ -674,7 +674,7 @@ func (h *Handler) Loss(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// reason — OpenRTB Loss Reason Code (${AUCTION_LOSS}); mtw — минимальная
-	// цена для выигрыша (${AUCTION_MIN_TO_WIN}). SSP может не подстави��ь макросы —
+	// цена для выигрыша (${AUCTION_MIN_TO_WIN}). SSP может не подставить макросы —
 	// тогда строки остаются как есть, и мы пишем пусто.
 	reason := macroOrEmpty(r.URL.Query().Get("reason"))
 	mtw := macroOrEmpty(r.URL.Query().Get("mtw"))

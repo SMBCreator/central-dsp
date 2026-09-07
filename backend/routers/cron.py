@@ -369,13 +369,20 @@ async def bid_events_retention(request: Request):
         raise HTTPException(status_code=400, detail="BID_EVENTS_RETENTION_DAYS must be >= 7")
 
     pool = await get_pool()
+    # Дедуп-заявки трекинг-событий (E-02): event-токен живёт 6 часов, 3 суток —
+    # с запасом на ретраи SSP. Не зависит от партиционирования bid_events.
+    once_status = await pool.execute(
+        "DELETE FROM bid_event_once WHERE created_at < now() - interval '3 days'"
+    )
+    once_deleted = int(once_status.rsplit(" ", 1)[-1] or 0)
+
     partitioned = await pool.fetchval(
         """SELECT EXISTS (
                SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
                WHERE n.nspname = 'public' AND c.relname = 'bid_events' AND c.relkind = 'p')"""
     )
     if not partitioned:
-        return {"skipped": "bid_events is not partitioned (apply migration 033)"}
+        return {"skipped": "bid_events is not partitioned (apply migration 033)", "once_deleted": once_deleted}
 
     created = await pool.fetchval(
         "SELECT bid_events_ensure_partitions(current_date, current_date + 7)"
@@ -389,4 +396,5 @@ async def bid_events_retention(request: Request):
         "partitions_created": created,
         "partitions_dropped": list(dropped or []),
         "rows_in_default_partition": in_default,
+        "once_deleted": once_deleted,
     }

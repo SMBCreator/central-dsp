@@ -3,7 +3,7 @@
 Юнит-тесты без живой БД (как в остальных tests/*):
 - adm баннера содержит скрипт-замер IntersectionObserver (MRC: 50% >=1 сек) и маячок /rtb/view
 - нативный adm содержит eventtrackers с event=2 (viewable MRC 50%)
-- эндпоинт /rtb/view идемпотентен через mark_once и пишет viewable_imps
+- эндпоинт /rtb/view идемпотентен через _once_txn (E-02) и пишет viewable_imps
 - математика viewability = viewable/imps*100
 """
 from __future__ import annotations
@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from contextlib import asynccontextmanager
 
 from routers import rtb as rtb_module
 from routers.rtb import _build_adm, viewable_impression
@@ -95,7 +96,9 @@ class TestViewEndpoint:
         assert resp.media_type == "image/gif"
 
     def test_view_idempotent_and_bumps_once(self, monkeypatch):
-        state = {"marks": 0}
+        """Дедуп теперь в _once_txn (E-02): первая заявка отдаёт соединение,
+        повтор — None, и обработчик ничего не пишет."""
+        state = {"claims": 0}
         bumps: list[str] = []
         row = {
             "imp_id": "1", "campaign_id": "c", "line_item_id": "li", "creative_id": "cr",
@@ -103,9 +106,11 @@ class TestViewEndpoint:
             "ad_type": "banner", "domain": "site.ru", "os": "linux", "browser": "chrome",
         }
 
-        async def fake_mark_once(kind, bid):
-            state["marks"] += 1
-            return state["marks"] == 1
+        @asynccontextmanager
+        async def fake_once_txn(pool, kind, bid):
+            assert kind == "view"
+            state["claims"] += 1
+            yield object() if state["claims"] == 1 else None
 
         async def fake_bump_stats(pool, field, spend, *ids):
             bumps.append(field)
@@ -122,7 +127,7 @@ class TestViewEndpoint:
         async def fake_get_pool():
             return None
 
-        monkeypatch.setattr(rtb_module, "mark_once", fake_mark_once)
+        monkeypatch.setattr(rtb_module, "_once_txn", fake_once_txn)
         monkeypatch.setattr(rtb_module, "_bump_stats", fake_bump_stats)
         monkeypatch.setattr(rtb_module, "_bump_domain_stats", fake_bump_domain)
         monkeypatch.setattr(rtb_module, "_find_bid", fake_find_bid)
