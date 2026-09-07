@@ -162,6 +162,12 @@ services:
       # Audit R-02: предел торговли по устаревшему снапшоту фида; дальше
       # no-bid (feed_stale) и /healthz 503 -> контейнер unhealthy.
       FEED_MAX_AGE: ${FEED_MAX_AGE:-120s}
+      # Audit R-03: предфильтр (боты / чужое гео / без device id / datacenter-IP)
+      # — те же переменные и тот же Redis SET prefilter:dc_subnets, что у backend,
+      # иначе Go-трафик фильтруется иначе, чем Python.
+      THROTTLE_ENABLED: ${THROTTLE_ENABLED:-1}
+      THROTTLE_COUNTRIES: ${THROTTLE_COUNTRIES:-ru,rus}
+      THROTTLE_REQUIRE_DEVICE_ID: ${THROTTLE_REQUIRE_DEVICE_ID:-1}
     depends_on:
       redis:
         condition: service_healthy

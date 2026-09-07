@@ -44,10 +44,16 @@ type Handler struct {
 	// trustedProxies — сети (TRUSTED_PROXIES), с которых принимаются
 	// X-Forwarded-For / X-Real-IP; иначе клиент = RemoteAddr (audit S-06).
 	trustedProxies []*net.IPNet
+	// prefilter — O(1)-отсев ботов/чужого гео/datacenter-IP до таргетинга
+	// (audit R-03, порт backend/prefilter.py). nil = выключен.
+	prefilter *prefilter.Filter
 }
 
 // SetMetrics подключает реестр метрик (вызывается из main до старта сервера).
 func (h *Handler) SetMetrics(r *metrics.Registry) { h.metrics = r }
+
+// SetPrefilter подключает предфильтр (см. internal/prefilter).
+func (h *Handler) SetPrefilter(f *prefilter.Filter) { h.prefilter = f }
 
 // SetInternalToken задаёт секрет для заголовка internalCheckHeader.
 func (h *Handler) SetInternalToken(t string) { h.internalToken = t }
@@ -247,6 +253,18 @@ func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Предфильтр (audit R-03): как в Python — после парсинга, до таргетинга,
+	// Redis и аукциона. Отсечение считается отдельно от no-bid.
+	if h.prefilter != nil {
+		if reason := h.prefilter.Check(prefilterDevice(req.Device)); reason != "" {
+			if h.metrics != nil {
+				h.metrics.IncPrefilterDrop(string(reason))
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+	}
+
 	// tmax SSP -> дедлайн контекста для Redis-вызовов (freq/budget/shading).
 	// Оставляем запас на сеть до SSP и сериализацию ответа; если tmax не задан
 	// или неразумно мал, работаем с дефолтным бюджетом.
@@ -383,7 +401,7 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 				liBudget = *c.LiBudget
 			}
 			// Audit M-05: одним Lua — дневные бюджеты кампании и группы, доступный
-			// баланс реклам��дателя и остаток общего бюджета; бид попадает в
+			// баланс рекламодателя и остаток общего бюджета; бид попадает в
 			// pending:bids до win/loss/expire (M-06).
 			res, okRes, err := h.redis.Reserve(rctx, time.Now(), redisx.ReserveInput{
 				BidID: bidID, CampaignID: c.CampaignID, LiID: c.LiID, AdvertiserID: c.AdvertiserID,
@@ -912,6 +930,19 @@ func (h *Handler) Healthz(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- helpers ---
+
+// prefilterDevice — проекция device для предфильтра; nil-device = пустые поля
+// (тогда сработает no_device_id, как req.get("device") or {} в Python).
+func prefilterDevice(d *Device) prefilter.Device {
+	if d == nil {
+		return prefilter.Device{}
+	}
+	pd := prefilter.Device{UA: d.UA, IFA: d.IFA, IP: d.IP, IPv6: d.IPv6}
+	if d.Geo != nil {
+		pd.Country = d.Geo.Country
+	}
+	return pd
+}
 
 // deviceTypeName — OpenRTB devicetype -> имя измерения (DEVICE_TYPES.get(..., "unknown")).
 func deviceTypeName(dt int) string {

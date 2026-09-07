@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/feed"
+	"github.com/SMBCreator/central-dsp/bidder-go/internal/metrics"
+	"github.com/SMBCreator/central-dsp/bidder-go/internal/prefilter"
 )
 
 const parityReq = `{"id":"p1","at":1,"imp":[{"id":"1","banner":{"w":300,"h":250},"bidfloor":1}],` +
@@ -140,6 +142,38 @@ func TestParity_ScoringBlocklist(t *testing.T) {
 	snap.ScoringBlocks = map[string]map[string]bool{"other": {"pub.example": true}}
 	if !bidsOn(t, snap) {
 		t.Fatal("scoring blocklist of another campaign must not block")
+	}
+}
+
+// Предфильтр (Часть C): бот-UA отсекается до таргетинга и аукциона, считается
+// в bidder_prefilter_drops_total, а не в no-bid; без предфильтра тот же запрос
+// торгуется.
+func TestParity_PrefilterDropsBotBeforeAuction(t *testing.T) {
+	botReq := strings.Replace(parityReq, "Mozilla/5.0 (Linux; Android 13) Chrome/120", "python-requests/2.31.0", 1)
+
+	h := newTestHandler(testSnapshot())
+	if w := doBid(t, h, botReq); w.Code != http.StatusOK {
+		t.Fatalf("without prefilter the bot UA still bids (targeting has no UA rule): got %d", w.Code)
+	}
+
+	h = newTestHandler(testSnapshot())
+	reg := metrics.New()
+	h.SetMetrics(reg)
+	h.SetPrefilter(prefilter.New(prefilter.Config{
+		Enabled: true, RequireDeviceID: true, Countries: map[string]bool{"ru": true, "rus": true},
+	}, nil))
+	if w := doBid(t, h, botReq); w.Code != http.StatusNoContent {
+		t.Fatalf("prefilter must drop bot UA with 204, got %d", w.Code)
+	}
+	if got := metricValue(t, reg, `bidder_prefilter_drops_total{reason="bot_ua"}`); got != "1" {
+		t.Fatalf("bidder_prefilter_drops_total{bot_ua}: want 1, got %q", got)
+	}
+	if got := metricValue(t, reg, `bidder_no_bid_total{reason="no_candidates"}`); got != "0" {
+		t.Fatalf("prefilter drop must not be counted as no-bid, got %q", got)
+	}
+	// Легитимный запрос через тот же фильтр торгуется как раньше.
+	if w := doBid(t, h, parityReq); w.Code != http.StatusOK {
+		t.Fatalf("legit request through prefilter must bid, got %d", w.Code)
 	}
 }
 

@@ -19,9 +19,17 @@ import (
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/config"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/feed"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/metrics"
+	"github.com/SMBCreator/central-dsp/bidder-go/internal/prefilter"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/redisx"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/rtb"
 )
+
+// redisSetReader — адаптер redisx.Client -> prefilter.SetReader (SMEMBERS).
+type redisSetReader struct{ c *redisx.Client }
+
+func (r redisSetReader) SMembers(ctx context.Context, key string) ([]string, error) {
+	return r.c.Raw().SMembers(ctx, key).Result()
+}
 
 // isProduction — как startup_checks.is_production в backend.
 func isProduction() bool {
@@ -140,6 +148,19 @@ func main() {
 	}
 	h.SetTrustedProxies(trustedProxies)
 	slog.Info("trusted proxies for X-Forwarded-For", "networks", trustedProxiesRaw)
+
+	// Audit R-03: тот же предфильтр, что в Python (THROTTLE_* env, Redis SET
+	// prefilter:dc_subnets). Без Redis datacenter-проверка выключена (fail-open).
+	pfCfg := prefilter.FromEnv()
+	var dcSource prefilter.SetReader
+	if rc != nil {
+		dcSource = redisSetReader{rc}
+	}
+	pf := prefilter.New(pfCfg, dcSource)
+	pf.Refresh()
+	h.SetPrefilter(pf)
+	slog.Info("prefilter", "enabled", pfCfg.Enabled, "countries", len(pfCfg.Countries),
+		"require_device_id", pfCfg.RequireDeviceID, "dc_cache", dcSource != nil)
 
 	// Prometheus-метрики: счётчики hot path + gauges состояния (GAP-011).
 	reg := metrics.New()
