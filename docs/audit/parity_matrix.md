@@ -67,6 +67,7 @@ Go-биддер (`bidder-go/`) доведён до функциональног�
 | Clean traffic (тумблер кампании) | `campaigns.clean_traffic_only` + `domain_quality.score < 0.5` | feed `clean_traffic_only`, `dirty_domains[]` (только если есть opt-in кампания) | `TestParity_CleanTrafficOnly` | ✅ |
 | Scoring-профиль (enforce) | `scoring_blocklist` | feed `scoring_blocks[]` → `Snapshot.ScoringBlocks` | `TestParity_ScoringBlocklist` | ✅ |
 | Глобальные white/blacklist аккаунта | `domain_lists` | feed `domain_lists[]` | targeting `parity_test.go` | ✅ (ранее) |
+| Предфильтр: bot UA / geo_unserved / no_device_id / datacenter_ip | env `THROTTLE_*`, Redis SET `prefilter:dc_subnets` (`backend/prefilter.py`) | порт `bidder-go/internal/prefilter` (тот же порядок проверок, те же причины, fail-open); `bidder_prefilter_drops_total{reason}` | `prefilter/prefilter_test.go`, `TestParity_PrefilterDropsBotBeforeAuction` | ✅ |
 | pCTR value-множитель (objective traffic/conversions, CPM) | `ml_models` + `ml_pctr_segments` | — | — | ⏳ B8.2 |
 | Pacing even | `campaigns.pacing` | feed `pacing` (уже есть), Go не применяет | — | ⏳ B8.3 |
 | Тип ставки CPC | `line_items.bid_type` | feed `bid_type` (уже есть), Go считает как CPM | — | ⏳ B8.4 |
