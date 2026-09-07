@@ -5,6 +5,7 @@ app_settings — key/value (jsonb) на пользователя; domain_lists �
 «в блэклист» из статистики бьёт в POST /settings/domain-lists с source=stats_click.
 """
 import json
+import os
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -20,6 +21,34 @@ DEFAULTS: dict = {
     "currency": "RUB",           # кабинет всегда в рублях
     "fx_markup_percent": 3.0,    # наценка к курсу ЦБ на волатильность
 }
+
+
+def public_bidder_base_url(env=None) -> str | None:
+    """Публичный базовый URL Go-биддера для SSP (audit R-01).
+
+    SSP должны получать `${PUBLIC_BIDDER_BASE_URL}/rtb/bid/{endpoint_key}` —
+    endpoint bidder-go, а не `/api/rtb/bid/...` backend'а (Python-биддер в
+    production выключен, A7/S-04). Fallback — PUBLIC_BASE_URL: в штатной
+    топологии Caddy маршрутизирует `/rtb/*` на bidder-go с того же домена.
+    None = не настроено; UI покажет предупреждение, а не «угадает» origin.
+    """
+    env = os.environ if env is None else env
+    for name in ("PUBLIC_BIDDER_BASE_URL", "PUBLIC_BASE_URL"):
+        v = (env.get(name) or "").strip().rstrip("/")
+        if v:
+            return v
+    return None
+
+
+@router.get("/public")
+async def get_public_settings(user: dict = Depends(current_user)):
+    """Не-секретные параметры деплоя, нужные UI (любая роль)."""
+    base = public_bidder_base_url()
+    return {
+        "bidder_base_url": base,
+        "rtb_bid_url_template": f"{base}/rtb/bid/{{endpoint_key}}" if base else None,
+        "ssp_token_header": "X-CentralDSP-Token",
+    }
 
 
 async def _load_settings(user_id: str) -> dict:
