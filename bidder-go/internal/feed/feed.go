@@ -51,6 +51,12 @@ type Candidate struct {
 	AdvertiserID string          `json:"advertiser_id"`
 	BidShading   bool            `json:"bid_shading"`
 	AdvDomain    string          `json:"adv_domain"`
+	// Audit R-03: настройки кабинета, которые Python применяет на hot path.
+	// Objective — clicks | traffic | conversions | ctr (value-based pCTR-множитель
+	// только для traffic/conversions); CleanTrafficOnly — не биддить на домены
+	// с низким quality score (Snapshot.DirtyDomains).
+	Objective        string `json:"objective"`
+	CleanTrafficOnly bool   `json:"clean_traffic_only"`
 
 	CreativeID      string `json:"creative_id"`
 	Type            string `json:"type"`
@@ -239,7 +245,40 @@ type Snapshot struct {
 	Partners   map[string]*Partner        // by endpoint_key
 	GBlack     map[string]map[string]bool // owner_id -> domains
 	GWhite     map[string]map[string]bool
-	LoadedAt   time.Time
+	// Audit R-03 — решения кабинета/оптимизатора, которые Python читает из БД
+	// на каждом запросе (rtb.py), а Go — из фида:
+	//   OptBlocks     campaign_id -> block_type -> lower(block_value) (optimizer_blocks)
+	//   ScoringBlocks campaign_id -> domain (scoring_blocklist, профиль enforce)
+	//   DirtyDomains  домены с quality score < порога (для clean_traffic_only)
+	OptBlocks     map[string]map[string]map[string]bool
+	ScoringBlocks map[string]map[string]bool
+	DirtyDomains  map[string]bool
+	LoadedAt      time.Time
+}
+
+// Blocked — есть ли у кампании блок оптимизатора (block_type, block_value).
+// value сравнивается в нижнем регистре, как в Python (block_value.lower()).
+func (s *Snapshot) Blocked(campaignID, blockType, value string) bool {
+	if value == "" || s == nil {
+		return false
+	}
+	byType := s.OptBlocks[campaignID]
+	if byType == nil {
+		return false
+	}
+	return byType[blockType][strings.ToLower(value)]
+}
+
+// OptimizerBlock / ScoringBlock — строки фида (optimizer_blocks, scoring_blocks).
+type OptimizerBlock struct {
+	CampaignID string `json:"campaign_id"`
+	BlockType  string `json:"block_type"`
+	BlockValue string `json:"block_value"`
+}
+
+type ScoringBlock struct {
+	CampaignID string `json:"campaign_id"`
+	Domain     string `json:"domain"`
 }
 
 // Status — состояние фида для /healthz и /internal/feed/reload.
@@ -345,8 +384,11 @@ func (s *Store) refresh(ctx context.Context) error {
 		return s.recordError(ErrNoToken)
 	}
 	var camps struct {
-		Candidates  []Candidate  `json:"candidates"`
-		DomainLists []DomainList `json:"domain_lists"`
+		Candidates    []Candidate      `json:"candidates"`
+		DomainLists   []DomainList     `json:"domain_lists"`
+		OptBlocks     []OptimizerBlock `json:"optimizer_blocks"`
+		ScoringBlocks []ScoringBlock   `json:"scoring_blocks"`
+		DirtyDomains  []string         `json:"dirty_domains"`
 	}
 	if err := s.get(ctx, "/rtb-feed/campaigns", &camps); err != nil {
 		slog.Error("feed campaigns refresh failed", "err", err)
@@ -395,6 +437,29 @@ func (s *Store) refresh(ctx context.Context) error {
 			m[owner] = map[string]bool{}
 		}
 		m[owner][strings.ToLower(dl.Domain)] = true
+	}
+	snap.OptBlocks = map[string]map[string]map[string]bool{}
+	for _, b := range camps.OptBlocks {
+		byType := snap.OptBlocks[b.CampaignID]
+		if byType == nil {
+			byType = map[string]map[string]bool{}
+			snap.OptBlocks[b.CampaignID] = byType
+		}
+		if byType[b.BlockType] == nil {
+			byType[b.BlockType] = map[string]bool{}
+		}
+		byType[b.BlockType][strings.ToLower(b.BlockValue)] = true
+	}
+	snap.ScoringBlocks = map[string]map[string]bool{}
+	for _, b := range camps.ScoringBlocks {
+		if snap.ScoringBlocks[b.CampaignID] == nil {
+			snap.ScoringBlocks[b.CampaignID] = map[string]bool{}
+		}
+		snap.ScoringBlocks[b.CampaignID][strings.ToLower(b.Domain)] = true
+	}
+	snap.DirtyDomains = make(map[string]bool, len(camps.DirtyDomains))
+	for _, d := range camps.DirtyDomains {
+		snap.DirtyDomains[strings.ToLower(d)] = true
 	}
 
 	s.mu.Lock()

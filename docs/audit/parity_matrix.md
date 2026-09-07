@@ -53,3 +53,21 @@ Go-биддер (`bidder-go/`) доведён до функциональног�
 Контрактное сравнение (одинаковые BidRequest в оба биддера): banner_ok, wrong_size, high_floor, video_request, no_imp — 5/5 MATCH (цены и коды идентичны).
 
 Тесты: Python 110 passed / 7 skipped; `go vet` чисто, `go test ./...` — rtb, shading, targeting ok.
+
+## Audit R-03 (2026-09-07): настройки кабинета ↔ Go — исполняемая матрица
+
+Истина — `backend/routers/rtb.py` (`process_bid_request`). Каждая строка
+подтверждается Go-тестом «одна и та же заявка: настройка выключена → бид,
+включена → no-bid / другая цена». Файл: `bidder-go/internal/rtb/parity_r03_test.go`.
+Контракт фида (что backend обязан отдать) — `backend/tests/test_bidder_feed_r03_db.py`.
+
+| Настройка кабинета | Источник в БД | Как едет в Go | Go-тест | Статус |
+|---|---|---|---|---|
+| Оптимизатор: блок domain / supply_partner / device_type / geo_country / os / browser / ad_type / creative / line_item / hour | `optimizer_blocks` | feed `optimizer_blocks[]` → `Snapshot.OptBlocks` | `TestParity_OptimizerBlocksEveryDimension`, `…IsPerCampaign` | ✅ |
+| Clean traffic (тумблер кампании) | `campaigns.clean_traffic_only` + `domain_quality.score < 0.5` | feed `clean_traffic_only`, `dirty_domains[]` (только если есть opt-in кампания) | `TestParity_CleanTrafficOnly` | ✅ |
+| Scoring-профиль (enforce) | `scoring_blocklist` | feed `scoring_blocks[]` → `Snapshot.ScoringBlocks` | `TestParity_ScoringBlocklist` | ✅ |
+| Глобальные white/blacklist аккаунта | `domain_lists` | feed `domain_lists[]` | targeting `parity_test.go` | ✅ (ранее) |
+| pCTR value-множитель (objective traffic/conversions, CPM) | `ml_models` + `ml_pctr_segments` | — | — | ⏳ B8.2 |
+| Pacing even | `campaigns.pacing` | feed `pacing` (уже есть), Go не применяет | — | ⏳ B8.3 |
+| Тип ставки CPC | `line_items.bid_type` | feed `bid_type` (уже есть), Go считает как CPM | — | ⏳ B8.4 |
+| Валюта партнёра | `supply_partners.currency` | — | — | ⏳ B8.5 |

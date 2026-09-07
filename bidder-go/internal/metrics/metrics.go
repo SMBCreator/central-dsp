@@ -60,6 +60,10 @@ type Registry struct {
 
 	noBid sync.Map // NoBidReason -> *atomic.Int64
 
+	// Audit R-03: предфильтр (bot_ua / geo_unserved / no_device_id /
+	// datacenter_ip) — отдельно от no-bid, как rtb_prefilter_drops_total в Python.
+	prefilterDrops sync.Map // reason -> *atomic.Int64
+
 	gateRejects     atomic.Int64 // gate_and_reserve: отказ (бюджет/freq cap)
 	gateErrors      atomic.Int64 // gate_and_reserve: ошибка Redis
 	lossReleases    atomic.Int64 // /rtb/loss: освобождение резерва
@@ -99,7 +103,21 @@ func New() *Registry {
 	for _, reason := range AllNoBidReasons {
 		r.noBid.Store(reason, new(atomic.Int64))
 	}
+	for _, reason := range PrefilterReasons {
+		r.prefilterDrops.Store(reason, new(atomic.Int64))
+	}
 	return r
+}
+
+// PrefilterReasons — bounded enum причин предфильтра (см. internal/prefilter).
+// Дублируется строками, чтобы metrics не зависел от prefilter.
+var PrefilterReasons = []string{"bot_ua", "geo_unserved", "no_device_id", "datacenter_ip"}
+
+// IncPrefilterDrop — запрос отсечён предфильтром до таргетинга/аукциона.
+func (r *Registry) IncPrefilterDrop(reason string) {
+	if v, ok := r.prefilterDrops.Load(reason); ok {
+		v.(*atomic.Int64).Add(1)
+	}
 }
 
 // IncBidRequest — входящий bid-запрос.
@@ -215,6 +233,12 @@ func (r *Registry) write(w http.ResponseWriter) {
 	for _, reason := range reasons {
 		v, _ := r.noBid.Load(NoBidReason(reason))
 		fmt.Fprintf(w, "bidder_no_bid_total{reason=%q} %d\n", reason, v.(*atomic.Int64).Load())
+	}
+
+	fmt.Fprintf(w, "# HELP bidder_prefilter_drops_total Requests dropped by the O(1) prefilter before targeting (not counted as no-bid).\n# TYPE bidder_prefilter_drops_total counter\n")
+	for _, reason := range PrefilterReasons {
+		v, _ := r.prefilterDrops.Load(reason)
+		fmt.Fprintf(w, "bidder_prefilter_drops_total{reason=%q} %d\n", reason, v.(*atomic.Int64).Load())
 	}
 
 	c("bidder_gate_rejects_total", "gate_and_reserve rejections (budget or frequency cap).", r.gateRejects.Load())

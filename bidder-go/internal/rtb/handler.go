@@ -24,6 +24,7 @@ import (
 
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/feed"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/metrics"
+	"github.com/SMBCreator/central-dsp/bidder-go/internal/prefilter"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/redisx"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/shading"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/targeting"
@@ -339,7 +340,7 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 		if !typeMatches(c, adType, imp) {
 			continue
 		}
-		if !h.matchCandidate(c, req, view, partner, snap) {
+		if !h.matchCandidate(c, req, view, partner, snap, adType) {
 			continue
 		}
 		if c.T != nil && !targeting.MatchImp(feedImpTargeting(c.T), impView) {
@@ -382,7 +383,7 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 				liBudget = *c.LiBudget
 			}
 			// Audit M-05: одним Lua — дневные бюджеты кампании и группы, доступный
-			// баланс рекламодателя и остаток общего бюджета; бид попадает в
+			// баланс реклам��дателя и остаток общего бюджета; бид попадает в
 			// pending:bids до win/loss/expire (M-06).
 			res, okRes, err := h.redis.Reserve(rctx, time.Now(), redisx.ReserveInput{
 				BidID: bidID, CampaignID: c.CampaignID, LiID: c.LiID, AdvertiserID: c.AdvertiserID,
@@ -453,8 +454,9 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 	return nil
 }
 
-// matchCandidate — таргетинг line item + SSP allowlist + глобальные домен-листы.
-func (h *Handler) matchCandidate(c *feed.Candidate, req *BidRequest, view *targeting.RequestView, partner *feed.Partner, snap *feed.Snapshot) bool {
+// matchCandidate — таргетинг line item + SSP allowlist + глобальные домен-листы
+// + решения оптимизатора / clean traffic / scoring-профиля (audit R-03).
+func (h *Handler) matchCandidate(c *feed.Candidate, req *BidRequest, view *targeting.RequestView, partner *feed.Partner, snap *feed.Snapshot, adType string) bool {
 	// badv: домен рекламодателя не должен быть заблокирован SSP.
 	if len(req.BAdv) > 0 && c.AdvDomain != "" {
 		for _, b := range req.BAdv {
@@ -469,6 +471,22 @@ func (h *Handler) matchCandidate(c *feed.Candidate, req *BidRequest, view *targe
 	if len(req.BCat) > 0 && len(c.IABCategories) > 0 && iabBlocked(req.BCat, c.IABCategories) {
 		return false
 	}
+	// Блоки оптимизатора (optimizer_blocks): любое наблюдаемое измерение — те же
+	// десять ключей и та же нормализация, что в rtb.py (camp_blocks).
+	if byType := snap.OptBlocks[c.CampaignID]; byType != nil {
+		if snap.Blocked(c.CampaignID, "domain", view.Domain) ||
+			snap.Blocked(c.CampaignID, "supply_partner", partner.ID) ||
+			snap.Blocked(c.CampaignID, "device_type", deviceTypeName(view.DeviceType)) ||
+			snap.Blocked(c.CampaignID, "geo_country", view.Country) ||
+			snap.Blocked(c.CampaignID, "os", view.OS) ||
+			snap.Blocked(c.CampaignID, "browser", targeting.DeviceBrowser(view.UA)) ||
+			snap.Blocked(c.CampaignID, "ad_type", adType) ||
+			snap.Blocked(c.CampaignID, "creative", c.CreativeID) ||
+			snap.Blocked(c.CampaignID, "line_item", c.LiID) ||
+			snap.Blocked(c.CampaignID, "hour", strconv.Itoa(view.Now.UTC().Hour())) {
+			return false
+		}
+	}
 	// Глобальные white/blacklist владельца (owner_id -> domains).
 	owner := c.OwnerID
 	if view.Domain != "" {
@@ -476,6 +494,15 @@ func (h *Handler) matchCandidate(c *feed.Candidate, req *BidRequest, view *targe
 			return false
 		}
 		if wl := snap.GWhite[owner]; len(wl) > 0 && !wl[view.Domain] {
+			return false
+		}
+		// Clean traffic (тумблер кампании): домен с низким quality score.
+		// Только opt-in и только известные домены — fail-open, как в Python.
+		if c.CleanTrafficOnly && snap.DirtyDomains[view.Domain] {
+			return false
+		}
+		// Scoring-профиль кампании в режиме enforce: домен ниже порога.
+		if sb := snap.ScoringBlocks[c.CampaignID]; sb != nil && sb[view.Domain] {
 			return false
 		}
 	}
@@ -536,10 +563,7 @@ func (h *Handler) persistBidMeta(ctx interface {
 		return nil
 	}
 	rdb := h.redis.Raw()
-	dt := targeting.DeviceTypes[view.DeviceType]
-	if dt == "" {
-		dt = "unknown"
-	}
+	dt := deviceTypeName(view.DeviceType)
 	browser := targeting.DeviceBrowser(view.UA)
 	testFlag := 0
 	if isTest {
@@ -888,6 +912,14 @@ func (h *Handler) Healthz(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- helpers ---
+
+// deviceTypeName — OpenRTB devicetype -> имя измерения (DEVICE_TYPES.get(..., "unknown")).
+func deviceTypeName(dt int) string {
+	if name := targeting.DeviceTypes[dt]; name != "" {
+		return name
+	}
+	return "unknown"
+}
 
 func buildRequestView(req *BidRequest) *targeting.RequestView {
 	v := &targeting.RequestView{Now: time.Now(), Env: "site"}

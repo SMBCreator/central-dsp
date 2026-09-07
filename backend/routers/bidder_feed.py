@@ -62,6 +62,7 @@ async def campaigns_feed(authorization: str | None = Header(default=None)):
                c.frequency_caps, c.bid_shading,
                c.pacing, c.advertiser_id, adv.domain AS adv_domain,
                adv.balance AS adv_balance, c.total_budget, c.spent_total,
+               c.objective, c.clean_traffic_only,
                cr.id AS creative_id, cr.type, cr.width, cr.height, cr.asset_url, cr.click_url,
                cr.html_snippet, cr.native_title, cr.native_description, cr.native_cta,
                cr.native_icon_url, cr.video_url, cr.video_duration, cr.vast_xml, cr.name,
@@ -105,7 +106,38 @@ async def campaigns_feed(authorization: str | None = Header(default=None)):
             "SELECT user_id, domain, list_type FROM domain_lists WHERE user_id = ANY($1)",
             owner_ids,
         )
+
+    # Audit R-03: всё, что Python-биддер применяет из БД на каждом запросе,
+    # Go получает из фида — иначе тумблеры кабинета (оптимизатор, clean traffic,
+    # scoring-профиль) для Go-трафика молча не работают.
+    camp_ids = list({c["campaign_id"] for c in cands})
+    block_rows: list = []
+    scoring_rows: list = []
+    if camp_ids:
+        block_rows = await pool.fetch(
+            "SELECT campaign_id, block_type, block_value FROM optimizer_blocks WHERE campaign_id = ANY($1)",
+            camp_ids,
+        )
+        scoring_rows = await pool.fetch(
+            "SELECT campaign_id, domain FROM scoring_blocklist WHERE campaign_id = ANY($1)",
+            camp_ids,
+        )
+    dirty_domains: list[str] = []
+    if any(c["clean_traffic_only"] for c in cands):
+        from ml.quality import CLEAN_SCORE_THRESHOLD
+
+        dirty_domains = [
+            r["domain"] for r in await pool.fetch(
+                "SELECT domain FROM domain_quality WHERE score < $1", CLEAN_SCORE_THRESHOLD
+            )
+        ]
     return {
         "candidates": out,
         "domain_lists": [dict(r) for r in dl_rows],
+        "optimizer_blocks": [
+            {"campaign_id": str(r["campaign_id"]), "block_type": r["block_type"], "block_value": r["block_value"]}
+            for r in block_rows
+        ],
+        "scoring_blocks": [{"campaign_id": str(r["campaign_id"]), "domain": r["domain"]} for r in scoring_rows],
+        "dirty_domains": dirty_domains,
     }
