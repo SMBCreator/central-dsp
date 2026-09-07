@@ -126,8 +126,8 @@
 - **CPC**: цена bid = `bid_cpc × pCTR × 1000`, резерв = ожидаемая стоимость; списание по клику (`bill_click`), win не списывает.
 - **Pacing even**: per-campaign allowance по минутам бизнес-дня (Lua `pacing:<camp>:<date>`), throttle вероятностный.
 - **Валюта**: feed отдаёт `currency` и `fx_rate`; Go матчится с `cur`/`bidfloorcur`, конвертирует; ответ в валюте запроса.
-- **Optimizer/scoring/clean_traffic/prefilter**: feed переносит `blocked_domains/publishers/tagids`, `scoring_min`, `clean_traffic_only`; Go применяет в `matchCandidate`; datacenter/bot список — в Go через shared Redis SET.
-- **pCTR**: лёгкая модель (логистическая, коэффициенты из feed) в Go или fallback на CTR кампании.
+- **Optimizer/scoring/clean_traffic/prefilter** ✅ (df2594f, f3ef583): feed переносит `optimizer_blocks[]`, `scoring_blocks[]`, `dirty_domains[]`, `clean_traffic_only`; Go применяет в `matchCandidate`; предфильтр — порт `backend/prefilter.py` в `internal/prefilter` (THROTTLE_*, shared Redis SET `prefilter:dc_subnets`).
+- **pCTR** ✅: feed отдаёт активную модель `pctr_model{global_ctr, segments[]}`; Go — порт лог-odds `predict` в `internal/pctr`, множитель clamp(0.7, 1.3) только для traffic/conversions на CPM; `bid_events.pctr` через stream.
 - Parity matrix `docs/audit/parity_matrix.md` — исполняемая через тесты Go: изменение настройки → изменение BidResponse.
 
 ### B9. R-04 — OpenRTB совместимость

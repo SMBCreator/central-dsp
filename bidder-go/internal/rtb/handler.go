@@ -675,11 +675,9 @@ func (h *Handler) persistBidMeta(ctx interface {
 		"browser":           browser,
 		"is_test":           strconv.Itoa(testFlag),
 		"ts":                strconv.FormatInt(time.Now().Unix(), 10),
-	}
-	// Decision log (bid_events.pctr): какой pCTR повлиял на цену — для offline-
-	// оценки модели. Пустое поле = базовый биддинг, consumer пишет NULL.
-	if pctrUsed > 0 {
-		ev["pctr"] = strconv.FormatFloat(pctrUsed, 'f', 6, 64)
+		// Decision log (bid_events.pctr): какой pCTR повлиял на цену — для
+		// offline-оценки модели. "" = базовый биддинг, consumer пишет NULL.
+		"pctr": formatPCTR(pctrUsed),
 	}
 	// Событие bid — единственный путь бида в bid_events/stats_hourly; без него
 	// win/imp/click повиснут без «родителя», а отчёт win-rate/CPA поедет (R-02).
@@ -958,6 +956,15 @@ func (h *Handler) Healthz(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- helpers ---
+
+// formatPCTR — значение stream-поля pctr; пустая строка, если модель не
+// влияла на цену (consumer -> NULL).
+func formatPCTR(p float64) string {
+	if p <= 0 {
+		return ""
+	}
+	return strconv.FormatFloat(p, 'f', 6, 64)
+}
 
 // prefilterDevice — проекция device для предфильтра; nil-device = пустые поля
 // (тогда сработает no_device_id, как req.get("device") or {} в Python).

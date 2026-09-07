@@ -65,6 +65,34 @@ def seconds_until_business_midnight(now: datetime | None = None, *, grace: int =
     return max(remaining, 60) + max(grace, 0)
 
 
+def business_day_fraction(now: datetime | None = None) -> float:
+    """Share of the business day elapsed at `now`, in [0, 1).
+
+    Even pacing throttles the daily budget by this fraction (audit R-03).
+    It is measured in the business timezone so the allowance reopens at
+    00:00 MSK together with the `spend:*` counters: a UTC fraction let an
+    evenly paced campaign spend 87.5% of its budget in the first minutes of
+    the business day (21:00 UTC == 00:00 MSK)."""
+    now = now or now_utc()
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    local = now.astimezone(BUSINESS_TZ)
+    return (local.hour * 3600 + local.minute * 60 + local.second) / 86400
+
+
+# Even pacing: allowance = daily budget × min(1, fraction + PACING_BURST).
+# 10% ahead of schedule so delivery never stalls at 00:00. Mirrors Go
+# redisx.PacingBurst.
+PACING_BURST = 0.1
+
+
+def even_pacing_budget(daily_budget: float, now: datetime | None = None) -> float:
+    """Effective daily budget for a campaign with `pacing = 'even'`."""
+    if daily_budget <= 0:
+        return daily_budget
+    return daily_budget * min(1.0, business_day_fraction(now) + PACING_BURST)
+
+
 def spend_key(scope: str, entity_id: str, day: str | date | None = None) -> str:
     """Redis key of a daily spend counter. scope: 'camp' | 'li'."""
     if day is None:
