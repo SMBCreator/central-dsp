@@ -237,8 +237,16 @@ async def connection_check(partner_id: str, user: dict = Depends(require_admin))
 
     # Go перечитывает фид раз в 30 с: только что переведённый в testing партнёр
     # ещё не в снапшоте -> проверка дала бы 404. Просим перечитать сейчас.
-    await ssp_check.request_feed_reload()
+    reload_ok, reload_detail = await ssp_check.request_feed_reload_detail()
     result = await ssp_check.run_connection_check(partner, ssp_check.go_bidder_caller())
+    if not reload_ok:
+        # Audit R-02: биддер честно сообщает, что рефреш не удался. Показываем
+        # это первой строкой — иначе 404/503 ниже выглядят как ошибка партнёра.
+        result["checks"].insert(0, {
+            "key": "feed_reload", "label": "Обновление фида биддера", "ok": False,
+            "detail": reload_detail or "рефреш не удался — биддер торгует по прошлому снапшоту",
+        })
+        result["passed"] = False
     await pool.execute(
         "UPDATE supply_partners SET last_check = $2::jsonb, updated_at = now() WHERE id = $1",
         partner_id, json.dumps(result),
