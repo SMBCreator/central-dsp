@@ -197,7 +197,7 @@ func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 	}
 	// Audit R-02: снапшот старше FEED_MAX_AGE — не торгуем. Иначе пауза кампании,
 	// исчерпанный бюджет, блокировка SSP или отозванный токен не применяются,
-	// пока backend нед��ступен. 503 — SSP видит недоступность и снижает трафик.
+	// пока backend недоступен. 503 — SSP видит недоступность и снижает трафик.
 	if !h.store.Fresh() {
 		h.mNoBid(metrics.ReasonFeedStale)
 		http.Error(w, "feed stale", http.StatusServiceUnavailable)
