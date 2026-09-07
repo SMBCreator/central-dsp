@@ -48,6 +48,16 @@ type Handler struct {
 	// prefilter — O(1)-отсев ботов/чужого гео/datacenter-IP до таргетинга
 	// (audit R-03, порт backend/prefilter.py). nil = выключен.
 	prefilter *prefilter.Filter
+	// now — часы бюджетного гейта (бизнес-день, even pacing); nil = time.Now.
+	// Подменяются только в тестах.
+	now func() time.Time
+}
+
+func (h *Handler) clock() time.Time {
+	if h.now != nil {
+		return h.now()
+	}
+	return time.Now()
 }
 
 // SetMetrics подключает реестр метрик (вызывается из main до старта сервера).
@@ -423,7 +433,7 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 			if c.LiBudget != nil {
 				liBudget = *c.LiBudget
 			}
-			now := time.Now()
+			now := h.clock()
 			// Even pacing (audit R-03): дневной бюджет кампании открывается
 			// пропорционально прошедшей доле бизнес-дня (+10% burst) — та же
 			// формула, что в rtb.py/business_day.even_pacing_budget.

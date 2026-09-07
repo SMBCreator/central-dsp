@@ -257,6 +257,40 @@ func TestParity_PCTRMultiplier(t *testing.T) {
 	})
 }
 
+// Even pacing (порт rtb.py/business_day.even_pacing_budget): в 00:00 МСК
+// кампании с pacing=even открыто только 10% дневного бюджета; asap-кампания
+// с тем же бюджетом торгуется. К полудню МСК — 60%, и тот же бид проходит.
+func TestParity_EvenPacingThrottlesDailyBudget(t *testing.T) {
+	at := func(s string) time.Time { n, _ := time.Parse(time.RFC3339, s); return n }
+	// price 120 CPM -> cost 0.12; бюджет 1.0: asap пропускает, even в полночь
+	// даёт allowance 0.1 < 0.12 -> отказ гейта.
+	run := func(t *testing.T, pacing string, now time.Time) int {
+		t.Helper()
+		snap := testSnapshot()
+		snap.Candidates[0].Pacing = pacing
+		snap.Candidates[0].CampBudget = 1.0
+		h, _ := newMiniRedisBidHandler(t, snap)
+		h.now = func() time.Time { return now }
+		return doBid(t, h, parityReq).Code
+	}
+	midnightMSK := at("2026-09-06T21:00:00Z")
+	noonMSK := at("2026-09-07T09:00:00Z")
+
+	if code := run(t, "asap", midnightMSK); code != http.StatusOK {
+		t.Fatalf("asap at business midnight must bid, got %d", code)
+	}
+	if code := run(t, "even", midnightMSK); code != http.StatusNoContent {
+		t.Fatalf("even at business midnight: allowance 0.1 < cost 0.12 must be no-bid, got %d", code)
+	}
+	if code := run(t, "even", noonMSK); code != http.StatusOK {
+		t.Fatalf("even at noon MSK: allowance 0.6 >= 0.12 must bid, got %d", code)
+	}
+	// UTC-полночь ничего не значит: 00:00 UTC = 03:00 МСК -> 22.5% -> бид проходит.
+	if code := run(t, "even", at("2026-09-07T00:00:00Z")); code != http.StatusOK {
+		t.Fatalf("even at UTC midnight (03:00 MSK) must bid, got %d", code)
+	}
+}
+
 // Предфильтр (Часть C): бот-UA отсекается до таргетинга и аукциона, считается
 // в bidder_prefilter_drops_total, а не в no-bid; без предфильтра тот же запрос
 // торгуется.

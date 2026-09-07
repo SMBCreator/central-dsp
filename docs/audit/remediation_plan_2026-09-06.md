@@ -124,7 +124,7 @@
 
 ### B8. R-03 — паритет настроек UI ↔ Go
 - **CPC**: цена bid = `bid_cpc × pCTR × 1000`, резерв = ожидаемая стоимость; списание по клику (`bill_click`), win не списывает.
-- **Pacing even**: per-campaign allowance по минутам бизнес-дня (Lua `pacing:<camp>:<date>`), throttle вероятностный.
+- **Pacing even** ✅ (da933ac +): общий helper `business_day.even_pacing_budget` (доля бизнес-дня МСК + 10% burst) в rtb.py; Go — `redisx.EvenPacingBudget` подменяет дневной бюджет в Lua-резерве. Детерминированная формула вместо вероятностного throttle: обе стороны считают одинаково без общего состояния.
 - **Валюта**: feed отдаёт `currency` и `fx_rate`; Go матчится с `cur`/`bidfloorcur`, конвертирует; ответ в валюте запроса.
 - **Optimizer/scoring/clean_traffic/prefilter** ✅ (df2594f, f3ef583): feed переносит `optimizer_blocks[]`, `scoring_blocks[]`, `dirty_domains[]`, `clean_traffic_only`; Go применяет в `matchCandidate`; предфильтр — порт `backend/prefilter.py` в `internal/prefilter` (THROTTLE_*, shared Redis SET `prefilter:dc_subnets`).
 - **pCTR** ✅: feed отдаёт активную модель `pctr_model{global_ctr, segments[]}`; Go — порт лог-odds `predict` в `internal/pctr`, множитель clamp(0.7, 1.3) только для traffic/conversions на CPM; `bid_events.pctr` через stream.
