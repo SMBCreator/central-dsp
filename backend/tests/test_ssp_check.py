@@ -118,3 +118,50 @@ def test_native_request_has_native_spec():
 def test_video_request_has_video_block():
     req = make_test_bid_request("video", request_id="r3")
     assert req["imp"][0]["video"]["mimes"] == ["video/mp4"]
+
+
+# --- request_feed_reload_detail (audit R-02) ------------------------------------
+
+
+def _reload_with(handler, monkeypatch):
+    import asyncio
+
+    import httpx
+
+    from ssp_check import request_feed_reload_detail
+
+    monkeypatch.setenv("RTB_API_TOKEN", "t")
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        return asyncio.run(request_feed_reload_detail(client))
+    finally:
+        asyncio.run(client.aclose())
+
+
+def test_feed_reload_ok(monkeypatch):
+    import httpx
+
+    ok, detail = _reload_with(lambda r: httpx.Response(200, json={"ok": True}), monkeypatch)
+    assert ok and detail == ""
+
+
+def test_feed_reload_reports_bidder_error(monkeypatch):
+    # Go возвращает 502 + error, когда рефреш не удался: backend не должен
+    # выдавать это за успех.
+    import httpx
+
+    ok, detail = _reload_with(
+        lambda r: httpx.Response(502, json={"ok": False, "error": "feed: backend 503"}), monkeypatch
+    )
+    assert not ok
+    assert "502" in detail and "backend 503" in detail
+
+
+def test_feed_reload_without_token(monkeypatch):
+    import asyncio
+
+    from ssp_check import request_feed_reload_detail
+
+    monkeypatch.delenv("RTB_API_TOKEN", raising=False)
+    ok, detail = asyncio.run(request_feed_reload_detail())
+    assert not ok and "RTB_API_TOKEN" in detail
