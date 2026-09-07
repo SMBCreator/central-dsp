@@ -34,9 +34,33 @@ def _serialize(row) -> dict:
     token_hash = d.pop("auth_token_hash", None)
     hint = d.pop("auth_token_hint", None)
     d.pop("auth_token", None)  # на случай прогона до миграции 032
+    d.pop("token_prev_hash", None)  # хэш предыдущего токена наружу не нужен
     d["has_auth_token"] = bool(token_hash)
     d["auth_token_hint"] = f"…{hint}" if token_hash and hint else None
     return d
+
+
+# Статусы, в которых endpoint партнёра реально принимает bid request'ы
+# (bidder_feed.py отдаёт их в Go; rtb.py торгует). Переход сюда без выданного
+# токена запрещён — audit S-06: биддер отвечает 403 партнёру без хэша, так что
+# «включить без токена» = включить заведомо неработающий endpoint.
+_SERVING_STATUSES = ("testing", "active")
+
+
+def _require_token_for_serving(status: str | None, token_hash: str | None) -> None:
+    if status in _SERVING_STATUSES and not token_hash:
+        raise HTTPException(
+            status_code=422,
+            detail="Сначала выпустите токен партнёра (POST /supply-partners/{id}/token): "
+                   "без токена биддер отвечает 403 и перевод в testing/active бессмыслен",
+        )
+
+
+def _validated_whitelist(items: list[str]) -> list[str]:
+    try:
+        return ssp_tokens.validate_ip_whitelist(items)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("")
@@ -52,6 +76,7 @@ async def list_partners(user: dict = Depends(current_user)):
 async def create_partner(body: SupplyPartnerIn, user: dict = Depends(require_admin)):
     pool = await get_pool()
     endpoint_key = secrets.token_urlsafe(16)
+    whitelist = _validated_whitelist(body.ip_whitelist)
     row = await pool.fetchrow(
         """
         INSERT INTO supply_partners
@@ -62,7 +87,7 @@ async def create_partner(body: SupplyPartnerIn, user: dict = Depends(require_adm
         user["id"], body.name, endpoint_key, body.auction_type, body.bid_floor,
         body.qps_limit, json.dumps(body.allowed_ad_types), body.notes,
         body.protocol_version, body.currency, body.tmax_ms,
-        json.dumps(body.ip_whitelist), body.seat_id, body.contact_email,
+        json.dumps(whitelist), body.seat_id, body.contact_email,
     )
     return _serialize(row)
 
@@ -73,6 +98,16 @@ async def update_partner(partner_id: str, body: SupplyPartnerPatch, user: dict =
     if not updates:
         raise HTTPException(status_code=400, detail="Нет полей для обновления")
     pool = await get_pool()
+    if "ip_whitelist" in updates:
+        updates["ip_whitelist"] = _validated_whitelist(updates["ip_whitelist"])
+    if updates.get("status") in _SERVING_STATUSES:
+        current = await pool.fetchrow(
+            "SELECT auth_token_hash FROM supply_partners WHERE id = $1 AND user_id = $2",
+            partner_id, user["id"],
+        )
+        if not current:
+            raise HTTPException(status_code=404, detail="SSP-партнёр не найден")
+        _require_token_for_serving(updates["status"], current["auth_token_hash"])
     sets, values = [], []
     for i, (k, v) in enumerate(updates.items(), start=3):
         if k in _JSONB_FIELDS:
@@ -109,31 +144,61 @@ async def rotate_token(partner_id: str, user: dict = Depends(require_admin)):
 
     Полное значение токена возвращается ТОЛЬКО из этого ответа — сохраните
     и передайте SSP. Дальше API отдаёт только хвост (auth_token_hint).
+
+    Ротация атомарна (один UPDATE) и безразрывна: прежний хэш переезжает в
+    token_prev_hash и принимается ещё PREV_TOKEN_GRACE (15 мин) — SSP успевает
+    переключить секрет без окна отказов (audit S-06). Если токена не было,
+    prev не заводится.
     """
     pool = await get_pool()
     token = ssp_tokens.generate_token()
+    grace_seconds = int(ssp_tokens.PREV_TOKEN_GRACE.total_seconds())
     row = await pool.fetchrow(
         """UPDATE supply_partners
-              SET auth_token_hash = $3, auth_token_hint = $4, updated_at = now()
-            WHERE id = $1 AND user_id = $2 RETURNING id""",
-        partner_id, user["id"], ssp_tokens.hash_token(token), ssp_tokens.token_hint(token),
+              SET token_prev_hash = CASE WHEN auth_token_hash IS NOT NULL AND auth_token_hash <> ''
+                                         THEN auth_token_hash END,
+                  token_prev_valid_until = CASE WHEN auth_token_hash IS NOT NULL AND auth_token_hash <> ''
+                                                THEN now() + make_interval(secs => $5) END,
+                  auth_token_hash = $3, auth_token_hint = $4,
+                  token_revoked_at = NULL, updated_at = now()
+            WHERE id = $1 AND user_id = $2
+            RETURNING id, token_prev_valid_until""",
+        partner_id, user["id"], ssp_tokens.hash_token(token), ssp_tokens.token_hint(token), grace_seconds,
     )
     if not row:
         raise HTTPException(status_code=404, detail="SSP-партнёр не найден")
-    return {"token": token, "header": ssp_tokens.HEADER_NAME}
+    prev_until = row["token_prev_valid_until"]
+    return {
+        "token": token,
+        "header": ssp_tokens.HEADER_NAME,
+        "prev_token_valid_until": prev_until.isoformat() if prev_until else None,
+    }
 
 
 @router.delete("/{partner_id}/token", status_code=204)
 async def revoke_token(partner_id: str, user: dict = Depends(require_admin)):
+    """Отзывает токен и СТАВИТ ПАРТНЁРА НА ПАУЗУ.
+
+    Без токена биддер всё равно ответит 403 (fail-closed), но paused делает это
+    явным в UI и убирает партнёра из фида Go — отзыв закрывает дверь, а не
+    оставляет endpoint «без авторизации» (audit S-06). Окно ротации тоже
+    закрывается: предыдущий токен более не принимается.
+    """
     pool = await get_pool()
     result = await pool.execute(
         """UPDATE supply_partners
-              SET auth_token_hash = NULL, auth_token_hint = NULL, updated_at = now()
+              SET auth_token_hash = NULL, auth_token_hint = NULL,
+                  token_prev_hash = NULL, token_prev_valid_until = NULL,
+                  token_revoked_at = now(),
+                  status = CASE WHEN status IN ('testing', 'active') THEN 'paused' ELSE status END,
+                  updated_at = now()
             WHERE id = $1 AND user_id = $2""",
         partner_id, user["id"],
     )
     if result.endswith("0"):
         raise HTTPException(status_code=404, detail="SSP-партнёр не найден")
+    # Партнёр только что ушёл из фида — пусть Go перечитает, а не ждёт 30 с.
+    await ssp_check.request_feed_reload()
 
 
 # --- Автопроверка подключения ----------------------------------------------------
@@ -158,6 +223,9 @@ async def connection_check(partner_id: str, user: dict = Depends(require_admin))
     for k in ("allowed_ad_types", "ip_whitelist"):
         if isinstance(partner.get(k), str):
             partner[k] = json.loads(partner[k])
+
+    # Без токена Go ответит 403 на каждый шаг — проверять нечего (S-06).
+    _require_token_for_serving("testing", partner.get("auth_token_hash"))
 
     # draft -> testing: endpoint начинает принимать запросы
     if partner["status"] == "draft":

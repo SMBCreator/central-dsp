@@ -35,9 +35,14 @@ async def partners_feed(authorization: str | None = Header(default=None)):
     # active + testing: testing = онбординг SSP (реальные биды, чтобы партнёр
     # прошёл интеграционный тест). Go отдаёт 404 для всех остальных статусов —
     # см. bidder-go partnerBiddable и Python process_bid_request.
+    # token_prev_hash/token_prev_valid_until — окно безразрывной ротации токена
+    # (миграция 039, audit S-06): Go принимает старый токен до этого момента.
+    # Протухшее окно в фид не отдаём, чтобы старый хэш не жил в памяти биддера.
     rows = await pool.fetch(
         """SELECT id, endpoint_key, auth_token_hash, qps_limit, bid_floor, status,
-                  allowed_ad_types, ip_whitelist
+                  allowed_ad_types, ip_whitelist,
+                  CASE WHEN token_prev_valid_until > now() THEN token_prev_hash END AS token_prev_hash,
+                  CASE WHEN token_prev_valid_until > now() THEN token_prev_valid_until END AS token_prev_valid_until
            FROM supply_partners WHERE status IN ('active', 'testing')"""
     )
     return {"partners": [dict(r) for r in rows]}

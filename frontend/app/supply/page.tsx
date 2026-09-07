@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react"
 import useSWR, { mutate } from "swr"
-import { api, fetcher } from "@/lib/api"
+import { api, ApiError, fetcher } from "@/lib/api"
 import { AD_TYPE_LABELS, type SspCheckResult, type SupplyPartner } from "@/lib/types"
 import { SspPartnerStats } from "@/components/ssp-partner-stats"
 import {
@@ -104,7 +104,12 @@ export default function SupplyPage() {
   const [error, setError] = useState<string | null>(null)
 
   // Токен показывается один раз после выдачи; результат проверки разворачивается
-  const [issuedToken, setIssuedToken] = useState<{ partnerId: string; token: string } | null>(null)
+  const [issuedToken, setIssuedToken] = useState<{
+    partnerId: string
+    token: string
+    prevValidUntil: string | null
+  } | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
   const [checkingId, setCheckingId] = useState<string | null>(null)
   const [statsId, setStatsId] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<string | null>(null)
@@ -145,7 +150,7 @@ export default function SupplyPage() {
           method: "POST",
           body: formToPayload(form),
         })
-        if (created?.token) setIssuedToken({ partnerId: created.id, token: created.token })
+        if (created?.token) setIssuedToken({ partnerId: created.id, token: created.token, prevValidUntil: null })
       }
       await mutate("/supply-partners")
       setOpen(false)
@@ -156,29 +161,70 @@ export default function SupplyPage() {
     }
   }
 
-  const setStatus = async (p: SupplyPartner, status: string) => {
-    await api(`/supply-partners/${p.id}`, { method: "PATCH", body: { status } })
-    await mutate("/supply-partners")
+  // Ошибки действий над карточкой (422 «сначала выпустите токен» и т.п.) —
+  // иначе клик молча ничего не делает.
+  const runAction = async (fn: () => Promise<void>) => {
+    setActionError(null)
+    try {
+      await fn()
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Не удалось выполнить действие")
+    }
   }
+
+  const setStatus = (p: SupplyPartner, status: string) =>
+    runAction(async () => {
+      await api(`/supply-partners/${p.id}`, { method: "PATCH", body: { status } })
+      await mutate("/supply-partners")
+    })
 
   const runCheck = async (p: SupplyPartner) => {
     setCheckingId(p.id)
+    setActionError(null)
     try {
       await api(`/supply-partners/${p.id}/check`, { method: "POST", body: {} })
       await mutate("/supply-partners")
       setExpandedId(p.id)
-    } catch {
-      // Ошибка проверки отражается в last_check с бэка
+    } catch (e) {
+      // Результаты шагов приходят в last_check с бэка; сюда попадает только
+      // отказ до запуска (например 422 «сначала выпустите токен»).
+      if (e instanceof ApiError && e.status === 422) setActionError(e.message)
     } finally {
       setCheckingId(null)
     }
   }
 
-  const rotateToken = async (p: SupplyPartner) => {
-    const res = await api<{ token: string }>(`/supply-partners/${p.id}/token`, { method: "POST" })
-    if (res?.token) setIssuedToken({ partnerId: p.id, token: res.token })
-    await mutate("/supply-partners")
-  }
+  const rotateToken = (p: SupplyPartner) =>
+    runAction(async () => {
+      if (
+        p.has_auth_token &&
+        !window.confirm(
+          `Перевыпустить токен «${p.name}»? Старый токен будет приниматься ещё 15 минут — успейте передать новый партнёру.`,
+        )
+      )
+        return
+      const res = await api<{ token: string; prev_token_valid_until?: string | null }>(
+        `/supply-partners/${p.id}/token`,
+        { method: "POST" },
+      )
+      if (res?.token) {
+        setIssuedToken({ partnerId: p.id, token: res.token, prevValidUntil: res.prev_token_valid_until ?? null })
+      }
+      await mutate("/supply-partners")
+    })
+
+  const revokeToken = (p: SupplyPartner) =>
+    runAction(async () => {
+      if (
+        !window.confirm(
+          `Отозвать токен «${p.name}»? Партнёр будет поставлен на паузу, биддер перестанет отвечать на его запросы.`,
+        )
+      )
+        return
+      await api(`/supply-partners/${p.id}/token`, { method: "DELETE" })
+      if (issuedToken?.partnerId === p.id) setIssuedToken(null)
+      await mutate("/supply-partners")
+    })
 
   const archive = async (p: SupplyPartner) => {
     if (!window.confirm(`Архивировать «${p.name}»? Биддер перестанет принимать запросы по его ключу.`)) return
@@ -255,6 +301,21 @@ export default function SupplyPage() {
               Скрыть
             </Button>
           </div>
+          {issuedToken.prevValidUntil ? (
+            <p className="text-xs text-muted">
+              Предыдущий токен принимается до {new Date(issuedToken.prevValidUntil).toLocaleTimeString("ru-RU")} —
+              после этого запросы со старым токеном получат 403.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {actionError ? (
+        <div role="alert" className="flex items-start justify-between gap-3 rounded-xl border border-danger/40 bg-danger/5 p-3 text-sm text-danger">
+          <span>{actionError}</span>
+          <button type="button" className="text-xs underline" onClick={() => setActionError(null)}>
+            Скрыть
+          </button>
         </div>
       ) : null}
 
@@ -313,11 +374,20 @@ export default function SupplyPage() {
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <Button variant="secondary" onClick={() => runCheck(p)} disabled={checkingId === p.id}>
-                      {checkingId === p.id ? "Проверяем…" : "Проверить подключение"}
-                    </Button>
+                    <span className="inline-flex items-center gap-1">
+                      <Button
+                        variant="secondary"
+                        onClick={() => runCheck(p)}
+                        disabled={checkingId === p.id || !p.has_auth_token}
+                      >
+                        {checkingId === p.id ? "Проверяем…" : "Проверить подключение"}
+                      </Button>
+                      {!p.has_auth_token ? (
+                        <HelpTip text="Сначала выдайте токен: без него биддер отвечает 403 на любой запрос партнёра." />
+                      ) : null}
+                    </span>
                     {p.status === "draft" || p.status === "paused" ? (
-                      <Button variant="secondary" onClick={() => setStatus(p, "testing")}>
+                      <Button variant="secondary" onClick={() => setStatus(p, "testing")} disabled={!p.has_auth_token}>
                         В тест
                       </Button>
                     ) : null}
@@ -349,6 +419,11 @@ export default function SupplyPage() {
                     <Button variant="ghost" onClick={() => rotateToken(p)}>
                       {p.has_auth_token ? "Перевыпустить токен" : "Выдать токен"}
                     </Button>
+                    {p.has_auth_token ? (
+                      <Button variant="ghost" onClick={() => revokeToken(p)}>
+                        Отозвать токен
+                      </Button>
+                    ) : null}
                     <Button variant="ghost" onClick={() => archive(p)}>
                       Архив
                     </Button>

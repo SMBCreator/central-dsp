@@ -42,7 +42,10 @@ func testSnapshot() *feed.Snapshot {
 			Name:       "Test Banner",
 		}},
 		Partners: map[string]*feed.Partner{
-			"key1": {ID: "5", EndpointKey: "key1", Status: "active", BidFloor: 10},
+			// Audit S-06: партнёр без auth_token_hash закрыт (403), поэтому у
+			// тестового партнёра токен выдан; см. testPartnerToken / bidRequest.
+			"key1": {ID: "5", EndpointKey: "key1", Status: "active", BidFloor: 10,
+				AuthTokenHash: sha256Hex(testPartnerToken)},
 		},
 		GBlack:   map[string]map[string]bool{},
 		GWhite:   map[string]map[string]bool{},
@@ -50,12 +53,27 @@ func testSnapshot() *feed.Snapshot {
 	}
 }
 
+// testPartnerToken — открытый SSP-токен партнёра key1 из testSnapshot.
+const testPartnerToken = "test-ssp-token"
+
+// bidRequest — POST /rtb/bid/{key} с валидным токеном партнёра key1.
+func bidRequest(key, body string) *http.Request {
+	r := httptest.NewRequest(http.MethodPost, "/rtb/bid/"+key, strings.NewReader(body))
+	r.SetPathValue("endpointKey", key)
+	r.Header.Set(TokenHeader, testPartnerToken)
+	return r
+}
+
+func bidRequestWithToken(key, body, token string) *http.Request {
+	r := bidRequest(key, body)
+	r.Header.Set(TokenHeader, token)
+	return r
+}
+
 func doBid(t *testing.T, h *Handler, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	r := httptest.NewRequest(http.MethodPost, "/rtb/bid/key1", strings.NewReader(body))
-	r.SetPathValue("endpointKey", "key1")
 	w := httptest.NewRecorder()
-	h.Bid(w, r)
+	h.Bid(w, bidRequest("key1", body))
 	return w
 }
 
@@ -207,10 +225,8 @@ func BenchmarkBidHotPath(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		r := httptest.NewRequest(http.MethodPost, "/rtb/bid/key1", strings.NewReader(body))
-		r.SetPathValue("endpointKey", "key1")
 		w := httptest.NewRecorder()
-		h.Bid(w, r)
+		h.Bid(w, bidRequest("key1", body))
 		if w.Code != http.StatusOK {
 			b.Fatalf("want 200, got %d", w.Code)
 		}
@@ -281,16 +297,26 @@ func TestMacroOrEmpty(t *testing.T) {
 }
 
 // IP-whitelist партнёра (паритет с rtb.py/ssp_check.ip_allowed): пустой список —
-// любой IP; непустой — только перечисленные IP/CIDR; XFF имеет приоритет.
+// любой IP; непустой — только перечисленные IP/CIDR. X-Forwarded-For учитывается
+// ТОЛЬКО от доверенного прокси (audit S-06) — иначе whitelist обходится одним
+// заголовком.
 func TestBidIPWhitelist(t *testing.T) {
 	snap := testSnapshot()
-	snap.Partners["key1"].IPNets = feed.ParseIPWhitelist([]byte(`["203.0.113.7","10.1.0.0/16"]`))
+	nets, err := feed.ParseIPWhitelist([]byte(`["203.0.113.7","10.1.0.0/16"]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap.Partners["key1"].IPNets = nets
 	h := newTestHandler(snap)
+	proxies, err := ParseTrustedProxies("127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.SetTrustedProxies(proxies)
 	body := `{"id":"r9","imp":[{"id":"1","banner":{"w":300,"h":250}}]}`
 
 	mk := func(remote, xff string) *httptest.ResponseRecorder {
-		r := httptest.NewRequest(http.MethodPost, "/rtb/bid/key1", strings.NewReader(body))
-		r.SetPathValue("endpointKey", "key1")
+		r := bidRequest("key1", body)
 		r.RemoteAddr = remote
 		if xff != "" {
 			r.Header.Set("X-Forwarded-For", xff)
@@ -308,17 +334,32 @@ func TestBidIPWhitelist(t *testing.T) {
 	if w := mk("198.51.100.1:5555", ""); w.Code != http.StatusForbidden {
 		t.Fatalf("foreign ip: want 403, got %d", w.Code)
 	}
-	// За Caddy: RemoteAddr = прокси, реальный клиент в XFF.
+	// За Caddy (доверенный 127.0.0.1): реальный клиент — первый адрес XFF.
 	if w := mk("127.0.0.1:1", "203.0.113.7, 127.0.0.1"); w.Code != http.StatusOK {
 		t.Fatalf("xff allowed: want 200, got %d", w.Code)
 	}
 	if w := mk("127.0.0.1:1", "198.51.100.1"); w.Code != http.StatusForbidden {
 		t.Fatalf("xff foreign: want 403, got %d", w.Code)
 	}
+	// Чужой хост подставляет XFF с разрешённым IP — заголовок игнорируется,
+	// клиент = RemoteAddr -> 403. Это и есть закрытая дыра S-06.
+	if w := mk("198.51.100.1:5555", "203.0.113.7"); w.Code != http.StatusForbidden {
+		t.Fatalf("spoofed xff from untrusted remote must be denied: want 403, got %d", w.Code)
+	}
+	// Мусор в XFF от доверенного прокси = клиент не определён -> 403, а не fail-open.
+	if w := mk("127.0.0.1:1", "not-an-ip"); w.Code != http.StatusForbidden {
+		t.Fatalf("garbage xff: want 403, got %d", w.Code)
+	}
+	// Без доверенных прокси вообще XFF никогда не учитывается.
+	h.SetTrustedProxies(nil)
+	if w := mk("127.0.0.1:1", "203.0.113.7"); w.Code != http.StatusForbidden {
+		t.Fatalf("no trusted proxies: xff must be ignored, want 403, got %d", w.Code)
+	}
+	h.SetTrustedProxies(proxies)
+
 	// Автопроверка из кабинета: internal-токен обходит whitelist; без токена — нет.
 	h.SetInternalToken("infra-secret")
-	r := httptest.NewRequest(http.MethodPost, "/rtb/bid/key1", strings.NewReader(body))
-	r.SetPathValue("endpointKey", "key1")
+	r := bidRequest("key1", body)
 	r.RemoteAddr = "172.18.0.5:4000"
 	r.Header.Set(internalCheckHeader, "infra-secret")
 	w := httptest.NewRecorder()
@@ -332,6 +373,149 @@ func TestBidIPWhitelist(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("wrong internal token must not bypass: want 403, got %d", w.Code)
 	}
+}
+
+// Audit S-06: партнёр без выданного токена закрыт всегда, даже для internal-
+// проверки со Skip-Token; невалидный whitelist -> fail-closed; предыдущий
+// токен принимается только в окне ротации; причины отказа считаются раздельно.
+func TestBidTokenLifecycle(t *testing.T) {
+	body := `{"id":"r10","imp":[{"id":"1","banner":{"w":300,"h":250}}]}`
+
+	t.Run("no hash is 403 even for internal check", func(t *testing.T) {
+		snap := testSnapshot()
+		snap.Partners["key1"].AuthTokenHash = ""
+		h := newTestHandler(snap)
+		h.SetInternalToken("infra-secret")
+		if w := doBid(t, h, body); w.Code != http.StatusForbidden {
+			t.Fatalf("partner w/o token: want 403, got %d", w.Code)
+		}
+		r := bidRequest("key1", body)
+		r.Header.Del(TokenHeader)
+		w := httptest.NewRecorder()
+		h.Bid(w, r)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("no hash + no token: want 403, got %d", w.Code)
+		}
+		r = bidRequest("key1", body)
+		r.Header.Del(TokenHeader)
+		r.Header.Set(internalCheckHeader, "infra-secret")
+		r.Header.Set(skipTokenHeader, "1")
+		w = httptest.NewRecorder()
+		h.Bid(w, r)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("internal skip-token on tokenless partner: want 403, got %d", w.Code)
+		}
+	})
+
+	t.Run("wrong token 403, missing token 403", func(t *testing.T) {
+		h := newTestHandler(testSnapshot())
+		w := httptest.NewRecorder()
+		h.Bid(w, bidRequestWithToken("key1", body, "wrong"))
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("wrong token: want 403, got %d", w.Code)
+		}
+		r := bidRequest("key1", body)
+		r.Header.Del(TokenHeader)
+		w = httptest.NewRecorder()
+		h.Bid(w, r)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("missing token: want 403, got %d", w.Code)
+		}
+	})
+
+	t.Run("internal skip-token still works for partner with hash", func(t *testing.T) {
+		h := newTestHandler(testSnapshot())
+		h.SetInternalToken("infra-secret")
+		r := bidRequest("key1", body)
+		r.Header.Del(TokenHeader)
+		r.Header.Set(internalCheckHeader, "infra-secret")
+		r.Header.Set(skipTokenHeader, "1")
+		w := httptest.NewRecorder()
+		h.Bid(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("ssp_check auto-test path: want 200, got %d", w.Code)
+		}
+	})
+
+	t.Run("previous token accepted only inside grace window", func(t *testing.T) {
+		snap := testSnapshot()
+		p := snap.Partners["key1"]
+		p.TokenPrevHash = sha256Hex("old-token")
+		until := time.Now().Add(10 * time.Minute)
+		p.TokenPrevValidUntil = &until
+		h := newTestHandler(snap)
+		w := httptest.NewRecorder()
+		h.Bid(w, bidRequestWithToken("key1", body, "old-token"))
+		if w.Code != http.StatusOK {
+			t.Fatalf("prev token in window: want 200, got %d", w.Code)
+		}
+		expired := time.Now().Add(-time.Second)
+		p.TokenPrevValidUntil = &expired
+		w = httptest.NewRecorder()
+		h.Bid(w, bidRequestWithToken("key1", body, "old-token"))
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("prev token after window: want 403, got %d", w.Code)
+		}
+		// Текущий токен работает независимо от окна.
+		if w := doBid(t, h, body); w.Code != http.StatusOK {
+			t.Fatalf("current token: want 200, got %d", w.Code)
+		}
+	})
+
+	t.Run("invalid whitelist is fail-closed", func(t *testing.T) {
+		snap := testSnapshot()
+		snap.Partners["key1"].WhitelistInvalid = true
+		h := newTestHandler(snap)
+		if w := doBid(t, h, body); w.Code != http.StatusForbidden {
+			t.Fatalf("invalid whitelist: want 403, got %d", w.Code)
+		}
+	})
+
+	// Причины отказа на auth-фазе считаются раздельно — иначе алерт «SSP шлёт
+	// неверный токен» не отличить от «токен отозван» и «режем по IP».
+	t.Run("auth rejects are counted by distinct reasons", func(t *testing.T) {
+		snap := testSnapshot()
+		nets, err := feed.ParseIPWhitelist([]byte(`["203.0.113.7"]`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		snap.Partners["key1"].IPNets = nets
+		h := newTestHandler(snap)
+		reg := metrics.New()
+		h.SetMetrics(reg)
+
+		w := httptest.NewRecorder()
+		r := bidRequestWithToken("key1", body, "wrong")
+		r.RemoteAddr = "203.0.113.7:1"
+		h.Bid(w, r) // bad_auth
+		w = httptest.NewRecorder()
+		r = bidRequest("key1", body)
+		r.RemoteAddr = "198.51.100.1:1"
+		h.Bid(w, r) // ip_denied
+		snap.Partners["key1"].AuthTokenHash = ""
+		w = httptest.NewRecorder()
+		h.Bid(w, bidRequest("key1", body)) // token_not_issued
+		snap.Partners["key1"].AuthTokenHash = sha256Hex(testPartnerToken)
+		snap.Partners["key1"].WhitelistInvalid = true
+		w = httptest.NewRecorder()
+		r = bidRequest("key1", body)
+		r.RemoteAddr = "203.0.113.7:1"
+		h.Bid(w, r) // whitelist_invalid
+
+		rec := httptest.NewRecorder()
+		reg.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+		out := rec.Body.String()
+		for _, want := range []string{
+			`bidder_no_bid_total{reason="bad_auth"} 1`,
+			`bidder_no_bid_total{reason="ip_denied"} 1`,
+			`bidder_no_bid_total{reason="token_not_issued"} 1`,
+			`bidder_no_bid_total{reason="whitelist_invalid"} 1`,
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("metrics missing %q\n%s", want, out)
+			}
+		}
+	})
 }
 
 func TestFeedReloadAuth(t *testing.T) {

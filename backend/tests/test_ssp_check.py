@@ -32,9 +32,12 @@ def test_nonempty_whitelist_requires_ip():
     assert ip_allowed("not-an-ip", ["203.0.113.7"]) is False
 
 
-def test_garbage_entries_ignored():
-    assert ip_allowed("203.0.113.7", ["garbage", "", "203.0.113.7"]) is True
+def test_garbage_entry_is_fail_closed():
+    # S-06: повреждённый whitelist запрещает всё, даже если другая запись совпала.
+    assert ip_allowed("203.0.113.7", ["garbage", "", "203.0.113.7"]) is False
     assert ip_allowed("203.0.113.8", ["garbage", ""]) is False
+    # Пустые строки сами по себе — не мусор.
+    assert ip_allowed("203.0.113.7", ["", "203.0.113.7"]) is True
 
 
 # --- validate_bid_response ------------------------------------------------------

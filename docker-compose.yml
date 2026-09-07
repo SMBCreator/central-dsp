@@ -152,6 +152,10 @@ services:
       EVENT_BASE_URL: ${PUBLIC_BASE_URL:-http://backend:8000}
       APP_ENV: ${APP_ENV:-production}
       INTERNAL_FEED_TOKEN: ${INTERNAL_FEED_TOKEN:-}
+      # Audit S-06: X-Forwarded-For принимается только от этих сетей (реверс-
+      # прокси). Дефолт в бинаре — loopback + приватные сети; за внешним LB
+      # перечислите его адреса. Пусто = XFF игнорируется всегда.
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.0/8,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7}
     depends_on:
       redis:
         condition: service_healthy
@@ -167,7 +171,7 @@ services:
     networks:
       - centraldsp
 
-  # ─────────────────────────────────────────
+  # ───────────────────���─────────────────────
   # CELERY WORKER
   # ─────────────────────────────────────────
   worker:

@@ -201,7 +201,7 @@
 - [x] A6 S-01 — `5709181`+`8f9caa0`
 - [x] A7 S-04 — `5b3ca1d`
 - [x] A8 S-05 — `frontend/lib/server-auth.ts` + `frontend/lib/ai-guard.ts`; vitest в CI (`frontend/tests/ai-api.test.ts`)
-- [ ] A9 S-06
+- [x] A9 S-06 — миграция 039 (token_prev_hash/valid_until, token_revoked_at); revoke → paused; CIDR-валидация 422; Go: fail-closed без хэша, TRUSTED_PROXIES для XFF, whitelist_invalid; метрики token_not_issued/ip_denied/whitelist_invalid
 - [ ] B1 R-01
 - [ ] B2 E-01
 - [ ] B3 E-02

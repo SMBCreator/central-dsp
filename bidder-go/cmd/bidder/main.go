@@ -39,6 +39,11 @@ func env(key, def string) string {
 	return def
 }
 
+// defaultTrustedProxies — loopback и приватные сети (RFC 1918 / ULA): Caddy
+// в docker-сети compose или на той же машине. Биддер не должен быть доступен
+// с публичного адреса напрямую — только через прокси.
+const defaultTrustedProxies = "127.0.0.0/8,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7"
+
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
@@ -107,6 +112,22 @@ func main() {
 	// (обход IP-whitelist) и запрос принудительного рефреша фида.
 	internalToken := env("RTB_API_TOKEN", os.Getenv("INTERNAL_FEED_TOKEN"))
 	h.SetInternalToken(internalToken)
+
+	// Audit S-06: X-Forwarded-For / X-Real-IP принимаются только от доверенных
+	// прокси (Caddy в compose-сети / на loopback). Дефолт — loopback + приватные
+	// сети, чего достаточно для стандартного деплоя; за внешним LB задайте его
+	// адреса явно. Пустое значение ("TRUSTED_PROXIES=") = никому не верить.
+	trustedProxiesRaw, trustedProxiesSet := os.LookupEnv("TRUSTED_PROXIES")
+	if !trustedProxiesSet {
+		trustedProxiesRaw = defaultTrustedProxies
+	}
+	trustedProxies, err := rtb.ParseTrustedProxies(trustedProxiesRaw)
+	if err != nil {
+		slog.Error("startup config check failed", "err", err.Error())
+		os.Exit(1)
+	}
+	h.SetTrustedProxies(trustedProxies)
+	slog.Info("trusted proxies for X-Forwarded-For", "networks", trustedProxiesRaw)
 
 	// Prometheus-метрики: счётчики hot path + gauges состояния (GAP-011).
 	reg := metrics.New()

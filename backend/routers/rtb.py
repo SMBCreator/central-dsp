@@ -737,10 +737,18 @@ async def process_bid_request(
         raise HTTPException(status_code=404, detail="Unknown endpoint")
 
     # Optional per-partner shared secret. В БД только sha256-хэш (миграция 032):
-    # NULL = legacy key-in-URL only; set = sha256(header) должен совпасть
-    # (сравнение в константное время, см. ssp_tokens.verify_token).
-    expected_hash = partner["auth_token_hash"] if "auth_token_hash" in partner.keys() else None
-    if verify_token and not ssp_tokens.verify_token(ssp_token, expected_hash):
+    # NULL/пусто = токен не выдан или отозван -> 403 всегда (fail-closed, audit
+    # S-06; паритет с Go partner_auth.go). В окне ротации принимается и
+    # предыдущий хэш (token_prev_hash до token_prev_valid_until, миграция 039).
+    keys = partner.keys()
+    expected_hash = partner["auth_token_hash"] if "auth_token_hash" in keys else None
+    if not expected_hash:
+        raise HTTPException(status_code=403, detail="SSP token not issued")
+    if verify_token and not ssp_tokens.verify_token(
+        ssp_token, expected_hash,
+        partner["token_prev_hash"] if "token_prev_hash" in keys else None,
+        partner["token_prev_valid_until"] if "token_prev_valid_until" in keys else None,
+    ):
         raise HTTPException(status_code=403, detail="Invalid SSP token")
 
     # IP whitelist партнёра (миграция 030): непустой список = только эти IP/CIDR.

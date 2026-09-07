@@ -26,18 +26,25 @@ type NoBidReason string
 const (
 	ReasonFeedNotLoaded   NoBidReason = "feed_not_loaded"
 	ReasonUnknownEndpoint NoBidReason = "unknown_endpoint"
-	ReasonBadAuth         NoBidReason = "bad_auth"
-	ReasonQPSExceeded     NoBidReason = "qps_exceeded"
-	ReasonParseError      NoBidReason = "parse_error"
-	ReasonEmptyRequest    NoBidReason = "empty_request"
-	ReasonCurrency        NoBidReason = "currency_mismatch"
-	ReasonNoCandidates    NoBidReason = "no_candidates"
+	ReasonBadAuth         NoBidReason = "bad_auth" // токен не совпал
+	// Audit S-06: раздельные причины отказа на auth-фазе, чтобы алерт
+	// «SSP шлёт неверный токен» не смешивался с «токен отозван/не выдан»
+	// и «мы режем по IP».
+	ReasonTokenNotIssued   NoBidReason = "token_not_issued"  // auth_token_hash пуст: не выдан или отозван
+	ReasonIPDenied         NoBidReason = "ip_denied"         // клиентский IP вне ip_whitelist
+	ReasonWhitelistInvalid NoBidReason = "whitelist_invalid" // ip_whitelist не разобрался -> fail-closed
+	ReasonQPSExceeded      NoBidReason = "qps_exceeded"
+	ReasonParseError       NoBidReason = "parse_error"
+	ReasonEmptyRequest     NoBidReason = "empty_request"
+	ReasonCurrency         NoBidReason = "currency_mismatch"
+	ReasonNoCandidates     NoBidReason = "no_candidates"
 )
 
 // AllNoBidReasons — полный список для инициализации серий (нулевые значения
 // видны в Prometheus сразу, rate() не «прыгает» при первом инкременте).
 var AllNoBidReasons = []NoBidReason{
-	ReasonFeedNotLoaded, ReasonUnknownEndpoint, ReasonBadAuth, ReasonQPSExceeded,
+	ReasonFeedNotLoaded, ReasonUnknownEndpoint, ReasonBadAuth,
+	ReasonTokenNotIssued, ReasonIPDenied, ReasonWhitelistInvalid, ReasonQPSExceeded,
 	ReasonParseError, ReasonEmptyRequest, ReasonCurrency, ReasonNoCandidates,
 }
 

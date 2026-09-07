@@ -12,6 +12,7 @@ package feed
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -153,22 +154,34 @@ type Partner struct {
 	AllowedAdTypes json.RawMessage `json:"allowed_ad_types"`
 	IPWhitelist    json.RawMessage `json:"ip_whitelist"` // JSON-массив IP/CIDR серверов SSP; пусто = любой IP
 
+	// Окно безразрывной ротации токена (миграция 039, audit S-06): предыдущий
+	// хэш принимается, пока now < TokenPrevValidUntil. Backend отдаёт поля
+	// только при открытом окне.
+	TokenPrevHash       string     `json:"token_prev_hash"`
+	TokenPrevValidUntil *time.Time `json:"token_prev_valid_until"`
+
 	AllowedTypes map[string]bool `json:"-"`
 	IPNets       []*net.IPNet    `json:"-"` // распарсенный IPWhitelist
+	// WhitelistInvalid — ip_whitelist не разобрался целиком. Fail-closed: такой
+	// партнёр не биддится (метрика bidder_no_bid_total{reason="whitelist_invalid"}),
+	// а не торгуется с любым IP, как было бы при молчаливом пропуске мусора.
+	WhitelistInvalid bool `json:"-"`
 }
 
 // ParseIPWhitelist разбирает JSON-массив строк IP или CIDR (объект/строка с
-// объектом — как ParseAllowedTypes). Мусорные элементы пропускаются —
-// паритет с ssp_check.ip_allowed.
-func ParseIPWhitelist(raw json.RawMessage) []*net.IPNet {
-	if len(raw) == 0 {
-		return nil
+// объектом — как ParseAllowedTypes). Любой неразборчивый элемент — ошибка:
+// backend валидирует список при сохранении (ssp_tokens.validate_ip_whitelist),
+// так что ошибка здесь = повреждённые данные, и партнёр должен закрыться
+// (audit S-06), а не открыться.
+func ParseIPWhitelist(raw json.RawMessage) ([]*net.IPNet, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
 	}
 	var items []string
 	if err := json.Unmarshal(raw, &items); err != nil {
 		var s string
 		if json.Unmarshal(raw, &s) != nil || json.Unmarshal([]byte(s), &items) != nil {
-			return nil
+			return nil, fmt.Errorf("ip_whitelist: not a JSON array of strings: %w", err)
 		}
 	}
 	out := make([]*net.IPNet, 0, len(items))
@@ -187,9 +200,11 @@ func ParseIPWhitelist(raw json.RawMessage) []*net.IPNet {
 				bits = 128
 			}
 			out = append(out, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
+			continue
 		}
+		return nil, fmt.Errorf("ip_whitelist: invalid IP/CIDR %q", it)
 	}
-	return out
+	return out, nil
 }
 
 // DomainList — глобальные white/blacklist на уровне аккаунта.
@@ -307,7 +322,15 @@ func (s *Store) refresh(ctx context.Context) {
 	for i := range parts.Partners {
 		p := &parts.Partners[i]
 		p.AllowedTypes = ParseAllowedTypes(p.AllowedAdTypes)
-		p.IPNets = ParseIPWhitelist(p.IPWhitelist)
+		nets, err := ParseIPWhitelist(p.IPWhitelist)
+		if err != nil {
+			// Fail-closed: партнёр остаётся в снапшоте, но hot path отвечает 403
+			// и считает whitelist_invalid — видно в /metrics и логах.
+			slog.Error("feed partner ip_whitelist invalid; partner fail-closed",
+				"partner_id", p.ID, "endpoint_key", p.EndpointKey, "err", err)
+			p.WhitelistInvalid = true
+		}
+		p.IPNets = nets
 		snap.Partners[p.EndpointKey] = p
 	}
 	for i := range camps.Candidates {

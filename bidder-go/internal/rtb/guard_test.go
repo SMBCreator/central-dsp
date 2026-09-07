@@ -15,10 +15,8 @@ func TestBidOversizedBodyIs413(t *testing.T) {
 	h := newTestHandler(testSnapshot())
 	body := `{"id":"big","imp":[{"id":"1","banner":{"w":300,"h":250}}],"ext":{"pad":"` +
 		strings.Repeat("x", MaxBidRequestBytes+1024) + `"}}`
-	req := httptest.NewRequest(http.MethodPost, "/rtb/bid/key1", strings.NewReader(body))
-	req.SetPathValue("endpointKey", "key1")
 	rec := httptest.NewRecorder()
-	h.Bid(rec, req)
+	h.Bid(rec, bidRequest("key1", body))
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status=%d want 413", rec.Code)
 	}
@@ -28,10 +26,8 @@ func TestBidOversizedBodyIs413(t *testing.T) {
 func TestBidNormalBodyWithinLimit(t *testing.T) {
 	h := newTestHandler(testSnapshot())
 	body := `{"id":"ok","imp":[{"id":"1","banner":{"w":300,"h":250}}],"cur":["RUB"]}`
-	req := httptest.NewRequest(http.MethodPost, "/rtb/bid/key1", strings.NewReader(body))
-	req.SetPathValue("endpointKey", "key1")
 	rec := httptest.NewRecorder()
-	h.Bid(rec, req)
+	h.Bid(rec, bidRequest("key1", body))
 	if rec.Code == http.StatusRequestEntityTooLarge || rec.Code == http.StatusBadRequest {
 		t.Fatalf("unexpected status=%d", rec.Code)
 	}
@@ -56,7 +52,8 @@ func TestBidDeadline(t *testing.T) {
 	}
 }
 
-// Токен партнёра: сверка по sha256-хэшу, оба заголовка, отсутствие хэша = без проверки.
+// Токен партнёра: сверка по sha256-хэшу, оба заголовка; отсутствие хэша =
+// отказ (audit S-06: fail-closed, паритет с rtb.py «SSP token not issued»).
 func TestPartnerTokenOK(t *testing.T) {
 	p := &feed.Partner{AuthTokenHash: sha256Hex("secret-token")}
 
@@ -79,7 +76,24 @@ func TestPartnerTokenOK(t *testing.T) {
 	if partnerTokenOK(p, mk("", "")) {
 		t.Fatal("missing token must fail when hash is set")
 	}
-	if !partnerTokenOK(&feed.Partner{}, mk("", "")) {
-		t.Fatal("partner without hash must not require token")
+	if partnerTokenOK(&feed.Partner{}, mk("", "")) {
+		t.Fatal("partner without hash must be rejected (fail-closed)")
+	}
+	if got := checkPartnerToken(&feed.Partner{}, mk("X-CentralDSP-Token", "any"), time.Now()); got != tokenNoHash {
+		t.Fatalf("verdict for tokenless partner: want tokenNoHash, got %v", got)
+	}
+}
+
+// TRUSTED_PROXIES: список IP/CIDR через запятую; мусор — ошибка старта.
+func TestParseTrustedProxies(t *testing.T) {
+	nets, err := ParseTrustedProxies(" 127.0.0.1, ::1 ,172.16.0.0/12 ")
+	if err != nil || len(nets) != 3 {
+		t.Fatalf("want 3 nets, got %d err=%v", len(nets), err)
+	}
+	if nets, err := ParseTrustedProxies(""); err != nil || len(nets) != 0 {
+		t.Fatalf("empty must be no proxies, got %d err=%v", len(nets), err)
+	}
+	if _, err := ParseTrustedProxies("10.0.0.0/8,garbage"); err == nil {
+		t.Fatal("garbage entry must fail")
 	}
 }

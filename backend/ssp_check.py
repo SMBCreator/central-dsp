@@ -111,9 +111,12 @@ async def request_feed_reload(client=None) -> bool:
 def ip_allowed(client_ip: str | None, whitelist: list[str]) -> bool:
     """Проверка IP клиента против whitelist (IP или CIDR).
 
-    Пустой whitelist = разрешено всё. Неразборчивые записи игнорируются
-    (fail-open по записи, но не по списку: если список непуст и ни одна
-    запись не совпала — запрещено).
+    Пустой whitelist = разрешено всё. Неразборчивая запись = fail-closed:
+    список считается повреждённым и запрещает всё (паритет с Go
+    `whitelist_invalid`, audit S-06). Backend валидирует whitelist при
+    сохранении (ssp_tokens.validate_ip_whitelist), так что сюда мусор
+    попадает только из старых строк — и это повод починить данные, а не
+    молча торговаться с любым IP.
     """
     if not whitelist:
         return True
@@ -123,6 +126,7 @@ def ip_allowed(client_ip: str | None, whitelist: list[str]) -> bool:
         addr = ipaddress.ip_address(client_ip)
     except ValueError:
         return False
+    matched = False
     for entry in whitelist:
         entry = str(entry).strip()
         if not entry:
@@ -130,12 +134,12 @@ def ip_allowed(client_ip: str | None, whitelist: list[str]) -> bool:
         try:
             if "/" in entry:
                 if addr in ipaddress.ip_network(entry, strict=False):
-                    return True
+                    matched = True
             elif addr == ipaddress.ip_address(entry):
-                return True
+                matched = True
         except ValueError:
-            continue
-    return False
+            return False
+    return matched
 
 
 def validate_bid_response(resp: dict | None, *, bid_floor: float = 0.0) -> list[str]:

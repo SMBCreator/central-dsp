@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"sort"
@@ -39,6 +40,9 @@ type Handler struct {
 	// internalToken — RTB_API_TOKEN: им backend подписывает автопроверку SSP
 	// (ssp_check.py), чтобы обойти IP-whitelist партнёра. "" = обход выключен.
 	internalToken string
+	// trustedProxies — сети (TRUSTED_PROXIES), с которых принимаются
+	// X-Forwarded-For / X-Real-IP; иначе клиент = RemoteAddr (audit S-06).
+	trustedProxies []*net.IPNet
 }
 
 // SetMetrics подключает реестр метрик (вызывается из main до старта сервера).
@@ -168,15 +172,29 @@ func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 	// client_ip=None в Python; (б) по заголовку X-CentralDSP-Skip-Token пропустить
 	// сверку токена партнёра — это verify_token=False в Python. Негативный тест
 	// auth шлёт явный неверный токен без Skip-Token и должен получить 403.
+	//
+	// Audit S-06: партнёр без выданного/с отозванным токеном закрыт ВСЕГДА —
+	// даже для автопроверки (паритет с rtb.py: 403 «SSP token not issued» до
+	// verify_token). Невалидный ip_whitelist — тоже 403 (fail-closed).
 	internal := h.isInternalCheck(r)
 	skipToken := internal && r.Header.Get(skipTokenHeader) == "1" && r.Header.Get(TokenHeader) == ""
-	if !skipToken && !partnerTokenOK(partner, r) {
+	switch verdict := checkPartnerToken(partner, r, time.Now()); {
+	case verdict == tokenNoHash:
+		h.mNoBid(metrics.ReasonTokenNotIssued)
+		http.Error(w, "ssp token not issued", http.StatusForbidden)
+		return
+	case verdict == tokenMismatch && !skipToken:
 		h.mNoBid(metrics.ReasonBadAuth)
 		http.Error(w, "invalid ssp token", http.StatusForbidden)
 		return
 	}
-	if !internal && !partnerIPOK(partner, r) {
-		h.mNoBid(metrics.ReasonBadAuth)
+	if partner.WhitelistInvalid {
+		h.mNoBid(metrics.ReasonWhitelistInvalid)
+		http.Error(w, "partner ip whitelist invalid", http.StatusForbidden)
+		return
+	}
+	if !internal && !h.partnerIPOK(partner, r) {
+		h.mNoBid(metrics.ReasonIPDenied)
 		http.Error(w, "ip not allowed", http.StatusForbidden)
 		return
 	}
@@ -652,7 +670,7 @@ func (h *Handler) Loss(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// reason — OpenRTB Loss Reason Code (${AUCTION_LOSS}); mtw — минимальная
-	// цена для выигрыша (${AUCTION_MIN_TO_WIN}). SSP может не подставить макросы —
+	// цена для выигрыша (${AUCTION_MIN_TO_WIN}). SSP может не подстави��ь макросы —
 	// тогда строки остаются как есть, и мы пишем пусто.
 	reason := macroOrEmpty(r.URL.Query().Get("reason"))
 	mtw := macroOrEmpty(r.URL.Query().Get("mtw"))
