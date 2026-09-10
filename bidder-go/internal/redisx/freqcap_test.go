@@ -98,7 +98,7 @@ func TestFreqCap_WinIsReservationNotImpression(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := float64(fcNow.Add(DefaultWinImpTTL).Unix()); score != want {
+	if want := float64(fcNow.Add(WinImpTTL).Unix()); score != want {
 		t.Fatalf("reservation deadline %v, want %v", score, want)
 	}
 	if _, ok := fcBid(t, c, "b2", "dev1", caps); ok {
@@ -113,9 +113,12 @@ func TestFreqCap_ImpConfirmsAndCounterGetsWindowTTL(t *testing.T) {
 	if _, err := c.SettleWin(context.Background(), fcNow, r1, 0.05, false); err != nil {
 		t.Fatal(err)
 	}
-	counted, err := c.ConfirmImp(context.Background(), r1)
-	if err != nil || !counted {
-		t.Fatalf("confirm: counted=%v err=%v", counted, err)
+	res, err := c.ConfirmImp(context.Background(), r1)
+	if err != nil || !res.Counted {
+		t.Fatalf("confirm: %+v err=%v", res, err)
+	}
+	if res.Late {
+		t.Fatal("pixel within WinImpTTL must not be flagged late")
 	}
 	if got := fcInflight(t, c); len(got) != 0 {
 		t.Fatalf("reservation must be dropped, got %v", got)
@@ -150,7 +153,7 @@ func TestFreqCap_WinReservationExpiresWithoutImpAndIsCounted(t *testing.T) {
 	}
 	before := WinWithoutImp.Load()
 	// Гейт после истечения WinImpTTL: бронь вычищается, слот свободен.
-	later := fcNow.Add(DefaultWinImpTTL + time.Second)
+	later := fcNow.Add(WinImpTTL + time.Second)
 	_, ok, err := c.Reserve(context.Background(), later, ReserveInput{
 		BidID: "b2", CampaignID: "c1", LiID: "li1", Cost: 0.1, CampBudget: 100, DeviceID: "dev1", Caps: caps,
 	})
@@ -173,8 +176,12 @@ func TestFreqCap_LateImpAfterExpiredReservationStillCounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.rdb.Del(context.Background(), FreqInflightKey("c1", "dev1"))
-	if counted, err := c.ConfirmImp(context.Background(), r1); err != nil || !counted {
-		t.Fatalf("late pixel must count: %v %v", counted, err)
+	res, err := c.ConfirmImp(context.Background(), r1)
+	if err != nil || !res.Counted {
+		t.Fatalf("late pixel must count: %+v %v", res, err)
+	}
+	if !res.Late {
+		t.Fatal("pixel without a reservation must be flagged late (rtb_imp_late_after_reservation_total)")
 	}
 	if fcCounter(t, c, 24) != 1 {
 		t.Fatal("counter must be 1")
@@ -205,14 +212,14 @@ func TestFreqCap_PartnerWithoutPixelCountsOnWin(t *testing.T) {
 		t.Fatal(err)
 	}
 	if fcCounter(t, c, 24) != 1 {
-		t.Fatal("win_counts_as_imp partner must commit on win")
+		t.Fatal("freq_cap_on_win partner must commit on win")
 	}
 	if got := fcInflight(t, c); len(got) != 0 {
 		t.Fatalf("no reservation expected, got %v", got)
 	}
 	// Поздний пиксель от такого партнёра не удваивает счёт.
-	if counted, _ := c.ConfirmImp(context.Background(), r1); counted {
-		t.Fatal("pixel after count-on-win must not increment")
+	if res, _ := c.ConfirmImp(context.Background(), r1); res.Counted || res.Late {
+		t.Fatalf("pixel after count-on-win must neither increment nor be late: %+v", res)
 	}
 	if fcCounter(t, c, 24) != 1 {
 		t.Fatal("counter must stay 1")
@@ -229,8 +236,8 @@ func TestFreqCap_NoDeviceIsFailOpen(t *testing.T) {
 	if _, ok := fcBid(t, c, "b2", "", caps); !ok {
 		t.Fatal("no device must bypass the cap")
 	}
-	if counted, _ := c.ConfirmImp(context.Background(), r1); counted {
-		t.Fatal("confirm without device must not create counters")
+	if res, _ := c.ConfirmImp(context.Background(), r1); res.Counted || res.Late {
+		t.Fatalf("confirm without device must be a no-op: %+v", res)
 	}
 }
 
@@ -246,8 +253,8 @@ func TestFreqCap_NoCapsMeansNoFreqKeys(t *testing.T) {
 	if code, err := c.SettleWin(context.Background(), fcNow, r1, 0.05, false); err != nil || code != 1 {
 		t.Fatalf("settle without caps: %d %v", code, err)
 	}
-	if counted, _ := c.ConfirmImp(context.Background(), r1); counted {
-		t.Fatal("confirm without caps is a no-op")
+	if res, _ := c.ConfirmImp(context.Background(), r1); res.Counted || res.Late {
+		t.Fatalf("confirm without caps is a no-op: %+v", res)
 	}
 	for _, k := range mr.Keys() {
 		if len(k) >= 5 && k[:5] == "freq:" {

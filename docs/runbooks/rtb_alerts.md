@@ -183,7 +183,7 @@ imp-пикселя (`rtb_freq_win_without_imp_total` / `rtb_wins_total` за 15 
 не отрисованный adm, серверный nurl до рендера).
 
 **Почему важно:** win — это «мы победили», не «показ состоялся» (audit R-06).
-Freq cap занимает слот на win временно (`WIN_IMP_TTL`, сейчас 120 с) и
+Freq cap занимает слот на win временно (env `WIN_IMP_TTL`, дефолт 120 с) и
 подтверждает показ на `/rtb/imp`. Высокая доля = пиксель не доходит: кап
 недоучитывает показы, а статистика `impressions` занижена относительно `wins`.
 
@@ -194,13 +194,19 @@ Freq cap занимает слот на win временно (`WIN_IMP_TTL`, с�
 2. У просевшего партнёра: исполняется ли `<script>` внутри banner adm (пиксель
    `/rtb/imp` живёт там); для native — доходит ли `eventtrackers`/`imptrackers`.
 3. Если SSP в принципе не даёт клиентского пикселя (in-app SDK) — включить
-   `UPDATE supply_partners SET win_counts_as_imp = true WHERE id = ...` (кап
-   считает показ на win; только по документации биржи).
-4. Если пиксель есть, но опаздывает: p95/p99 `win→imp` —
+   `UPDATE supply_partners SET freq_cap_on_win = true WHERE id = ...` (основание
+   капа — win; отчётные `impressions` флаг не трогает; только по документации биржи).
+4. Медленный пиксель или сломанный? Смотреть пару метрик:
+   `rtb_imp_late_after_reservation_total` (пиксель пришёл после истечения брони —
+   показ засчитан, но слот успел освободиться) растёт вместе с
+   `rtb_freq_win_without_imp_total` → пиксель опаздывает, не сломан. Подтвердить
+   p95/p99 `win→imp`:
    `SELECT percentile_cont(0.95) WITHIN GROUP (ORDER BY extract(epoch FROM i.created_at - w.created_at))
    FROM bid_events w JOIN bid_events i ON i.bid_id = w.bid_id AND i.event_type='impression'
    WHERE w.event_type='win' AND w.created_at > now() - interval '1 day'` — если p95 > 100 с,
-   поднять `WIN_IMP_TTL` (cache.WIN_IMP_TTL ↔ redisx.DefaultWinImpTTL, менять парой).
+   поднять env `WIN_IMP_TTL` (секунды) **одновременно** у backend и bidder-go: обе
+   стороны пишут score брони в один `freqinf` ZSET. Только `win_without_imp` без
+   `late` → пиксель не доходит вовсе (п. 2).
 
 ## imp-win-mismatch — ImpWithoutWinAnomaly
 

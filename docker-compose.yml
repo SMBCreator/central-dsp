@@ -67,6 +67,8 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      # Audit R-06: бронь freq cap на win до imp-пикселя; то же значение у bidder-go.
+      WIN_IMP_TTL: ${WIN_IMP_TTL:-120}
       RTB_API_TOKEN: ${RTB_API_TOKEN:?set RTB_API_TOKEN in .env (openssl rand -hex 32)}
       # production => fail-fast на пустых/плейсхолдерных секретах при старте
       # (backend/startup_checks.py). Для локальной разработки: APP_ENV=dev в .env.
@@ -162,6 +164,8 @@ services:
       # Audit R-02: предел торговли по устаревшему снапшоту фида; дальше
       # no-bid (feed_stale) и /healthz 503 -> контейнер unhealthy.
       FEED_MAX_AGE: ${FEED_MAX_AGE:-120s}
+      # Audit R-06: бронь freq cap на win до imp-пикселя; то же значение у backend.
+      WIN_IMP_TTL: ${WIN_IMP_TTL:-120}
       # Audit R-03: предфильтр (боты / чужое гео / без device id / datacenter-IP)
       # — те же переменные и тот же Redis SET prefilter:dc_subnets, что у backend,
       # иначе Go-трафик фильтруется иначе, чем Python.

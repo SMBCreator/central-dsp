@@ -48,6 +48,7 @@ _COUNTER_HELP = {
     "rtb_win_settle_duplicate_total": "Win settle calls for bids already in state win (no money moved).",
     "rtb_settle_win_errors_total": "settle_win Redis failures after a successful DB bill (reconcile fixes drift).",
     "rtb_freq_win_without_imp_total": "Won bids whose frequency-cap reservation expired without an imp pixel (R-06); high share = broken SSP pixel.",
+    "rtb_imp_late_after_reservation_total": "Imp pixels that arrived after the bid's frequency-cap reservation had expired (WIN_IMP_TTL) or without a prior win (R-06); rising together with rtb_freq_win_without_imp_total means the SSP pixel is slow, not broken — raise WIN_IMP_TTL.",
     "rtb_imp_freq_uncounted_total": "Impressions that could not be committed to the frequency cap (no bidmeta fdev/fcaps, e.g. PG fallback).",
     "rtb_imp_freq_errors_total": "confirm_imp Redis errors on the imp pixel (R-06).",
     "audience_reseeded_segments_total": "Audience segments whose audz: ZSET was re-seeded from Postgres by /cron/audience-sync (Redis had lost it).",

@@ -1,5 +1,6 @@
 """Redis client (Upstash) for budget guard, frequency capping, pacing."""
 import os
+from typing import NamedTuple
 
 import redis.asyncio as redis
 
@@ -213,8 +214,10 @@ return 1
 """
 
 # imp pixel confirms the impression: reservation -> counters (bidder-go luaConfirmImp).
+# Returns 0 nothing counted | 1 counted, reservation dropped | 3 counted, but no
+# reservation existed (pixel after WIN_IMP_TTL or without a prior win).
 _CONFIRM_IMP_LUA = """
-redis.call('ZREM', KEYS[1], ARGV[1], 'w:' .. ARGV[1])
+local removed = redis.call('ZREM', KEYS[1], ARGV[1], 'w:' .. ARGV[1])
 if ARGV[5] == '1' then return 0 end
 local counted = 0
 for i = 1, 3 do
@@ -225,6 +228,7 @@ for i = 1, 3 do
     counted = 1
   end
 end
+if counted == 1 and removed == 0 then return 3 end
 return counted
 """
 
@@ -232,7 +236,26 @@ PENDING_BIDS_KEY = "pending:bids"
 DEFAULT_RESERVE_TTL = 90          # seconds a reservation waits for win/loss (bidder-go DefaultReserveTTL)
 BID_STATE_TTL = 2 * 3600          # bidstate:{bid} lifetime (bidder-go BidStateTTL)
 MAX_CAP_WINDOWS = 3               # freq windows per bid (bidder-go MaxCapWindows)
-WIN_IMP_TTL = 120                 # seconds a won bid holds its freq-cap reservation waiting for imp (bidder-go DefaultWinImpTTL)
+DEFAULT_WIN_IMP_TTL = 120         # seconds a won bid holds its freq-cap reservation waiting for imp (bidder-go DefaultWinImpTTL)
+
+
+def _env_positive_int(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, "") or default)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+# Env WIN_IMP_TTL: must be identical for backend and bidder-go (redisx.WinImpTTL);
+# raise it when the runbook p95 win->imp query shows pixels slower than the TTL.
+WIN_IMP_TTL = _env_positive_int("WIN_IMP_TTL", DEFAULT_WIN_IMP_TTL)
+
+
+class ImpConfirm(NamedTuple):
+    """Outcome of confirm_imp (bidder-go redisx.ImpConfirm)."""
+    counted: bool   # window counters were incremented
+    late: bool      # no reservation existed: pixel after WIN_IMP_TTL or without a prior win
 
 
 def freq_key(campaign_id: str, hours: int, device_id: str) -> str:
@@ -449,14 +472,16 @@ async def settle_win(res: dict, clearing_cost: float, *, assume_released: bool =
     return int(out)
 
 
-async def confirm_imp(res: dict) -> bool:
+async def confirm_imp(res: dict) -> ImpConfirm:
     """The imp pixel confirms the impression (R-06): drop the bid's freqinf
     reservation and increment every window counter of res["caps"] for
-    res["device_id"]. Idempotency is the caller's (bid_event_once). Returns
-    True when counters were incremented. No-op without cap windows."""
+    res["device_id"]. Idempotency is the caller's (bid_event_once). `late`
+    tells the caller the reservation had already expired (or never existed)
+    when the pixel arrived — the impression still counts, but the slot was
+    free in the meantime. No-op without cap windows."""
     caps = active_caps(res.get("caps"))
     if not caps:
-        return False
+        return ImpConfirm(False, False)
     campaign_id = res["campaign_id"]
     device_id = res.get("device_id") or ""
     keys, hours = _freq_window_keys(campaign_id, device_id, caps)
@@ -467,7 +492,8 @@ async def confirm_imp(res: dict) -> bool:
         res["bid_id"], *[str(h) for h in hours],
         "1" if res.get("count_on_win") else "0",
     )
-    return int(out) == 1
+    code = int(out)
+    return ImpConfirm(counted=bool(code & 1), late=bool(code & 2))
 
 
 async def adjust_available_balance(advertiser_id: str, delta: float) -> None:

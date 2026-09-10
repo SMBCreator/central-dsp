@@ -47,7 +47,7 @@ async def partners_feed(authorization: str | None = Header(default=None)):
     # его в seatbid.seat, как Python (_seat).
     rows = await pool.fetch(
         """SELECT id, endpoint_key, auth_token_hash, qps_limit, bid_floor, status,
-                  allowed_ad_types, ip_whitelist, currency, seat_id, win_counts_as_imp,
+                  allowed_ad_types, ip_whitelist, currency, seat_id, freq_cap_on_win,
                   CASE WHEN token_prev_valid_until > now() THEN token_prev_hash END AS token_prev_hash,
                   CASE WHEN token_prev_valid_until > now() THEN token_prev_valid_until END AS token_prev_valid_until
            FROM supply_partners WHERE status IN ('active', 'testing')"""

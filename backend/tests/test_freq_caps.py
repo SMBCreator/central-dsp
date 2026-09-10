@@ -87,7 +87,8 @@ def test_imp_confirms_and_counter_gets_window_ttl():
         caps = [(2, 1), (5, 24), (9, 168)]
         assert await _bid("b1", caps)
         assert await settle_win(_res("b1", caps), 0.05) == 1
-        assert await confirm_imp(_res("b1", caps))
+        outcome = await confirm_imp(_res("b1", caps))
+        assert outcome.counted and not outcome.late
         assert await get_frequency_inflight("c1", "dev1") == 0
         for hours in (1, 24, 168):
             key = freq_key("c1", hours, "dev1")
@@ -149,8 +150,9 @@ def test_partner_without_pixel_counts_on_win():
         assert await settle_win(res, 0.05) == 1
         assert await get_frequency("c1", "dev1", 24) == 1
         assert await r.zcard(freq_inflight_key("c1", "dev1")) == 0
-        # A later pixel from such a partner must not double count.
-        assert not await confirm_imp(res)
+        # A later pixel from such a partner must not double count, and the
+        # missing reservation is by design — not a late pixel.
+        assert await confirm_imp(res) == (False, False)
         assert await get_frequency("c1", "dev1", 24) == 1
     asyncio.run(run())
 
@@ -170,7 +172,7 @@ def test_no_device_id_is_fail_open():
         assert await _bid("b1", caps, dev="")
         assert await _bid("b2", caps, dev="")
         # And confirm_imp without a device never creates counters.
-        assert not await confirm_imp(_res("b1", caps, dev=""))
+        assert await confirm_imp(_res("b1", caps, dev="")) == (False, False)
     asyncio.run(run())
 
 
@@ -180,7 +182,7 @@ def test_no_caps_means_no_freq_keys():
         assert await gate_and_reserve("c6", "li1", 0.1, 100, 0, device_id="dev1", bid_id="b1")
         assert not await r.exists(freq_inflight_key("c6", "dev1"))
         assert await settle_win(_res("b1", []), 0.05) == 1
-        assert not await confirm_imp(_res("b1", []))
+        assert await confirm_imp(_res("b1", [])) == (False, False)
         assert not await r.keys("freq:*")
     asyncio.run(run())
 
@@ -192,3 +194,33 @@ def test_budget_still_enforced_with_caps():
         assert await gate_and_reserve("c7", "li1", 60, 100, 0, device_id="dev1", caps=caps, bid_id="b1")
         assert not await gate_and_reserve("c7", "li1", 60, 100, 0, device_id="dev1", caps=caps, bid_id="b2")
     asyncio.run(run())
+
+
+def test_pixel_after_reservation_expiry_counts_and_is_flagged_late():
+    """WIN_IMP_TTL ran out (slot freed, win_without_imp bumped) and then the
+    pixel arrived: the impression still counts, and `late` lets the imp
+    handler bump rtb_imp_late_after_reservation_total so ops can tell a slow
+    pixel from a broken one."""
+    async def run():
+        r = _fresh_redis()
+        caps = [(2, 24)]
+        assert await _bid("b1", caps)
+        assert await settle_win(_res("b1", caps), 0.05) == 1
+        # Simulate expiry: the gate prune (or a lost reservation) removed w:b1.
+        await r.delete(freq_inflight_key("c1", "dev1"))
+        outcome = await confirm_imp(_res("b1", caps))
+        assert outcome == (True, True)
+        assert await get_frequency("c1", "dev1", 24) == 1
+        # A pixel for a bid that never won (no reservation at all) is late too.
+        assert await confirm_imp(_res("b2", caps)) == (True, True)
+        assert await get_frequency("c1", "dev1", 24) == 2
+    asyncio.run(run())
+
+
+def test_win_imp_ttl_env_override(monkeypatch):
+    monkeypatch.setenv("WIN_IMP_TTL", "300")
+    assert cache._env_positive_int("WIN_IMP_TTL", cache.DEFAULT_WIN_IMP_TTL) == 300
+    monkeypatch.setenv("WIN_IMP_TTL", "garbage")
+    assert cache._env_positive_int("WIN_IMP_TTL", cache.DEFAULT_WIN_IMP_TTL) == 120
+    monkeypatch.setenv("WIN_IMP_TTL", "0")
+    assert cache._env_positive_int("WIN_IMP_TTL", cache.DEFAULT_WIN_IMP_TTL) == 120

@@ -1273,7 +1273,7 @@ async def process_bid_request(
             # persistBidMeta (fdev/fcaps).
             "fdev": device_id or "",
             "fcaps": [list(w) for w in active_caps(caps_list)],
-            "fwin": 1 if _partner_flag(partner, "win_counts_as_imp") else 0,
+            "fwin": 1 if _partner_flag(partner, "freq_cap_on_win") else 0,
         }
         if not is_test_req:
             ok = await gate_and_reserve(
@@ -1558,7 +1558,12 @@ async def impression(bid: str):
                 res = reservation_from_bidmeta(row) if isinstance(row, dict) else None
                 if res and res.get("caps"):
                     res["bid_id"] = bid
-                    await confirm_imp(res)
+                    outcome = await confirm_imp(res)
+                    if outcome.late:
+                        # Бронь уже истекла (или win не приходил): показ засчитан,
+                        # но слот был свободен. Рост вместе с win_without_imp =
+                        # пиксель медленный, а не сломанный → поднять WIN_IMP_TTL.
+                        obs_metrics.inc("rtb_imp_late_after_reservation_total")
                 else:
                     obs_metrics.inc("rtb_imp_freq_uncounted_total")
             except Exception:

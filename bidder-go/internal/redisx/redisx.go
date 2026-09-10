@@ -10,7 +10,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"os"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -303,7 +305,7 @@ return 1
 //	  be gone — e.g. bid resolved from Postgres after bidmeta expired),
 //	9..11 window hours aligned with KEYS[10..12] (0 = pad, no counter),
 //	12 win→imp deadline (unix seconds) for the freq reservation,
-//	13 '1' when the partner has no client-side pixel (win_counts_as_imp):
+//	13 '1' when the partner has no client-side pixel (freq_cap_on_win):
 //	   the win is the impression, counters are incremented right here
 //
 // Returns 0 duplicate win, 1 reserve converted to clearing, 2 clearing
@@ -376,13 +378,15 @@ return 1
 // ARGV[1]: bid_id; ARGV[2..4]: window hours aligned with KEYS[2..4] (0 = pad);
 // ARGV[5]: '1' when the counters were already incremented on win
 //
-//	(win_counts_as_imp partner) — only the reservation is dropped.
+//	(freq_cap_on_win partner) — only the reservation is dropped.
 //
 // Idempotency comes from the caller (bid_event_once(bid_id,'imp')); a pixel
 // after the reservation expired or without a prior win still counts: the
-// impression happened. Returns 1 when counters were incremented, 0 otherwise.
+// impression happened. Returns 0 nothing counted | 1 counted, reservation
+// dropped | 3 counted, but no reservation existed (late pixel — see
+// ImpConfirm.Late and rtb_imp_late_after_reservation_total).
 const luaConfirmImp = `
-redis.call('ZREM', KEYS[1], ARGV[1], 'w:' .. ARGV[1])
+local removed = redis.call('ZREM', KEYS[1], ARGV[1], 'w:' .. ARGV[1])
 if ARGV[5] == '1' then return 0 end
 local counted = 0
 for i = 1, 3 do
@@ -393,8 +397,15 @@ for i = 1, 3 do
     counted = 1
   end
 end
+if counted == 1 and removed == 0 then return 3 end
 return counted
 `
+
+// ImpConfirm — результат luaConfirmImp (Python cache.ImpConfirm).
+type ImpConfirm struct {
+	Counted bool // счётчики окон инкрементированы
+	Late    bool // брони уже не было: пиксель после WinImpTTL или без win
+}
 
 // CapWindow is one frequency-cap window: at most Limit impressions per
 // PeriodHours hours. Serialized into bidmeta.fcaps as a [limit, hours] tuple.
@@ -524,6 +535,20 @@ const MaxCapWindows = 3
 // (runbook), далее per-format.
 const DefaultWinImpTTL = 120 * time.Second
 
+// WinImpTTL — действующее значение: env WIN_IMP_TTL (секунды) либо
+// DefaultWinImpTTL. Должно совпадать с backend (cache.WIN_IMP_TTL): обе
+// стороны пишут score брони в один freqinf ZSET.
+var WinImpTTL = winImpTTLFromEnv()
+
+func winImpTTLFromEnv() time.Duration {
+	if raw := strings.TrimSpace(os.Getenv("WIN_IMP_TTL")); raw != "" {
+		if sec, err := strconv.Atoi(raw); err == nil && sec > 0 {
+			return time.Duration(sec) * time.Second
+		}
+	}
+	return DefaultWinImpTTL
+}
+
 // freqWindowKeys — ровно MaxCapWindows ключей окон + часы (0 у pad-ключей).
 func freqWindowKeys(campaignID, deviceID string, caps []CapWindow) ([]string, []int) {
 	keys := make([]string, 0, MaxCapWindows)
@@ -593,8 +618,8 @@ type BidReservation struct {
 	// in-flight слот, а settle инкрементирует счётчики окон.
 	DeviceID string      `json:"fdev"`
 	Caps     []CapWindow `json:"fcaps"`
-	// CountOnWin — партнёр без клиентского пикселя (win_counts_as_imp):
-	// показ фиксируется на win, imp только снимает бронь.
+	// CountOnWin — партнёр без клиентского пикселя (freq_cap_on_win):
+	// кап фиксирует показ на win, imp только снимает бронь.
 	CountOnWin bool `json:"fwin,omitempty"`
 }
 
@@ -761,7 +786,7 @@ func (c *Client) SettleWin(ctx context.Context, now time.Time, r BidReservation,
 		b01(assumeReleased),
 	}
 	args = append(args, r.freqHoursArgs()...)
-	args = append(args, strconv.FormatInt(now.Add(DefaultWinImpTTL).Unix(), 10), b01(r.CountOnWin))
+	args = append(args, strconv.FormatInt(now.Add(WinImpTTL).Unix(), 10), b01(r.CountOnWin))
 	out, err := c.settleScript.Run(ctx, c.rdb, r.keys(), args...).Int64()
 	if err != nil {
 		return 0, fmt.Errorf("redisx: settle_win: %w", err)
@@ -773,9 +798,9 @@ func (c *Client) SettleWin(ctx context.Context, now time.Time, r BidReservation,
 // счётчики окон инкрементируются (R-06). Идемпотентность — у вызывающего
 // (bid_event_once). В production это делает backend (cache.confirm_imp);
 // порт здесь — контракт и тесты паритета.
-func (c *Client) ConfirmImp(ctx context.Context, r BidReservation) (bool, error) {
+func (c *Client) ConfirmImp(ctx context.Context, r BidReservation) (ImpConfirm, error) {
 	if len(r.Caps) == 0 {
-		return false, nil
+		return ImpConfirm{}, nil
 	}
 	freqKeys, hours := freqWindowKeys(r.CampaignID, r.DeviceID, r.Caps)
 	keys := append([]string{FreqInflightKey(r.CampaignID, r.DeviceID)}, freqKeys...)
@@ -786,9 +811,9 @@ func (c *Client) ConfirmImp(ctx context.Context, r BidReservation) (bool, error)
 	args = append(args, b01(r.CountOnWin))
 	out, err := c.confirmScript.Run(ctx, c.rdb, keys, args...).Int64()
 	if err != nil {
-		return false, fmt.Errorf("redisx: confirm_imp: %w", err)
+		return ImpConfirm{}, fmt.Errorf("redisx: confirm_imp: %w", err)
 	}
-	return out == 1, nil
+	return ImpConfirm{Counted: out&1 == 1, Late: out&2 == 2}, nil
 }
 
 // ReleaseGate — legacy: возврат только дневных ключей без per-bid состояния.

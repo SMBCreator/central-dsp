@@ -172,9 +172,10 @@ type Partner struct {
 	// уходит в seatbid.seat. "" = дефолт биддера (audit R-04).
 	SeatID      string          `json:"seat_id"`
 	IPWhitelist json.RawMessage `json:"ip_whitelist"` // JSON-массив IP/CIDR серверов SSP; пусто = любой IP
-	// WinCountsAsImp — SSP без клиентского imp-пикселя (миграция 043, audit
-	// R-06): freq cap фиксирует показ на win notice, а не на /rtb/imp.
-	WinCountsAsImp bool `json:"win_counts_as_imp"`
+	// FreqCapOnWin — SSP без клиентского imp-пикселя (миграция 043, audit
+	// R-06): основание frequency cap — win notice, а не /rtb/imp. Только кап:
+	// отчётные wins/impressions флаг не смешивает.
+	FreqCapOnWin bool `json:"freq_cap_on_win"`
 
 	// Окно безразрывной ротации токена (миграция 039, audit S-06): предыдущий
 	// хэш принимается, пока now < TokenPrevValidUntil. Backend отдаёт поля

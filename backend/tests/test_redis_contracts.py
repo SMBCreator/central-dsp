@@ -145,6 +145,14 @@ def test_release_and_settle_lua_are_byte_identical():
     assert _norm(_SETTLE_WIN_LUA) == _norm(_go_lua("luaSettleWin"))
 
 
+def test_confirm_imp_lua_is_byte_identical():
+    """Python подтверждает imp (luaConfirmImp) в production, Go держит порт для
+    тестов паритета; коды возврата (0/1/3 — late) читают обе стороны."""
+    from cache import _CONFIRM_IMP_LUA
+
+    assert _norm(_CONFIRM_IMP_LUA) == _norm(_go_lua("luaConfirmImp"))
+
+
 def test_reservation_constants_match_go():
     """TTL/ключи резерва: sweeper (Go) и settle (Python) смотрят на одни значения."""
     from cache import BID_STATE_TTL, DEFAULT_RESERVE_TTL, PENDING_BIDS_KEY
@@ -154,6 +162,12 @@ def test_reservation_constants_match_go():
     assert m and int(m.group(1)) == DEFAULT_RESERVE_TTL
     m = re.search(r"const BidStateTTL = (\d+) \* time\.Hour", GO_REDISX)
     assert m and int(m.group(1)) * 3600 == BID_STATE_TTL
+    # WIN_IMP_TTL: одинаковый дефолт и одна и та же env-переменная на обеих сторонах.
+    from cache import DEFAULT_WIN_IMP_TTL
+
+    m = re.search(r"const DefaultWinImpTTL = (\d+) \* time\.Second", GO_REDISX)
+    assert m and int(m.group(1)) == DEFAULT_WIN_IMP_TTL
+    assert 'os.Getenv("WIN_IMP_TTL")' in GO_REDISX
 
 
 def test_bidmeta_carries_reservation_fields():

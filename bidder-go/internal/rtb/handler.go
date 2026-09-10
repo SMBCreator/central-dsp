@@ -800,7 +800,7 @@ func (h *Handler) persistBidMeta(ctx interface {
 		// инкрементирует freq:*, Go loss/sweeper — снимает in-flight слот freqinf.
 		"fdev":  deviceID,
 		"fcaps": res.Caps,
-		"fwin":  b01int(partner.WinCountsAsImp),
+		"fwin":  b01int(partner.FreqCapOnWin),
 	})
 	if err := rdb.Set(ctx, "bidmeta:"+bidID, meta, time.Hour).Err(); err != nil {
 		return fmt.Errorf("set bidmeta: %w", err)

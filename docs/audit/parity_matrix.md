@@ -17,7 +17,7 @@
 | SSP allowlist per campaign | ✅ | ❌ | 📋 | |
 | Audience include/exclude (`audz:` ZSET, per-member expiry) | ✅ | ❌ | ✅ + тесты | R-06: ZSCORE > now в обоих; goal-сегменты наполняются из `_match_goals`; cron `/cron/audience-sync` + `scripts/redis_rebuild_audiences.py` |
 | Budget reserve (атомарный Lua, копейки int) | ✅ | 🟡 (CAS-цикл) | 📋 | Go: перенос Lua 1:1, НЕ CAS |
-| Freq caps multi-window (до 3 окон, один Lua) | ✅ | 🟡 (одно окно) | ✅ + тесты | R-06: гейт = confirmed (`freq:*`) + active reservations (`freqinf` ZSET: in-flight биды и `w:{bid}` выигранные, WIN_IMP_TTL 120 с) < cap; win → бронь, `/rtb/imp` → `luaConfirmImp`; `partners.win_counts_as_imp` для SSP без пикселя; Lua байт-в-байт (`test_redis_contracts.py`), `redisx/freqcap_test.go` ↔ `test_freq_caps.py` |
+| Freq caps multi-window (до 3 окон, один Lua) | ✅ | 🟡 (одно окно) | ✅ + тесты | R-06: гейт = confirmed (`freq:*`) + active reservations (`freqinf` ZSET: in-flight биды и `w:{bid}` выигранные, env `WIN_IMP_TTL`, дефолт 120 с, одно значение у backend и Go) < cap; win → бронь, `/rtb/imp` → `luaConfirmImp` (0/1/3, 3 = засчитано без брони → `rtb_imp_late_after_reservation_total`); `supply_partners.freq_cap_on_win` для SSP без пикселя; imp после истечения `bidmeta` (1 ч) кап не бампает (`rtb_imp_freq_uncounted_total`, известное ограничение); Lua байт-в-байт (`test_redis_contracts.py`), `redisx/freqcap_test.go` ↔ `test_freq_caps.py` |
 | Bid shading (first-price-only, floor*1.01) | ✅ (GAP-005 fixed) | ❌ | ✅ гейт + 📋 фактор | Фактор обучается в Python cron |
 | Deal/PMP (`imp.pmp.deals`) | ✅ | ❌ | ✅ | R-04: deal floor/at/private_auction — см. строку OpenRTB-совместимости ниже |
 | Валюта RUB + Decimal/копейки | ✅ | ❌ (double USD) | 📋 (int64 копейки) | Java-double — одна из причин деприкации |
