@@ -27,6 +27,7 @@ import asyncpg  # noqa: E402
 import db  # noqa: E402
 from routers.stats import LOSS_REASON_LABELS  # noqa: E402
 from tests.test_idor_isolation_db import _app_as, _Tenant  # noqa: E402
+from stats_math import NOT_SET_LABEL
 
 
 @pytest.fixture
@@ -97,12 +98,13 @@ def test_report_by_tagid_and_loss_reason(env):
             # publisher × bundle — два измерения за один запрос
             r3 = await client.post("/stats/report", json={**body, "groupings": ["publisher", "bundle"]})
             combos = {(row["publisher"], row["bundle"]) for row in r3.json()["rows"]}
-            assert ("pub-1", "com.app.one") in combos and ("pub-1", "—") in combos
+            assert ("pub-1", "com.app.one") in combos and ("pub-1", NOT_SET_LABEL) in combos  # F-02: NULL → «Не указано»
 
             # источник stats_hourly (группировка day) не знает supply-метрик → null, а не 0
             r4 = await client.post("/stats/report", json={**body, "groupings": ["day"]})
             day = r4.json()["rows"][0]
-            assert day["losses"] == 0 and day["avg_bidfloor"] is None and day["avg_min_to_win"] is None
+            # hourly-источник проигрыши не измеряет → None, не ноль (F-02)
+            assert day["losses"] is None and day["avg_bidfloor"] is None and day["avg_min_to_win"] is None
 
             # чужой тенант не видит наши плейсменты
             rb = await _app_as(b.as_user()).post("/stats/report", json={**body, "campaign_ids": [camp]})

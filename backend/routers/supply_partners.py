@@ -14,7 +14,7 @@ from auth import current_user
 from rbac import require_admin
 from db import get_pool
 from schemas import SupplyPartnerIn, SupplyPartnerPatch
-from stats_math import spend_expr
+from stats_math import derive, money, pct, spend_expr
 import ssp_check
 import ssp_tokens
 
@@ -270,21 +270,22 @@ _METRIC_COLS = f"""
 """
 
 
-def _ratio(num, den) -> float | None:
-    return round(float(num) / float(den) * 100, 2) if den else None
-
-
 def _metrics(r) -> dict:
+    """Операционный отчёт по SSP: spend — net (себестоимость), наценка не
+    применяется намеренно (смотрит владелец партнёра/админ). Производные —
+    через stats_math.derive, как во всех отчётах (F-02)."""
     bids, wins, imps, clicks = int(r["bids"]), int(r["wins"]), int(r["impressions"]), int(r["clicks"])
+    spend = money(r["spend"])
+    d = derive(bids=bids, wins=wins, impressions=imps, clicks=clicks, spend=spend)
     return {
         "bids": bids,
         "wins": wins,
         "impressions": imps,
         "clicks": clicks,
         "losses": int(r["losses"]),
-        "spend": round(float(r["spend"]), 2),
-        "win_rate": _ratio(wins, bids),
-        "ctr": _ratio(clicks, imps),
+        "spend": spend,
+        "win_rate": d["win_rate"],
+        "ctr": d["ctr"],
     }
 
 
@@ -368,7 +369,7 @@ async def partner_stats(
                 "reason": r["reason"],
                 "label": LOSS_REASON_LABELS.get(r["reason"], r["reason"]),
                 "count": int(r["cnt"]),
-                "share": _ratio(r["cnt"], total_losses),
+                "share": pct(r["cnt"], total_losses) if total_losses else None,
             }
             for r in loss_rows
         ],

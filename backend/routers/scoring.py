@@ -23,7 +23,7 @@ from auth import current_user
 from db import get_pool
 from rbac import require_platform_write
 from schemas import ScoringProfileIn, ScoringProfilePatch
-from stats_math import spend_expr
+from stats_math import derive, money, spend_expr
 
 router = APIRouter(prefix="/scoring", tags=["scoring"])
 
@@ -202,14 +202,13 @@ async def _full_report(pool, user, dimension, profile_id, campaign_id, group_id,
                         continue
                     for k in ("impressions", "clicks", "viewable_imps", "conversions"):
                         acc[k] = (acc.get(k) or 0) + (r.get(k) or 0)
-                    acc["spend"] = round((acc.get("spend") or 0) + (r.get("spend") or 0), 2)
+                    acc["spend"] = money((acc.get("spend") or 0) + (r.get("spend") or 0))
                     acc["blocked"] = acc["blocked"] or r["blocked"]
                     acc["flagged"] = acc["flagged"] or r["flagged"]
             rows = list(rows_by_dom.values())
             for m in rows:
-                imps = m["impressions"]
-                m["ctr"] = round(m["clicks"] / imps * 100, 3) if imps else 0.0
-                m["viewability"] = round(m["viewable_imps"] / imps * 100, 1) if imps else 0.0
+                d = derive(impressions=m["impressions"], clicks=m["clicks"], viewable_imps=m["viewable_imps"])
+                m["ctr"], m["viewability"] = d["ctr"], d["viewability"]
         else:
             rows = await scoring.domain_metrics(pool, str(user["id"]), profile, campaign_id=campaign_id)
     else:
@@ -452,12 +451,13 @@ async def _ssp_rows(pool, user, profile, campaign_id) -> list[dict]:
     out = []
     for r in ssp_rows:
         imps, clicks, viewable = int(r["impressions"]), int(r["clicks"]), int(r["viewable_imps"])
+        # операционный отчёт (владелец кампаний): spend — net, наценка не применяется
+        d = derive(impressions=imps, clicks=clicks, viewable_imps=viewable)
         m = {
             "id": str(r["id"]), "name": r["name"],
             "impressions": imps, "clicks": clicks, "viewable_imps": viewable,
-            "spend": round(float(r["spend"]), 2),
-            "ctr": round(clicks / imps * 100, 3) if imps else 0.0,
-            "viewability": round(viewable / imps * 100, 1) if imps else 0.0,
+            "spend": money(r["spend"]),
+            "ctr": d["ctr"], "viewability": d["viewability"],
             "avg_depth": None, "avg_time": None, "bounce_rate": None, "cpa": None,
         }
         if imps >= int(profile.get("min_impressions") or 0) and clicks >= int(profile.get("min_clicks") or 0):

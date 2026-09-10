@@ -3,7 +3,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from auth import current_user
 from db import get_pool
 from rbac import effective_markup_pct, visible_user_ids
-from stats_math import spend_expr
+from stats_math import (
+    ADDITIVE_METRICS, NOT_SET_LABEL, OTHER_LABEL, ROW_KIND_DATA, ROW_KIND_NOT_SET, ROW_KIND_OTHER,
+    DateRangeError, clamp_hours, clamp_limit, derive, money, parse_date_range, present_spend, spend_expr,
+)
 
 router = APIRouter(prefix="/stats", tags=["stats"])
 
@@ -37,10 +40,18 @@ async def _resolve_scope(user: dict) -> tuple[list[str], str | None, float]:
     return uids, None, mult
 
 
+def _date_range_or_422(date_from, date_to):
+    try:
+        return parse_date_range(date_from, date_to)
+    except DateRangeError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
 @router.get("/summary")
 async def summary(hours: int = 24, campaign_id: str | None = None, user: dict = Depends(current_user)):
     """Totals + deltas for the dashboard. Optionally scoped to one campaign."""
     uid, adv_scope, mult = await _resolve_scope(user)
+    hours = clamp_hours(hours)
     pool = await get_pool()
     extra = []
     filters = ""
@@ -85,11 +96,8 @@ async def summary(hours: int = 24, campaign_id: str | None = None, user: dict = 
         "impressions": imps,
         "clicks": clicks,
         "viewable_imps": viewable,
-        "spend": round(spend, 4),
-        "win_rate": round(wins / bids * 100, 2) if bids else 0,
-        "ctr": round(clicks / imps * 100, 3) if imps else 0,
-        "ecpm": round(spend / imps * 1000, 2) if imps else 0,
-        "viewability": round(viewable / imps * 100, 1) if imps else 0,
+        "spend": spend,
+        **derive(bids=bids, wins=wins, impressions=imps, clicks=clicks, viewable_imps=viewable, spend=spend),
         **{k: int(v) for k, v in dict(counts).items()},
     }
 
@@ -113,8 +121,6 @@ async def timeseries(
     - date_from/date_to (YYYY-MM-DD, произвольный диапазон) — приоритетнее hours.
     granularity: hour | day | week — агрегация date_trunc на стороне БД.
     """
-    from datetime import date as _date
-
     trunc = _GRANULARITIES.get(granularity)
     if trunc is None:
         raise HTTPException(422, "granularity должен быть hour, day или week")
@@ -122,24 +128,14 @@ async def timeseries(
     uid, adv_scope, mult = await _resolve_scope(user)
     pool = await get_pool()
 
-    # Валидация дат: строго ISO YYYY-MM-DD, from <= to, диапазон <= 366 дней
     period_filter = ""
     params: list = [uid]
     if date_from or date_to:
-        if not (date_from and date_to):
-            raise HTTPException(422, "Нужны обе даты: date_from и date_to")
-        try:
-            d_from, d_to = _date.fromisoformat(date_from), _date.fromisoformat(date_to)
-        except ValueError:
-            raise HTTPException(422, "Даты в формате YYYY-MM-DD")
-        if d_from > d_to:
-            raise HTTPException(422, "date_from позже date_to")
-        if (d_to - d_from).days > 366:
-            raise HTTPException(422, "Диапазон не больше года")
+        d_from, d_to = _date_range_or_422(date_from, date_to)
         params.extend([d_from, d_to])
         period_filter = " AND s.ts_hour >= $2::date AND s.ts_hour < ($3::date + interval '1 day')"
     else:
-        params.append(str(max(1, min(hours, 8784))))
+        params.append(str(clamp_hours(hours)))
         period_filter = " AND s.ts_hour >= now() - ($2 || ' hours')::interval"
 
     filters = ""
@@ -169,7 +165,7 @@ async def timeseries(
             "wins": int(r["wins"]),
             "impressions": int(r["impressions"]),
             "clicks": int(r["clicks"]),
-            "spend": round(float(r["spend"]) * mult, 4),
+            "spend": present_spend(r["spend"], mult),
         }
         for r in rows
     ]
@@ -225,6 +221,7 @@ _DIMENSIONS = {
 async def domain_breakdown(hours: int = 168, limit: int = 100, user: dict = Depends(current_user)):
     """Domain-level stats for one-click blacklisting. Scoped to the user's campaigns."""
     uid, _adv, mult = await _resolve_scope(user)
+    hours, limit = clamp_hours(hours), clamp_limit(limit, 100)
     pool = await get_pool()
     rows = await pool.fetch(
         """
@@ -247,13 +244,17 @@ async def domain_breakdown(hours: int = 168, limit: int = 100, user: dict = Depe
         "SELECT domain FROM domain_lists WHERE user_id = $1 AND list_type = 'black'", user["id"]
     )
     blocked_set = {r["domain"] for r in blocked}
-    return [
-        {"domain": r["domain"], "wins": int(r["wins"]), "impressions": int(r["impressions"]),
-         "clicks": int(r["clicks"]), "spend": round(float(r["spend"]) * mult, 4),
-         "viewability": round(int(r["viewable_imps"] or 0) / int(r["impressions"]) * 100, 1) if int(r["impressions"]) else 0,
-         "blacklisted": r["domain"] in blocked_set}
-        for r in rows
-    ]
+    out = []
+    for r in rows:
+        spend = present_spend(r["spend"], mult)
+        d = derive(wins=r["wins"], impressions=r["impressions"], clicks=r["clicks"],
+                   viewable_imps=r["viewable_imps"], spend=spend)
+        out.append({
+            "domain": r["domain"], "wins": int(r["wins"]), "impressions": int(r["impressions"]),
+            "clicks": int(r["clicks"]), "spend": spend, "viewability": d["viewability"],
+            "blacklisted": r["domain"] in blocked_set,
+        })
+    return out
 
 
 @router.get("/domain-quality")
@@ -266,6 +267,7 @@ async def domain_quality_panel(limit: int = 100, user: dict = Depends(current_us
     from ml.quality import CLEAN_SCORE_THRESHOLD
 
     uid, _adv, _mult = await _resolve_scope(user)
+    limit = clamp_limit(limit, 100)
     pool = await get_pool()
     rows = await pool.fetch(
         """
@@ -307,25 +309,22 @@ async def breakdown(hours: int = 168, dimension: str = "campaign", user: dict = 
     if adv_scope:
         sql = sql.replace("WHERE c.user_id = ANY($1::uuid[])", "WHERE c.user_id = ANY($1::uuid[]) AND c.advertiser_id = $3")
     pool = await get_pool()
-    args = [uid, str(hours)] + ([adv_scope] if adv_scope else [])
+    args = [uid, str(clamp_hours(hours))] + ([adv_scope] if adv_scope else [])
     rows = await pool.fetch(sql, *args)
     out = []
     for r in rows:
         bids, wins = int(r["bids"]), int(r["wins"])
         imps, clicks = int(r["impressions"]), int(r["clicks"])
         viewable = int(r["viewable_imps"] or 0)
-        spend = float(r["spend"])
+        spend = present_spend(r["spend"], mult)
         out.append({
             "id": str(r["id"]),
             "name": r["name"],
             "status": r["status"],
             "bids": bids, "wins": wins, "impressions": imps, "clicks": clicks,
             "viewable_imps": viewable,
-            "spend": round(spend, 4),
-            "win_rate": round(wins / bids * 100, 2) if bids else 0,
-            "ctr": round(clicks / imps * 100, 3) if imps else 0,
-            "ecpm": round(spend / imps * 1000, 2) if imps else 0,
-            "viewability": round(viewable / imps * 100, 1) if imps else 0,
+            "spend": spend,
+            **derive(bids=bids, wins=wins, impressions=imps, clicks=clicks, viewable_imps=viewable, spend=spend),
         })
     return out
 
@@ -356,20 +355,41 @@ _DIM_EVENTS: dict[str, str] = {
     "campaign": "e.campaign_id",
     "creative": "e.creative_id",
     "supply_partner": "e.supply_partner_id",
-    "country": "COALESCE(e.geo_country, '—')",
-    "device": "COALESCE(e.device_type, '—')",
-    "os": "COALESCE(e.os, '—')",
-    "browser": "COALESCE(e.browser, '—')",
-    "ad_type": "COALESCE(e.ad_type, '—')",
-    "domain": "COALESCE(e.domain, '—')",
+    # NULL остаётся NULL: строка получает NOT_SET_LABEL и kind=not_set (F-02),
+    # а не тире, неотличимое от настоящего значения.
+    "country": "e.geo_country",
+    "device": "e.device_type",
+    "os": "e.os",
+    "browser": "e.browser",
+    "ad_type": "e.ad_type",
+    "domain": "e.domain",
     # supply-side slices (Go bidder writes them on bid/loss, see docs/CONTRACTS.md)
-    "tagid": "COALESCE(e.tagid, '—')",
-    "publisher": "COALESCE(e.publisher_id, '—')",
-    "bundle": "COALESCE(e.bundle, '—')",
-    "loss_reason": "COALESCE(e.loss_reason, '—')",
+    "tagid": "e.tagid",
+    "publisher": "e.publisher_id",
+    "bundle": "e.bundle",
+    "loss_reason": "e.loss_reason",
 }
 
 _EVENTS_ONLY_DIMS = {"country", "device", "os", "browser", "ad_type", "domain", "tagid", "publisher", "bundle", "loss_reason"}
+_TIME_DIMS = ("hour", "day", "week", "month")
+
+# Измерения, по которым конверсии можно посчитать из таблицы conversions
+# (атрибуция last click кладёт эти поля в строку конверсии). Для остальных
+# (os/browser/ad_type/tagid/publisher/bundle/loss_reason) конверсии в
+# raw-отчёте недоступны до слоя conversion_attributions (план B14c):
+# отдаём None и meta.conversions_available=false, а не ноль.
+_DIM_CONV: dict[str, str] = {
+    "hour": "date_trunc('hour', cv.created_at)",
+    "day": "date_trunc('day', cv.created_at)",
+    "week": "date_trunc('week', cv.created_at)",
+    "month": "date_trunc('month', cv.created_at)",
+    "campaign": "cv.campaign_id",
+    "creative": "cv.creative_id",
+    "supply_partner": "cv.supply_partner_id",
+    "country": "cv.geo_country",
+    "device": "cv.device_type",
+    "domain": "cv.domain",
+}
 
 # OpenRTB 2.5 §5.25 Loss Reason Codes — что SSP сообщает в ${AUCTION_LOSS}.
 # Ключи — строки: consumer пишет loss_reason как text без приведения.
@@ -420,7 +440,7 @@ async def report(body: ReportRequest, user: dict = Depends(current_user)):
     Source auto-selection: stats_hourly when possible (fast), bid_events when a
     raw-event dimension (country/device/os/browser/ad_type/domain) is requested.
     """
-    owner_ids, adv_filter, _fx = await _resolve_scope(user)
+    owner_ids, _adv_filter, mult = await _resolve_scope(user)
 
     groupings = [g for g in body.groupings if g][:4] or ["day"]
     use_events = any(g in _EVENTS_ONLY_DIMS for g in groupings) or bool(body.countries) or bool(body.devices)
@@ -429,18 +449,11 @@ async def report(body: ReportRequest, user: dict = Depends(current_user)):
         if g not in dim_map:
             raise HTTPException(status_code=400, detail=f"Недопустимая группировка: {g}")
 
-    from datetime import date as _date
-
-    try:
-        d_from = _date.fromisoformat(body.date_from)
-        d_to = _date.fromisoformat(body.date_to)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Неверный формат даты (ожидается YYYY-MM-DD)")
-    if d_from > d_to:
-        d_from, d_to = d_to, d_from
-
-    limit = max(1, min(body.limit, 5000))
+    d_from, d_to = _date_range_or_422(body.date_from, body.date_to)
+    limit = clamp_limit(body.limit)
     pool = await get_pool()
+    empty_meta = {"source": "events" if use_events else "hourly", "truncated": False, "limit": limit,
+                  "conversions_available": True}
 
     # --- resolve campaign scope (ownership + optional group filter) ---
     async with pool.acquire() as conn:
@@ -457,51 +470,64 @@ async def report(body: ReportRequest, user: dict = Depends(current_user)):
         if body.campaign_ids:
             scope_ids = [c for c in body.campaign_ids if c in allowed]
             if not scope_ids:
-                return {"rows": [], "totals": None}
+                return {"rows": [], "totals": None, "meta": empty_meta}
         else:
             scope_ids = list(allowed)
         if not scope_ids:
-            return {"rows": [], "totals": None}
+            return {"rows": [], "totals": None, "meta": empty_meta}
 
         sel_dims = ", ".join(f"{dim_map[g]} AS dim_{i}" for i, g in enumerate(groupings))
         grp_by = ", ".join(f"dim_{i}" for i in range(len(groupings)))
+        # Временные ряды читают хронологически; остальное — крупное сверху,
+        # чтобы за LIMIT уходил хвост, а не случайные группы.
+        order_by = grp_by if all(g in _TIME_DIMS for g in groupings) else f"spend DESC, impressions DESC, bids DESC, {grp_by}"
 
         params: list = [scope_ids, d_from, d_to]
+        conv_available = True
 
         if use_events:
             extra = ""
+            conv_extra = ""
             if body.countries:
                 params.append(body.countries)
                 extra += f" AND e.geo_country = ANY(${len(params)})"
+                conv_extra += f" AND cv.geo_country = ANY(${len(params)})"
             if body.devices:
                 params.append(body.devices)
                 extra += f" AND e.device_type = ANY(${len(params)})"
-            q = f"""
-            SELECT {sel_dims},
+                conv_extra += f" AND cv.device_type = ANY(${len(params)})"
+            metrics_sql = f"""
                    count(*) FILTER (WHERE e.event_type = 'bid')        AS bids,
                    count(*) FILTER (WHERE e.event_type = 'win')        AS wins,
                    count(*) FILTER (WHERE e.event_type = 'impression') AS impressions,
                    count(*) FILTER (WHERE e.event_type = 'click')      AS clicks,
                    count(*) FILTER (WHERE e.event_type = 'viewable')   AS viewable_imps,
                    {spend_expr("e")} AS spend,
-                   0::bigint AS conversions,
+                   NULL::bigint AS conversions,
                    count(*) FILTER (WHERE e.event_type = 'loss')       AS losses,
                    avg(e.price)      FILTER (WHERE e.event_type = 'bid')  AS avg_bid,
                    avg(e.bidfloor)   FILTER (WHERE e.event_type = 'bid')  AS avg_bidfloor,
                    avg(e.min_to_win) FILTER (WHERE e.event_type = 'loss') AS avg_min_to_win
+            """
+            from_where = f"""
             FROM bid_events e
             WHERE e.campaign_id = ANY($1::uuid[])
               AND e.created_at >= $2::date
               AND e.created_at < ($3::date + interval '1 day')
               AND NOT e.is_test
               {extra}
-            GROUP BY {grp_by}
-            ORDER BY {grp_by}
-            LIMIT {limit}
+            """
+            conv_available = all(g in _DIM_CONV for g in groupings)
+            conv_from_where = f"""
+            FROM conversions cv
+            WHERE cv.campaign_id = ANY($1::uuid[])
+              AND cv.created_at >= $2::date
+              AND cv.created_at < ($3::date + interval '1 day')
+              AND NOT cv.is_test
+              {conv_extra}
             """
         else:
-            q = f"""
-            SELECT {sel_dims},
+            metrics_sql = """
                    COALESCE(sum(s.bids), 0)        AS bids,
                    COALESCE(sum(s.wins), 0)        AS wins,
                    COALESCE(sum(s.impressions), 0) AS impressions,
@@ -511,15 +537,36 @@ async def report(body: ReportRequest, user: dict = Depends(current_user)):
                    COALESCE(sum(s.conversions), 0) AS conversions,
                    NULL::bigint AS losses, NULL::numeric AS avg_bid,
                    NULL::numeric AS avg_bidfloor, NULL::numeric AS avg_min_to_win
+            """
+            from_where = """
             FROM stats_hourly s
             WHERE s.campaign_id = ANY($1::uuid[])
               AND s.ts_hour >= $2::date
               AND s.ts_hour < ($3::date + interval '1 day')
-            GROUP BY {grp_by}
-            ORDER BY {grp_by}
-            LIMIT {limit}
             """
-        recs = await conn.fetch(q, *params)
+
+        # limit+1: один лишний ряд говорит, что были ещё группы (truncated),
+        # без второго GROUP BY-скана ради точного count.
+        recs = await conn.fetch(
+            f"SELECT {sel_dims}, {metrics_sql} {from_where} GROUP BY {grp_by} ORDER BY {order_by} LIMIT {limit + 1}",
+            *params,
+        )
+        truncated = len(recs) > limit
+        recs = recs[:limit]
+        # totals — тем же фильтром, без GROUP BY и без LIMIT: итог не зависит от обрезки.
+        tot_rec = await conn.fetchrow(f"SELECT {metrics_sql} {from_where}", *params)
+
+        conv_by_key: dict[tuple, int] = {}
+        conv_total = None
+        if use_events and conv_available:
+            conv_dims = ", ".join(f"{_DIM_CONV[g]} AS dim_{i}" for i, g in enumerate(groupings))
+            conv_rows = await conn.fetch(
+                f"SELECT {conv_dims}, count(*) AS conversions {conv_from_where} GROUP BY {grp_by}", *params
+            )
+            conv_by_key = {
+                tuple(_dim_key(r[f"dim_{i}"]) for i in range(len(groupings))): int(r["conversions"]) for r in conv_rows
+            }
+            conv_total = int(await conn.fetchval(f"SELECT count(*) {conv_from_where}", *params))
 
         # name lookups for id dimensions
         name_maps: dict[str, dict[str, str]] = {}
@@ -530,50 +577,80 @@ async def report(body: ReportRequest, user: dict = Depends(current_user)):
         if "loss_reason" in groupings:
             name_maps["loss_reason"] = LOSS_REASON_LABELS
 
+    def metrics_of(r, conversions) -> dict:
+        spend = present_spend(r["spend"], mult)
+        m = {
+            "bids": int(r["bids"] or 0), "wins": int(r["wins"] or 0),
+            "impressions": int(r["impressions"] or 0), "clicks": int(r["clicks"] or 0),
+            "viewable_imps": int(r["viewable_imps"] or 0),
+            "spend": spend, "conversions": conversions,
+            # hourly-агрегат проигрыши не измеряет: None, а не ноль
+            "losses": int(r["losses"]) if r["losses"] is not None else None,
+            # цены аукциона — деньги, показываем в той же цене, что и spend
+            "avg_bid": money(float(r["avg_bid"]) * mult) if r["avg_bid"] is not None else None,
+            "avg_bidfloor": money(float(r["avg_bidfloor"]) * mult) if r["avg_bidfloor"] is not None else None,
+            "avg_min_to_win": money(float(r["avg_min_to_win"]) * mult) if r["avg_min_to_win"] is not None else None,
+        }
+        m.update(derive(bids=m["bids"], wins=m["wins"], impressions=m["impressions"], clicks=m["clicks"],
+                        viewable_imps=m["viewable_imps"], spend=spend, conversions=conversions, losses=m["losses"]))
+        return m
+
+    def conversions_of(r) -> int | None:
+        if not use_events:
+            return int(r["conversions"] or 0)
+        if not conv_available:
+            return None
+        return conv_by_key.get(tuple(_dim_key(r[f"dim_{i}"]) for i in range(len(groupings))), 0)
+
     out_rows = []
-    tot = {"bids": 0, "wins": 0, "impressions": 0, "clicks": 0, "viewable_imps": 0, "spend": 0.0, "conversions": 0, "losses": 0}
     for r in recs:
-        row: dict = {}
+        row: dict = {"kind": ROW_KIND_DATA}
         for i, g in enumerate(groupings):
             v = r[f"dim_{i}"]
-            if v is not None and g in name_maps:
+            if v is None:
+                row[g] = NOT_SET_LABEL
+                row["kind"] = ROW_KIND_NOT_SET
+            elif g in name_maps:
                 row[g] = name_maps[g].get(str(v), str(v))
                 row[f"{g}_id"] = str(v)
             elif hasattr(v, "isoformat"):
                 row[g] = v.isoformat()
             else:
-                row[g] = str(v) if v is not None else "—"
-        m = {
-            "bids": int(r["bids"]), "wins": int(r["wins"]),
-            "impressions": int(r["impressions"]), "clicks": int(r["clicks"]),
-            "viewable_imps": int(r["viewable_imps"] or 0),
-            "spend": float(r["spend"]), "conversions": int(r["conversions"]),
-            "losses": int(r["losses"] or 0),
-            "avg_bid": round(float(r["avg_bid"]), 4) if r["avg_bid"] is not None else None,
-            "avg_bidfloor": round(float(r["avg_bidfloor"]), 4) if r["avg_bidfloor"] is not None else None,
-            "avg_min_to_win": round(float(r["avg_min_to_win"]), 4) if r["avg_min_to_win"] is not None else None,
-        }
-        m["win_rate"] = round(m["wins"] / m["bids"] * 100, 2) if m["bids"] else 0.0
-        m["ctr"] = round(m["clicks"] / m["impressions"] * 100, 3) if m["impressions"] else 0.0
-        m["cpm"] = round(m["spend"] / m["impressions"] * 1000, 4) if m["impressions"] else 0.0
-        m["cpc"] = round(m["spend"] / m["clicks"], 4) if m["clicks"] else 0.0
-        m["cpa"] = round(m["spend"] / m["conversions"], 4) if m["conversions"] else 0.0
-        m["viewability"] = round(m["viewable_imps"] / m["impressions"] * 100, 1) if m["impressions"] else 0.0
-        row.update(m)
+                row[g] = str(v)
+        row.update(metrics_of(r, conversions_of(r)))
         out_rows.append(row)
-        for k in tot:
-            tot[k] += m[k]
-    for r in out_rows:
-        # доля проигрышей считается от откликов, по которым SSP вообще шлёт lurl
-        r["loss_rate"] = round(r["losses"] / r["bids"] * 100, 2) if r["bids"] and r["losses"] else 0.0
 
-    totals = dict(tot)
-    totals["win_rate"] = round(totals["wins"] / totals["bids"] * 100, 2) if totals["bids"] else 0.0
-    totals["ctr"] = round(totals["clicks"] / totals["impressions"] * 100, 3) if totals["impressions"] else 0.0
-    totals["cpm"] = round(totals["spend"] / totals["impressions"] * 1000, 4) if totals["impressions"] else 0.0
-    totals["cpc"] = round(totals["spend"] / totals["clicks"], 4) if totals["clicks"] else 0.0
-    totals["cpa"] = round(totals["spend"] / totals["conversions"], 4) if totals["conversions"] else 0.0
-    totals["viewability"] = round(totals["viewable_imps"] / totals["impressions"] * 100, 1) if totals["impressions"] else 0.0
-    totals["loss_rate"] = round(totals["losses"] / totals["bids"] * 100, 2) if totals["bids"] and totals["losses"] else 0.0
-    totals["spend"] = round(totals["spend"], 4)
-    return {"rows": out_rows, "totals": totals}
+    totals = metrics_of(tot_rec, (conv_total if conv_available else None) if use_events else int(tot_rec["conversions"] or 0))
+
+    if truncated and out_rows:
+        # «Прочее» = totals − показанные строки по аддитивным метрикам, чтобы
+        # sum(rows) == totals; средние цены для свёртки не определены.
+        other = {k: (totals[k] - sum((row[k] or 0) for row in out_rows)) if totals[k] is not None else None
+                 for k in ADDITIVE_METRICS}
+        other["spend"] = money(other["spend"])
+        other_row: dict = {"kind": ROW_KIND_OTHER, groupings[0]: OTHER_LABEL}
+        for g in groupings[1:]:
+            other_row[g] = ""
+        other_row.update(other)
+        other_row.update({"avg_bid": None, "avg_bidfloor": None, "avg_min_to_win": None})
+        other_row.update(derive(bids=other["bids"], wins=other["wins"], impressions=other["impressions"],
+                                clicks=other["clicks"], viewable_imps=other["viewable_imps"], spend=other["spend"],
+                                conversions=other["conversions"], losses=other["losses"]))
+        out_rows.append(other_row)
+
+    meta = {
+        "source": "events" if use_events else "hourly",
+        "truncated": truncated,
+        "limit": limit,
+        "conversions_available": conv_available,
+    }
+    return {"rows": out_rows, "totals": totals, "meta": meta}
+
+
+def _dim_key(v):
+    """Ключ для сопоставления строк отчёта и конверсий: uuid/datetime/str → hashable one way."""
+    if v is None:
+        return None
+    if hasattr(v, "isoformat"):
+        return v.isoformat()
+    return str(v)

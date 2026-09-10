@@ -7,8 +7,9 @@ from pydantic import BaseModel, EmailStr, Field
 
 from auth import current_user, hash_password_async
 from db import get_pool
-from rbac import require_share_manager
+from rbac import effective_markup_pct, require_share_manager
 from schemas import PasswordStr
+from stats_math import clamp_hours, derive, present_spend
 
 router = APIRouter(prefix="/share", tags=["share"])
 
@@ -104,12 +105,23 @@ async def _resolve_link(token: str):
     return row
 
 
+async def _owner_spend_multiplier(pool, owner_id) -> float:
+    """Получатель отчёта видит цену владельца доступа (F-02). До B14b (snapshot
+    на ссылке/гостe) — текущая наценка владельца по цепочке; для admin/manager/
+    advertiser это net, как в их собственном кабинете."""
+    role = await pool.fetchval("SELECT role FROM users WHERE id = $1", owner_id)
+    if role in ("agency", "client"):
+        return 1.0 + (await effective_markup_pct(str(owner_id))) / 100.0
+    return 1.0
+
+
 @router.get("/public/{token}")
 async def public_stats(token: str, hours: int = 168):
     """Everything the public report page needs in one call."""
     link = await _resolve_link(token)
     pool = await get_pool()
-    hours = min(max(hours, 1), 720)
+    hours = min(clamp_hours(hours), 720)
+    mult = await _owner_spend_multiplier(pool, link["user_id"])
     adv_filter = "AND c.advertiser_id = $3" if link["advertiser_id"] else ""
     args = [link["user_id"], str(hours)] + ([link["advertiser_id"]] if link["advertiser_id"] else [])
 
@@ -148,7 +160,8 @@ async def public_stats(token: str, hours: int = 168):
 
     bids, wins = int(summary["bids"]), int(summary["wins"])
     imps, clicks = int(summary["impressions"]), int(summary["clicks"])
-    spend = float(summary["spend"])
+    spend = present_spend(summary["spend"], mult)
+    d = derive(bids=bids, wins=wins, impressions=imps, clicks=clicks, spend=spend)
     return {
         "brand": {
             "name": link["brand_name"] or "Отчёт по рекламе",
@@ -158,17 +171,15 @@ async def public_stats(token: str, hours: int = 168):
         "report_name": link["name"],
         "summary": {
             "bids": bids, "wins": wins, "impressions": imps, "clicks": clicks,
-            "spend": round(spend, 4),
-            "win_rate": round(wins / bids * 100, 2) if bids else 0,
-            "ctr": round(clicks / imps * 100, 3) if imps else 0,
-            "ecpm": round(spend / imps * 1000, 2) if imps else 0,
+            "spend": spend,
+            "win_rate": d["win_rate"], "ctr": d["ctr"], "ecpm": d["ecpm"],
         },
         "series": [
             {
                 "ts": r["ts_hour"].isoformat(),
                 "bids": int(r["bids"]), "wins": int(r["wins"]),
                 "impressions": int(r["impressions"]), "clicks": int(r["clicks"]),
-                "spend": round(float(r["spend"]), 4),
+                "spend": present_spend(r["spend"], mult),
             }
             for r in series
         ],
@@ -176,8 +187,8 @@ async def public_stats(token: str, hours: int = 168):
             {
                 "id": str(r["id"]), "name": r["name"], "status": r["status"],
                 "impressions": int(r["impressions"]), "clicks": int(r["clicks"]),
-                "spend": round(float(r["spend"]), 4),
-                "ctr": round(int(r["clicks"]) / int(r["impressions"]) * 100, 3) if int(r["impressions"]) else 0,
+                "spend": present_spend(r["spend"], mult),
+                "ctr": derive(impressions=r["impressions"], clicks=r["clicks"])["ctr"],
             }
             for r in campaigns
         ],

@@ -12,10 +12,24 @@ import { TimeseriesChart, METRIC_COLORS, CHART_TZ, TZ_NOTE } from "@/components/
 type Campaign = { id: string; name: string }
 type Group = { id: string; name: string }
 
-type ReportRow = Record<string, string | number>
+type ReportRow = Record<string, string | number | null>
+type ReportMeta = {
+  source: "hourly" | "events"
+  truncated: boolean
+  limit: number
+  conversions_available: boolean
+}
 type ReportResponse = {
   rows: ReportRow[]
-  totals: Record<string, number> | null
+  totals: Record<string, number | null> | null
+  meta?: ReportMeta
+}
+
+/* Служебные строки отчёта (F-02): «Прочее» — свёртка за пределами limit,
+   «Не указано» — значение измерения отсутствует в событии. Итого их учитывает. */
+const ROW_KIND_CLASS: Record<string, string> = {
+  other: "italic text-muted",
+  not_set: "text-muted",
 }
 
 const GROUPINGS: { key: string; label: string; section: string }[] = [
@@ -260,6 +274,7 @@ function AnalyticsInner() {
   // «день» не сдвигался на дату браузера.
   function fmtDim(key: string, value: string): string {
     if (!value || value === "—") return "—"
+    if (value === "Прочее" || value === "Не указано") return value
     if (key === "hour") {
       const d = new Date(value)
       return isNaN(d.getTime())
@@ -444,7 +459,13 @@ function AnalyticsInner() {
           title="Результат"
           subtitle={
             report?.rows?.length
-              ? `${report.rows.length} строк · ${dateFrom} — ${dateTo}`
+              ? `${report.rows.length} строк · ${dateFrom} — ${dateTo}${
+                  report.meta?.truncated ? ` · показаны первые ${report.meta.limit} групп, остальное — в строке «Прочее»` : ""
+                }${
+                  report.meta && !report.meta.conversions_available
+                    ? " · конверсии для этой группировки недоступны"
+                    : ""
+                }`
               : undefined
           }
           action={<ColumnsButton onClick={() => setColsOpen(true)} />}
@@ -494,11 +515,11 @@ function AnalyticsInner() {
               </thead>
               <tbody>
                 {report.rows.map((row, i) => (
-                  <tr key={i} className="group border-b border-border/50">
+                  <tr key={i} className={`group border-b border-border/50 ${ROW_KIND_CLASS[String(row.kind ?? "")] ?? ""}`}>
                     {activeGroupings.map((g, gi) => (
                       <td
                         key={g.key}
-                        className={`whitespace-nowrap px-4 py-2.5 font-medium text-foreground transition-colors group-hover:bg-surface ${gi === 0 ? "sticky left-0 z-10 min-w-[140px] bg-card" : ""}`}
+                        className={`whitespace-nowrap px-4 py-2.5 font-medium transition-colors group-hover:bg-surface ${row.kind && row.kind !== "data" ? "" : "text-foreground"} ${gi === 0 ? "sticky left-0 z-10 min-w-[140px] bg-card" : ""}`}
                       >
                         {fmtDim(g.key, String(row[g.key] ?? "—"))}
                       </td>
@@ -522,7 +543,7 @@ function AnalyticsInner() {
                     </td>
                     {activeMetrics.map((m) => (
                       <td key={m.key} className="whitespace-nowrap px-4 py-2.5 text-right font-mono text-xs text-foreground">
-                        {m.fmt(Number(report.totals![m.key] ?? 0))}
+                        {report.totals![m.key] == null ? "—" : m.fmt(Number(report.totals![m.key]))}
                       </td>
                     ))}
                   </tr>

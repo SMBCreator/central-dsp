@@ -93,6 +93,7 @@ Go-биддер (`bidder-go/`) доведён до функциональног�
 | Custom `vast_xml`: well-formed XML с `<VAST>` и `InLine`/`Wrapper`, иначе `adm_vast_malformed`; вставка `Impression` (после существующих), `TrackingEvents` (6 событий; в существующий контейнер или новый в каждом `Linear`), `ClickTracking` (в `VideoClicks` или новый), `Extensions` erid (если нет `<Erid>`); Wrapper без Creatives получает `Creatives/Creative/Linear` блок; pod — каждый Ad; исходная разметка не переписывается (вставка по смещениям токенов) | `inject_vast_trackers` (expat) | `injectVastTrackers` (`encoding/xml`, `HTMLEntity`) | `TestCustomVAST_*` в обоих |
 | Video `start` — только `video_starts`, не viewable (MRC: 50 % пикселей 2 с) | `video_event` | n/a (backend) | `TestVideoStartNotViewable` |
 | Валидация на загрузке: `CreativeIn/CreativePatch` — URL-поля через `validate_creative_url`, `vast_xml` через `validate_vast_xml` (≤64 KiB), `html_snippet` ≤100 KB; `""` → `None` | `schemas.py` | n/a | `TestCreativeSchemas` |
+| Отчётность F-02 (B14a): spend net в БД, наценка `present_spend` одной точкой, `derive` одна арифметика, totals без LIMIT + «Прочее», «Не указано», конверсии из `conversions` в raw-отчёте | ✅ (`stats_math.py`, `routers/stats.py`) | — | n/a | Только read-path backend; Go пишет `bid_events`/`stats_hourly` net и не участвует в представлении. `tests/test_stats_presentation.py` |
 
 `[V]` при онбординге SSP: подтвердить, что площадка исполняет `<script>` в
 banner adm (иначе viewability для banner недоступна — только native eventtrackers).

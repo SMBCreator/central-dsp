@@ -87,3 +87,48 @@ Python `cache.py:_GATE_LUA` и Go `redisx.go:luaGateAndReserve` — один и 
 же скрипт (`test_gate_lua_is_byte_identical_between_python_and_go`). Возврат
 по loss (`ReleaseGate`, только Go) — по существующим ключам, clamp 0, TTL
 сохраняется (`redisx_test.go: TestReleaseGate_*`).
+
+## 5. Наценка и представление отчётности (audit F-02, `backend/stats_math.py`)
+
+**Хранение.** `stats_hourly.spend`, `domain_stats_hourly.spend`,
+`bid_events.clear_price`, `transactions.amount` — **net, в валюте платформы
+(RUB)**. Курс (`fx.py`) применяется один раз, в момент win, дальше только RUB.
+
+**Наценка — товарная цепочка.** `users.markup_pct` — процент, который родитель
+назначил пользователю; `rbac.effective_markup_pct(user)` — произведение по
+цепочке вверх = «цена, которую видит этот пользователь». Каждый уровень видит
+net × свою цепочку; никто не видит цену уровня ниже себя. Множитель
+вычисляется в одном месте (`routers/stats._resolve_scope`; share/guest — цена
+владельца доступа, с B14b — snapshot на доступе) и применяется одним вызовом
+`present_spend(net, mult)`. Money-метрики, производные от spend (cpm/ecpm, cpc,
+cpa, avg_bid, avg_bidfloor, avg_min_to_win), — в той же цене. Операционные
+отчёты владельца инвентаря (`/supply-partners/{id}/stats`, скоринг) — net,
+наценка не применяется намеренно.
+
+**Кто может добавлять наценку сверх своей цены** (ссылки/гости, B14b):
+superadmin, admin, agency. manager (его наценка задана admin-ом в
+`users.markup_pct`), advertiser, client, viewer — нет.
+
+**Одна арифметика.** Производные метрики — только `stats_math.derive()`:
+деньги `MONEY_DECIMALS=4`, проценты `PCT_DECIMALS=2`, CTR `CTR_DECIMALS=3`.
+`conversions=None` означает «для этого среза недоступно» (cpa=None), `0` —
+«не было». `losses=None` — источник (hourly) не измеряет lurl.
+
+**Отчёт-конструктор (`POST /stats/report`).**
+* `totals` — отдельный запрос тем же фильтром без GROUP BY/LIMIT.
+* Не-временные группировки сортируются `spend DESC, impressions DESC, bids DESC`;
+  хвост за `limit` сворачивается в строку `«Прочее»` (`kind=other`), аддитивные
+  метрики = totals − показанные, так что `sum(rows) == totals` всегда; средние
+  цены для свёртки не определены (null). `meta.truncated`, `meta.limit`.
+* NULL-значение измерения — строка `«Не указано»` (`kind=not_set`), а не тире;
+  конверсии с NULL-измерением остаются в этой строке, не теряются.
+* Конверсии в raw-источнике — из `conversions` для измерений, которые
+  атрибуция кладёт в строку конверсии (время, campaign, creative, supply_partner,
+  country, device, domain); для остальных (os/browser/ad_type/tagid/publisher/
+  bundle/loss_reason) `conversions=null`, `meta.conversions_available=false` —
+  до слоя `conversion_attributions` (план B14c).
+* Лимиты: `hours ≤ MAX_HOURS (8784)`, `limit ≤ MAX_LIMIT (5000)`, диапазон дат
+  ≤ 366 дней, `date_from > date_to` → 422 (не swap).
+
+Контракт закреплён `tests/test_stats_presentation.py` (в т.ч. проверка, что в
+роутерах не осталось ad-hoc `round(... * 1000)`/`* 100` расчётов).
