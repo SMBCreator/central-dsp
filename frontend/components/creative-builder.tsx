@@ -208,7 +208,7 @@ export function CreativeForm({ format, onAdd }: { format: AdFormat; onAdd: (d: C
               </Field>
             </div>
             {d.subtype === "html5" ? (
-              <Field label="HTML5-код баннера" hint="Полный HTML сниппет; клик должен вести на ${CLICK_URL} или вашу ссылку">
+              <Field label="HTML5-код баннера" hint={d.html_snippet && !/\$\{CLICK_URL(_ENC|_ESC|_UNESC)?\}|%%CLICK_URL_(UNESC|ESC)%%|\{CLICK_URL(_ENC)?\}|\[CLICK_URL\]/.test(d.html_snippet) ? "Макрос ${CLICK_URL} не найден: клики будут учтены маячком, но лендинг не получит cdsp_clid — конверсии не атрибуцируются" : "Полный HTML сниппет; ссылка клика — ${CLICK_URL} (мы подставим трекинг-редирект), для вложения в чужой редирект — ${CLICK_URL_ENC}"}>
                 <textarea value={d.html_snippet || ""} onChange={(e) => set({ html_snippet: e.target.value })} rows={5} className={`${inputCls} font-mono text-xs`} placeholder="<div>…</div>" />
               </Field>
             ) : (

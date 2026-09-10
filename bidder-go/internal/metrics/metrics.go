@@ -130,6 +130,8 @@ var OpenRTBIncompatReasons = []string{
 	"native_request_malformed", "native_asset_missing",
 	"video_mime", "video_protocol", "video_duration",
 	"private_auction",
+	// Audit R-05: разметку не собрать безопасно (URL / пользовательский VAST).
+	"adm_url_invalid", "adm_vast_malformed",
 }
 
 // IncPrefilterDrop — запрос отсечён предфильтром до таргетинга/аукциона.
@@ -270,7 +272,7 @@ func (r *Registry) write(w http.ResponseWriter) {
 		fmt.Fprintf(w, "bidder_prefilter_drops_total{reason=%q} %d\n", reason, v.(*atomic.Int64).Load())
 	}
 
-	fmt.Fprintf(w, "# HELP bidder_openrtb_incompat_total Candidates skipped as incompatible with the OpenRTB slot (native assets, video MIME/protocol/duration, private auction).\n# TYPE bidder_openrtb_incompat_total counter\n")
+	fmt.Fprintf(w, "# HELP bidder_openrtb_incompat_total Candidates skipped as incompatible with the OpenRTB slot (native assets, video MIME/protocol/duration, private auction, unsafe adm URL / malformed VAST).\n# TYPE bidder_openrtb_incompat_total counter\n")
 	for _, reason := range OpenRTBIncompatReasons {
 		v, _ := r.openrtbIncompat.Load(reason)
 		fmt.Fprintf(w, "bidder_openrtb_incompat_total{reason=%q} %d\n", reason, v.(*atomic.Int64).Load())

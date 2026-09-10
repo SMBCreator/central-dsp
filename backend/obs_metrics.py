@@ -111,6 +111,9 @@ OPENRTB_INCOMPAT_REASONS = (
     "video_protocol",
     "video_duration",
     "private_auction",
+    # Audit R-05: разметку не собрать безопасно (URL креатива / пользовательский VAST).
+    "adm_url_invalid",
+    "adm_vast_malformed",
 )
 
 _lock = threading.Lock()

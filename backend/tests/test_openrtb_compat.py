@@ -120,7 +120,8 @@ def test_build_adm_native_uses_requested_assets():
 
 def test_creative_fits_imp_video_counts_metric():
     before = obs_metrics.snapshot()["openrtb_incompat"]["video_mime"]
-    creative = {"type": "video", "video_url": "https://cdn/x.mp4", "video_duration": 10, "width": None, "height": None}
+    creative = {"type": "video", "video_url": "https://cdn/x.mp4", "click_url": "https://adv/l",
+                "video_duration": 10, "width": None, "height": None}
     assert rtb._creative_fits_imp(creative, {"video": {"mimes": ["video/webm"]}}, "video") is False
     assert obs_metrics.snapshot()["openrtb_incompat"]["video_mime"] == before + 1
     assert rtb._creative_fits_imp(creative, {"video": {"mimes": ["video/mp4"], "maxduration": 30}}, "video") is True

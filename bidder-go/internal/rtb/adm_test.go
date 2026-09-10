@@ -61,8 +61,9 @@ func TestBuildAdm_BannerWithHTMLSnippetStillMarked(t *testing.T) {
 	c := markedCandidate("banner")
 	c.HTMLSnippet = `<div id="ad">custom</div>`
 	adm := BuildAdm(c, testBase, "tok")
-	if !strings.HasPrefix(adm, c.HTMLSnippet) {
-		t.Fatal("snippet must be preserved as-is")
+	// Сниппет — как есть, внутри обёртки для viewability (паритет с rtb.py).
+	if !strings.Contains(adm, `<div id="cdsp_tok_c">`+c.HTMLSnippet+`</div>`) {
+		t.Fatalf("snippet must be preserved as-is inside the wrapper\n%s", adm)
 	}
 	if !strings.Contains(adm, "erid: 2VtzqxABCDE") || !strings.Contains(adm, "Реклама") {
 		t.Errorf("custom HTML banner must still carry the ad-info badge\n%s", adm)

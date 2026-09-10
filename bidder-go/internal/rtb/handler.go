@@ -432,6 +432,12 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 				continue
 			}
 		}
+		// Audit R-05: URL креатива не собрать в безопасную разметку / VAST не
+		// разбирается — кандидат не торгуется, а не уходит в SSP с дырой.
+		if reason := admIncompat(c); reason != "" {
+			h.incIncompat(reason)
+			continue
+		}
 		var nativeAssets []map[string]any
 		if adType == "native" && nativeReq != nil {
 			assets, ok := buildNativeAssets(nativeReq, c)
@@ -576,6 +582,16 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 			h.abortReservation(rctx, reservation)
 			return nil, 0
 		}
+		// adm собираем до bookkeeping: пустая разметка (admIncompat пропустил,
+		// но VAST не собрался) — резерв назад, bidmeta не пишем, кандидат
+		// пропущен; иначе SSP получил бы бид без трекеров.
+		adm := BuildAdmAssets(c, h.base, token, sc.nativeAssets)
+		if adm == "" {
+			slog.Warn("adm build failed; candidate skipped", "creative_id", c.CreativeID)
+			h.incIncompat(IncompatAdmVAST)
+			h.abortReservation(rctx, reservation)
+			continue
+		}
 		// Audit R-02: bidmeta + событие bid — обязательный bookkeeping. Без bidmeta
 		// backend не опознает win/imp/click (rtb.py:_find_bid) — платный показ
 		// пройдёт без списания и без учёта. Не удалось записать — резерв
@@ -589,7 +605,6 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 			return nil, 0
 		}
 
-		adm := BuildAdmAssets(c, h.base, token, sc.nativeAssets)
 		nurl := fmt.Sprintf("%s/api/rtb/win?bid=%s&price=${AUCTION_PRICE}", h.base, token)
 		// lurl (OpenRTB 2.5 §4.2.3): SSP сообщает о проигрыше с кодом причины и
 		// ценой, которой не хватило. Идёт в Go (/rtb/* -> биддер): освобождаем

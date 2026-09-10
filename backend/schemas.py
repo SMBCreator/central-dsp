@@ -4,10 +4,53 @@ from typing import Annotated
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr, Field, field_validator
 
+import rtb_compat
 from targeting_contract import validate_targeting
 
 # IAB Content Taxonomy 1.0: "IAB1" (tier-1) или "IAB1-1" (tier-2).
 _IAB_CODE_RE = re.compile(r"^IAB\d{1,2}(-\d{1,2})?$")
+
+# Пределы разметки креатива (audit R-05): что принято здесь — соберётся в adm
+# обоими биддерами (rtb_compat.adm_incompat / adm.go admIncompat).
+MAX_HTML_SNIPPET_LEN = 100_000
+MAX_VAST_XML_LEN = 65_536
+
+
+def validate_creative_url(value: str | None) -> str | None:
+    """URL для разметки: абсолютный http(s) с хостом, <= 2048 символов, без
+    пробелов, кавычек, угловых скобок (иначе XSS у паблишера или битый adm)."""
+    if value is None:
+        return None
+    value = value.strip()
+    if value == "":
+        return None
+    if not rtb_compat.safe_url(value):
+        raise ValueError(
+            "ожидается абсолютный http(s)-URL без пробелов, кавычек и угловых скобок "
+            f"(до {rtb_compat.MAX_ADM_URL_LEN} символов)"
+        )
+    return value
+
+
+def validate_vast_xml(value: str | None) -> str | None:
+    """Пользовательский VAST: well-formed XML с корнем <VAST> и хотя бы одним
+    <InLine>/<Wrapper> — иначе биддер не сможет вставить трекеры."""
+    if value is None:
+        return None
+    value = value.strip()
+    if value == "":
+        return None
+    if len(value) > MAX_VAST_XML_LEN:
+        raise ValueError(f"vast_xml длиннее {MAX_VAST_XML_LEN} символов")
+    try:
+        rtb_compat.validate_vast(value)
+    except ValueError as e:
+        raise ValueError(f"vast_xml не разбирается как VAST: {e}") from e
+    return value
+
+
+CreativeUrl = Annotated[str | None, AfterValidator(validate_creative_url)]
+VastXml = Annotated[str | None, AfterValidator(validate_vast_xml)]
 
 
 # --- Auth -------------------------------------------------------------------
@@ -174,20 +217,20 @@ class CreativeIn(BaseModel):
     subtype: str | None = Field(default=None, pattern="^(static|gif|html5|instream|outstream)$")
     width: int | None = Field(default=None, ge=1, le=4096)
     height: int | None = Field(default=None, ge=1, le=4096)
-    asset_url: str | None = None
-    click_url: str | None = None
-    html_snippet: str | None = None
+    asset_url: CreativeUrl = None
+    click_url: CreativeUrl = None
+    html_snippet: str | None = Field(default=None, max_length=MAX_HTML_SNIPPET_LEN)
     native_title: str | None = Field(default=None, max_length=90)
     native_description: str | None = Field(default=None, max_length=200)
     native_cta: str | None = Field(default=None, max_length=30)
-    native_icon_url: str | None = None
-    video_url: str | None = None
+    native_icon_url: CreativeUrl = None
+    video_url: CreativeUrl = None
     video_duration: int | None = Field(default=None, ge=1, le=600)
-    vast_xml: str | None = None
+    vast_xml: VastXml = None
     crop: dict | None = None
     # Сторонние трекеры (показ и клик) — пиксели аудита
-    imp_tracker_url: str | None = Field(default=None, max_length=1000)
-    click_tracker_url: str | None = Field(default=None, max_length=1000)
+    imp_tracker_url: CreativeUrl = None
+    click_tracker_url: CreativeUrl = None
     # Информация о рекламодателе (контрагент из ОРД): ОГРН, наименование, адрес
     counterparty_id: str | None = None
     # Договор ОРД для получения erid (миграция 036). Пусто — подбирается по контрагенту.
@@ -239,22 +282,22 @@ class CreativePatch(BaseModel):
     @classmethod
     def _attr_codes(cls, v):
         return None if v is None else CreativeIn._attr_codes(v)
-    imp_tracker_url: str | None = Field(default=None, max_length=1000)
-    click_tracker_url: str | None = Field(default=None, max_length=1000)
+    imp_tracker_url: CreativeUrl = None
+    click_tracker_url: CreativeUrl = None
     # Владелец может только отправить на модерацию или архивировать.
     # approved/rejected ставит исключительно /moderation (админ) — иначе
     # обход модерации и показ непроверенного креатива.
     status: str | None = Field(default=None, pattern="^(pending|archived)$")
-    asset_url: str | None = None
-    click_url: str | None = None
-    html_snippet: str | None = None
-    native_title: str | None = None
-    native_description: str | None = None
-    native_cta: str | None = None
-    native_icon_url: str | None = None
-    video_url: str | None = None
-    video_duration: int | None = None
-    vast_xml: str | None = None
+    asset_url: CreativeUrl = None
+    click_url: CreativeUrl = None
+    html_snippet: str | None = Field(default=None, max_length=MAX_HTML_SNIPPET_LEN)
+    native_title: str | None = Field(default=None, max_length=90)
+    native_description: str | None = Field(default=None, max_length=200)
+    native_cta: str | None = Field(default=None, max_length=30)
+    native_icon_url: CreativeUrl = None
+    video_url: CreativeUrl = None
+    video_duration: int | None = Field(default=None, ge=1, le=600)
+    vast_xml: VastXml = None
 
 
 # --- Supply partners --------------------------------------------------------------

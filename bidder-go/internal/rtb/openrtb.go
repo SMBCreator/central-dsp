@@ -24,6 +24,9 @@ const (
 	IncompatVideoProtocol   = "video_protocol"
 	IncompatVideoDuration   = "video_duration"
 	IncompatPrivateAuction  = "private_auction"
+	// Audit R-05 (adm.go admIncompat): разметку не собрать безопасно.
+	IncompatAdmURL  = "adm_url_invalid"    // URL креатива не http(s) или с опасными символами
+	IncompatAdmVAST = "adm_vast_malformed" // vast_xml не разбирается / без InLine|Wrapper
 )
 
 // IncompatReasons — полный список для регистрации метрики.

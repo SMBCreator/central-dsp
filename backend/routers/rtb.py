@@ -14,6 +14,7 @@ import uuid
 from contextlib import asynccontextmanager
 from decimal import Decimal
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import APIRouter, HTTPException, Request, Response
 
@@ -370,6 +371,12 @@ def _creative_fits_imp(creative: dict, imp: dict, ad_type: str) -> bool:
         if reason:
             obs_metrics.inc_openrtb_incompat(reason)
             return False
+    # Audit R-05: URL креатива не собрать в безопасную разметку / VAST не
+    # разбирается — кандидат не торгуется, а не уходит в SSP с дырой.
+    reason = rtb_compat.adm_incompat(creative)
+    if reason:
+        obs_metrics.inc_openrtb_incompat(reason)
+        return False
     return True
 
 
@@ -437,43 +444,74 @@ def _build_vast_extensions(creative: dict, erid: str) -> str:
     return f"<Extensions>{parts}</Extensions>"
 
 
+def _adm_id_token(tok: str) -> str:
+    """Первые 24 символа токена, пригодные для id/JS-строки (v1.<uuid>.<exp>.<hex>)."""
+    return "".join(ch for ch in tok if ch.isalnum() or ch in "._-")[:24]
+
+
+def _view_script(wrap_id: str, view_url: str, click_beacon: str = "") -> str:
+    # MRC viewability: >=50% площади в зоне видимости непрерывно >=1 сек.
+    # IntersectionObserver с фолбэком «страница видима» для старых webview.
+    # click_beacon — HTML5 без макроса клика: фиксируем клик по содержимому
+    # обёртки в capture-фазе (stopPropagation внутри сниппета не помешает).
+    click = ""
+    if click_beacon:
+        click = (f'var c=document.getElementById("{wrap_id}_c");'
+                 f'if(c){{c.addEventListener("click",function(){{(new Image()).src="{click_beacon}";}},true);}}')
+    return (
+        f'<script>(function(){{var f=0,t=null,el=document.getElementById("{wrap_id}");'
+        f'function fire(){{if(f)return;f=1;(new Image()).src="{view_url}";}}'
+        f'if(el&&"IntersectionObserver"in window){{'
+        f'var o=new IntersectionObserver(function(es){{es.forEach(function(e){{'
+        f'if(e.intersectionRatio>=0.5){{if(!t)t=setTimeout(function(){{fire();o.disconnect();}},1000);}}'
+        f'else if(t){{clearTimeout(t);t=null;}}}});}},{{threshold:[0,0.5]}});o.observe(el);}}'
+        f'else{{setTimeout(fire,1000);}}{click}}})();</script>'
+    )
+
+
 def _build_adm(creative: dict, base: str, bid_id: str) -> str:
+    """Разметка креатива (banner HTML / native JSON / VAST XML) — эталон для
+    bidder-go/internal/rtb/adm.go.
+
+    Audit R-05: URL креатива заранее проверены rtb_compat.adm_incompat
+    (только http(s), без кавычек/угловых скобок/пробелов) и экранируются по
+    контексту вставки — HTML-атрибут, JS-строка в атрибуте, CDATA. Клик-редирект
+    /api/rtb/click не несёт цель в query: цель — click_url креатива из bidmeta/БД,
+    публичный токен бида нельзя превратить в open redirect. Пользовательский VAST
+    получает наши Impression/TrackingEvents/ClickTracking/erid; невалидный —
+    ValueError (до сюда не доходит: adm_incompat отсекает кандидата).
+    """
     # Сторонние трекеры (аудит): пиксель на показ добавляется в разметку,
     # клик-трекер дёргается из клиентского onclick / clicktrackers / VAST.
     third_imp = creative.get("imp_tracker_url") or ""
     third_imp_px = (
-        f'<img src="{third_imp}" width="1" height="1" style="display:none" alt=""/>'
+        f'<img src="{_html_escape(third_imp)}" width="1" height="1" style="display:none" alt=""/>'
         if third_imp else ""
     )
     third_click = creative.get("click_tracker_url") or ""
     erid = creative.get("erid") or ""
     erid_label = _build_ad_info_badge(creative)
-    click_url = f"{base}/api/rtb/click?bid={bid_id}&r={creative.get('click_url') or ''}"
+    # Токен — [0-9a-zA-Z._-], base — наш конфиг: эти URL не нуждаются в
+    # экранировании ни в атрибуте, ни в JS-строке, ни в CDATA.
+    click_url = f"{base}/api/rtb/click?bid={bid_id}"
+    click_beacon = f"{click_url}&beacon=1"
     imp_pixel = f"{base}/api/rtb/imp?bid={bid_id}"
     view_url = f"{base}/api/rtb/view?bid={bid_id}"
     if creative["type"] == "banner":
         click_js = (
-            f' onclick="(new Image()).src=\'{third_click}\'"' if third_click else ""
+            f' onclick="(new Image()).src=\'{rtb_compat.js_string_escape(third_click)}\'"' if third_click else ""
         )
-        # MRC viewability: >=50% площади в зоне видимости непрерывно >=1 сек.
-        # IntersectionObserver с фолбэком «страница видима» для старых webview.
-        wrap_id = f"cdsp_{bid_id[:24]}"
-        view_script = (
-            f'<script>(function(){{var f=0,t=null,el=document.getElementById("{wrap_id}");'
-            f'function fire(){{if(f)return;f=1;(new Image()).src="{view_url}";}}'
-            f'if(el&&"IntersectionObserver"in window){{'
-            f'var o=new IntersectionObserver(function(es){{es.forEach(function(e){{'
-            f'if(e.intersectionRatio>=0.5){{if(!t)t=setTimeout(function(){{fire();o.disconnect();}},1000);}}'
-            f'else if(t){{clearTimeout(t);t=null;}}}});}},{{threshold:[0,0.5]}});o.observe(el);}}'
-            f'else{{setTimeout(fire,1000);}}}})();</script>'
-        )
+        wrap_id = f"cdsp_{_adm_id_token(bid_id)}"
         if creative.get("html_snippet"):
-            return (f'<div id="{wrap_id}">' + creative["html_snippet"] + erid_label + "</div>"
-                    + f'<img src="{imp_pixel}" width="1" height="1" style="display:none"/>' + third_imp_px + view_script)
+            snippet, had_macro = rtb_compat.substitute_click_macros(creative["html_snippet"], click_url)
+            return (f'<div id="{wrap_id}"><div id="{wrap_id}_c">' + snippet + "</div>" + erid_label + "</div>"
+                    + f'<img src="{imp_pixel}" width="1" height="1" style="display:none"/>' + third_imp_px
+                    + _view_script(wrap_id, view_url, "" if had_macro else click_beacon))
         return (
             f'<div id="{wrap_id}"><a href="{click_url}" target="_blank"{click_js}>'
-            f'<img src="{creative.get("asset_url") or ""}" width="{creative.get("width")}" height="{creative.get("height")}" alt=""/></a>'
-            f'{erid_label}</div><img src="{imp_pixel}" width="1" height="1" style="display:none"/>' + third_imp_px + view_script
+            f'<img src="{_html_escape(creative.get("asset_url") or "")}" width="{creative.get("width")}" height="{creative.get("height")}" alt=""/></a>'
+            f'{erid_label}</div><img src="{imp_pixel}" width="1" height="1" style="display:none"/>' + third_imp_px
+            + _view_script(wrap_id, view_url)
         )
     if creative["type"] in ("native", "push"):
         # push over RTB is native markup: title + body + icon + main image.
@@ -507,28 +545,31 @@ def _build_adm(creative: dict, base: str, bid_id: str) -> str:
             native["native"].setdefault("ext", {})["ad_format"] = "push"
         return json.dumps(native, ensure_ascii=False)
     # video: VAST with quartile tracking
+    vevent = f"{base}/api/rtb/vevent?bid={bid_id}"
+    extensions = _build_vast_extensions(creative, erid)
     if creative.get("vast_xml"):
-        return creative["vast_xml"]
+        return rtb_compat.inject_vast_trackers(
+            creative["vast_xml"],
+            impressions=[imp_pixel, third_imp],
+            vevent=vevent,
+            click_trackings=[click_beacon, third_click],
+            extensions_xml=extensions,
+        )
     # MIME — по расширению video_url (то же значение проверяет
     # rtb_compat.video_incompat против imp.video.mimes), Duration — HH:MM:SS.
     duration = rtb_compat.vast_duration(creative.get("video_duration") or 15)
     media_mime = rtb_compat.creative_video_mime(creative)
-    vevent = f"{base}/api/rtb/vevent?bid={bid_id}"
     creative_id = creative.get("creative_id") or creative.get("id") or ""
-    return f"""<VAST version="3.0"><Ad id="{creative_id}"><InLine>
-<AdSystem>CentralDSP</AdSystem>{_build_vast_extensions(creative, erid)}<AdTitle>{_xml_escape(creative['name'])}</AdTitle>
+    # ClickThrough — наш редирект (клик учитывается и лендинг получает
+    # cdsp_clid), ClickTracking — маячок для плееров, которые открывают ссылку
+    # сами; дедуп по биду — _once_txn в /click.
+    return f"""<VAST version="3.0"><Ad id="{_xml_escape(creative_id)}"><InLine>
+<AdSystem>CentralDSP</AdSystem>{extensions}<AdTitle>{_xml_escape(creative['name'])}</AdTitle>
 <Impression><![CDATA[{imp_pixel}]]></Impression>{f'<Impression><![CDATA[{third_imp}]]></Impression>' if third_imp else ''}
 <Creatives><Creative><Linear><Duration>{duration}</Duration>
-<TrackingEvents>
-<Tracking event="start"><![CDATA[{vevent}&e=start]]></Tracking>
-<Tracking event="firstQuartile"><![CDATA[{vevent}&e=firstQuartile]]></Tracking>
-<Tracking event="midpoint"><![CDATA[{vevent}&e=midpoint]]></Tracking>
-<Tracking event="thirdQuartile"><![CDATA[{vevent}&e=thirdQuartile]]></Tracking>
-<Tracking event="complete"><![CDATA[{vevent}&e=complete]]></Tracking>
-<Tracking event="skip"><![CDATA[{vevent}&e=skip]]></Tracking>
-</TrackingEvents>
-<VideoClicks><ClickThrough><![CDATA[{creative.get('click_url') or ''}]]></ClickThrough>
-<ClickTracking><![CDATA[{click_url}]]></ClickTracking>{f'<ClickTracking><![CDATA[{third_click}]]></ClickTracking>' if third_click else ''}</VideoClicks>
+<TrackingEvents>{rtb_compat.vast_tracking_nodes(vevent)}</TrackingEvents>
+<VideoClicks><ClickThrough><![CDATA[{click_url}]]></ClickThrough>
+<ClickTracking><![CDATA[{click_beacon}]]></ClickTracking>{f'<ClickTracking><![CDATA[{third_click}]]></ClickTracking>' if third_click else ''}</VideoClicks>
 <MediaFiles><MediaFile delivery="progressive" type="{media_mime}" width="640" height="360"><![CDATA[{creative.get('video_url') or ''}]]></MediaFile></MediaFiles>
 </Linear></Creative></Creatives></InLine></Ad></VAST>"""
 
@@ -1543,8 +1584,9 @@ async def viewable_impression(bid: str):
 
 
 async def _record_viewable(pool, bid: str, row) -> None:
-    """Событие viewable + viewable_imps ровно один раз на бид (общее для
-    /rtb/view и video start). Тестовый бид (E-04): журнал — да, статистика — нет."""
+    """Событие viewable + viewable_imps ровно один раз на бид (/rtb/view:
+    IO-скрипт баннера и native eventtrackers event=2). Тестовый бид (E-04):
+    журнал — да, статистика — нет."""
     is_test = _is_test_bid(row)
     async with _once_txn(pool, "view", bid) as conn:
         if conn is None:
@@ -1582,15 +1624,17 @@ async def video_event(bid: str, e: str):
                 await _bump_stats(conn, "video_starts", 0, *_stat_ids(row))
             elif e == "complete":
                 await _bump_stats(conn, "video_completes", 0, *_stat_ids(row))
-    if e == "start":
-        # Видео-viewability: старт плеера = объявление в зоне видимости.
-        # Отдельная заявка "view" — не задвоится с /rtb/view.
-        await _record_viewable(pool, bid, row)
+    # Audit R-05: start плеера — не viewable по MRC (50% пикселей 2 с непрерывно);
+    # для видео viewable_imps не заявляем до появления OMID/VPAID-замера.
     return Response(content=_PIXEL, media_type="image/gif")
 
 
 @router.get("/click")
-async def click(bid: str, r: str = ""):
+async def click(bid: str, beacon: int = 0):
+    """Клик по биду. Редирект — только на click_url креатива из bidmeta/БД;
+    цель в query (старый &r=…) не принимается: токен бида публичен (лежит в
+    разметке), и open redirect с нашего домена превращался бы в фишинг.
+    beacon=1 — учёт без перехода (HTML5 без макроса клика, VAST ClickTracking)."""
     bid = verify_event_token(bid)
     if not bid:
         raise HTTPException(status_code=403, detail="Invalid event token")
@@ -1625,12 +1669,19 @@ async def click(bid: str, r: str = ""):
                     await _bump_stats(conn, "clicks", float(charged or 0), *_stat_ids(row))
                     await _bump_domain_stats(conn, row, "clicks", float(charged or 0))
                     obs_metrics.inc("rtb_clicks_total")
-    # Redirect target: explicit r param, else fall back to the creative's click_url
-    if not (r and r.startswith(("http://", "https://"))):
-        if row and row["creative_id"]:
-            r = await pool.fetchval("SELECT click_url FROM creatives WHERE id = $1", row["creative_id"]) or ""
-    if r and r.startswith(("http://", "https://")):
-        # Pass our click id to the landing page so the Central Pixel can attribute conversions
-        sep = "&" if "?" in r else "?"
-        return Response(status_code=302, headers={"Location": f"{r}{sep}cdsp_clid={bid}"})
-    return {"ok": True}
+    if beacon:
+        return Response(content=_PIXEL, media_type="image/gif")
+    target = ""
+    if row and row["creative_id"]:
+        target = await pool.fetchval("SELECT click_url FROM creatives WHERE id = $1", row["creative_id"]) or ""
+    if rtb_compat.safe_url(target):
+        return Response(status_code=302, headers={"Location": _with_clid(target, bid)})
+    return Response(content=_PIXEL, media_type="image/gif")
+
+
+def _with_clid(url: str, bid: str) -> str:
+    """Лендинг получает cdsp_clid=<bid> для атрибуции конверсий Central Pixel;
+    query дописывается до #fragment, а не после него."""
+    parts = urlsplit(url)
+    query = f"{parts.query}&cdsp_clid={bid}" if parts.query else f"cdsp_clid={bid}"
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
