@@ -47,6 +47,7 @@
 | **DELETE** | `/creatives/upload/{name}` | roles+flag | admin, advertiser, agency, manager, superadmin + client[can_manage_creatives] |
 | **DELETE** | `/creatives/{creative_id}` | roles+flag | admin, advertiser, agency, manager, superadmin + client[can_manage_creatives] |
 | **PATCH** | `/creatives/{creative_id}` | roles+flag | admin, advertiser, agency, manager, superadmin + client[can_manage_creatives] |
+| GET | `/cron/audience-sync` | none | Bearer CRON_SECRET |
 | GET | `/cron/domain-quality` | none | Bearer CRON_SECRET |
 | GET | `/cron/fx-refresh` | none | Bearer CRON_SECRET |
 | GET | `/cron/ml-train` | none | Bearer CRON_SECRET |

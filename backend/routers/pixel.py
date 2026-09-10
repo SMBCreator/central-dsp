@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 import pixel_guard
-from audiences import process_pixel_event
+from audiences import add_goal_members, process_pixel_event
 from auth import current_user
 from rbac import require_campaign_write
 from db import get_pool
@@ -218,6 +218,11 @@ async def _match_goals(pool, pixel_id: str, pixel_owner_id: str, session_id: str
             attrib.get("supply_partner_id"), attrib.get("domain"), attrib.get("device_type"),
             attrib.get("geo_country"), float(g["value"] or 0), is_test,
         )
+        # Goal segments (R-06): первая конверсия по цели наполняет сегменты
+        # rule_type='goal' этого пикселя. После INSERT, чтобы дубль конверсии
+        # не трогал аудиторию повторно; тестовый бид в аудиторию не попадает.
+        if inserted and not is_test:
+            await add_goal_members(pool, pixel_id, str(g["id"]), clid)
         # bump hourly conversions for CPA math
         if inserted and attrib.get("campaign_id") and not is_test:
             await pool.execute(

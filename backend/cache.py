@@ -58,11 +58,12 @@ async def reserve_budget(scope: str, entity_id: str, amount: float, budget: floa
     return bool(ok)
 
 
-# One roundtrip for the whole bid-time gate (audit M-05/M-06): frequency cap
-# check plus atomic reservation on campaign daily, line-item daily, advertiser
-# available balance and campaign total-budget remaining, and registration of
-# the bid in pending:bids. Byte-identical to bidder-go luaGateAndReserve
-# (tests/test_redis_contracts.py) — key layout documented there.
+# One roundtrip for the whole bid-time gate (audit M-05/M-06/R-06): frequency
+# cap check (won impressions + bids of this device still in flight) plus atomic
+# reservation on campaign daily, line-item daily, advertiser available balance
+# and campaign total-budget remaining, and registration of the bid in
+# pending:bids and freqinf:{camp}:{device}. Byte-identical to bidder-go
+# luaGateAndReserve (tests/test_redis_contracts.py) — key layout documented there.
 _GATE_LUA = """
 local cost        = tonumber(ARGV[4])
 local camp_budget = tonumber(ARGV[5])
@@ -70,11 +71,22 @@ local li_budget   = tonumber(ARGV[6])
 local ttl         = tonumber(ARGV[7])
 local has_adv     = ARGV[8] ~= ''
 local has_total   = ARGV[10] == '1'
+local track_freq  = ARGV[11] ~= '' and (tonumber(ARGV[1]) > 0 or tonumber(ARGV[2]) > 0 or tonumber(ARGV[3]) > 0)
+local inflight    = 0
+local won_expired = 0
+if track_freq then
+  local overdue = redis.call('ZRANGEBYSCORE', KEYS[11], '-inf', ARGV[13])
+  for _, m in ipairs(overdue) do
+    if string.sub(m, 1, 2) == 'w:' then won_expired = won_expired + 1 end
+  end
+  if #overdue > 0 then redis.call('ZREMRANGEBYSCORE', KEYS[11], '-inf', ARGV[13]) end
+  inflight = redis.call('ZCARD', KEYS[11])
+end
 for i = 1, 3 do
   local cap = tonumber(ARGV[i])
   if cap > 0 then
     local seen = tonumber(redis.call('GET', KEYS[i]) or '0')
-    if seen >= cap then return 0 end
+    if seen + inflight >= cap then return {0, won_expired} end
   end
 end
 local function rollback(stage)
@@ -82,7 +94,7 @@ local function rollback(stage)
   if stage >= 3 then redis.call('INCRBYFLOAT', KEYS[6], cost) end
   if stage >= 2 and li_budget > 0 then redis.call('INCRBYFLOAT', KEYS[5], -cost) end
   redis.call('INCRBYFLOAT', KEYS[4], -cost)
-  return 0
+  return {0, won_expired}
 end
 local camp = redis.call('INCRBYFLOAT', KEYS[4], cost)
 if redis.call('TTL', KEYS[4]) < 0 then redis.call('EXPIRE', KEYS[4], ttl) end
@@ -105,12 +117,17 @@ if has_adv then
   redis.call('INCRBYFLOAT', KEYS[8], cost)
 end
 if ARGV[11] ~= '' then redis.call('ZADD', KEYS[10], ARGV[12], ARGV[11]) end
-return 1
+if track_freq then
+  redis.call('ZADD', KEYS[11], ARGV[12], ARGV[11])
+  redis.call('EXPIRE', KEYS[11], 600)
+end
+return {1, won_expired}
 """
 
 # Terminal states per bid (mirror of bidder-go luaReleaseBid / luaSettleWin).
 _RELEASE_BID_LUA = """
 local reserve = tonumber(ARGV[2])
+redis.call('ZREM', KEYS[9], ARGV[3], 'w:' .. ARGV[3])
 if redis.call('SET', KEYS[1], ARGV[1], 'NX', 'EX', tonumber(ARGV[4])) == false then
   redis.call('ZREM', KEYS[2], ARGV[3])
   return 0
@@ -146,6 +163,23 @@ local prev = redis.call('GET', KEYS[1])
 if prev == 'win' then return 0 end
 redis.call('SET', KEYS[1], 'win', 'EX', tonumber(ARGV[4]))
 redis.call('ZREM', KEYS[2], ARGV[3])
+local windows = 0
+for i = 1, 3 do if tonumber(ARGV[8 + i]) > 0 then windows = windows + 1 end end
+if windows > 0 then
+  redis.call('ZREM', KEYS[9], ARGV[3])
+  if ARGV[13] == '1' then
+    for i = 1, 3 do
+      local hours = tonumber(ARGV[8 + i])
+      if hours > 0 then
+        redis.call('INCR', KEYS[9 + i])
+        if redis.call('TTL', KEYS[9 + i]) < 0 then redis.call('EXPIRE', KEYS[9 + i], hours * 3600) end
+      end
+    end
+  else
+    redis.call('ZADD', KEYS[9], ARGV[12], 'w:' .. ARGV[3])
+    redis.call('EXPIRE', KEYS[9], 600)
+  end
+end
 local function refund(key, amount)
   if redis.call('EXISTS', key) == 1 then
     local v = tonumber(redis.call('INCRBYFLOAT', key, -amount))
@@ -178,9 +212,64 @@ if has_total then refund(KEYS[8], reserve) end
 return 1
 """
 
+# imp pixel confirms the impression: reservation -> counters (bidder-go luaConfirmImp).
+_CONFIRM_IMP_LUA = """
+redis.call('ZREM', KEYS[1], ARGV[1], 'w:' .. ARGV[1])
+if ARGV[5] == '1' then return 0 end
+local counted = 0
+for i = 1, 3 do
+  local hours = tonumber(ARGV[1 + i])
+  if hours > 0 then
+    redis.call('INCR', KEYS[1 + i])
+    if redis.call('TTL', KEYS[1 + i]) < 0 then redis.call('EXPIRE', KEYS[1 + i], hours * 3600) end
+    counted = 1
+  end
+end
+return counted
+"""
+
 PENDING_BIDS_KEY = "pending:bids"
 DEFAULT_RESERVE_TTL = 90          # seconds a reservation waits for win/loss (bidder-go DefaultReserveTTL)
 BID_STATE_TTL = 2 * 3600          # bidstate:{bid} lifetime (bidder-go BidStateTTL)
+MAX_CAP_WINDOWS = 3               # freq windows per bid (bidder-go MaxCapWindows)
+WIN_IMP_TTL = 120                 # seconds a won bid holds its freq-cap reservation waiting for imp (bidder-go DefaultWinImpTTL)
+
+
+def freq_key(campaign_id: str, hours: int, device_id: str) -> str:
+    """Won-impression counter of one window (bidder-go FreqKey)."""
+    return f"freq:{campaign_id}:{int(hours)}h:{device_id or '-'}"
+
+
+def freq_inflight_key(campaign_id: str, device_id: str) -> str:
+    """ZSET of this device's bids awaiting win/loss (bidder-go FreqInflightKey, R-06)."""
+    return f"freqinf:{campaign_id}:{device_id or '-'}"
+
+
+def active_caps(caps) -> list[tuple[int, int]]:
+    """Valid (limit, hours) windows, at most MAX_CAP_WINDOWS (bidder-go activeCaps)."""
+    out: list[tuple[int, int]] = []
+    for w in caps or []:
+        try:
+            limit, hours = int(w[0]), int(w[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if limit > 0 and hours > 0 and len(out) < MAX_CAP_WINDOWS:
+            out.append((limit, hours))
+    return out
+
+
+def _freq_window_keys(campaign_id: str, device_id: str, caps) -> tuple[list[str], list[int]]:
+    """Exactly MAX_CAP_WINDOWS window keys + their hours (0 on pad keys and
+    when the bid has no device) — bidder-go freqWindowKeys."""
+    keys, hours = [], []
+    for _limit, h in active_caps(caps):
+        keys.append(freq_key(campaign_id, h, device_id))
+        hours.append(h if device_id else 0)
+    dev = device_id or "-"
+    while len(keys) < MAX_CAP_WINDOWS:
+        keys.append(f"freq:{campaign_id}:pad{len(keys)}:{dev}")
+        hours.append(0)
+    return keys, hours
 
 
 def avail_adv_key(advertiser_id: str) -> str:
@@ -203,12 +292,19 @@ def bid_state_key(bid_id: str) -> str:
     return f"bidstate:{bid_id}"
 
 
-def _reservation_keys(bid_id: str, campaign_id: str, li_id: str, advertiser_id: str, day: str) -> list[str]:
-    adv = advertiser_id or "-"
+def _reservation_keys(res: dict) -> list[str]:
+    """KEYS of luaReleaseBid/luaSettleWin (bidder-go BidReservation.keys)."""
+    campaign_id = res["campaign_id"]
+    adv = res.get("advertiser_id") or "-"
+    day = res.get("business_date") or business_date_str()
+    device_id = res.get("device_id") or ""
+    freq_keys, _ = _freq_window_keys(campaign_id, device_id, res.get("caps"))
     return [
-        bid_state_key(bid_id), PENDING_BIDS_KEY,
-        spend_key("camp", campaign_id, day), spend_key("li", li_id or "", day),
+        bid_state_key(res["bid_id"]), PENDING_BIDS_KEY,
+        spend_key("camp", campaign_id, day), spend_key("li", res.get("line_item_id") or "", day),
         avail_adv_key(adv), avail_camp_key(campaign_id), res_adv_key(adv), res_camp_key(campaign_id),
+        freq_inflight_key(campaign_id, device_id),
+        *freq_keys,
     ]
 
 
@@ -218,6 +314,8 @@ def reservation_from_bidmeta(row) -> dict | None:
     Returns None for test bids and rows without a campaign. Legacy rows
     (before audit M-06) have no `reserve`: fall back to price/1000 and no
     advertiser constraint, which matches what the old gate reserved.
+    `fdev`/`fcaps` (R-06) carry the device and cap windows so that settle_win
+    counts the won impression; rows without them (PG fallback) count nothing.
     """
     if row is None:
         return None
@@ -237,6 +335,9 @@ def reservation_from_bidmeta(row) -> dict | None:
         "business_date": str(get("business_date") or business_date_str()),
         "has_total": bool(int(get("has_total") or 0)),
         "has_li": bool(int(get("has_li") or 0)),
+        "device_id": str(get("fdev") or ""),
+        "caps": active_caps(get("fcaps") or []),
+        "count_on_win": bool(int(get("fwin") or 0)),
     }
 
 
@@ -259,26 +360,24 @@ async def gate_and_reserve(
 ) -> bool:
     """Bid-time gate in a single Redis roundtrip.
 
-    Checks up to 3 frequency-cap windows (read-only) and atomically reserves
-    `cost` on the campaign and line-item daily-spend keys and — when
-    `advertiser_id` is given — on the advertiser's available balance and the
-    campaign's total-budget remaining. All-or-nothing. With `bid_id` the bid
-    is tracked in pending:bids until win/loss/expire (bidder-go sweeper).
+    Checks up to 3 frequency-cap windows — confirmed impressions (freq:*)
+    plus this device's active reservations (freqinf: bids in flight and wins
+    awaiting the imp pixel, audit R-06) — and
+    atomically reserves `cost` on the campaign and line-item daily-spend keys
+    and — when `advertiser_id` is given — on the advertiser's available balance
+    and the campaign's total-budget remaining. All-or-nothing. With `bid_id`
+    the bid is tracked in pending:bids and freqinf until win/loss/expire.
     `caps` is a list of (impressions, period_hours); the legacy `freq_cap`
     (24h) is used when `caps` is empty.
     """
     if camp_budget <= 0:
         return False
-    windows = [(int(a), int(b)) for a, b in (caps or []) if int(a) > 0 and int(b) > 0][:3]
+    windows = active_caps(caps)
     if not windows and freq_cap:
         windows = [(int(freq_cap), 24)]
-    dev = device_id or "-"
-    keys, cap_args = [], []
-    for cap_n, hours in windows:
-        keys.append(f"freq:{campaign_id}:{hours}h:{dev}")
-        cap_args.append(str(cap_n if device_id else 0))
-    while len(keys) < 3:
-        keys.append(f"freq:{campaign_id}:pad{len(keys)}:{dev}")
+    keys, _hours = _freq_window_keys(campaign_id, device_id, windows)
+    cap_args = [str(cap_n if device_id else 0) for cap_n, _h in windows]
+    while len(cap_args) < MAX_CAP_WINDOWS:
         cap_args.append("0")
     r = get_redis()
     ttl = _daily_key_ttl()
@@ -286,19 +385,27 @@ async def gate_and_reserve(
     adv = advertiser_id or "-"
     import time as _time
 
-    ok = await r.eval(
-        _GATE_LUA, 10,
+    now = int(_time.time())
+    out = await r.eval(
+        _GATE_LUA, 11,
         *keys,
         spend_key("camp", campaign_id, day),
         spend_key("li", li_id, day),
         avail_adv_key(adv), avail_camp_key(campaign_id), res_adv_key(adv), res_camp_key(campaign_id),
-        PENDING_BIDS_KEY,
+        PENDING_BIDS_KEY, freq_inflight_key(campaign_id, device_id),
         *cap_args, str(cost), str(camp_budget), str(li_budget), str(ttl),
         str(adv_balance) if advertiser_id else "",
         str(total_remaining), "1" if (has_total and advertiser_id) else "0",
-        bid_id or "", str(int(_time.time()) + int(reserve_ttl)),
+        bid_id or "", str(now + int(reserve_ttl)), str(now),
     )
-    return bool(ok)
+    allowed, won_expired = (int(out[0]), int(out[1])) if isinstance(out, (list, tuple)) else (int(out), 0)
+    if won_expired:
+        try:
+            from obs_metrics import inc as _obs_inc
+            _obs_inc("rtb_freq_win_without_imp_total", won_expired)
+        except Exception:
+            pass
+    return allowed == 1
 
 
 async def release_bid(res: dict, state: str = "loss") -> bool:
@@ -308,9 +415,8 @@ async def release_bid(res: dict, state: str = "loss") -> bool:
         return False
     r = get_redis()
     out = await r.eval(
-        _RELEASE_BID_LUA, 8,
-        *_reservation_keys(res["bid_id"], res["campaign_id"], res.get("line_item_id", ""),
-                           res.get("advertiser_id", ""), res.get("business_date") or business_date_str()),
+        _RELEASE_BID_LUA, 12,
+        *_reservation_keys(res),
         state, str(res["reserve"]), res["bid_id"], str(BID_STATE_TTL),
         "1" if res.get("has_total") else "0", "1" if res.get("has_li") else "0",
     )
@@ -319,17 +425,49 @@ async def release_bid(res: dict, state: str = "loss") -> bool:
 
 async def settle_win(res: dict, clearing_cost: float, *, assume_released: bool = False) -> int:
     """Reservation -> clearing price. 0 duplicate, 1 converted, 2 re-charged
-    (bid had been released by loss/expire before the win arrived)."""
+    (bid had been released by loss/expire before the win arrived).
+
+    Frequency cap (R-06): a win notice is not an impression. The first win
+    turns the bid's in-flight freqinf member into a "w:{bid}" reservation
+    that expires after WIN_IMP_TTL unless confirm_imp commits it to the
+    freq:* counters. Partners with res["count_on_win"] (no client pixel)
+    commit right here.
+    """
+    import time as _time
+
     r = get_redis()
+    _keys, hours = _freq_window_keys(res["campaign_id"], res.get("device_id") or "", res.get("caps"))
     out = await r.eval(
-        _SETTLE_WIN_LUA, 8,
-        *_reservation_keys(res["bid_id"], res["campaign_id"], res.get("line_item_id", ""),
-                           res.get("advertiser_id", ""), res.get("business_date") or business_date_str()),
+        _SETTLE_WIN_LUA, 12,
+        *_reservation_keys(res),
         str(res["reserve"]), str(clearing_cost), res["bid_id"], str(BID_STATE_TTL),
         "1" if res.get("has_total") else "0", "1" if res.get("has_li") else "0",
         str(_daily_key_ttl()), "1" if assume_released else "0",
+        *[str(h) for h in hours],
+        str(int(_time.time()) + WIN_IMP_TTL), "1" if res.get("count_on_win") else "0",
     )
     return int(out)
+
+
+async def confirm_imp(res: dict) -> bool:
+    """The imp pixel confirms the impression (R-06): drop the bid's freqinf
+    reservation and increment every window counter of res["caps"] for
+    res["device_id"]. Idempotency is the caller's (bid_event_once). Returns
+    True when counters were incremented. No-op without cap windows."""
+    caps = active_caps(res.get("caps"))
+    if not caps:
+        return False
+    campaign_id = res["campaign_id"]
+    device_id = res.get("device_id") or ""
+    keys, hours = _freq_window_keys(campaign_id, device_id, caps)
+    r = get_redis()
+    out = await r.eval(
+        _CONFIRM_IMP_LUA, 1 + MAX_CAP_WINDOWS,
+        freq_inflight_key(campaign_id, device_id), *keys,
+        res["bid_id"], *[str(h) for h in hours],
+        "1" if res.get("count_on_win") else "0",
+    )
+    return int(out) == 1
 
 
 async def adjust_available_balance(advertiser_id: str, delta: float) -> None:
@@ -392,40 +530,23 @@ async def get_spend(scope: str, entity_id: str, day: str | None = None) -> float
 
 
 # --- Frequency capping ------------------------------------------------------
-async def check_frequency_cap(campaign_id: str, device_id: str, cap: int, period_hours: int) -> bool:
-    """Read-only check at bid time: True when another impression is allowed.
+# Lifecycle (audit R-06): gate_and_reserve takes an in-flight slot →
+# settle_win turns it into a win reservation with WIN_IMP_TTL → confirm_imp
+# commits it to the freq:* window counters (or release_bid / the gate prune
+# drops it). Gate formula: confirmed + active_reservations < cap.
 
-    The counter is incremented only on a real impression (bump_frequency),
-    so lost auctions never consume the cap.
-    """
-    if not device_id or cap <= 0:
-        return True
+
+async def get_frequency(campaign_id: str, device_id: str, hours: int) -> int:
+    """Won impressions of a device in one window (diagnostics/tests)."""
     r = get_redis()
-    count = await r.get(f"freq:{campaign_id}:{device_id}")
-    return int(count or 0) < cap
+    val = await r.get(freq_key(campaign_id, hours, device_id))
+    return int(val or 0)
 
 
-async def bump_frequency_multi(campaign_id: str, device_id: str, windows: list[tuple[int, int]]) -> None:
-    """Increment all frequency-cap window counters after a confirmed impression."""
-    if not device_id:
-        return
+async def get_frequency_inflight(campaign_id: str, device_id: str) -> int:
+    """Bids of a device still awaiting win/loss (diagnostics/tests)."""
     r = get_redis()
-    for _cap, hours in windows[:3]:
-        key = f"freq:{campaign_id}:{int(hours)}h:{device_id}"
-        count = await r.incr(key)
-        if count == 1:
-            await r.expire(key, int(hours) * 3600)
-
-
-async def bump_frequency(campaign_id: str, device_id: str, period_hours: int) -> None:
-    """Increment the frequency counter after a confirmed impression."""
-    if not device_id:
-        return
-    r = get_redis()
-    key = f"freq:{campaign_id}:{device_id}"
-    count = await r.incr(key)
-    if count == 1:
-        await r.expire(key, period_hours * 3600)
+    return int(await r.zcard(freq_inflight_key(campaign_id, device_id)) or 0)
 
 
 # --- Per-partner QPS limiting ------------------------------------------------

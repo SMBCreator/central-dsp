@@ -47,6 +47,10 @@ _COUNTER_HELP = {
     "rtb_win_settle_recharged_total": "Late wins re-charged after the reservation had been released (loss/expire).",
     "rtb_win_settle_duplicate_total": "Win settle calls for bids already in state win (no money moved).",
     "rtb_settle_win_errors_total": "settle_win Redis failures after a successful DB bill (reconcile fixes drift).",
+    "rtb_freq_win_without_imp_total": "Won bids whose frequency-cap reservation expired without an imp pixel (R-06); high share = broken SSP pixel.",
+    "rtb_imp_freq_uncounted_total": "Impressions that could not be committed to the frequency cap (no bidmeta fdev/fcaps, e.g. PG fallback).",
+    "rtb_imp_freq_errors_total": "confirm_imp Redis errors on the imp pixel (R-06).",
+    "audience_reseeded_segments_total": "Audience segments whose audz: ZSET was re-seeded from Postgres by /cron/audience-sync (Redis had lost it).",
     "reserve_reconcile_drift_total": "avail:* keys whose value drifted from DB balance minus outstanding reserves.",
     "csrf_rejected_total": "State-changing requests rejected by the Origin guard (S-01).",
 }

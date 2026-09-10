@@ -169,6 +169,22 @@ async def reconcile_reserves(request: Request):
             "campaigns_checked": len(camps), "campaigns_fixed": fixed_camp}
 
 
+@router.get("/audience-sync")
+@_cron_job("audience_sync")
+async def audience_sync(request: Request):
+    """Ретаргетинг-аудитории (audit R-06): удалить просроченных участников в
+    Postgres, вычистить просроченные score в audz:*, досеять пустые ключи из
+    Postgres (самовосстановление после потери Redis). Раз в час."""
+    _check_secret(request)
+    from audiences import sync_audiences
+
+    pool = await get_pool()
+    result = await sync_audiences(pool)
+    if result.get("reseeded_segments"):
+        obs_metrics.inc("audience_reseeded_segments_total", result["reseeded_segments"])
+    return result
+
+
 @router.get("/optimize")
 @_cron_job("optimize")
 async def run_buy_optimizer(request: Request):

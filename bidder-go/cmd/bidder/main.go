@@ -165,6 +165,7 @@ func main() {
 	// Prometheus-метрики: счётчики hot path + gauges состояния (GAP-011).
 	reg := metrics.New()
 	h.SetMetrics(reg)
+	reg.SetWinWithoutImpSource(redisx.WinWithoutImp.Load)
 	reg.RegisterGauge("bidder_feed_age_seconds", func() float64 { return store.Age().Seconds() })
 	reg.RegisterGauge("bidder_feed_campaigns", func() float64 { return float64(store.Len()) })
 	reg.RegisterGauge("bidder_feed_max_age_seconds", func() float64 { return store.MaxAge().Seconds() })

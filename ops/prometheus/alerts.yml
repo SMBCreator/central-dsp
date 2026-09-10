@@ -160,6 +160,22 @@ groups:
             replay или потеря win-notice. Сверить с bid_events.
             Runbook: rtb_alerts.md#imp-win-mismatch
 
+      - alert: FreqWinWithoutImpHigh
+        expr: |
+          rate(rtb_freq_win_without_imp_total[15m])
+            > 0.15 * (rate(rtb_wins_total[15m]) + 0.01)
+          and rate(rtb_wins_total[15m]) > 0.05
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Более 15% выигранных бидов без imp-пикселя (freq cap бронь истекла)"
+          description: >-
+            Win — не показ (audit R-06): кап бронируется на win и подтверждается
+            на /rtb/imp. Высокая доля истёкших броней — пиксель не доходит от
+            какой-то SSP: кап недоучитывает показы, impressions занижены к wins.
+            Runbook: rtb_alerts.md#freq-win-without-imp
+
       - alert: PrefilterDropRateHigh
         expr: |
           sum(rate(rtb_prefilter_drops_total[15m]))

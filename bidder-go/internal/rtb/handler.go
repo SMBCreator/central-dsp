@@ -178,7 +178,7 @@ func (h *Handler) incIncompat(reason string) {
 
 // Bid — POST /rtb/bid/{endpointKey}. Пайплайн — паритет с Python:
 // auth -> QPS -> parse -> targeting -> freq (check-only) -> budget reserve ->
-// shading (только at=1) -> adm с erid -> bidmeta/bidfreq в Redis -> response.
+// shading (только at=1) -> adm с erid -> bidmeta в Redis -> response.
 func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	ctx := r.Context()
@@ -530,9 +530,10 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 
 	for _, sc := range scored {
 		c := sc.c
-		// Bid-time gate: freq-окна (read-only) + атомарная резервация бюджета
-		// кампании И line item в одном Lua-роундтрипе — порт gate_and_reserve.
-		// Инкремент freq-счётчиков делает backend на /imp через bidfreq:{bid_id}.
+		// Bid-time gate: freq-окна (выигранные показы + in-flight биды этого
+		// устройства, audit R-06) + атомарная резервация бюджета кампании И line
+		// item в одном Lua-роундтрипе — порт gate_and_reserve. Счётчики окон
+		// инкрементирует backend в settle_win (на win), не на imp-пикселе.
 		capsList := parseCaps(c)
 		bidID := uuid.NewString()
 		// test=1 (OpenRTB 3.2.1): SSP проверяет интеграцию — отвечаем реальным
@@ -596,7 +597,7 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 		// backend не опознает win/imp/click (rtb.py:_find_bid) — платный показ
 		// пройдёт без списания и без учёта. Не удалось записать — резерв
 		// возвращаем и бид не отдаём.
-		if err := h.persistBidMeta(rctx, bidID, imp, c, partner, sc.price, sc.pctr, sc.bidCPC, respCur, sc.fxRate, view, adType, deviceID, capsList, req.Test == 1, reservation); err != nil {
+		if err := h.persistBidMeta(rctx, bidID, imp, c, partner, sc.price, sc.pctr, sc.bidCPC, respCur, sc.fxRate, view, adType, deviceID, req.Test == 1, reservation); err != nil {
 			slog.Error("bid bookkeeping failed; no-bid", "bid_id", bidID, "err", err)
 			if h.metrics != nil {
 				h.metrics.IncBookkeepingError()
@@ -729,13 +730,20 @@ func parseCaps(c *feed.Candidate) []redisx.CapWindow {
 	return caps
 }
 
-// persistBidMeta пишет bidmeta:{bid_id} и bidfreq:{bid_id} — формат Python.
+func b01int(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// persistBidMeta пишет bidmeta:{bid_id} — формат Python.
 func (h *Handler) persistBidMeta(ctx interface {
 	Done() <-chan struct{}
 	Err() error
 	Deadline() (time.Time, bool)
 	Value(any) any
-}, bidID string, imp *Imp, c *feed.Candidate, partner *feed.Partner, price, pctrUsed, bidCPC float64, respCur string, fxRate float64, view *targeting.RequestView, adType, deviceID string, caps []redisx.CapWindow, isTest bool, res redisx.BidReservation) error {
+}, bidID string, imp *Imp, c *feed.Candidate, partner *feed.Partner, price, pctrUsed, bidCPC float64, respCur string, fxRate float64, view *targeting.RequestView, adType, deviceID string, isTest bool, res redisx.BidReservation) error {
 	if h.redis == nil {
 		// Без Redis биддер в degraded-режиме (только dev): bookkeeping невозможен,
 		// но и резервов нет — бид уходит как раньше.
@@ -788,6 +796,11 @@ func (h *Handler) persistBidMeta(ctx interface {
 		// тем же курсом (rtb.py:_to_rub_price) — без дрейфа к моменту нотиса.
 		"cur":     respCur,
 		"fx_rate": fxRate,
+		// Frequency cap (R-06): устройство и окна бида. Python settle_win по ним
+		// инкрементирует freq:*, Go loss/sweeper — снимает in-flight слот freqinf.
+		"fdev":  deviceID,
+		"fcaps": res.Caps,
+		"fwin":  b01int(partner.WinCountsAsImp),
 	})
 	if err := rdb.Set(ctx, "bidmeta:"+bidID, meta, time.Hour).Err(); err != nil {
 		return fmt.Errorf("set bidmeta: %w", err)
@@ -832,14 +845,8 @@ func (h *Handler) persistBidMeta(ctx interface {
 		}
 		return fmt.Errorf("xadd bid event: %w", err)
 	}
-	// bidfreq/clidmap — вторичны: их отсутствие лишь ослабляет freq cap/ретаргетинг
-	// для одного бида, а не теряет деньги. Логируем, бид не отменяем.
-	if deviceID != "" && len(caps) > 0 {
-		capsJSON, _ := json.Marshal(caps)
-		if err := rdb.Set(ctx, "bidfreq:"+bidID, deviceID+"|"+string(capsJSON), time.Hour).Err(); err != nil {
-			slog.Warn("set bidfreq", "bid_id", bidID, "err", err)
-		}
-	}
+	// clidmap — вторичен: его отсутствие лишь ослабляет ретаргетинг для одного
+	// бида, а не теряет деньги. Логируем, бид не отменяем.
 	// Retargeting bridge: clid == bid_id после клика. Ключ и TTL — контракт с
 	// backend/audiences.py (resolve_clid читает clidmap:{bid_id}, CLIDMAP_TTL 7d):
 	// пиксель на лендинге может сработать через дни после клика. Раньше Go писал
@@ -867,15 +874,19 @@ func (h *Handler) abortReservation(ctx context.Context, res redisx.BidReservatio
 }
 
 const (
-	clidMapPrefix  = "clidmap:"
-	clidMapTTL     = 7 * 24 * time.Hour
-	audiencePrefix = "aud:" // aud:{segment_id} — SET device_id; наполняет пиксель (audiences.py)
+	clidMapPrefix = "clidmap:"
+	clidMapTTL    = 7 * 24 * time.Hour
+	// audz:{segment_id} — ZSET device_id -> expires_at (unix); наполняет пиксель
+	// (audiences.py). Per-member expiry (audit R-06): старый aud:* SET с одним
+	// EXPIRE на ключ продлевал всех участников при каждом новом.
+	audiencePrefix = "audz:"
 )
 
 // audienceOK — порт check_audiences (backend/audiences.py): устройство должно
-// быть хотя бы в одном include-сегменте и ни в одном exclude. Fail-open при
-// ошибке Redis (торгуем как без сегментов) — паритет с Python. Без device_id
-// include невыполним, exclude — не мешает.
+// быть хотя бы в одном include-сегменте и ни в одном exclude. Членство =
+// ZSCORE есть и в будущем (просроченный, но ещё не вычищенный участник — уже
+// не участник). Fail-open при ошибке Redis (торгуем как без сегментов) —
+// паритет с Python. Без device_id include невыполним, exclude — не мешает.
 func (h *Handler) audienceOK(ctx context.Context, include, exclude []string, deviceID string) bool {
 	if len(include) == 0 && len(exclude) == 0 {
 		return true
@@ -887,20 +898,23 @@ func (h *Handler) audienceOK(ctx context.Context, include, exclude []string, dev
 		return true
 	}
 	pipe := h.redis.Raw().Pipeline()
-	cmds := make([]*redis.BoolCmd, 0, len(include)+len(exclude))
+	cmds := make([]*redis.FloatCmd, 0, len(include)+len(exclude))
 	for _, sid := range include {
-		cmds = append(cmds, pipe.SIsMember(ctx, audiencePrefix+sid, deviceID))
+		cmds = append(cmds, pipe.ZScore(ctx, audiencePrefix+sid, deviceID))
 	}
 	for _, sid := range exclude {
-		cmds = append(cmds, pipe.SIsMember(ctx, audiencePrefix+sid, deviceID))
+		cmds = append(cmds, pipe.ZScore(ctx, audiencePrefix+sid, deviceID))
 	}
+	// redis.Nil от ZScore = не участник; любая другая ошибка = fail-open.
 	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
 		return true
 	}
+	now := float64(time.Now().Unix())
+	member := func(c *redis.FloatCmd) bool { return c.Err() == nil && c.Val() > now }
 	if len(include) > 0 {
 		anyIn := false
 		for _, c := range cmds[:len(include)] {
-			if c.Val() {
+			if member(c) {
 				anyIn = true
 				break
 			}
@@ -910,7 +924,7 @@ func (h *Handler) audienceOK(ctx context.Context, include, exclude []string, dev
 		}
 	}
 	for _, c := range cmds[len(include):] {
-		if c.Val() {
+		if member(c) {
 			return false
 		}
 	}

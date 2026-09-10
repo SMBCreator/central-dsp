@@ -178,4 +178,8 @@ def test_reservation_from_bidmeta_legacy_and_test_rows():
     assert res == {
         "bid_id": "b", "campaign_id": "c", "line_item_id": "li", "advertiser_id": "a",
         "reserve": 1.5, "business_date": "2026-01-01", "has_total": True, "has_li": True,
+        "device_id": "", "caps": [], "count_on_win": False,
     }
+    # R-06: fdev/fcaps/fwin carry the frequency-cap context of the bid.
+    res = reservation_from_bidmeta({**full, "fdev": "dev9", "fcaps": [[3, 24], [0, 1], [5, 168]], "fwin": 1})
+    assert res["device_id"] == "dev9" and res["caps"] == [(3, 24), (5, 168)] and res["count_on_win"] is True

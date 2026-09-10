@@ -138,7 +138,21 @@
 - URL builder с `url.QueryEscape`, HTML/XML/JS escaping, allowlist схем; VAST через `encoding/xml`; duration `HH:MM:SS`; трекеры для каждого формата; viewability-beacon (IntersectionObserver ≥50%/1 с) для banner/native; video start — отдельная метрика, не viewable.
 
 ### B11. R-06 — frequency/audience
-- In-flight frequency reservation в Lua (`freq:<user>:<camp>` INCR на bid, DECR на loss/expire); per-member expiry в Redis (ZSET score = expires_at); goal-segment hook; `ops/redis_rebuild_audiences.py`.
+Решение 2026-09-10 (уточнено по документу «WIN, IMP, BURL и frequency cap»): win — не показ, а **временная бронь** лимита; показ подтверждает imp. Формула гейта: `confirmed_impressions + active_reservations < cap`, где `active_reservations` = биды в полёте + выигранные, ждущие imp.
+- Статусная машина бида в freq cap: `bid → inflight → won_reserved → confirmed (imp)` / `lost` / `expired_no_imp`. Один ключ `freqinf:{camp}:{device}` (ZSET bid_id → deadline): на bid `ZADD deadline=now+reserve_ttl`; на win score переставляется на `now+WIN_IMP_TTL` (бронь), **без** INCR; на imp `ZREM` + `INCR freq:{camp}:{Nh}:{device}` (подтверждённый показ, TTL окна); на loss/expired/aborted `ZREM`. Гейт: `ZREMRANGEBYSCORE` просроченных → `ZCARD` = active_reservations; `GET freq:*` = confirmed.
+- `bidmeta.fdev`/`fcaps` — единственный источник device/окон для win/imp/loss (Go `persistBidMeta` ↔ Python bid path); `bidfreq:{bid}` и bump на imp удалены; мёртвые `check_frequency_cap`/`bump_frequency` удалены.
+- `WIN_IMP_TTL`: старт 120 с; runbook-SQL по `bid_events` для p95/p99 `win→imp`, затем per-format (display/video/in-app).
+- Метрика `rtb_freq_win_without_imp_total` (Lua-prune возвращает число вычищенных выигранных) + алерт на аномальную долю (сломан пиксель SSP).
+- Per-SSP флаг `partners.win_counts_as_imp` (default false) — только для бирж без клиентского пикселя: INCR сразу на win (узкий случай, на уровне интеграции, не глобально).
+- Отчётность: `wins` / `impressions` / `viewable_imps` / `spend` уже раздельны (stats_hourly, B2/B10) — проверить подписи в UI (win не называть «показом»); «reserved wins» — только диагностический gauge, не в отчёты клиенту.
+- Audiences: `aud:` SET с TTL на весь ключ → `audz:` ZSET score = expires_at (per-member expiry), проверка `ZSCORE > now` в Python и Go, `ZREMRANGEBYSCORE` при добавлении; goal-сегменты (`rule_type='goal'`) подключить в `_match_goals`; cron `/cron/audience-sync` (чистка просроченных PG + Redis, автодосев пустого `audz:` из PG) + `backend/scripts/redis_rebuild_audiences.py` (dry-run/--apply) + runbook.
+- Тесты: Go `redisx` (гейт с in-flight, win→бронь, imp→confirm, expire без imp, идемпотентность imp), Python `test_freq_caps.py` переписать под новую семантику, `test_reservation_lifecycle.py`, контракт Lua байт-в-байт; parity_matrix.
+- Проверить связанные модули до правок: `bill_win`/`_once_txn` (B3) на imp — INCR только после коммита; `bid_event_once` даёт идемпотентность imp; Go sweeper `pending:bids` не трогает `freqinf` (просрочка через score); PG-fallback без bidmeta → показ не считается (безопасная сторона, лог).
+
+### B15. R-07 (новый, из решения 2026-09-10) — billing по `burl`
+- Сейчас spend списывается на `nurl` (`bill_win` + `settle_win`, контракт B2 «spend = win.clear_price»); `burl` в BidResponse не отправляем. По OpenRTB `nurl` — win notice, не billable impression.
+- Добавить `burl` в BidResponse (Go + Python) с `${AUCTION_PRICE}`; per-SSP режим биллинга `partners.billing_event` ∈ {`nurl` (как сейчас, default до сверки), `burl`}; при `burl`: на nurl — только `wins` + бронь cap, деньги (`bill_win`, `settle_win`, `spend`) — на burl; `win_without_billing` по TTL; сверка с отчётами SSP.
+- Затрагивает B2/B3 транзакционные контракты, `bid_event_once`, `rtb_events_inbox`, Go `Win`/новый `Burl` handler, stats/UI (метрика «Billable impressions»). Делать после B11 и B14 отдельным коммитом с миграцией; до включения на реальной SSP — `[V]` документация биржи о семантике burl.
 
 ### B12. S-02 + S-03 — ownership и scopes
 - Helper `assert_owned(pool, table, id, user_scope)` для всех ссылочных полей в create/patch.
@@ -212,10 +226,11 @@
 - [x] B8 R-03
 - [x] B9 R-04 — `rtb_compat.py` (эталон) ↔ `bidder-go/internal/rtb/openrtb.go`: PMP `private_auction` → только сделки, `deal.bidfloor/bidfloorcur/at` заменяют floor/тип аукциона; `seatbid.seat` = `seat_id` партнёра (feed); native assets строго по `imp.native.request` (id/required/len, строкой или объектом), обязательный без данных → отказ; video MIME/VAST-версия/длительность против `mimes/protocols/min-maxduration`; VAST `Duration` HH:MM:SS и реальный `MediaFile type`; несовместимо → `*_openrtb_incompat_total{reason}`, не невалидная ставка. Контрактные фикстуры `bidder-go/testdata/openrtb/*.json` (10) гоняются Go и Python; parity_matrix обновлена. `[V]` реальные запросы SSP — при онбординге
 - [x] B10 R-05 — `rtb_compat.py` (`safe_url/adm_incompat/substitute_click_macros/js_string_escape/inject_vast_trackers`) ↔ `bidder-go/internal/rtb/adm.go` + `vast.go`: все URL креатива — только http(s) без кавычек/скобок/пробелов, иначе кандидат пропущен (`adm_url_invalid`); экранирование по контексту (атрибут / JS-строка / CDATA); `/api/rtb/click` без `&r=` (open redirect закрыт — цель только `click_url` креатива, `beacon=1` без перехода, `cdsp_clid` до `#fragment`); HTML5-макросы `${CLICK_URL}`/`%%CLICK_URL_*%%`, без макроса — capture click-beacon; Go получил viewability для banner (IO ≥50 %/1 с) и native `eventtrackers` event=2 (раньше `viewable_imps`=0 на Go-трафике); пользовательский VAST разбирается (`encoding/xml` / expat) и получает Impression/TrackingEvents/ClickTracking/erid во все InLine/Wrapper (в т.ч. Wrapper без Creatives, pod), невалидный → `adm_vast_malformed`; video `start` больше не viewable; Pydantic-валидаторы URL/VAST/длины в `CreativeIn/CreativePatch`. Тесты: Go `adm_r05_test.go` (14), Python `test_adm_safety.py` (46); parity_matrix дополнена. `[V]` SSP исполняет `<script>` в banner adm — при онбординге
-- [ ] B11 R-06
+- [x] B11 R-06 — frequency cap: win = бронь (`freqinf` `w:{bid}`, WIN_IMP_TTL 120 с), imp = подтверждение (`luaConfirmImp`), гейт confirmed + active reservations < cap; `bidmeta.fdev/fcaps/fwin`, `bidfreq` удалён; `partners.win_counts_as_imp` (миграция 043); метрика `rtb_freq_win_without_imp_total` + runbook `freq-win-without-imp`; audiences `audz:` ZSET per-member expiry (Python + Go), goal-сегменты через `_match_goals`, cron `/cron/audience-sync` (vercel.json, DEPLOYMENT.md) + `scripts/redis_rebuild_audiences.py`. Тесты: Go `redisx/freqcap_test.go` 11 + `audience_test.go` +1, Python `test_freq_caps.py` 12 (переписан), `test_audiences.py` +6, `test_reservation_lifecycle.py` расширен; Lua байт-в-байт. Не восстанавливается из БД после потери Redis: `freq:*` (нет per-device журнала) — зафиксировано в runbook redis-down.
 - [ ] B12 S-02/S-03
 - [ ] B13 L-02/L-03
 - [ ] B14 F-02
+- [ ] B15 R-07 — billing по burl (новый пункт, после B11/B14)
 - [ ] C1 O-01
 - [ ] C2 O-02
 - [ ] C3 O-03/O-04

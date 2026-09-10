@@ -29,10 +29,9 @@ from business_day import business_date_str, even_pacing_budget
 from audiences import check_audiences, store_clid_bridge
 from shading import get_factor as shading_get_factor, should_shade
 from cache import (
-    bump_frequency,
-    bump_frequency_multi,
-    check_frequency_cap,
+    active_caps,
     check_qps,
+    confirm_imp,
     gate_and_reserve,
     get_redis,
     mark_once,
@@ -1269,6 +1268,12 @@ async def process_bid_request(
             "has_total": 1 if total_budget > 0 else 0,
             "has_li": 1 if float(c["li_budget"] or 0) > 0 else 0,
             "business_date": business_date_str(),
+            # Frequency cap (R-06): settle_win инкрементирует freq:* по этим
+            # окнам, loss/expire снимает in-flight слот freqinf. Контракт с Go
+            # persistBidMeta (fdev/fcaps).
+            "fdev": device_id or "",
+            "fcaps": [list(w) for w in active_caps(caps_list)],
+            "fwin": 1 if _partner_flag(partner, "win_counts_as_imp") else 0,
         }
         if not is_test_req:
             ok = await gate_and_reserve(
@@ -1290,15 +1295,6 @@ async def process_bid_request(
             _fire_and_forget(store_clid_bridge(bid_id, device_id))
         nurl = f"{base}/api/rtb/win?bid={event_token}&price=${{AUCTION_PRICE}}"
         adm = _build_adm(c, base, event_token)
-
-        # Remember device for frequency counting at impression time
-        if device_id and caps_list:
-            r = get_redis()
-            _fire_and_forget(r.set(
-                f"bidfreq:{bid_id}",
-                f"{device_id}|{json.dumps(caps_list)}",
-                ex=3600,
-            ))
 
         # Synchronously cache bid metadata in Redis (sub-ms) so win/imp/click
         # handlers can resolve the bid immediately; the Postgres insert below
@@ -1521,6 +1517,15 @@ async def win_notice(bid: str, price: str | None = None):
     return {"ok": True}
 
 
+def _partner_flag(partner, name: str) -> bool:
+    """Boolean partner column that may be absent on older schemas (Record or dict)."""
+    try:
+        keys = partner.keys() if hasattr(partner, "keys") else ()
+        return bool(partner[name]) if name in keys else False
+    except Exception:
+        return False
+
+
 @router.get("/imp")
 async def impression(bid: str):
     bid = verify_event_token(bid)
@@ -1544,21 +1549,21 @@ async def impression(bid: str):
             counted = True
     if counted:
         obs_metrics.inc("rtb_imps_total")
-    if counted and not is_test:
-        # Count the impression against the frequency cap (после коммита: Redis
-        # не откатить, а недосчитанный кап безопаснее пересчитанного).
-        try:
-            meta = await get_redis().get(f"bidfreq:{bid}")
-        except Exception:
-            meta = None
-        if meta:
-            device_id, _, payload = meta.partition("|")
+        if not is_test:
+            # Frequency cap (audit R-06): показ подтверждён — бронь win → счётчики
+            # окон. После коммита bid_event_once: Redis не откатить, а
+            # недосчитанный кап безопаснее пересчитанного. PG-fallback без
+            # bidmeta (fdev/fcaps) ничего не считает — безопасная сторона.
             try:
-                windows = [(int(a), int(b)) for a, b in json.loads(payload)]
+                res = reservation_from_bidmeta(row) if isinstance(row, dict) else None
+                if res and res.get("caps"):
+                    res["bid_id"] = bid
+                    await confirm_imp(res)
+                else:
+                    obs_metrics.inc("rtb_imp_freq_uncounted_total")
             except Exception:
-                # Legacy meta format: "device|period_hours"
-                windows = [(0, int(payload or 24))]
-            await bump_frequency_multi(str(row["campaign_id"]), device_id, windows)
+                logger.exception("confirm_imp failed for bid %s", bid)
+                obs_metrics.inc("rtb_imp_freq_errors_total")
     return Response(content=_PIXEL, media_type="image/gif")
 
 

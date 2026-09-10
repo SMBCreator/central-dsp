@@ -15,9 +15,9 @@
 | Geo country (alpha-3→alpha-2) | ✅ | 🟡 | 🟡 (без нормализации) | TODO в Go: `_normalize_country` |
 | OS / device type targeting | ✅ | ✅ | 📋 | |
 | SSP allowlist per campaign | ✅ | ❌ | 📋 | |
-| Audience include/exclude (Redis sets) | ✅ | ❌ | 📋 | ifa + eids fallback-цепочка |
+| Audience include/exclude (`audz:` ZSET, per-member expiry) | ✅ | ❌ | ✅ + тесты | R-06: ZSCORE > now в обоих; goal-сегменты наполняются из `_match_goals`; cron `/cron/audience-sync` + `scripts/redis_rebuild_audiences.py` |
 | Budget reserve (атомарный Lua, копейки int) | ✅ | 🟡 (CAS-цикл) | 📋 | Go: перенос Lua 1:1, НЕ CAS |
-| Freq caps multi-window (до 3 окон, один Lua) | ✅ | 🟡 (одно окно) | 📋 | |
+| Freq caps multi-window (до 3 окон, один Lua) | ✅ | 🟡 (одно окно) | ✅ + тесты | R-06: гейт = confirmed (`freq:*`) + active reservations (`freqinf` ZSET: in-flight биды и `w:{bid}` выигранные, WIN_IMP_TTL 120 с) < cap; win → бронь, `/rtb/imp` → `luaConfirmImp`; `partners.win_counts_as_imp` для SSP без пикселя; Lua байт-в-байт (`test_redis_contracts.py`), `redisx/freqcap_test.go` ↔ `test_freq_caps.py` |
 | Bid shading (first-price-only, floor*1.01) | ✅ (GAP-005 fixed) | ❌ | ✅ гейт + 📋 фактор | Фактор обучается в Python cron |
 | Deal/PMP (`imp.pmp.deals`) | ✅ | ❌ | ✅ | R-04: deal floor/at/private_auction — см. строку OpenRTB-совместимости ниже |
 | Валюта RUB + Decimal/копейки | ✅ | ❌ (double USD) | 📋 (int64 копейки) | Java-double — одна из причин деприкации |
@@ -43,7 +43,7 @@ Go-биддер (`bidder-go/`) доведён до функциональног�
 | Возможность | Python | Go | Проверка |
 |---|---|---|---|
 | Banner bid (targeting, размер, floor) | да | да | contract-тест 5/5 MATCH |
-| Multi-window frequency caps (Lua) | да | да | e2e: NOBID на 3-м запросе при капе 2/1ч |
+| Multi-window frequency caps (Lua) | да | да | e2e: NOBID на 3-м запросе при капе 2/1ч; R-06: NOBID на 3-м параллельном биде без единого показа (in-flight), win без imp освобождает слот через WIN_IMP_TTL |
 | Bid shading gate (first-price only) | да | да | фид отдаёт `bid_shading`, порт shading.go |
 | HMAC nurl/imp/click токены | да | да | win=200, imp=200 через Python-обработчики |
 | Денежный контур (bill_win, ledger) | да | да | transactions -0.0012, balance/spent_total обновлены |

@@ -65,6 +65,15 @@ HTTP 502), если backend не отдал фид — backend (ssp_check) по 
   затем `--apply` (ключ только повышается до значения ledger; `--force` — перезапись).
   Compose-Redis: `noeviction` + AOF + volume `redis_data`; в production backend и
   bidder-go не стартуют с eviction-политикой.
+- Ретаргетинг-аудитории (`audz:{segment}` ZSET, R-06): после потери Redis
+  include-кампании молчат, пока ключи пусты. `/cron/audience-sync` (раз в час)
+  досеет пустые ключи из `audience_members` сам; немедленно —
+  `docker compose exec backend python scripts/redis_rebuild_audiences.py` (dry-run),
+  затем `--apply` (только пустые ключи) или `--apply --force` (полная перезапись).
+- Frequency cap после потери Redis: `freq:*` и `freqinf:*` начинают с нуля —
+  до конца самого длинного окна возможен перепоказ в размере уже показанного.
+  Из БД не восстанавливается (нет per-device журнала показов за окно); принять
+  как известное ограничение инцидента.
 
 ## no-traffic — BidderNoTraffic
 
@@ -165,6 +174,33 @@ HTTP 502), если backend не отдал фид — backend (ssp_check) по 
 - Replay-атака: заблокировать источник на уровне ингресса.
 - Рассинхрон после деплоя: ожидаемо, затухнет за минуты; если нет — проверить
   что все инстансы читают один секрет.
+
+## freq-win-without-imp — FreqWinWithoutImpHigh
+
+**Что значит:** доля выигранных бидов, чья бронь frequency cap истекла без
+imp-пикселя (`rtb_freq_win_without_imp_total` / `rtb_wins_total` за 15 мин)
+выше нормы (ориентир — >15 %; нормальный фон 3–10 %: закрытая вкладка,
+не отрисованный adm, серверный nurl до рендера).
+
+**Почему важно:** win — это «мы победили», не «показ состоялся» (audit R-06).
+Freq cap занимает слот на win временно (`WIN_IMP_TTL`, сейчас 120 с) и
+подтверждает показ на `/rtb/imp`. Высокая доля = пиксель не доходит: кап
+недоучитывает показы, а статистика `impressions` занижена относительно `wins`.
+
+**Диагностика:**
+1. Разрез по SSP: `SELECT supply_partner_id, count(*) FILTER (WHERE event_type='win') wins,
+   count(*) FILTER (WHERE event_type='impression') imps FROM bid_events WHERE created_at > now() - interval '1 hour'
+   GROUP BY 1` — у какого партнёра imps/wins просел.
+2. У просевшего партнёра: исполняется ли `<script>` внутри banner adm (пиксель
+   `/rtb/imp` живёт там); для native — доходит ли `eventtrackers`/`imptrackers`.
+3. Если SSP в принципе не даёт клиентского пикселя (in-app SDK) — включить
+   `UPDATE supply_partners SET win_counts_as_imp = true WHERE id = ...` (кап
+   считает показ на win; только по документации биржи).
+4. Если пиксель есть, но опаздывает: p95/p99 `win→imp` —
+   `SELECT percentile_cont(0.95) WITHIN GROUP (ORDER BY extract(epoch FROM i.created_at - w.created_at))
+   FROM bid_events w JOIN bid_events i ON i.bid_id = w.bid_id AND i.event_type='impression'
+   WHERE w.event_type='win' AND w.created_at > now() - interval '1 day'` — если p95 > 100 с,
+   поднять `WIN_IMP_TTL` (cache.WIN_IMP_TTL ↔ redisx.DefaultWinImpTTL, менять парой).
 
 ## imp-win-mismatch — ImpWithoutWinAnomaly
 

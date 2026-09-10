@@ -97,6 +97,10 @@ type Registry struct {
 	// Gauges снимаются колбэками в момент скрейпа.
 	gaugesMu sync.Mutex
 	gauges   map[string]func() float64
+
+	// winWithoutImp — источник счётчика rtb_freq_win_without_imp_total
+	// (redisx.WinWithoutImp); колбэк, чтобы metrics не зависел от redisx.
+	winWithoutImp func() uint64
 }
 
 type histogram struct {
@@ -107,7 +111,7 @@ type histogram struct {
 
 // New создаёт реестр с преаллоцированными сериями no-bid.
 func New() *Registry {
-	r := &Registry{gauges: map[string]func() float64{}}
+	r := &Registry{gauges: map[string]func() float64{}, winWithoutImp: func() uint64 { return 0 }}
 	for _, reason := range AllNoBidReasons {
 		r.noBid.Store(reason, new(atomic.Int64))
 	}
@@ -173,6 +177,13 @@ func (r *Registry) IncLossRelease() { r.lossReleases.Add(1) }
 // IncReserveExpired / IncReserveOrphans — sweeper: резервы без win/loss,
 // возвращённые по таймауту; orphans — pending без bidmeta (деньги вернёт reconcile).
 func (r *Registry) IncReserveExpired(n int) { r.reserveExpired.Add(int64(n)) }
+
+// SetWinWithoutImpSource подключает счётчик выигранных бидов без imp (R-06).
+func (r *Registry) SetWinWithoutImpSource(f func() uint64) {
+	if f != nil {
+		r.winWithoutImp = f
+	}
+}
 func (r *Registry) IncReserveOrphans(n int) { r.reserveOrphans.Add(int64(n)) }
 
 // IncEventEmitError — не удалось положить событие в Redis Stream.
@@ -282,6 +293,7 @@ func (r *Registry) write(w http.ResponseWriter) {
 	c("bidder_gate_errors_total", "gate_and_reserve Redis errors.", r.gateErrors.Load())
 	c("bidder_loss_releases_total", "Budget reservations released via /rtb/loss.", r.lossReleases.Load())
 	c("bidder_reserve_expired_total", "Reservations expired by the sweeper (no win/loss in time).", r.reserveExpired.Load())
+	c("rtb_freq_win_without_imp_total", "Won bids whose frequency-cap reservation expired without an imp pixel (audit R-06); a high share means a broken SSP pixel.", int64(r.winWithoutImp()))
 	c("bidder_reserve_orphans_total", "pending:bids entries whose bidmeta was already gone.", r.reserveOrphans.Load())
 	c("bidder_event_emit_errors_total", "Bid events that failed to be written to the rtb:events Redis stream.", r.eventEmitErrors.Load())
 	c("bidder_bookkeeping_errors_total", "Bids withdrawn because bidmeta/bid event could not be written to Redis (reservation released).", r.bookkeepingErrors.Load())

@@ -1,13 +1,15 @@
 package rtb
 
 // Ретаргетинг-сегменты в Go-биддере: паритет с backend/audiences.py.
-// Redis — miniredis: ключи aud:{segment} наполняет пиксель, биддер только читает.
+// Redis — miniredis: ключи audz:{segment} (ZSET device -> expires_at) наполняет
+// пиксель, биддер только читает.
 
 import (
 	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 
@@ -26,6 +28,30 @@ func newMiniRedisHandler(t *testing.T) (*Handler, *miniredis.Miniredis) {
 	return &Handler{redis: rc}, mr
 }
 
+// audFuture — expires_at участника далеко в будущем (сегмент ещё жив).
+var audFuture = float64(time.Now().Add(24 * time.Hour).Unix())
+
+// Просроченный участник (score в прошлом) — уже не в сегменте, даже если
+// pruner его ещё не удалил (R-06 per-member expiry).
+func TestAudienceOK_ExpiredMemberIsNotAMember(t *testing.T) {
+	h, mr := newMiniRedisHandler(t)
+	mr.ZAdd("audz:buyers", float64(time.Now().Add(-time.Minute).Unix()), "dev-1")
+	mr.ZAdd("audz:buyers", audFuture, "dev-2")
+	ctx := context.Background()
+	if h.audienceOK(ctx, []string{"buyers"}, nil, "dev-1") {
+		t.Fatal("expired include member must not pass")
+	}
+	if !h.audienceOK(ctx, []string{"buyers"}, nil, "dev-2") {
+		t.Fatal("live member must pass")
+	}
+	if !h.audienceOK(ctx, nil, []string{"buyers"}, "dev-1") {
+		t.Fatal("expired exclude member must not block")
+	}
+	if h.audienceOK(ctx, nil, []string{"buyers"}, "dev-2") {
+		t.Fatal("live exclude member must block")
+	}
+}
+
 func TestAudienceOK_NoSegmentsAlwaysPasses(t *testing.T) {
 	h := &Handler{} // redis == nil: без сегментов Redis не нужен
 	if !h.audienceOK(context.Background(), nil, nil, "dev-1") {
@@ -39,8 +65,9 @@ func TestAudienceOK_NoSegmentsAlwaysPasses(t *testing.T) {
 func TestAudienceOK_IncludeExclude(t *testing.T) {
 	h, mr := newMiniRedisHandler(t)
 	ctx := context.Background()
-	mr.SAdd("aud:buyers", "dev-1", "dev-2")
-	mr.SAdd("aud:churned", "dev-2")
+	mr.ZAdd("audz:buyers", audFuture, "dev-1")
+	mr.ZAdd("audz:buyers", audFuture, "dev-2")
+	mr.ZAdd("audz:churned", audFuture, "dev-2")
 
 	cases := []struct {
 		name    string
@@ -108,7 +135,7 @@ func TestBid_AudienceFiltersCandidates(t *testing.T) {
 	snap.Candidates = []feed.Candidate{seg, plain}
 
 	h, mr := newMiniRedisBidHandler(t, snap)
-	mr.SAdd("aud:buyers", "other-device")
+	mr.ZAdd("audz:buyers", audFuture, "other-device")
 
 	w := doBid(t, h, audienceBidReq)
 	if w.Code != http.StatusOK {
@@ -122,7 +149,7 @@ func TestBid_AudienceFiltersCandidates(t *testing.T) {
 		t.Fatalf("segment-gated candidate must be filtered; got crid=%s", got)
 	}
 
-	mr.SAdd("aud:buyers", "dev-1")
+	mr.ZAdd("audz:buyers", audFuture, "dev-1")
 	w = doBid(t, h, audienceBidReq)
 	if w.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d", w.Code)
@@ -138,11 +165,11 @@ func TestBid_ExcludeSegmentDropsOnlyCandidate(t *testing.T) {
 	snap := testSnapshot()
 	snap.Candidates[0].T = &feed.Targeting{AudienceExclude: []string{"churned"}}
 	h, mr := newMiniRedisBidHandler(t, snap)
-	mr.SAdd("aud:churned", "dev-1")
+	mr.ZAdd("audz:churned", audFuture, "dev-1")
 	if w := doBid(t, h, audienceBidReq); w.Code != http.StatusNoContent {
 		t.Fatalf("excluded device: want 204 no-bid, got %d", w.Code)
 	}
-	mr.SRem("aud:churned", "dev-1")
+	mr.ZRem("audz:churned", "dev-1")
 	if w := doBid(t, h, audienceBidReq); w.Code != http.StatusOK {
 		t.Fatalf("device not excluded: want 200, got %d", w.Code)
 	}
