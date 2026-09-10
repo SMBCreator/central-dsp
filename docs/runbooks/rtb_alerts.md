@@ -441,6 +441,37 @@ consumers.
 
 ---
 
+## conversion-attribution — ConversionAttributionCoverageLow
+
+**Что значит:** за 7 дней меньше 80 % конверсий пикселя удалось привязать к
+биду (`conversion_attributions.attribution_status = 'attributed'`). Отчёты по
+CPA/CVR по любым срезам занижают конверсии; backend это знает и **сам
+отключает** авто-действия по conversion-KPI (`rules_engine` пропускает правила
+по `cpa/cvr/conversions`, `optimizer` не блокирует по правилам 1 и 3) — до
+восстановления покрытия кампании работают без этой защиты.
+
+**Где смотреть:**
+- `conversions_unattributed_total{status}` — `unattributed` растёт: clid не
+  доходит до пикселя; `out_of_window` растёт: бид старше окна.
+- `conversion_attribution_coverage{dimension}` — если низко только для
+  `os/browser/tagid/...`, а `campaign` в норме, проблема не в атрибуции, а в
+  том, что SSP не передаёт это поле в bid request (строки «Не указано»).
+- В UI: /analytics → бейдж покрытия и строки «Без атрибуции» / «Вне окна
+  атрибуции» на уровне рекламодателя.
+
+**Действия:**
+1. `SELECT attribution_status, count(*) FROM conversion_attributions
+   WHERE converted_at >= now() - interval '7 days' GROUP BY 1;`
+2. `unattributed` доминирует → проверить креативы: click_url должен содержать
+   `${CLICK_URL}`-редирект через `/click`, который дописывает `cdsp_clid` на
+   лендинг; лендинг не должен терять query на своих редиректах; пиксель должен
+   стоять на странице приземления (clid читается из `location.search` и
+   кладётся в localStorage).
+3. `out_of_window` доминирует → длинный цикл покупки: поднять
+   `PIXEL_ATTRIBUTION_WINDOW_DAYS` (backend), согласовав с рекламодателем.
+4. `raw_payload` / `external_conversion_id` (`oid` в beacon) — сверить спорные
+   конверсии с CRM рекламодателя.
+
 ## Куда смотреть в первую очередь при любом алерте
 
 1. `bidder :8090/metrics` и `backend /metrics` — снапшот всех счётчиков.

@@ -22,6 +22,7 @@ uniformly.
 """
 import json as _json
 
+import conversion_attribution as attribution
 from db import get_pool
 from stats_math import spend_expr
 
@@ -38,6 +39,7 @@ CPV_OVERRUN_FACTOR = 2.0
 MIN_VIDEO_STARTS = 100
 MIN_VTR = 0.15               # 15% completion rate floor
 WINDOW = "72 hours"
+WINDOW_HOURS = 72
 
 # block_type -> (SQL expression over bid_events alias "be", volume multiplier)
 # Higher multiplier = coarser dimension = demand more data before blocking it.
@@ -73,6 +75,12 @@ async def optimize_campaign(campaign: dict) -> list[dict]:
 
     target_cpa = float(campaign.get("target_cpa") or 0)
     target_cpc = float(campaign.get("target_cpc") or 0)
+    # F-02/B14c: правила 1 и 3 опираются на «конверсий нет»; если атрибуция
+    # владельца неисправна (покрытие < 0.8), этот ноль ничего не значит — не блокируем.
+    conv_kpi_ok = (
+        await attribution.kpi_trustworthy_for_owner(pool, str(campaign["user_id"]), WINDOW_HOURS)
+        if campaign.get("user_id") else True
+    )
     target_cpm = float(campaign.get("target_cpm") or 0)
     target_cpv = float(campaign.get("target_cpv") or 0)
     objective = campaign.get("objective") or "clicks"
@@ -135,7 +143,7 @@ async def optimize_campaign(campaign: dict) -> list[dict]:
             spend, convs = float(r["spend"] or 0), convs_by_val.get(val, 0)
             ctr = clicks / imps if imps else 0
             # Rule 1: click-fraud — abnormally high CTR, zero conversions
-            if camp_ctr > 0 and ctr > camp_ctr * FRAUD_CTR_FACTOR and convs == 0 and clicks >= 10:
+            if conv_kpi_ok and camp_ctr > 0 and ctr > camp_ctr * FRAUD_CTR_FACTOR and convs == 0 and clicks >= 10:
                 await _block(block_type, val,
                              f"Аномальный CTR {ctr*100:.2f}% (в {ctr/camp_ctr:.0f}x выше среднего) без конверсий — похоже на скликивание ({label})",
                              {"imps": imps, "clicks": clicks, "ctr": round(ctr, 5), "camp_ctr": round(camp_ctr, 5)})
@@ -147,7 +155,7 @@ async def optimize_campaign(campaign: dict) -> list[dict]:
                              {"imps": imps, "clicks": clicks, "ctr": round(ctr, 5)})
                 continue
             # Rule 3: CPA overrun — spend without conversions
-            if (objective == "conversions" or target_cpa > 0) and target_cpa > 0 \
+            if conv_kpi_ok and (objective == "conversions" or target_cpa > 0) and target_cpa > 0 \
                     and convs == 0 and spend > target_cpa * MIN_SPEND_MULTIPLIER_CPA:
                 await _block(block_type, val,
                              f"Потрачено ${spend:.2f} (>{MIN_SPEND_MULTIPLIER_CPA:.0f}x целевого CPA ${target_cpa:.2f}) без единой конверсии ({label})",

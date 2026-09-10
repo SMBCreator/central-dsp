@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import uuid
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -17,6 +18,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 import pixel_guard
 from audiences import add_goal_members, process_pixel_event
 from auth import current_user
+import conversion_attribution as attribution
 from rbac import require_campaign_write
 from db import get_pool
 from routers.settings import public_api_base_url
@@ -30,6 +32,8 @@ router = APIRouter(prefix="/pixel", tags=["pixel"])
 MAX_COLLECT_BODY = 16 * 1024
 # Окно атрибуции клик → конверсия: bid старше окна к кампании не привязывается.
 ATTRIBUTION_WINDOW_DAYS = int(os.environ.get("PIXEL_ATTRIBUTION_WINDOW_DAYS", "30"))
+# Насколько глубоко искать бид по clid, чтобы отличить out_of_window от unattributed.
+ATTRIBUTION_LOOKUP_DAYS = max(90, ATTRIBUTION_WINDOW_DAYS)
 
 _CORS = {"Access-Control-Allow-Origin": "*"}
 
@@ -151,8 +155,10 @@ async def _attributed_bid(pool, pixel_owner_id: str, clid: str) -> dict | None:
     """Бид для атрибуции конверсии по clid (audit E-05).
 
     Привязываем только если кампания бида принадлежит владельцу пикселя (или его
-    поддереву agency → client) и бид не старше окна атрибуции. Чужой/просроченный
-    clid → конверсия записывается как органическая, без campaign_id.
+    поддереву agency → client). Чужой clid → бид не найден → unattributed.
+    Окно атрибуции здесь НЕ фильтр: бид ищется до ATTRIBUTION_LOOKUP_DAYS назад,
+    а статус attributed/out_of_window выставляет conversion_attribution.classify
+    (B14c) — иначе «вне окна» неотличимо от «без clid».
     """
     row = await pool.fetchrow(
         """
@@ -162,7 +168,8 @@ async def _attributed_bid(pool, pixel_owner_id: str, clid: str) -> dict | None:
             SELECT u.id FROM users u JOIN owners o ON u.parent_user_id = o.id
         )
         SELECT be.campaign_id, be.line_item_id, be.creative_id, be.supply_partner_id,
-               be.domain, be.device_type, be.geo_country, be.is_test
+               be.domain, be.device_type, be.geo_country, be.os, be.browser, be.ad_type,
+               be.tagid, be.publisher_id, be.bundle, be.is_test, be.created_at
         FROM bid_events be
         JOIN campaigns c ON c.id = be.campaign_id
         WHERE be.bid_id = $1 AND be.event_type = 'bid'
@@ -171,18 +178,24 @@ async def _attributed_bid(pool, pixel_owner_id: str, clid: str) -> dict | None:
         ORDER BY be.created_at DESC
         LIMIT 1
         """,
-        clid, pixel_owner_id, ATTRIBUTION_WINDOW_DAYS,
+        clid, pixel_owner_id, ATTRIBUTION_LOOKUP_DAYS,
     )
     return dict(row) if row else None
 
 
 async def _match_goals(pool, pixel_id: str, pixel_owner_id: str, session_id: str, event_type: str,
-                       event_name: str | None, url: str | None, clid: str | None) -> None:
+                       event_name: str | None, url: str | None, clid: str | None,
+                       external_id: str | None = None, raw_payload: dict | None = None) -> None:
     """Check active goals for this pixel against the incoming event and record conversions."""
     goals = await pool.fetch("SELECT * FROM goals WHERE pixel_id = $1", pixel_id)
     if not goals:
         return
-    bid = await _attributed_bid(pool, pixel_owner_id, clid) if clid else None
+    found = await _attributed_bid(pool, pixel_owner_id, clid) if clid else None
+    now = datetime.now(UTC)
+    status = attribution.classify(found, now, ATTRIBUTION_WINDOW_DAYS)
+    # В conversions (и в hourly/CPA) бид попадает только при attributed; для
+    # out_of_window измерения бида остаются в conversion_attributions.
+    bid = found if status == attribution.STATUS_ATTRIBUTED else None
     for g in goals:
         hit = False
         if g["goal_type"] == "event" and event_type == "event" and event_name == g["match_value"]:
@@ -203,10 +216,10 @@ async def _match_goals(pool, pixel_id: str, pixel_owner_id: str, session_id: str
             continue
         # Attribute to the bid (campaign / SSP / domain / device) via clid —
         # только свой и в окне атрибуции (E-05), иначе organic.
-        attrib = dict(bid) if bid else {}
+        attrib = {k: v for k, v in bid.items() if k != "created_at"} if bid else {}
         # E-04: конверсия по тестовому биду (OpenRTB test=1) наследует флаг —
         # в журнале остаётся, в hourly/CPA/ML не попадает.
-        is_test = bool(attrib.pop("is_test", False))
+        is_test = bool(attrib.pop("is_test", False)) or bool((found or {}).get("is_test", False))
         inserted = await pool.fetchrow(
             """INSERT INTO conversions (goal_id, pixel_id, session_id, clid, campaign_id, line_item_id,
                                         creative_id, supply_partner_id, domain, device_type, geo_country, value,
@@ -218,6 +231,12 @@ async def _match_goals(pool, pixel_id: str, pixel_owner_id: str, session_id: str
             attrib.get("supply_partner_id"), attrib.get("domain"), attrib.get("device_type"),
             attrib.get("geo_country"), float(g["value"] or 0), is_test,
         )
+        if inserted:
+            await attribution.record(
+                pool, conversion_id=inserted["id"], owner_user_id=pixel_owner_id, pixel_id=pixel_id,
+                goal_id=g["id"], status=status, clid=clid, bid=found, converted_at=now,
+                external_conversion_id=external_id, raw_payload=raw_payload, is_test=is_test,
+            )
         # Goal segments (R-06): первая конверсия по цели наполняет сегменты
         # rule_type='goal' этого пикселя. После INSERT, чтобы дубль конверсии
         # не трогал аудиторию повторно; тестовый бид в аудиторию не попадает.
@@ -248,13 +267,15 @@ class CollectIn(BaseModel):
     url: str | None = Field(default=None, max_length=500)
     ref: str | None = Field(default=None, max_length=500)
     clid: str | None = Field(default=None, max_length=64)
+    # внешний id конверсии (номер заказа) — сверка с CRM рекламодателя (F-02)
+    oid: str | None = Field(default=None, max_length=128)
     dur: int = Field(default=0, ge=0, le=60)
     sp: int = Field(default=0, ge=0, le=100)
     sw: int = Field(default=0, ge=0, le=20000)
     ua: str = Field(default="", max_length=512)
     lang: str | None = Field(default=None, max_length=32)
 
-    @field_validator("name", "url", "ref", "clid", "lang", mode="before")
+    @field_validator("name", "url", "ref", "clid", "oid", "lang", mode="before")
     @classmethod
     def _empty_to_none(cls, v):
         return None if v in ("", 0, False) else v
@@ -325,7 +346,9 @@ async def collect(request: Request):
         pixel_id, ev.sid, ev.type, ev.name, ev.url, ev.ref,
         device, browser, os_name, ev.dur, ev.sp, ev.clid,
     )
-    await _match_goals(pool, pixel_id, str(owner_id), ev.sid, ev.type, ev.name, ev.url, ev.clid)
+    await _match_goals(pool, pixel_id, str(owner_id), ev.sid, ev.type, ev.name, ev.url, ev.clid,
+                       external_id=ev.oid,
+                       raw_payload={"type": ev.type, "name": ev.name, "url": ev.url, "ref": ev.ref})
     await process_pixel_event(pool, pixel_id, ev.clid, ev.type, ev.name, ev.url)
     return _noop()
 

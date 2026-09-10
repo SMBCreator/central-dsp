@@ -1,5 +1,11 @@
 """Auto-rules engine: evaluates metric conditions and applies actions."""
+import logging
+
+import conversion_attribution as attribution
 from db import get_pool
+from stats_math import CONVERSION_KPI_METRICS
+
+log = logging.getLogger("rules")
 
 _OPS = {"gt": ">", "lt": "<", "gte": ">=", "lte": "<="}
 
@@ -136,7 +142,18 @@ async def evaluate_rules_for_user(user_id: str) -> list[dict]:
         user_id,
     )
     triggered: list[dict] = []
+    # F-02/B14c: по CPA/CVR/conversions действуем только при исправной атрибуции
+    # (покрытие >= 0.8 за окно правила); иначе правило пропускается, а не
+    # останавливает кампанию по «нулю конверсий», которого нет.
+    kpi_ok_cache: dict[int, bool] = {}
     for rule in rules:
+        if rule["metric"] in CONVERSION_KPI_METRICS:
+            wh = int(rule["window_hours"])
+            if wh not in kpi_ok_cache:
+                kpi_ok_cache[wh] = await attribution.kpi_trustworthy_for_owner(pool, user_id, wh)
+            if not kpi_ok_cache[wh]:
+                log.warning("rule %s skipped: conversion attribution coverage low for user %s", rule["id"], user_id)
+                continue
         if rule["campaign_id"]:
             campaign_ids = [str(rule["campaign_id"])]
         else:

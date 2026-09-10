@@ -13,11 +13,22 @@ type Campaign = { id: string; name: string }
 type Group = { id: string; name: string }
 
 type ReportRow = Record<string, string | number | null>
+/* F-02/B14c: покрытие атрибуции конверсий. coverage[dim] — доля конверсий,
+   попадающих в строку измерения; < 0.8 → confidence=low, CPA/CVR ненадёжны. */
+type ConversionsMeta = {
+  attributed: number
+  out_of_window: number
+  unattributed: number
+  coverage: Record<string, number | null>
+  confidence: "high" | "low" | "n/a"
+  scope: "advertiser" | "campaign"
+}
 type ReportMeta = {
   source: "hourly" | "events"
   truncated: boolean
   limit: number
   conversions_available: boolean
+  conversions?: ConversionsMeta | null
 }
 type ReportResponse = {
   rows: ReportRow[]
@@ -30,6 +41,38 @@ type ReportResponse = {
 const ROW_KIND_CLASS: Record<string, string> = {
   other: "italic text-muted",
   not_set: "text-muted",
+  // строки уровня рекламодателя: конверсии, которые нельзя положить ни в одну строку измерения
+  out_of_window: "text-muted",
+  unattributed: "text-muted",
+}
+
+function AttributionBadge({ meta }: { meta: ConversionsMeta }) {
+  const total = meta.attributed + meta.out_of_window + meta.unattributed
+  if (total === 0) return null
+  const campaignCov = meta.coverage.campaign
+  const pct = campaignCov == null ? null : Math.round(campaignCov * 100)
+  const low = meta.confidence === "low"
+  const lowDims = Object.entries(meta.coverage)
+    .filter(([, v]) => v != null && v < 0.8)
+    .map(([k]) => k)
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ${
+        low ? "bg-warning/10 text-warning" : "bg-success/10 text-success"
+      }`}
+      title={
+        low
+          ? `Низкое покрытие атрибуции (${lowDims.join(", ")}): CPA и CVR по этим срезам ненадёжны, авто-правила по конверсиям не действуют`
+          : "Атрибуция исправна: ≥ 80 % конверсий привязаны к биду"
+      }
+    >
+      {pct == null ? "Атрибуция: нет данных" : `Атрибуция ${pct} %`}
+      {meta.out_of_window > 0 || meta.unattributed > 0
+        ? ` · вне окна ${meta.out_of_window} · без атрибуции ${meta.unattributed}`
+        : ""}
+      {low ? " · низкое покрытие" : ""}
+    </span>
+  )
 }
 
 const GROUPINGS: { key: string; label: string; section: string }[] = [
@@ -468,7 +511,14 @@ function AnalyticsInner() {
                 }`
               : undefined
           }
-          action={<ColumnsButton onClick={() => setColsOpen(true)} />}
+          action={
+            <div className="flex items-center gap-2">
+              {report?.meta?.conversions && report.meta.conversions_available ? (
+                <AttributionBadge meta={report.meta.conversions} />
+              ) : null}
+              <ColumnsButton onClick={() => setColsOpen(true)} />
+            </div>
+          }
         />
         <ColumnsModal
           open={colsOpen}

@@ -362,3 +362,20 @@ groups:
             Есть bid-трафик, но bid_events/stats_hourly.bids не пополняются —
             consumer не запущен (RTB_EVENTS_CONSUMER=0? REDIS_URL?) или завис на
             bootstrap группы. Runbook: rtb_alerts.md#events-consumer
+
+      # F-02/B14c: доля конверсий пикселя, привязанных к биду (attributed, last click).
+      # Ниже 0.8 отчёты по CPA/CVR врут, а backend сам перестаёт делать авто-стоп/blacklist
+      # по conversion-KPI (stats_math.conversion_kpi_trustworthy). Gauge обновляет /cron/optimize.
+      - alert: ConversionAttributionCoverageLow
+        expr: conversion_attribution_coverage{dimension="campaign"} < 0.8
+        for: 6h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Менее 80 % конверсий пикселя привязываются к биду (7 дней)"
+          description: >-
+            Конверсии приходят без cdsp_clid, с чужим clid или позже окна
+            PIXEL_ATTRIBUTION_WINDOW_DAYS — макрос ${CLICK_URL} не прокинут на
+            лендинг, clid теряется на редиректе, либо окно слишком короткое.
+            Пока покрытие низкое, правила и оптимизатор не действуют по
+            CPA/CVR/conversions. Runbook: rtb_alerts.md#conversion-attribution

@@ -81,6 +81,23 @@ OTHER_LABEL = "Прочее"          # свёртка групп за пред�
 ROW_KIND_DATA = "data"
 ROW_KIND_NOT_SET = "not_set"
 ROW_KIND_OTHER = "other"
+# F-02/B14c: служебные строки уровня рекламодателя — конверсии, которые нельзя
+# положить ни в одну строку измерения (нет бида / бид старше окна).
+ROW_KIND_UNATTRIBUTED = "unattributed"
+ROW_KIND_OUT_OF_WINDOW = "out_of_window"
+UNATTRIBUTED_LABEL = "Без атрибуции"
+OUT_OF_WINDOW_LABEL = "Вне окна атрибуции"
+# Строки, для которых CPA не имеет смысла (spend и конверсии из разных множеств).
+ROW_KINDS_WITHOUT_CPA = frozenset({ROW_KIND_NOT_SET, ROW_KIND_UNATTRIBUTED, ROW_KIND_OUT_OF_WINDOW})
+
+# Покрытие атрибуции: доля конверсий владельца, которые можно положить в строку
+# данного измерения (attributed И значение измерения не NULL). Ниже порога —
+# CPA/CVR по этому срезу ненадёжны: авто-стоп/blacklist по conversion-KPI запрещён.
+COVERAGE_LOW_THRESHOLD = 0.8
+CONFIDENCE_HIGH = "high"
+CONFIDENCE_LOW = "low"
+CONFIDENCE_NA = "n/a"          # конверсий нет вовсе — покрытие не определено
+CONVERSION_KPI_METRICS = frozenset({"cpa", "cvr", "conversions"})
 
 # Аддитивные метрики: суммируются в totals и вычитаются для строки «Прочее».
 ADDITIVE_METRICS = ("bids", "wins", "impressions", "clicks", "viewable_imps", "spend", "conversions", "losses")
@@ -130,6 +147,31 @@ def derive(*, bids=0, wins=0, impressions=0, clicks=0, viewable_imps=0, spend=0.
         # доля проигрышей — от откликов, по которым SSP вообще шлёт lurl
         out["loss_rate"] = pct(losses, b) if losses else 0.0
     return out
+
+
+def coverage_ratio(covered, total) -> float | None:
+    """attributed-с-измерением / все конверсии владельца. None, если конверсий нет."""
+    t = int(total or 0)
+    if t <= 0:
+        return None
+    return round(min(int(covered or 0), t) / t, 4)
+
+
+def coverage_confidence(ratio: float | None) -> str:
+    if ratio is None:
+        return CONFIDENCE_NA
+    return CONFIDENCE_LOW if ratio < COVERAGE_LOW_THRESHOLD else CONFIDENCE_HIGH
+
+
+def conversion_kpi_trustworthy(attributed, total) -> bool:
+    """Можно ли принимать автоматические решения (stop/blacklist) по CPA/CVR/conversions.
+
+    Нет конверсий вовсе — покрытие не определено, решение остаётся за правилом
+    (у него свои пороги по показам/spend). Есть конверсии, но атрибутировано
+    < COVERAGE_LOW_THRESHOLD — трекинг clid неисправен, KPI по конверсиям врут.
+    """
+    ratio = coverage_ratio(attributed, total)
+    return ratio is None or ratio >= COVERAGE_LOW_THRESHOLD
 
 
 def clamp_hours(hours) -> int:

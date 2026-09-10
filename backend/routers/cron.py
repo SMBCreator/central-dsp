@@ -10,6 +10,7 @@ import time
 
 from fastapi import APIRouter, HTTPException, Request
 
+import conversion_attribution as attribution
 import obs_metrics
 from business_day import business_date
 from cache import avail_adv_key, avail_camp_key, clear_stale_daily_spend, get_redis, res_adv_key, res_camp_key
@@ -190,7 +191,12 @@ async def audience_sync(request: Request):
 async def run_buy_optimizer(request: Request):
     """Analyze traffic quality and block weak sources for auto_optimize campaigns."""
     _check_secret(request)
-    return await run_optimizer()
+    # F-02/B14c: gauge conversion_attribution_coverage{dimension} обновляется здесь же —
+    # optimizer и алерт смотрят на одну и ту же величину.
+    coverage = await attribution.refresh_coverage_gauges(await get_pool())
+    result = await run_optimizer()
+    result["attribution_coverage"] = coverage
+    return result
 
 
 @router.get("/fx-refresh")

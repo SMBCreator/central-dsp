@@ -10,7 +10,7 @@
   * date_from > date_to — 422, не молчаливый swap.
 """
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -79,7 +79,7 @@ def test_parse_date_range_ok():
 # ---------------------------------------------------------------------------
 
 CAMP_A, CAMP_B = str(uuid4()), str(uuid4())
-TS = datetime(2026, 9, 1, tzinfo=timezone.utc)
+TS = datetime(2026, 9, 1, tzinfo=UTC)
 
 
 def _rec(**kw):
@@ -102,7 +102,8 @@ class _Conn:
             return [{"id": CAMP_A}, {"id": CAMP_B}]
         if "SELECT id, name FROM" in q:
             return [{"id": CAMP_A, "name": "Alpha"}, {"id": CAMP_B, "name": "Beta"}]
-        if "FROM conversions cv" in q:
+        if "FROM conversion_attributions ca" in q:
+            assert "attribution_status = 'attributed'" in q, "в строках отчёта — только attributed"
             return self.s.get("conv_groups", [])
         if "GROUP BY" in q:
             assert "LIMIT" in q
@@ -116,7 +117,7 @@ class _Conn:
 
     async def fetchval(self, q, *args):
         self.queries.append(q)
-        assert "FROM conversions cv" in q
+        assert "FROM conversion_attributions ca" in q and "attribution_status = 'attributed'" in q
         return self.s.get("conv_total", 0)
 
 
@@ -146,8 +147,17 @@ def _run_report(monkeypatch, scenario, body, mult=1.0):
     async def fake_scope(user):
         return [str(uuid4())], None, mult
 
+    # B14c: покрытие атрибуции владельца — из сценария (по умолчанию всё attributed)
+    async def fake_breakdown(conn, owner_ids, d_from, d_to, dims):
+        attr = scenario.get("attr", {"attributed": scenario.get("conv_total", 0) or 0,
+                                     "out_of_window": 0, "unattributed": 0})
+        total = attr["attributed"] + attr["out_of_window"] + attr["unattributed"]
+        cov = {d: (attr["attributed"] / total if total else None) for d in dims if d in st.attribution.DIM_COLUMNS}
+        return {**attr, "coverage": cov}
+
     monkeypatch.setattr(st, "get_pool", fake_get_pool)
     monkeypatch.setattr(st, "_resolve_scope", fake_scope)
+    monkeypatch.setattr(st.attribution, "owner_breakdown", fake_breakdown)
     req = st.ReportRequest(**body)
     return asyncio.run(st.report(req, user={"id": "u", "role": "agency"})), pool.conn
 
@@ -170,7 +180,11 @@ def test_report_applies_markup_once_to_rows_totals_and_prices(monkeypatch):
     assert row["cpm"] == tot["cpm"] == 32500.0            # 130 / 4 * 1000 — от marked-up spend
     assert row["conversions"] == tot["conversions"] == 2
     assert row["cpa"] == 65.0
-    assert out["meta"] == {"source": "events", "truncated": False, "limit": 1000, "conversions_available": True}
+    assert {k: v for k, v in out["meta"].items() if k != "conversions"} == \
+        {"source": "events", "truncated": False, "limit": 1000, "conversions_available": True}
+    assert out["meta"]["conversions"] == {"attributed": 2, "out_of_window": 0, "unattributed": 0,
+                                          "coverage": {"campaign": 1.0}, "confidence": "high", "scope": "advertiser"}
+    assert tot["conversions_attributed"] == 2
 
 
 def test_report_hourly_source_uses_stats_conversions_and_markup(monkeypatch):
@@ -208,10 +222,10 @@ def test_report_truncation_folds_tail_into_other_so_rows_sum_to_totals(monkeypat
     assert other["losses"] == 4 and other["avg_bid"] is None
     for k in ("bids", "impressions", "clicks", "spend", "losses"):
         assert sum(r[k] for r in rows) == out["totals"][k], k
-    # browser нет в conversions → конверсии недоступны, не ноль
-    assert out["meta"]["conversions_available"] is False
-    assert all(r["conversions"] is None and r["cpa"] is None for r in rows)
-    assert out["totals"]["conversions"] is None
+    # B14c: browser есть в conversion_attributions → конверсии доступны (0 = известно, что не было)
+    assert out["meta"]["conversions_available"] is True
+    assert all(r["conversions"] == 0 for r in rows) and out["totals"]["conversions"] == 0
+    assert out["meta"]["conversions"]["confidence"] == "n/a"   # конверсий нет — покрытие не определено
 
 
 def test_report_null_dimension_is_not_set_row(monkeypatch):
@@ -268,10 +282,81 @@ def test_no_ad_hoc_spend_math_left_in_report_routers():
     import inspect
     import re
 
-    from routers import share, supply_partners, scoring
+    from routers import scoring, share, supply_partners
 
     for mod in (st, share, supply_partners, scoring):
         src = inspect.getsource(mod)
         assert not re.search(r"round\(float\(r\[.spend.\]\)", src), mod.__name__
         assert not re.search(r"\* 1000, [124]\)", src), f"{mod.__name__}: ecpm/cpm must come from derive()"
         assert not re.search(r"\* 100, [123]\) if", src), f"{mod.__name__}: rates must come from derive()"
+
+
+# ---------------------------------------------------------------------------
+# B14c: служебные строки атрибуции и coverage/confidence
+# ---------------------------------------------------------------------------
+
+def test_report_advertiser_level_adds_unattributed_rows_and_keeps_sum_invariant(monkeypatch):
+    scenario = {
+        "groups": [{"dim_0": CAMP_A, **_rec(bids=10, impressions=10, clicks=2, spend=100)}],
+        "totals": _rec(bids=10, impressions=10, clicks=2, spend=100),
+        "conv_groups": [{"dim_0": CAMP_A, "conversions": 4}],
+        "conv_total": 4,
+        "attr": {"attributed": 4, "out_of_window": 1, "unattributed": 3},
+    }
+    body = {"date_from": "2026-09-01", "date_to": "2026-09-02", "groupings": ["campaign"], "countries": ["RU"]}
+    out, _ = _run_report(monkeypatch, scenario, body)
+    kinds = [r["kind"] for r in out["rows"]]
+    assert kinds == ["data", "out_of_window", "unattributed"]
+    oow, una = out["rows"][1], out["rows"][2]
+    assert oow["campaign"] == sm.OUT_OF_WINDOW_LABEL and oow["conversions"] == 1 and oow["cpa"] is None
+    assert una["campaign"] == sm.UNATTRIBUTED_LABEL and una["conversions"] == 3 and una["spend"] == 0.0
+    tot = out["totals"]
+    assert tot["conversions"] == 8 and tot["conversions_attributed"] == 4
+    assert sum(r["conversions"] for r in out["rows"]) == tot["conversions"]
+    assert tot["cpa"] == 25.0                       # 100 / 4 attributed, не / 8
+    meta = out["meta"]["conversions"]
+    assert meta["coverage"] == {"campaign": 0.5} and meta["confidence"] == "low" and meta["scope"] == "advertiser"
+
+
+def test_report_campaign_level_has_no_service_rows_but_reports_coverage(monkeypatch):
+    scenario = {
+        "groups": [{"dim_0": CAMP_A, **_rec(bids=10, impressions=10, spend=100)}],
+        "totals": _rec(bids=10, impressions=10, spend=100),
+        "conv_groups": [{"dim_0": CAMP_A, "conversions": 4}],
+        "conv_total": 4,
+        "attr": {"attributed": 4, "out_of_window": 1, "unattributed": 3},
+    }
+    body = {"date_from": "2026-09-01", "date_to": "2026-09-02", "groupings": ["campaign"], "countries": ["RU"],
+            "campaign_ids": [CAMP_A]}
+    out, _ = _run_report(monkeypatch, scenario, body)
+    assert [r["kind"] for r in out["rows"]] == ["data"]
+    assert out["totals"]["conversions"] == 4 and out["totals"]["conversions_attributed"] == 4
+    assert out["meta"]["conversions"]["scope"] == "campaign" and out["meta"]["conversions"]["unattributed"] == 3
+
+
+def test_report_not_set_row_has_no_cpa(monkeypatch):
+    scenario = {
+        "groups": [{"dim_0": None, **_rec(bids=5, impressions=5, spend=50)}],
+        "totals": _rec(bids=5, impressions=5, spend=50),
+        "conv_groups": [{"dim_0": None, "conversions": 1}],
+        "conv_total": 1,
+    }
+    body = {"date_from": "2026-09-01", "date_to": "2026-09-02", "groupings": ["os"], "campaign_ids": [CAMP_A]}
+    out, _ = _run_report(monkeypatch, scenario, body)
+    row = out["rows"][0]
+    assert row["kind"] == "not_set" and row["os"] == sm.NOT_SET_LABEL
+    assert row["conversions"] == 1 and row["cpa"] is None   # spend и конверсии «Не указано» — разные множества
+
+
+def test_report_loss_reason_has_no_conversions_and_no_service_rows(monkeypatch):
+    scenario = {
+        "groups": [{"dim_0": "102", **_rec(bids=5, losses=3)}],
+        "totals": _rec(bids=5, losses=3),
+        "attr": {"attributed": 2, "out_of_window": 1, "unattributed": 1},
+    }
+    body = {"date_from": "2026-09-01", "date_to": "2026-09-02", "groupings": ["loss_reason"]}
+    out, conn = _run_report(monkeypatch, scenario, body)
+    assert out["meta"]["conversions_available"] is False
+    assert [r["kind"] for r in out["rows"]] == ["data"]
+    assert out["rows"][0]["conversions"] is None and out["totals"]["conversions"] is None
+    assert not any("conversion_attributions" in q for q in conn.queries)

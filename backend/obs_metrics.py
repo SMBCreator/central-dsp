@@ -121,6 +121,14 @@ OPENRTB_INCOMPAT_REASONS = (
     "adm_vast_malformed",
 )
 
+# F-02/B14c: конверсии, которые нельзя привязать к биду (label status), и
+# покрытие атрибуции по измерениям отчёта (gauge, обновляется /cron/optimize).
+UNATTRIBUTED_STATUSES = ("out_of_window", "unattributed")
+COVERAGE_DIMENSIONS = (
+    "campaign", "creative", "supply_partner", "domain", "device", "country",
+    "os", "browser", "ad_type", "tagid", "publisher", "bundle",
+)
+
 _lock = threading.Lock()
 _started_at = time.time()
 
@@ -135,6 +143,8 @@ _gauges: dict[str, float | None] = {name: None for name in _GAUGE_HELP}
 _cron_runs: dict[tuple[str, str], int] = {(j, r): 0 for j in CRON_JOBS for r in _CRON_RESULTS}
 _cron_last_ok: dict[str, float | None] = {j: None for j in CRON_JOBS}
 _http: dict[str, int] = {c: 0 for c in HTTP_CLASSES}
+_conv_unattributed: dict[str, int] = {s: 0 for s in UNATTRIBUTED_STATUSES}
+_coverage: dict[str, float | None] = {d: None for d in COVERAGE_DIMENSIONS}
 
 
 def inc(name: str, value: float = 1.0) -> None:
@@ -167,6 +177,22 @@ def inc_openrtb_incompat(reason: str) -> None:
         raise KeyError(f"unknown openrtb incompat reason: {reason}")
     with _lock:
         _openrtb_incompat[reason] += 1
+
+
+def inc_conversion_unattributed(status: str) -> None:
+    """Конверсия без атрибуции к биду (F-02). Неизвестный статус — KeyError."""
+    if status not in _conv_unattributed:
+        raise KeyError(f"unknown attribution status: {status}")
+    with _lock:
+        _conv_unattributed[status] += 1
+
+
+def set_coverage(dimension: str, ratio: float | None) -> None:
+    """Покрытие атрибуции по измерению отчёта, 0..1; None — конверсий нет (серия не рендерится)."""
+    if dimension not in _coverage:
+        raise KeyError(f"unknown coverage dimension: {dimension}")
+    with _lock:
+        _coverage[dimension] = None if ratio is None else float(ratio)
 
 
 def set_gauge(name: str, value: float) -> None:
@@ -254,6 +280,17 @@ def render_prometheus() -> str:
         for reason in OPENRTB_INCOMPAT_REASONS:
             lines.append(f'rtb_openrtb_incompat_total{{reason="{reason}"}} {_openrtb_incompat[reason]}')
 
+        lines.append("# HELP conversions_unattributed_total Pixel conversions that could not be attributed to a bid (F-02): out_of_window = bid older than PIXEL_ATTRIBUTION_WINDOW_DAYS, unattributed = no/foreign clid.")
+        lines.append("# TYPE conversions_unattributed_total counter")
+        for st in UNATTRIBUTED_STATUSES:
+            lines.append(f'conversions_unattributed_total{{status="{st}"}} {_conv_unattributed[st]}')
+
+        lines.append("# HELP conversion_attribution_coverage Share of conversions (7d, all owners) that land in a row of the report dimension: attributed AND dimension not NULL. < 0.8 = conversion KPIs unreliable.")
+        lines.append("# TYPE conversion_attribution_coverage gauge")
+        for d in COVERAGE_DIMENSIONS:
+            if _coverage[d] is not None:
+                lines.append(f'conversion_attribution_coverage{{dimension="{d}"}} {_coverage[d]}')
+
         lines.append("# HELP rtb_bid_latency_seconds Bid request handling latency.")
         lines.append("# TYPE rtb_bid_latency_seconds histogram")
         cum = 0
@@ -325,3 +362,7 @@ def reset_for_tests() -> None:
             _cron_last_ok[job] = None
         for cls in _http:
             _http[cls] = 0
+        for st in _conv_unattributed:
+            _conv_unattributed[st] = 0
+        for d in _coverage:
+            _coverage[d] = None

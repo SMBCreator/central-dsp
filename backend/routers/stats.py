@@ -1,11 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException
 
+import conversion_attribution as attribution
 from auth import current_user
 from db import get_pool
 from rbac import spend_multiplier, visible_user_ids
 from stats_math import (
-    ADDITIVE_METRICS, NOT_SET_LABEL, OTHER_LABEL, ROW_KIND_DATA, ROW_KIND_NOT_SET, ROW_KIND_OTHER,
-    DateRangeError, clamp_hours, clamp_limit, derive, money, parse_date_range, present_spend, spend_expr,
+    ADDITIVE_METRICS, CONFIDENCE_LOW, NOT_SET_LABEL, OTHER_LABEL, OUT_OF_WINDOW_LABEL, ROW_KIND_DATA,
+    ROW_KIND_NOT_SET, ROW_KIND_OTHER, ROW_KIND_OUT_OF_WINDOW, ROW_KIND_UNATTRIBUTED, ROW_KINDS_WITHOUT_CPA,
+    UNATTRIBUTED_LABEL, DateRangeError, clamp_hours, clamp_limit, coverage_confidence, derive, money,
+    parse_date_range, present_spend, spend_expr,
 )
 
 router = APIRouter(prefix="/stats", tags=["stats"])
@@ -376,22 +379,17 @@ _DIM_EVENTS: dict[str, str] = {
 _EVENTS_ONLY_DIMS = {"country", "device", "os", "browser", "ad_type", "domain", "tagid", "publisher", "bundle", "loss_reason"}
 _TIME_DIMS = ("hour", "day", "week", "month")
 
-# Измерения, по которым конверсии можно посчитать из таблицы conversions
-# (атрибуция last click кладёт эти поля в строку конверсии). Для остальных
-# (os/browser/ad_type/tagid/publisher/bundle/loss_reason) конверсии в
-# raw-отчёте недоступны до слоя conversion_attributions (план B14c):
-# отдаём None и meta.conversions_available=false, а не ноль.
+# Конверсии в raw-отчёте считаются из conversion_attributions (B14c): все
+# измерения бида скопированы в строку атрибуции, поэтому доступны os/browser/
+# ad_type/tagid/publisher/bundle. Недоступно только loss_reason — это измерение
+# воронки bid→loss, у конверсии его нет: отдаём None и
+# meta.conversions_available=false, а не ноль.
 _DIM_CONV: dict[str, str] = {
-    "hour": "date_trunc('hour', cv.created_at)",
-    "day": "date_trunc('day', cv.created_at)",
-    "week": "date_trunc('week', cv.created_at)",
-    "month": "date_trunc('month', cv.created_at)",
-    "campaign": "cv.campaign_id",
-    "creative": "cv.creative_id",
-    "supply_partner": "cv.supply_partner_id",
-    "country": "cv.geo_country",
-    "device": "cv.device_type",
-    "domain": "cv.domain",
+    "hour": "date_trunc('hour', ca.converted_at)",
+    "day": "date_trunc('day', ca.converted_at)",
+    "week": "date_trunc('week', ca.converted_at)",
+    "month": "date_trunc('month', ca.converted_at)",
+    **{dim: f"ca.{col}" for dim, col in attribution.DIM_COLUMNS.items() if dim in _DIM_EVENTS},
 }
 
 # OpenRTB 2.5 §5.25 Loss Reason Codes — что SSP сообщает в ${AUCTION_LOSS}.
@@ -442,6 +440,13 @@ async def report(body: ReportRequest, user: dict = Depends(current_user)):
 
     Source auto-selection: stats_hourly when possible (fast), bid_events when a
     raw-event dimension (country/device/os/browser/ad_type/domain) is requested.
+
+    Конверсии (F-02/B14c): в строках — только attributed (last click, в окне).
+    На уровне рекламодателя (без фильтра по кампаниям/группе) добавляются
+    служебные строки «Вне окна атрибуции» / «Без атрибуции», чтобы
+    sum(rows.conversions) == totals.conversions == все конверсии пикселей
+    владельца; totals.cpa считается по attributed. meta.conversions.coverage[dim]
+    — доля конверсий, попадающих в строку измерения; < 0.8 → confidence=low.
     """
     owner_ids, _adv_filter, mult = await _resolve_scope(user)
 
@@ -456,7 +461,10 @@ async def report(body: ReportRequest, user: dict = Depends(current_user)):
     limit = clamp_limit(body.limit)
     pool = await get_pool()
     empty_meta = {"source": "events" if use_events else "hourly", "truncated": False, "limit": limit,
-                  "conversions_available": True}
+                  "conversions_available": True, "conversions": None}
+    # Уровень рекламодателя = весь скоуп владельца без фильтров по кампаниям;
+    # только здесь есть смысл показывать конверсии, у которых нет campaign_id.
+    advertiser_level = not body.campaign_ids and not body.group_id and _adv_filter is None
 
     # --- resolve campaign scope (ownership + optional group filter) ---
     async with pool.acquire() as conn:
@@ -494,11 +502,11 @@ async def report(body: ReportRequest, user: dict = Depends(current_user)):
             if body.countries:
                 params.append(body.countries)
                 extra += f" AND e.geo_country = ANY(${len(params)})"
-                conv_extra += f" AND cv.geo_country = ANY(${len(params)})"
+                conv_extra += f" AND ca.geo_country = ANY(${len(params)})"
             if body.devices:
                 params.append(body.devices)
                 extra += f" AND e.device_type = ANY(${len(params)})"
-                conv_extra += f" AND cv.device_type = ANY(${len(params)})"
+                conv_extra += f" AND ca.device_type = ANY(${len(params)})"
             metrics_sql = f"""
                    count(*) FILTER (WHERE e.event_type = 'bid')        AS bids,
                    count(*) FILTER (WHERE e.event_type = 'win')        AS wins,
@@ -522,11 +530,12 @@ async def report(body: ReportRequest, user: dict = Depends(current_user)):
             """
             conv_available = all(g in _DIM_CONV for g in groupings)
             conv_from_where = f"""
-            FROM conversions cv
-            WHERE cv.campaign_id = ANY($1::uuid[])
-              AND cv.created_at >= $2::date
-              AND cv.created_at < ($3::date + interval '1 day')
-              AND NOT cv.is_test
+            FROM conversion_attributions ca
+            WHERE ca.campaign_id = ANY($1::uuid[])
+              AND ca.attribution_status = '{attribution.STATUS_ATTRIBUTED}'
+              AND ca.converted_at >= $2::date
+              AND ca.converted_at < ($3::date + interval '1 day')
+              AND NOT ca.is_test
               {conv_extra}
             """
         else:
@@ -580,6 +589,11 @@ async def report(body: ReportRequest, user: dict = Depends(current_user)):
         if "loss_reason" in groupings:
             name_maps["loss_reason"] = LOSS_REASON_LABELS
 
+        # Покрытие атрибуции владельца за период: coverage по запрошенным измерениям
+        # (+ campaign = доля attributed вообще) и счётчики для служебных строк.
+        cov_dims = list(dict.fromkeys(["campaign", *groupings]))
+        attr = await attribution.owner_breakdown(conn, owner_ids, d_from, d_to, cov_dims)
+
     def metrics_of(r, conversions) -> dict:
         spend = present_spend(r["spend"], mult)
         m = {
@@ -621,6 +635,8 @@ async def report(body: ReportRequest, user: dict = Depends(current_user)):
             else:
                 row[g] = str(v)
         row.update(metrics_of(r, conversions_of(r)))
+        if row["kind"] in ROW_KINDS_WITHOUT_CPA:
+            row["cpa"] = None
         out_rows.append(row)
 
     totals = metrics_of(tot_rec, (conv_total if conv_available else None) if use_events else int(tot_rec["conversions"] or 0))
@@ -641,13 +657,49 @@ async def report(body: ReportRequest, user: dict = Depends(current_user)):
                                 conversions=other["conversions"], losses=other["losses"]))
         out_rows.append(other_row)
 
+    # Служебные строки уровня рекламодателя: конверсии без campaign_id. В totals
+    # они входят (sum(rows) == totals), CPA по ним не определён; totals.cpa — по attributed.
+    totals["conversions_attributed"] = totals["conversions"]
+    if advertiser_level and conv_available and totals["conversions"] is not None:
+        for kind, label, count in (
+            (ROW_KIND_OUT_OF_WINDOW, OUT_OF_WINDOW_LABEL, attr["out_of_window"]),
+            (ROW_KIND_UNATTRIBUTED, UNATTRIBUTED_LABEL, attr["unattributed"]),
+        ):
+            if count <= 0:
+                continue
+            out_rows.append(_service_conversion_row(kind, label, groupings, count))
+            totals["conversions"] += count
+
+    coverage = attr["coverage"]
+    confidences = [coverage_confidence(v) for v in coverage.values()]
     meta = {
         "source": "events" if use_events else "hourly",
         "truncated": truncated,
         "limit": limit,
         "conversions_available": conv_available,
+        "conversions": {
+            "attributed": attr["attributed"],
+            "out_of_window": attr["out_of_window"],
+            "unattributed": attr["unattributed"],
+            "coverage": coverage,
+            "confidence": CONFIDENCE_LOW if CONFIDENCE_LOW in confidences else coverage_confidence(coverage.get("campaign")),
+            "scope": "advertiser" if advertiser_level else "campaign",
+        },
     }
     return {"rows": out_rows, "totals": totals, "meta": meta}
+
+
+def _service_conversion_row(kind: str, label: str, groupings: list[str], conversions: int) -> dict:
+    """Строка «Вне окна» / «Без атрибуции»: только конверсии, остальные метрики пустые."""
+    row: dict = {"kind": kind, groupings[0]: label}
+    for g in groupings[1:]:
+        row[g] = ""
+    row.update({k: 0 for k in ADDITIVE_METRICS})
+    row.update({"spend": 0.0, "conversions": conversions, "losses": None,
+                "avg_bid": None, "avg_bidfloor": None, "avg_min_to_win": None})
+    row.update(derive(conversions=conversions, losses=None))
+    row["cpa"] = None
+    return row
 
 
 def _dim_key(v):
