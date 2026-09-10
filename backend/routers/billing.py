@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from cache import adjust_available_balance
 from db import get_pool
-from rbac import require_billing_viewer, require_finance_write
+from rbac import fetch_in_scope, require_billing_viewer, require_finance_write, scope_for
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/billing", tags=["billing"])
@@ -85,6 +85,9 @@ async def _apply_money_operation(
         raise HTTPException(status_code=422, detail="Сумма операции не может быть нулевой")
     amount = _to_money(amount)
     pool = await get_pool()
+    # finance/admin — все рекламодатели платформы (платёжная роль), остальные —
+    # свой scope. transactions.user_id остаётся «кто провёл» (аудит).
+    scope = await scope_for(user)
 
     async with pool.acquire() as conn:
         if idempotency_key:
@@ -94,9 +97,8 @@ async def _apply_money_operation(
 
         try:
             async with conn.transaction():
-                adv = await conn.fetchrow(
-                    "SELECT id, balance FROM advertisers WHERE id = $1 AND user_id = $2 FOR UPDATE",
-                    advertiser_id, user["id"],
+                adv = await fetch_in_scope(
+                    conn, "advertisers", advertiser_id, scope, columns="id, balance", for_update=True
                 )
                 if adv is None:
                     raise HTTPException(status_code=404, detail="Рекламодатель не найден")
@@ -206,25 +208,29 @@ async def adjust(
 async def transactions(advertiser_id: str | None = None, limit: int = 100, user: dict = Depends(require_billing_viewer)):
     pool = await get_pool()
     limit = min(max(limit, 1), 500)
+    # Scope — по владельцу рекламодателя (проводка admin-а клиенту видна клиенту);
+    # у строк без рекламодателя владелец — кто провёл.
+    scope = await scope_for(user)
+    owner_where = scope.where("COALESCE(a.user_id, t.user_id)", 1)
     if advertiser_id:
         rows = await pool.fetch(
-            """
+            f"""
             SELECT t.*, a.name AS advertiser_name FROM transactions t
             LEFT JOIN advertisers a ON a.id = t.advertiser_id
-            WHERE t.user_id = $1 AND t.advertiser_id = $2
-            ORDER BY t.created_at DESC LIMIT $3
+            WHERE {owner_where} AND t.advertiser_id = $3
+            ORDER BY t.created_at DESC LIMIT $4
             """,
-            user["id"], advertiser_id, limit,
+            *scope.params, advertiser_id, limit,
         )
     else:
         rows = await pool.fetch(
-            """
+            f"""
             SELECT t.*, a.name AS advertiser_name FROM transactions t
             LEFT JOIN advertisers a ON a.id = t.advertiser_id
-            WHERE t.user_id = $1
-            ORDER BY t.created_at DESC LIMIT $2
+            WHERE {owner_where}
+            ORDER BY t.created_at DESC LIMIT $3
             """,
-            user["id"], limit,
+            *scope.params, limit,
         )
     return [
         {
@@ -245,19 +251,22 @@ async def transactions(advertiser_id: str | None = None, limit: int = 100, user:
 async def billing_summary(user: dict = Depends(require_billing_viewer)):
     """Balances of all advertisers plus total spend from the ledger."""
     pool = await get_pool()
+    scope = await scope_for(user)
     advertisers = await pool.fetch(
-        "SELECT id, name, balance, currency, status FROM advertisers WHERE user_id = $1 ORDER BY name",
-        user["id"],
+        f"SELECT id, name, balance, currency, status FROM advertisers WHERE {scope.where('user_id', 1)} ORDER BY name",
+        *scope.params,
     )
     totals = await pool.fetchrow(
-        """
+        f"""
         SELECT
-          COALESCE(SUM(CASE WHEN type = 'deposit' THEN amount END), 0)    AS deposited,
-          COALESCE(SUM(CASE WHEN type = 'spend' THEN -amount END), 0)     AS spent,
-          COALESCE(SUM(CASE WHEN type = 'adjustment' THEN amount END), 0) AS adjusted
-        FROM transactions WHERE user_id = $1
+          COALESCE(SUM(CASE WHEN t.type = 'deposit' THEN t.amount END), 0)    AS deposited,
+          COALESCE(SUM(CASE WHEN t.type = 'spend' THEN -t.amount END), 0)     AS spent,
+          COALESCE(SUM(CASE WHEN t.type = 'adjustment' THEN t.amount END), 0) AS adjusted
+        FROM transactions t
+        LEFT JOIN advertisers a ON a.id = t.advertiser_id
+        WHERE {scope.where("COALESCE(a.user_id, t.user_id)", 1)}
         """,
-        user["id"],
+        *scope.params,
     )
     return {
         "advertisers": [

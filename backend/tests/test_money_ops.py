@@ -185,6 +185,15 @@ def test_deposit_rejects_unknown_fields_and_zero(monkeypatch):
 DATABASE_URL = os.environ.get("DATABASE_URL")
 db = pytest.mark.skipif(not DATABASE_URL, reason="DATABASE_URL not set")
 
+
+@pytest.fixture(autouse=True)
+def _restore_billing_get_pool():
+    """DB-тесты ниже подменяют billing_router.get_pool на пул теста и закрывают
+    его — без отката следующий модуль с этим роутером падает «pool is closed»."""
+    original = billing_router.get_pool
+    yield
+    billing_router.get_pool = original
+
 if DATABASE_URL:
     import asyncpg  # noqa: E402
 

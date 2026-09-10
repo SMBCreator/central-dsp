@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from auth import current_user
-from rbac import require_campaign_write
+from rbac import require_campaign_write, scope_for
 from db import get_pool
 
 router = APIRouter(prefix="/groups", tags=["groups"])
@@ -16,14 +16,15 @@ class GroupIn(BaseModel):
 @router.get("")
 async def list_groups(user: dict = Depends(current_user)):
     pool = await get_pool()
+    scope = await scope_for(user)
     rows = await pool.fetch(
-        """SELECT g.id, g.name, g.created_at, count(c.id) AS campaigns_count,
+        f"""SELECT g.id, g.name, g.created_at, count(c.id) AS campaigns_count,
                   COALESCE(SUM(c.spent_total), 0) AS spent_total
            FROM campaign_groups g
            LEFT JOIN campaigns c ON c.group_id = g.id
-           WHERE g.user_id = $1::uuid
+           WHERE {scope.where("g.user_id", 1)}
            GROUP BY g.id ORDER BY g.created_at DESC""",
-        str(user["id"]),
+        *scope.params,
     )
     return [
         {
@@ -47,9 +48,10 @@ async def create_group(body: GroupIn, user: dict = Depends(require_campaign_writ
 @router.patch("/{group_id}")
 async def rename_group(group_id: str, body: GroupIn, user: dict = Depends(require_campaign_write)):
     pool = await get_pool()
+    scope = await scope_for(user)
     row = await pool.fetchrow(
-        "UPDATE campaign_groups SET name = $3 WHERE id = $1::uuid AND user_id = $2::uuid RETURNING id, name",
-        group_id, str(user["id"]), body.name,
+        f"UPDATE campaign_groups SET name = $4 WHERE id = $1::uuid AND {scope.where('user_id', 2)} RETURNING id, name",
+        group_id, *scope.params, body.name,
     )
     if not row:
         raise HTTPException(status_code=404, detail="Группа не найдена")
@@ -60,8 +62,9 @@ async def rename_group(group_id: str, body: GroupIn, user: dict = Depends(requir
 async def delete_group(group_id: str, user: dict = Depends(require_campaign_write)):
     """Delete the group; campaigns keep running (group_id becomes NULL)."""
     pool = await get_pool()
+    scope = await scope_for(user)
     result = await pool.execute(
-        "DELETE FROM campaign_groups WHERE id = $1::uuid AND user_id = $2::uuid", group_id, str(user["id"])
+        f"DELETE FROM campaign_groups WHERE id = $1::uuid AND {scope.where('user_id', 2)}", group_id, *scope.params
     )
     if result == "DELETE 0":
         raise HTTPException(status_code=404, detail="Группа не найдена")

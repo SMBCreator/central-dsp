@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from auth import current_user
-from rbac import require_platform_write
+from rbac import assert_in_scope, assert_owned_by, require_platform_write, scope_for
 from db import get_pool
 from ord import OrdError, OrdNotConfigured, get_ord_adapter
 from ord.service import register_creative as ord_register_creative
@@ -56,8 +56,9 @@ def _row(r) -> dict:
 @router.get("/counterparties")
 async def list_counterparties(user: dict = Depends(current_user)):
     pool = await get_pool()
+    scope = await scope_for(user)
     rows = await pool.fetch(
-        "SELECT * FROM counterparties WHERE user_id = $1 ORDER BY created_at DESC", user["id"]
+        f"SELECT * FROM counterparties WHERE {scope.where('user_id', 1)} ORDER BY created_at DESC", *scope.params
     )
     return [dict(r) for r in rows]
 
@@ -70,13 +71,22 @@ async def create_counterparty(body: CounterpartyIn, user: dict = Depends(require
         if body.legal_type != "foreign":
             raise HTTPException(400, "ИНН: 10 цифр для юрлица, 12 для ИП/физлица")
     pool = await get_pool()
+    # Контрагент, привязанный к рекламодателю, принадлежит владельцу рекламодателя
+    # (admin заводит его клиенту); без привязки — текущему пользователю.
+    owner = str(user["id"])
+    if body.advertiser_id:
+        adv = await assert_in_scope(
+            pool, "advertisers", body.advertiser_id, await scope_for(user), "Рекламодатель не найден",
+            columns="id, user_id",
+        )
+        owner = str(adv["user_id"])
     row = await pool.fetchrow(
         """INSERT INTO counterparties (user_id, advertiser_id, name, inn, ogrn, legal_type, role, address)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
            ON CONFLICT (user_id, inn, role) DO UPDATE
              SET name = EXCLUDED.name, ogrn = COALESCE(EXCLUDED.ogrn, counterparties.ogrn), address = COALESCE(EXCLUDED.address, counterparties.address), updated_at = now()
            RETURNING *""",
-        user["id"], body.advertiser_id, body.name, body.inn, body.ogrn, body.legal_type, body.role, body.address,
+        owner, body.advertiser_id, body.name, body.inn, body.ogrn, body.legal_type, body.role, body.address,
     )
     return _row(row)
 
@@ -92,11 +102,8 @@ async def _adapter_or_503():
 @router.post("/counterparties/{cp_id}/register")
 async def register_counterparty(cp_id: str, user: dict = Depends(require_platform_write)):
     pool = await get_pool()
-    cp = await pool.fetchrow(
-        "SELECT * FROM counterparties WHERE id = $1 AND user_id = $2", cp_id, user["id"]
-    )
-    if not cp:
-        raise HTTPException(404, "Контрагент не найден")
+    cp = await assert_in_scope(pool, "counterparties", cp_id, await scope_for(user), "Контрагент не найден")
+    owner = str(cp["user_id"])
     if cp["ord_status"] == "registered":
         return _row(cp)  # идемпотентно
     adapter = await _adapter_or_503()
@@ -108,13 +115,13 @@ async def register_counterparty(cp_id: str, user: dict = Depends(require_platfor
         row = await pool.fetchrow(
             """UPDATE counterparties SET ord_external_id=$3, ord_status='registered',
                ord_error=NULL, updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING *""",
-            cp_id, user["id"], out["external_id"],
+            cp_id, owner, out["external_id"],
         )
         return _row(row)
     except OrdError as e:
         await pool.execute(
             "UPDATE counterparties SET ord_status='failed', ord_error=$3, updated_at=now() WHERE id=$1 AND user_id=$2",
-            cp_id, user["id"], str(e),
+            cp_id, owner, str(e),
         )
         raise HTTPException(502, f"ОРД: {e}")
 
@@ -123,13 +130,14 @@ async def register_counterparty(cp_id: str, user: dict = Depends(require_platfor
 @router.get("/contracts")
 async def list_contracts(user: dict = Depends(current_user)):
     pool = await get_pool()
+    scope = await scope_for(user)
     rows = await pool.fetch(
-        """SELECT c.*, cl.name AS client_name, ct.name AS contractor_name
+        f"""SELECT c.*, cl.name AS client_name, ct.name AS contractor_name
            FROM ord_contracts c
            JOIN counterparties cl ON cl.id = c.client_id
            JOIN counterparties ct ON ct.id = c.contractor_id
-           WHERE c.user_id = $1 ORDER BY c.created_at DESC""",
-        user["id"],
+           WHERE {scope.where("c.user_id", 1)} ORDER BY c.created_at DESC""",
+        *scope.params,
     )
     return [dict(r) for r in rows]
 
@@ -139,17 +147,20 @@ async def create_contract(body: ContractIn, user: dict = Depends(require_platfor
     from datetime import date
 
     pool = await get_pool()
-    for cp_id in (body.client_id, body.contractor_id):
-        ok = await pool.fetchval(
-            "SELECT 1 FROM counterparties WHERE id = $1 AND user_id = $2", cp_id, user["id"]
-        )
-        if not ok:
-            raise HTTPException(400, f"Контрагент {cp_id} не найден")
+    scope = await scope_for(user)
+    # Договор принадлежит владельцу контрагентов; обе стороны — одного владельца,
+    # родительский договор — его же (чужой договор в цепочке = чужие данные в фиде ОРД).
+    client = await assert_in_scope(pool, "counterparties", body.client_id, scope, "Контрагент не найден",
+                                   columns="id, user_id")
+    owner = str(client["user_id"])
+    await assert_owned_by(pool, "counterparties", body.contractor_id, owner, "Контрагент не найден")
+    if body.parent_contract_id:
+        await assert_owned_by(pool, "ord_contracts", body.parent_contract_id, owner, "Договор не найден")
     row = await pool.fetchrow(
         """INSERT INTO ord_contracts (user_id, client_id, contractor_id, contract_type,
              subject_type, number, signed_at, amount, is_vat, parent_contract_id)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *""",
-        user["id"], body.client_id, body.contractor_id, body.contract_type,
+        owner, body.client_id, body.contractor_id, body.contract_type,
         body.subject_type, body.number, date.fromisoformat(body.signed_at),
         body.amount, body.is_vat, body.parent_contract_id,
     )
@@ -159,11 +170,8 @@ async def create_contract(body: ContractIn, user: dict = Depends(require_platfor
 @router.post("/contracts/{contract_id}/register")
 async def register_contract(contract_id: str, user: dict = Depends(require_platform_write)):
     pool = await get_pool()
-    c = await pool.fetchrow(
-        "SELECT * FROM ord_contracts WHERE id = $1 AND user_id = $2", contract_id, user["id"]
-    )
-    if not c:
-        raise HTTPException(404, "Договор не найден")
+    c = await assert_in_scope(pool, "ord_contracts", contract_id, await scope_for(user), "Договор не найден")
+    owner = str(c["user_id"])
     if c["ord_status"] == "registered":
         return _row(c)
     # обе стороны должны быть зарегистрированы в ОРД
@@ -183,13 +191,13 @@ async def register_contract(contract_id: str, user: dict = Depends(require_platf
         row = await pool.fetchrow(
             """UPDATE ord_contracts SET ord_external_id=$3, ord_status='registered',
                ord_error=NULL, updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING *""",
-            contract_id, user["id"], out["external_id"],
+            contract_id, owner, out["external_id"],
         )
         return _row(row)
     except OrdError as e:
         await pool.execute(
             "UPDATE ord_contracts SET ord_status='failed', ord_error=$3, updated_at=now() WHERE id=$1 AND user_id=$2",
-            contract_id, user["id"], str(e),
+            contract_id, owner, str(e),
         )
         raise HTTPException(502, f"ОРД: {e}")
 
@@ -200,17 +208,10 @@ async def register_creative(creative_id: str, body: CreativeRegisterIn, user: di
     """Ручная регистрация креатива в ОРД (страница «Маркировка»). Тот же код,
     что авторегистрация при approve — ord.service.register_creative."""
     pool = await get_pool()
-    cr = await pool.fetchrow(
-        "SELECT * FROM creatives WHERE id = $1 AND user_id = $2", creative_id, user["id"]
-    )
-    if not cr:
-        raise HTTPException(404, "Креатив не найден")
+    cr = await assert_in_scope(pool, "creatives", creative_id, await scope_for(user), "Креатив не найден")
     if body.contract_id:
-        owns = await pool.fetchval(
-            "SELECT 1 FROM ord_contracts WHERE id = $1 AND user_id = $2", body.contract_id, user["id"]
-        )
-        if not owns:
-            raise HTTPException(404, "Договор не найден")
+        # Договор — того же владельца, что и креатив (не текущего пользователя).
+        await assert_owned_by(pool, "ord_contracts", body.contract_id, cr["user_id"], "Договор не найден")
     result = await ord_register_creative(pool, dict(cr), contract_id=body.contract_id)
     if result["outcome"] == "awaiting_contract":
         raise HTTPException(409, result.get("error") or "Договор должен быть зарегистрирован в ОРД до регистрации креатива")
@@ -224,11 +225,12 @@ async def register_creative(creative_id: str, body: CreativeRegisterIn, user: di
 @router.get("/creatives")
 async def list_ord_creatives(user: dict = Depends(current_user)):
     pool = await get_pool()
+    scope = await scope_for(user)
     rows = await pool.fetch(
-        """SELECT oc.*, c.name AS creative_name, c.campaign_id
+        f"""SELECT oc.*, c.name AS creative_name, c.campaign_id
            FROM ord_creatives oc JOIN creatives c ON c.id = oc.creative_id
-           WHERE c.user_id = $1 ORDER BY oc.created_at DESC""",
-        user["id"],
+           WHERE {scope.where("c.user_id", 1)} ORDER BY oc.created_at DESC""",
+        *scope.params,
     )
     return [dict(r) for r in rows]
 

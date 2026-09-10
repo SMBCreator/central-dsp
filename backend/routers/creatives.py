@@ -7,7 +7,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 
 from auth import current_user
-from rbac import require_creative_manager, is_admin
+from rbac import assert_in_scope, assert_owned_by, assert_refs_owned, is_admin, require_creative_manager, scope_for
 from notify import notify_admins
 from db import get_pool
 from ord.service import campaign_targets_ru, register_creative
@@ -54,6 +54,13 @@ async def _mark_self_approved(pool, row) -> dict:
     return out
 
 
+# Ссылочные поля креатива, владелец — владелец кампании/креатива.
+_REF_TABLES = {
+    "counterparty_id": ("counterparties", "Контрагент не найден"),
+    "contract_id": ("ord_contracts", "Договор не найден"),
+}
+
+
 def _validate_type_fields(body: CreativeIn) -> None:
     missing = [f for f in _REQUIRED_BY_TYPE[body.type] if not getattr(body, f)]
     if body.type == "banner" and not (body.asset_url or body.html_snippet):
@@ -71,14 +78,15 @@ def _validate_type_fields(body: CreativeIn) -> None:
 @router.get("")
 async def list_creatives(campaign_id: str | None = None, user: dict = Depends(current_user)):
     pool = await get_pool()
+    scope = await scope_for(user)
     if campaign_id:
         rows = await pool.fetch(
-            "SELECT * FROM creatives WHERE user_id = $1 AND campaign_id = $2 ORDER BY created_at DESC",
-            user["id"], campaign_id,
+            f"SELECT * FROM creatives WHERE {scope.where('user_id', 1)} AND campaign_id = $3 ORDER BY created_at DESC",
+            *scope.params, campaign_id,
         )
     else:
         rows = await pool.fetch(
-            "SELECT * FROM creatives WHERE user_id = $1 ORDER BY created_at DESC", user["id"]
+            f"SELECT * FROM creatives WHERE {scope.where('user_id', 1)} ORDER BY created_at DESC", *scope.params
         )
     return [_serialize(r) for r in rows]
 
@@ -87,27 +95,21 @@ async def list_creatives(campaign_id: str | None = None, user: dict = Depends(cu
 async def create_creative(body: CreativeIn, user: dict = Depends(require_creative_manager)):
     _validate_type_fields(body)
     pool = await get_pool()
-    camp = await pool.fetchval(
-        "SELECT 1 FROM campaigns WHERE id = $1 AND user_id = $2", body.campaign_id, user["id"]
+    camp = await assert_in_scope(
+        pool, "campaigns", body.campaign_id, await scope_for(user), "Кампания не найдена", columns="id, user_id"
     )
-    if not camp:
-        raise HTTPException(status_code=404, detail="Кампания не найдена")
-    # Ссылочные id тоже должны принадлежать пользователю И этой кампании: иначе
-    # креатив можно повесить на чужую группу (уйдёт в чужой фид) или подписать
-    # в ОРД чужим контрагентом.
+    # Креатив принадлежит владельцу кампании. Ссылочные id должны принадлежать
+    # ему же (и группа — этой кампании): иначе креатив можно повесить на чужую
+    # группу (уйдёт в чужой фид) или подписать в ОРД чужим контрагентом/договором.
+    owner = str(camp["user_id"])
     if body.line_item_id:
-        li_ok = await pool.fetchval(
-            "SELECT 1 FROM line_items WHERE id = $1 AND campaign_id = $2 AND user_id = $3",
-            body.line_item_id, body.campaign_id, user["id"],
+        await assert_owned_by(
+            pool, "line_items", body.line_item_id, owner, "Группа объявлений не найдена",
+            extra_where="campaign_id = $3", extra_params=(body.campaign_id,),
         )
-        if not li_ok:
-            raise HTTPException(status_code=404, detail="Группа объявлений не найдена")
-    if body.counterparty_id:
-        cp_ok = await pool.fetchval(
-            "SELECT 1 FROM counterparties WHERE id = $1 AND user_id = $2", body.counterparty_id, user["id"]
-        )
-        if not cp_ok:
-            raise HTTPException(status_code=404, detail="Контрагент не найден")
+    await assert_refs_owned(
+        pool, owner, {"counterparty_id": body.counterparty_id, "contract_id": body.contract_id}, _REF_TABLES
+    )
     # Админы модерируют сами себя: креатив сразу approved. Остальные — на модерацию.
     status = "approved" if is_admin(user) else "pending"
     row = await pool.fetchrow(
@@ -120,7 +122,7 @@ async def create_creative(body: CreativeIn, user: dict = Depends(require_creativ
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,
                 $26::text[], $27::smallint[], $28) RETURNING *
         """,
-        body.campaign_id, body.line_item_id, user["id"], body.name, body.type, body.subtype, body.width,
+        body.campaign_id, body.line_item_id, owner, body.name, body.type, body.subtype, body.width,
         body.height, body.asset_url, body.click_url, body.html_snippet, body.native_title,
         body.native_description, body.native_cta, body.native_icon_url, body.video_url,
         body.video_duration, body.vast_xml, json.dumps(body.crop) if body.crop else None,
@@ -144,30 +146,32 @@ async def update_creative(creative_id: str, body: CreativePatch, user: dict = De
     if not updates:
         raise HTTPException(status_code=400, detail="Нет полей для обновления")
     pool = await get_pool()
+    cur = await assert_in_scope(
+        pool, "creatives", creative_id, await scope_for(user), "Креатив не найден",
+        columns="id, user_id, status, erid, name",
+    )
+    owner = str(cur["user_id"])
+    await assert_refs_owned(pool, owner, {k: updates.get(k) for k in _REF_TABLES}, _REF_TABLES)
     # Изменение видимого содержимого одобренного креатива (картинка, ссылка,
     # текст, видео) отправляет его обратно на модерацию — иначе после approve
     # можно подменить баннер. Админ модерирует сам себя: статус не сбрасываем,
     # но erid выдан на конкретное содержимое — снимаем и перерегистрируем.
     remoderate = False
     remark = False
-    if _CONTENT_FIELDS & set(updates) and "status" not in updates:
-        cur = await pool.fetchrow(
-            "SELECT status, erid, name FROM creatives WHERE id = $1 AND user_id = $2", creative_id, user["id"]
-        )
-        if cur and cur["status"] == "approved":
-            updates["erid"] = None
-            if is_admin(user):
-                remark = True
-            else:
-                remoderate = True
-                updates["status"] = "pending"
+    if _CONTENT_FIELDS & set(updates) and "status" not in updates and cur["status"] == "approved":
+        updates["erid"] = None
+        if is_admin(user):
+            remark = True
+        else:
+            remoderate = True
+            updates["status"] = "pending"
     sets, values = [], []
     for i, (k, v) in enumerate(updates.items(), start=3):
         sets.append(f"{k} = ${i}")
         values.append(v)
     row = await pool.fetchrow(
         f"UPDATE creatives SET {', '.join(sets)}, updated_at = now() WHERE id = $1 AND user_id = $2 RETURNING *",
-        creative_id, user["id"], *values,
+        creative_id, owner, *values,
     )
     if not row:
         raise HTTPException(status_code=404, detail="Креатив не найден")
@@ -191,8 +195,9 @@ async def update_creative(creative_id: str, body: CreativePatch, user: dict = De
 @router.delete("/{creative_id}", status_code=204)
 async def delete_creative(creative_id: str, user: dict = Depends(require_creative_manager)):
     pool = await get_pool()
+    scope = await scope_for(user)
     result = await pool.execute(
-        "DELETE FROM creatives WHERE id = $1 AND user_id = $2", creative_id, user["id"]
+        f"DELETE FROM creatives WHERE id = $1 AND {scope.where('user_id', 2)}", creative_id, *scope.params
     )
     if result == "DELETE 0":
         raise HTTPException(status_code=404, detail="Креатив не найден")

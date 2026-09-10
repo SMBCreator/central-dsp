@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 import scoring
 from auth import current_user
 from db import get_pool
-from rbac import require_platform_write
+from rbac import assert_in_scope, assert_refs_owned, require_platform_write, scope_for
 from schemas import ScoringProfileIn, ScoringProfilePatch
 from stats_math import derive, money, spend_expr
 
@@ -32,6 +32,18 @@ _PROFILE_COLS = (
     "min_ctr, min_viewability, max_bounce_rate, min_avg_depth, min_time_on_site, "
     "max_cpa, goal_id, pixel_id, block_threshold, enforce, created_at, updated_at"
 )
+
+
+# Ссылочные поля профиля: цель/пиксель — владельца профиля.
+_REF_TABLES = {
+    "goal_id": ("goals", "Цель не найдена"),
+    "pixel_id": ("pixels", "Пиксель не найден"),
+}
+
+
+async def _campaign_in_scope(pool, campaign_id: str, user: dict, *, columns: str = "id, user_id"):
+    return await assert_in_scope(pool, "campaigns", campaign_id, await scope_for(user), "Кампания не найдена",
+                                 columns=columns)
 
 
 def _profile_dict(r) -> dict:
@@ -51,9 +63,10 @@ def _profile_dict(r) -> dict:
 @router.get("/profiles")
 async def list_profiles(user: dict = Depends(current_user)):
     pool = await get_pool()
+    scope = await scope_for(user)
     rows = await pool.fetch(
-        f"SELECT {_PROFILE_COLS} FROM scoring_profiles WHERE user_id = $1 ORDER BY created_at DESC",
-        user["id"],
+        f"SELECT {_PROFILE_COLS} FROM scoring_profiles WHERE {scope.where('user_id', 1)} ORDER BY created_at DESC",
+        *scope.params,
     )
     return [_profile_dict(r) for r in rows]
 
@@ -61,6 +74,7 @@ async def list_profiles(user: dict = Depends(current_user)):
 @router.post("/profiles")
 async def create_profile(body: ScoringProfileIn, user: dict = Depends(require_platform_write)):
     pool = await get_pool()
+    await assert_refs_owned(pool, user["id"], {"goal_id": body.goal_id, "pixel_id": body.pixel_id}, _REF_TABLES)
     row = await pool.fetchrow(
         f"""INSERT INTO scoring_profiles
               (user_id, name, description, window_days, min_impressions, min_clicks,
@@ -76,28 +90,30 @@ async def create_profile(body: ScoringProfileIn, user: dict = Depends(require_pl
     return _profile_dict(row)
 
 
-async def _owned_profile(pool, profile_id: str, user_id) -> dict:
-    row = await pool.fetchrow(
-        f"SELECT {_PROFILE_COLS} FROM scoring_profiles WHERE id = $1 AND user_id = $2",
-        profile_id, user_id,
-    )
-    if not row:
-        raise HTTPException(404, "Профиль скоринга не найден")
-    return _profile_dict(row)
+async def _owned_profile(pool, profile_id: str, user: dict) -> dict:
+    """Профиль в scope пользователя (404 иначе). В dict добавлен user_id владельца."""
+    row = await assert_in_scope(pool, "scoring_profiles", profile_id, await scope_for(user),
+                                "Профиль скоринга не найден", columns=f"{_PROFILE_COLS}, user_id")
+    out = _profile_dict(row)
+    out["user_id"] = str(row["user_id"])
+    return out
 
 
 @router.patch("/profiles/{profile_id}")
 async def update_profile(profile_id: str, body: ScoringProfilePatch, user: dict = Depends(require_platform_write)):
     pool = await get_pool()
-    await _owned_profile(pool, profile_id, user["id"])
+    current = await _owned_profile(pool, profile_id, user)
+    owner = current["user_id"]
     fields = body.model_dump(exclude_unset=True)
     if not fields:
-        return await _owned_profile(pool, profile_id, user["id"])
+        current.pop("user_id", None)
+        return current
+    await assert_refs_owned(pool, owner, {k: fields.get(k) for k in _REF_TABLES}, _REF_TABLES)
     sets, params = [], []
     for k, v in fields.items():
         params.append(v)
         sets.append(f"{k} = ${len(params)}")
-    params.extend([profile_id, user["id"]])
+    params.extend([profile_id, owner])
     row = await pool.fetchrow(
         f"UPDATE scoring_profiles SET {', '.join(sets)}, updated_at = now() "
         f"WHERE id = ${len(params) - 1} AND user_id = ${len(params)} RETURNING {_PROFILE_COLS}",
@@ -109,8 +125,8 @@ async def update_profile(profile_id: str, body: ScoringProfilePatch, user: dict 
 @router.delete("/profiles/{profile_id}")
 async def delete_profile(profile_id: str, user: dict = Depends(require_platform_write)):
     pool = await get_pool()
-    await _owned_profile(pool, profile_id, user["id"])
-    await pool.execute("DELETE FROM scoring_profiles WHERE id = $1 AND user_id = $2", profile_id, user["id"])
+    current = await _owned_profile(pool, profile_id, user)
+    await pool.execute("DELETE FROM scoring_profiles WHERE id = $1 AND user_id = $2", profile_id, current["user_id"])
     return {"ok": True}
 
 
@@ -182,11 +198,7 @@ async def _full_report(pool, user, dimension, profile_id, campaign_id, group_id,
         return hit[1], hit[2]
 
     if campaign_id:
-        owned = await pool.fetchval(
-            "SELECT 1 FROM campaigns WHERE id = $1 AND user_id = $2", campaign_id, user["id"]
-        )
-        if not owned:
-            raise HTTPException(404, "Кампания не найдена")
+        await _campaign_in_scope(pool, campaign_id, user)
 
     profile = await _resolve_profile(pool, user["id"], profile_id, campaign_id, group_id)
 
@@ -362,11 +374,7 @@ def _norm_domain(raw: str) -> str:
 async def manual_block(body: ManualBlockIn, user: dict = Depends(require_platform_write)):
     """Ручная блокировка площадки в кампании. Живёт до снятия; пересчёт её не трогает."""
     pool = await get_pool()
-    owned = await pool.fetchval(
-        "SELECT 1 FROM campaigns WHERE id = $1 AND user_id = $2", body.campaign_id, user["id"]
-    )
-    if not owned:
-        raise HTTPException(404, "Кампания не найдена")
+    await _campaign_in_scope(pool, body.campaign_id, user)
     domain = _norm_domain(body.domain)
     reasons = json.dumps([{"type": "manual", "by": str(user["id"]), "note": body.note}])
     await pool.execute(
@@ -389,11 +397,7 @@ async def manual_unblock(campaign_id: str, domain: str, user: dict = Depends(req
     Авто-блок вернётся при следующем пересчёте, если площадка всё ещё ниже порога.
     """
     pool = await get_pool()
-    owned = await pool.fetchval(
-        "SELECT 1 FROM campaigns WHERE id = $1 AND user_id = $2", campaign_id, user["id"]
-    )
-    if not owned:
-        raise HTTPException(404, "Кампания не найдена")
+    await _campaign_in_scope(pool, campaign_id, user)
     dom = _norm_domain(domain)
     res = await pool.execute(
         "DELETE FROM scoring_blocklist WHERE campaign_id = $1 AND domain = $2", campaign_id, dom
@@ -407,11 +411,7 @@ async def manual_unblock(campaign_id: str, domain: str, user: dict = Depends(req
 async def list_blocks(campaign_id: str, user: dict = Depends(current_user)):
     """Текущий блок-лист кампании (авто + ручные)."""
     pool = await get_pool()
-    owned = await pool.fetchval(
-        "SELECT 1 FROM campaigns WHERE id = $1 AND user_id = $2", campaign_id, user["id"]
-    )
-    if not owned:
-        raise HTTPException(404, "Кампания не найдена")
+    await _campaign_in_scope(pool, campaign_id, user)
     rows = await pool.fetch(
         """SELECT domain, score, reasons, source, note, updated_at
            FROM scoring_blocklist WHERE campaign_id = $1 ORDER BY updated_at DESC""",
@@ -512,14 +512,13 @@ async def _resolve_profile(pool, user_id, profile_id, campaign_id, group_id) -> 
 async def recompute(campaign_id: str, user: dict = Depends(require_platform_write)):
     """Пересчёт scoring_blocklist кампании по её профилю (enforce=true)."""
     pool = await get_pool()
-    owned = await pool.fetchval(
-        "SELECT 1 FROM campaigns WHERE id = $1 AND user_id = $2", campaign_id, user["id"]
-    )
-    if not owned:
-        raise HTTPException(404, "Кампания не найдена")
-    profile = await _resolve_profile(pool, user["id"], None, campaign_id, None)
+    camp = await _campaign_in_scope(pool, campaign_id, user)
+    # Профиль и блок-лист — владельца кампании (admin пересчитывает клиенту).
+    owner = str(camp["user_id"])
+    profile = await _resolve_profile(pool, owner, None, campaign_id, None)
     if not profile.get("enforce"):
         raise HTTPException(400, "Профиль в режиме наблюдения (enforce выключен) — блокировка не применяется")
-    result = await scoring.recompute_blocklist(pool, campaign_id, str(user["id"]), profile)
+    result = await scoring.recompute_blocklist(pool, campaign_id, owner, profile)
+    invalidate_report_cache(owner)
     invalidate_report_cache(user["id"])
     return {"ok": True, **result}

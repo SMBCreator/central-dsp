@@ -17,6 +17,8 @@
   can_view_billing    — просмотр биллинга (транзакции/summary)
   can_share_stats     — создание share-ссылок и гостевых аккаунтов
 """
+from dataclasses import dataclass, replace
+
 from fastapi import Depends, HTTPException
 
 from auth import current_user
@@ -78,9 +80,14 @@ def is_admin(user: dict) -> bool:
     return user["role"] in ADMIN_ROLES
 
 
+# Платформенный scope: видят объекты всех владельцев (analyst/finance — только
+# чтение, это обеспечивают require_*-guards, а не scope).
+PLATFORM_SCOPE_ROLES = ("superadmin", "admin", "analyst", "finance")
+
+
 def can_see_all(user: dict) -> bool:
     """admin/superadmin/analyst/finance видят все сущности; manager/advertiser — только свои."""
-    return user["role"] in ("superadmin", "admin", "analyst", "finance")
+    return user["role"] in PLATFORM_SCOPE_ROLES
 
 # ---------- Иерархия (agency -> client), наценки, ограничения ----------
 
@@ -104,6 +111,151 @@ async def visible_user_ids(user: dict) -> list[str] | None:
         user["id"],
     )
     return [str(r["id"]) for r in rows]
+
+
+# ---------- Единый scope объектов (audit S-02/S-03) ----------
+#
+# Правило: list, detail, update, delete и billing одного пользователя фильтруют
+# по одному и тому же Scope. Ссылочные поля в create/patch (group_id, pixel_id,
+# counterparty_id, ...) должны принадлежать владельцу главного объекта — не
+# «кому-то в scope» и не текущему пользователю (admin создаёт кампанию клиенту:
+# группа тоже должна быть клиентской). Спецификация: docs/audit/scope_spec.md.
+
+
+@dataclass(frozen=True)
+class Scope:
+    """Кого видит пользователь.
+
+    all=True — платформенный scope (все владельцы). Иначе видны объекты
+    владельцев из user_ids: manager/advertiser/client — только свои; agency —
+    сам + всё поддерево клиентов; viewer — пусто (гость ходит только в отчёты,
+    там его граница — advertiser_id из guest_access, см. report_scope_for).
+    """
+
+    all: bool
+    user_ids: tuple[str, ...]
+    advertiser_id: str | None = None
+    spend_mult: float = 1.0
+
+    def where(self, column: str, first_param: int) -> str:
+        """SQL-предикат на два подряд идущих параметра: $first — bool «все»,
+        $first+1 — uuid[] владельцев. Значения — self.params."""
+        return f"(${first_param}::boolean OR {column} = ANY(${first_param + 1}::uuid[]))"
+
+    @property
+    def params(self) -> list:
+        return [self.all, list(self.user_ids)]
+
+    def includes(self, owner_id) -> bool:
+        return self.all or str(owner_id) in self.user_ids
+
+
+async def scope_for(user: dict) -> Scope:
+    """Scope CRUD-ручек. Единственная точка, где роль превращается в фильтр владельцев."""
+    role = user.get("role")
+    if role in PLATFORM_SCOPE_ROLES:
+        return Scope(all=True, user_ids=(str(user["id"]),))
+    if role == "viewer":
+        return Scope(all=False, user_ids=())
+    ids = await visible_user_ids(user)
+    return Scope(all=False, user_ids=tuple(ids or (str(user["id"]),)))
+
+
+async def report_scope_for(user: dict) -> Scope:
+    """Scope отчётов/статистики: scope_for + граница гостя и множитель наценки.
+
+    viewer: данные владельца (guest_access.owner_id), при заданном advertiser_id —
+    только этот рекламодатель; spend — по snapshot наценки (F-02).
+    """
+    if user.get("role") == "viewer":
+        from db import get_pool
+        pool = await get_pool()
+        row = await pool.fetchrow(
+            "SELECT owner_id, advertiser_id, markup_mult_snapshot, revoked_at FROM guest_access WHERE user_id = $1",
+            user["id"],
+        )
+        if not row:
+            raise HTTPException(status_code=403, detail="Гостевой доступ не настроен")
+        if row["revoked_at"] is not None:
+            raise HTTPException(status_code=403, detail="Доступ отозван")
+        return Scope(
+            all=False,
+            user_ids=(str(row["owner_id"]),),
+            advertiser_id=str(row["advertiser_id"]) if row["advertiser_id"] else None,
+            spend_mult=float(row["markup_mult_snapshot"] or 1),
+        )
+    scope = await scope_for(user)
+    mult = await spend_multiplier(str(user["id"]), user.get("role", ""))
+    return replace(scope, spend_mult=mult)
+
+
+# Таблицы с владельцем и предикат «владелец = …» для них. goals принадлежат
+# владельцу пикселя. Ключи — литералы в коде, не пользовательский ввод.
+_OWNED_TABLES: dict[str, str] = {
+    "advertisers": "{owner}",
+    "campaigns": "{owner}",
+    "line_items": "{owner}",
+    "creatives": "{owner}",
+    "campaign_groups": "{owner}",
+    "pixels": "{owner}",
+    "goals": "pixel_id IN (SELECT id FROM pixels WHERE {owner})",
+    "scoring_profiles": "{owner}",
+    "counterparties": "{owner}",
+    "ord_contracts": "{owner}",
+    "rules": "{owner}",
+    "audience_segments": "{owner}",
+    "supply_partners": "{owner}",
+}
+
+
+def _owner_predicate(table: str, owner_sql: str) -> str:
+    return _OWNED_TABLES[table].format(owner=owner_sql)
+
+
+async def fetch_in_scope(conn, table: str, obj_id: str, scope: Scope, *, columns: str = "*",
+                         for_update: bool = False):
+    """Строка объекта, если он в scope пользователя, иначе None."""
+    sql = (f"SELECT {columns} FROM {table} WHERE id = $1 AND "
+           f"{_owner_predicate(table, scope.where('user_id', 2))}")
+    if for_update:
+        sql += " FOR UPDATE"
+    return await conn.fetchrow(sql, obj_id, *scope.params)
+
+
+async def assert_in_scope(conn, table: str, obj_id: str, scope: Scope, not_found: str, **kw):
+    """Главный объект запроса (id в URL / родитель в body): 404, если вне scope.
+    404, а не 403 — не раскрываем существование чужого объекта."""
+    row = await fetch_in_scope(conn, table, obj_id, scope, **kw)
+    if row is None:
+        raise HTTPException(status_code=404, detail=not_found)
+    return row
+
+
+async def assert_owned_by(conn, table: str, obj_id: str, owner_id, not_found: str, *,
+                          extra_where: str = "", extra_params: tuple = ()):
+    """Ссылочное поле (group_id, pixel_id, counterparty_id, ...): объект должен
+    принадлежать владельцу главного объекта. extra_where — дополнительные
+    условия совместимости цепочки (нумерация параметров с $3)."""
+    sql = f"SELECT * FROM {table} WHERE id = $1 AND {_owner_predicate(table, 'user_id = $2')}"
+    if extra_where:
+        sql += f" AND ({extra_where})"
+    row = await conn.fetchrow(sql, obj_id, str(owner_id), *extra_params)
+    if row is None:
+        raise HTTPException(status_code=404, detail=not_found)
+    return row
+
+
+async def assert_refs_owned(conn, owner_id, refs: dict[str, str | None],
+                            tables: dict[str, tuple[str, str]]) -> dict:
+    """Проверка набора ссылочных полей body: refs {поле: id|None},
+    tables {поле: (таблица, текст 404)}. Возвращает {поле: строка}."""
+    rows = {}
+    for field, value in refs.items():
+        if value is None:
+            continue
+        table, not_found = tables[field]
+        rows[field] = await assert_owned_by(conn, table, value, owner_id, not_found)
+    return rows
 
 
 async def effective_markup_pct(user_id: str) -> float:

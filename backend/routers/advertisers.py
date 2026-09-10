@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 from auth import current_user
-from rbac import can_see_all, require_campaign_write
+from rbac import assert_in_scope, require_campaign_write, scope_for
 from db import get_pool
 from schemas import AdvertiserIn, AdvertiserPatch
 
@@ -19,12 +19,10 @@ def _serialize(row) -> dict:
 @router.get("")
 async def list_advertisers(user: dict = Depends(current_user)):
     pool = await get_pool()
-    if can_see_all(user):
-        rows = await pool.fetch("SELECT * FROM advertisers ORDER BY created_at DESC")
-    else:
-        rows = await pool.fetch(
-            "SELECT * FROM advertisers WHERE user_id = $1 ORDER BY created_at DESC", user["id"]
-        )
+    scope = await scope_for(user)
+    rows = await pool.fetch(
+        f"SELECT * FROM advertisers WHERE {scope.where('user_id', 1)} ORDER BY created_at DESC", *scope.params
+    )
     return [_serialize(r) for r in rows]
 
 
@@ -45,11 +43,7 @@ async def create_advertiser(body: AdvertiserIn, user: dict = Depends(require_cam
 @router.get("/{advertiser_id}")
 async def get_advertiser(advertiser_id: str, user: dict = Depends(current_user)):
     pool = await get_pool()
-    row = await pool.fetchrow(
-        "SELECT * FROM advertisers WHERE id = $1 AND user_id = $2", advertiser_id, user["id"]
-    )
-    if not row:
-        raise HTTPException(status_code=404, detail="Рекламодатель не найден")
+    row = await assert_in_scope(pool, "advertisers", advertiser_id, await scope_for(user), "Рекламодатель не найден")
     return _serialize(row)
 
 
@@ -59,13 +53,15 @@ async def update_advertiser(advertiser_id: str, body: AdvertiserPatch, user: dic
     if not updates:
         raise HTTPException(status_code=400, detail="Нет полей для обновления")
     pool = await get_pool()
+    scope = await scope_for(user)
     sets, values = [], []
-    for i, (k, v) in enumerate(updates.items(), start=3):
+    for i, (k, v) in enumerate(updates.items(), start=4):
         sets.append(f"{k} = ${i}")
         values.append(v)
     row = await pool.fetchrow(
-        f"UPDATE advertisers SET {', '.join(sets)}, updated_at = now() WHERE id = $1 AND user_id = $2 RETURNING *",
-        advertiser_id, user["id"], *values,
+        f"UPDATE advertisers SET {', '.join(sets)}, updated_at = now() "
+        f"WHERE id = $1 AND {scope.where('user_id', 2)} RETURNING *",
+        advertiser_id, *scope.params, *values,
     )
     if not row:
         raise HTTPException(status_code=404, detail="Рекламодатель не найден")
@@ -75,8 +71,9 @@ async def update_advertiser(advertiser_id: str, body: AdvertiserPatch, user: dic
 @router.delete("/{advertiser_id}", status_code=204)
 async def delete_advertiser(advertiser_id: str, user: dict = Depends(require_campaign_write)):
     pool = await get_pool()
+    scope = await scope_for(user)
     result = await pool.execute(
-        "DELETE FROM advertisers WHERE id = $1 AND user_id = $2", advertiser_id, user["id"]
+        f"DELETE FROM advertisers WHERE id = $1 AND {scope.where('user_id', 2)}", advertiser_id, *scope.params
     )
     if result == "DELETE 0":
         raise HTTPException(status_code=404, detail="Рекламодатель не найден")

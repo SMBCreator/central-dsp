@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from auth import current_user
 from business_day import normalize_spent_today
 from cache import reset_available
-from rbac import can_see_all, require_campaign_editor, require_campaign_write
+from rbac import assert_in_scope, assert_refs_owned, require_campaign_editor, require_campaign_write, scope_for
 from db import get_pool
 from ord.adapter import mock_allowed
 from ord.service import campaign_targets_ru, unmarked_creative_sql
@@ -45,37 +45,56 @@ def _parse_date(val: str | None) -> date | None:
     return date.fromisoformat(val) if val else None
 
 
+# Ссылочные поля кампании: таблица и текст 404. Владелец — владелец кампании
+# (не текущий пользователь: admin/agency создают кампании клиентам).
+_REF_TABLES = {
+    "group_id": ("campaign_groups", "Группа не найдена"),
+    "pixel_id": ("pixels", "Пиксель не найден"),
+    "goal_id": ("goals", "Цель не найдена"),
+    "scoring_profile_id": ("scoring_profiles", "Профиль скоринга не найден"),
+}
+
+
+async def _assert_campaign_refs(pool, owner_id, updates: dict, current: dict | None = None) -> None:
+    """Ownership ссылочных полей + совместимость цепочки: цель должна
+    относиться к пикселю кампании (после применения этого же PATCH)."""
+    refs = {k: updates.get(k) for k in _REF_TABLES}
+    rows = await assert_refs_owned(pool, owner_id, refs, _REF_TABLES)
+    goal = rows.get("goal_id")
+    if goal is not None:
+        pixel_id = updates.get("pixel_id") or (current or {}).get("pixel_id")
+        if pixel_id and str(goal["pixel_id"]) != str(pixel_id):
+            raise HTTPException(status_code=422, detail="Цель не относится к пикселю кампании")
+
+
+async def _campaign_in_scope(pool, campaign_id: str, user: dict):
+    return await assert_in_scope(pool, "campaigns", campaign_id, await scope_for(user), "Кампания не найдена")
+
+
 @router.get("")
 async def list_campaigns(user: dict = Depends(current_user)):
     pool = await get_pool()
-    if can_see_all(user):
-        rows = await pool.fetch(
-            """
-            SELECT c.*, a.name AS advertiser_name
-            FROM campaigns c JOIN advertisers a ON a.id = c.advertiser_id
-            ORDER BY c.created_at DESC
-            """
-        )
-    else:
-        rows = await pool.fetch(
-            """
-            SELECT c.*, a.name AS advertiser_name
-            FROM campaigns c JOIN advertisers a ON a.id = c.advertiser_id
-            WHERE c.user_id = $1 ORDER BY c.created_at DESC
-            """,
-            user["id"],
-        )
+    scope = await scope_for(user)
+    rows = await pool.fetch(
+        f"""
+        SELECT c.*, a.name AS advertiser_name
+        FROM campaigns c JOIN advertisers a ON a.id = c.advertiser_id
+        WHERE {scope.where("c.user_id", 1)} ORDER BY c.created_at DESC
+        """,
+        *scope.params,
+    )
     return [_serialize(r) for r in rows]
 
 
 @router.post("", status_code=201)
 async def create_campaign(body: CampaignIn, user: dict = Depends(require_campaign_editor)):
     pool = await get_pool()
-    adv = await pool.fetchval(
-        "SELECT 1 FROM advertisers WHERE id = $1 AND user_id = $2", body.advertiser_id, user["id"]
+    adv = await assert_in_scope(
+        pool, "advertisers", body.advertiser_id, await scope_for(user), "Рекламодатель не найден"
     )
-    if not adv:
-        raise HTTPException(status_code=404, detail="Рекламодатель не найден")
+    # Кампания принадлежит владельцу рекламодателя (admin/agency создают клиенту).
+    owner = str(adv["user_id"])
+    await _assert_campaign_refs(pool, owner, {"group_id": body.group_id})
     row = await pool.fetchrow(
         """
         INSERT INTO campaigns (advertiser_id, user_id, name, objective, daily_budget, total_budget,
@@ -83,7 +102,7 @@ async def create_campaign(body: CampaignIn, user: dict = Depends(require_campaig
                                group_id, kktu_code, kktu_label, bid_shading, frequency_caps)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *
         """,
-        body.advertiser_id, user["id"], body.name, body.objective, body.daily_budget,
+        body.advertiser_id, owner, body.name, body.objective, body.daily_budget,
         body.total_budget, _parse_date(body.start_date), _parse_date(body.end_date),
         body.pacing, body.frequency_cap_impressions, body.frequency_cap_period_hours, body.group_id,
         body.kktu_code, body.kktu_label, body.bid_shading,
@@ -95,12 +114,7 @@ async def create_campaign(body: CampaignIn, user: dict = Depends(require_campaig
 @router.get("/{campaign_id}")
 async def get_campaign(campaign_id: str, user: dict = Depends(current_user)):
     pool = await get_pool()
-    row = await pool.fetchrow(
-        "SELECT * FROM campaigns WHERE id = $1 AND user_id = $2", campaign_id, user["id"]
-    )
-    if not row:
-        raise HTTPException(status_code=404, detail="Кампания не найдена")
-    return _serialize(row)
+    return _serialize(await _campaign_in_scope(pool, campaign_id, user))
 
 
 @router.patch("/{campaign_id}")
@@ -114,6 +128,9 @@ async def update_campaign(campaign_id: str, body: CampaignPatch, user: dict = De
     if "frequency_caps" in updates:
         updates["frequency_caps"] = json.dumps(updates["frequency_caps"])
     pool = await get_pool()
+    camp = await _campaign_in_scope(pool, campaign_id, user)
+    owner = str(camp["user_id"])
+    await _assert_campaign_refs(pool, owner, updates, dict(camp))
     sets, values = [], []
     for i, (k, v) in enumerate(updates.items(), start=3):
         sets.append(f"{k} = ${i}")
@@ -127,11 +144,6 @@ async def update_campaign(campaign_id: str, body: CampaignPatch, user: dict = De
     import os as _os
     gate_on = not mock_allowed() or _os.getenv("LAUNCH_GATE", _os.getenv("ORD_LAUNCH_GUARD", "on")) != "off"
     if updates.get("status") == "active" and gate_on:
-        camp = await pool.fetchrow(
-            "SELECT * FROM campaigns WHERE id = $1 AND user_id = $2", campaign_id, user["id"]
-        )
-        if not camp:
-            raise HTTPException(status_code=404, detail="Кампания не найдена")
         # Учитываем поля, которые меняются этим же PATCH (например, даты/бюджет).
         merged = dict(camp)
         for k, v in updates.items():
@@ -148,7 +160,7 @@ async def update_campaign(campaign_id: str, body: CampaignPatch, user: dict = De
             )
     row = await pool.fetchrow(
         f"UPDATE campaigns SET {', '.join(sets)}, updated_at = now() WHERE id = $1 AND user_id = $2 RETURNING *",
-        campaign_id, user["id"], *values,
+        campaign_id, owner, *values,
     )
     if not row:
         raise HTTPException(status_code=404, detail="Кампания не найдена")
@@ -166,8 +178,9 @@ async def update_campaign(campaign_id: str, body: CampaignPatch, user: dict = De
 @router.delete("/{campaign_id}", status_code=204)
 async def delete_campaign(campaign_id: str, user: dict = Depends(require_campaign_editor)):
     pool = await get_pool()
+    scope = await scope_for(user)
     result = await pool.execute(
-        "DELETE FROM campaigns WHERE id = $1 AND user_id = $2", campaign_id, user["id"]
+        f"DELETE FROM campaigns WHERE id = $1 AND {scope.where('user_id', 2)}", campaign_id, *scope.params
     )
     if result == "DELETE 0":
         raise HTTPException(status_code=404, detail="Кампания не найдена")
@@ -192,11 +205,7 @@ async def duplicate_campaign(campaign_id: str, user: dict = Depends(require_camp
     (пойдут через модерацию и ОРД заново).
     """
     pool = await get_pool()
-    src = await pool.fetchrow(
-        "SELECT * FROM campaigns WHERE id = $1 AND user_id = $2", campaign_id, user["id"]
-    )
-    if not src:
-        raise HTTPException(status_code=404, detail="Кампания не найдена")
+    await _campaign_in_scope(pool, campaign_id, user)
 
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -451,11 +460,7 @@ async def compute_diagnostics(pool, camp, *, assume_active: bool = False) -> dic
 async def campaign_diagnostics(campaign_id: str, user: dict = Depends(current_user)):
     """Почему кампания не откручивается / готова ли к запуску — см. compute_diagnostics."""
     pool = await get_pool()
-    camp = await pool.fetchrow(
-        "SELECT * FROM campaigns WHERE id = $1 AND user_id = $2", campaign_id, user["id"]
-    )
-    if not camp:
-        raise HTTPException(status_code=404, detail="Кампания не найдена")
+    camp = await _campaign_in_scope(pool, campaign_id, user)
     return await compute_diagnostics(pool, camp)
 
 
@@ -463,11 +468,7 @@ async def campaign_diagnostics(campaign_id: str, user: dict = Depends(current_us
 async def list_optimizer_blocks(campaign_id: str, user: dict = Depends(current_user)):
     """Traffic sources blocked by the buying optimizer for this campaign."""
     pool = await get_pool()
-    owned = await pool.fetchval(
-        "SELECT 1 FROM campaigns WHERE id = $1 AND user_id = $2", campaign_id, user["id"]
-    )
-    if not owned:
-        raise HTTPException(status_code=404, detail="Кампания не найдена")
+    await _campaign_in_scope(pool, campaign_id, user)
     rows = await pool.fetch(
         """SELECT b.*, sp.name AS partner_name
            FROM optimizer_blocks b
@@ -488,11 +489,12 @@ async def list_optimizer_blocks(campaign_id: str, user: dict = Depends(current_u
 async def remove_optimizer_block(campaign_id: str, block_id: str, user: dict = Depends(require_campaign_editor)):
     """Manually unblock a source (the optimizer will not re-add it unless metrics degrade again)."""
     pool = await get_pool()
+    scope = await scope_for(user)
     deleted = await pool.fetchval(
-        """DELETE FROM optimizer_blocks b USING campaigns c
-           WHERE b.id = $1 AND b.campaign_id = $2 AND c.id = b.campaign_id AND c.user_id = $3
+        f"""DELETE FROM optimizer_blocks b USING campaigns c
+           WHERE b.id = $1 AND b.campaign_id = $2 AND c.id = b.campaign_id AND {scope.where("c.user_id", 3)}
            RETURNING b.id""",
-        block_id, campaign_id, user["id"],
+        block_id, campaign_id, *scope.params,
     )
     if not deleted:
         raise HTTPException(status_code=404, detail="Блок не найден")
@@ -502,11 +504,7 @@ async def remove_optimizer_block(campaign_id: str, block_id: str, user: dict = D
 async def get_shading_factors(campaign_id: str, user: dict = Depends(current_user)):
     """Текущие факторы bid-шейдинга по SSP + оценка экономии за 7 дней."""
     pool = await get_pool()
-    own = await pool.fetchval(
-        "SELECT 1 FROM campaigns WHERE id = $1 AND user_id = $2", campaign_id, user["id"]
-    )
-    if not own:
-        raise HTTPException(status_code=404, detail="Кампания не найдена")
+    await _campaign_in_scope(pool, campaign_id, user)
     factors = await pool.fetch(
         """
         SELECT f.supply_partner_id, sp.name AS partner_name, f.factor,
