@@ -76,7 +76,9 @@ def test_event_dims_normalises_go_bidmeta():
 
 def test_spend_expr_counts_only_paid_events():
     sql = spend_expr("e")
-    assert "e.event_type = 'win'" in sql and "/ 1000.0" in sql
+    # R-07: clear_price несёт ровно одно из событий бида — win (billing_event=win)
+    # либо billable (billing_event=burl); оба CPM -> /1000.
+    assert "e.event_type IN ('win', 'billable')" in sql and "/ 1000.0" in sql
     assert "e.event_type = 'click'" in sql  # CPC: цена клика, без /1000
     assert "'impression'" not in sql
 
