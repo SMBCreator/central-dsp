@@ -85,7 +85,9 @@
 | **POST** | `/ord/counterparties/{cp_id}/register` | roles | admin, manager, superadmin |
 | GET | `/ord/creatives` | session | любая роль (scope внутри хендлера) |
 | **POST** | `/ord/creatives/{creative_id}/register` | roles | admin, manager, superadmin |
+| GET | `/ord/creatives/{creative_id}/versions` | session | любая роль (scope внутри хендлера) |
 | GET | `/ord/exports` | session | любая роль (scope внутри хендлера) |
+| GET | `/ord/exports/{log_id}/rows` | session | любая роль (scope внутри хендлера) |
 | **POST** | `/pixel/collect` | none | публично (пиксель), rate-limit |
 | GET | `/pixel/script/{pixel_id}.js` | none | публично (пиксель) |
 | GET | `/pixels` | session | любая роль (scope внутри хендлера) |

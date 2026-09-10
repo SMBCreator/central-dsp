@@ -379,9 +379,13 @@ def test_content_change_reissues_erid_for_admin_and_remoderates_for_manager(env)
             assert ch["status"] == "approved" and ch["ord"]["status"] == "ok"
             assert ch["erid"] and ch["erid"] != erid0
             assert cr["id"] in await _feed_creatives(admin)
-            assert await conn.fetchval(
-                "SELECT status FROM ord_creatives WHERE creative_id = $1", cr["id"]
-            ) == "registered"
+            # B13: старая версия остаётся в истории со своим erid, текущая — registered
+            hist = await conn.fetch(
+                "SELECT version, status, erid FROM ord_creatives WHERE creative_id = $1 ORDER BY version", cr["id"]
+            )
+            assert [(h["version"], h["status"], h["erid"]) for h in hist] == [
+                (1, "superseded", erid0), (2, "registered", ch["erid"]),
+            ]
 
             # manager (тот же владелец) меняет картинку: pending, erid снят, superseded, вне фида
             mgr = _app_as(_manager(e))
@@ -391,8 +395,8 @@ def test_content_change_reissues_erid_for_admin_and_remoderates_for_manager(env)
             assert m["status"] == "pending" and not m["erid"] and "ord" not in m
             assert cr["id"] not in await _feed_creatives(mgr)
             assert await conn.fetchval(
-                "SELECT status FROM ord_creatives WHERE creative_id = $1", cr["id"]
-            ) == "superseded"
+                "SELECT count(*) FROM ord_creatives WHERE creative_id = $1 AND superseded_at IS NULL", cr["id"]
+            ) == 0
 
             # повторный approve → новый erid на новое содержимое
             r = await admin.post(f"/moderation/{cr['id']}/approve")

@@ -10,7 +10,7 @@ from auth import current_user
 from rbac import assert_in_scope, assert_owned_by, assert_refs_owned, is_admin, require_creative_manager, scope_for
 from notify import notify_admins
 from db import get_pool
-from ord.service import campaign_targets_ru, register_creative
+from ord.service import campaign_targets_ru, register_creative, supersede_current
 from schemas import CreativeIn, CreativePatch
 
 router = APIRouter(prefix="/creatives", tags=["creatives"])
@@ -20,6 +20,12 @@ _CONTENT_FIELDS = frozenset({
     "asset_url", "click_url", "html_snippet", "native_title", "native_description",
     "native_cta", "native_icon_url", "video_url", "vast_xml",
 })
+
+# Юридически значимые поля маркировки. После выдачи erid (creatives.ord_locked_at)
+# их менять нельзя: erid выдан на конкретного заказчика/договор/тематику. Смена =
+# новый креатив (новая модерация, новый erid, отдельная статистика) — так же, как
+# в ОРД: новые данные договора/заказчика = новый externalCreativeId (B13, L-02).
+_LEGAL_FIELDS = frozenset({"counterparty_id", "contract_id", "kktu_code"})
 
 _REQUIRED_BY_TYPE = {
     "banner": ["width", "height", "click_url"],
@@ -148,10 +154,28 @@ async def update_creative(creative_id: str, body: CreativePatch, user: dict = De
     pool = await get_pool()
     cur = await assert_in_scope(
         pool, "creatives", creative_id, await scope_for(user), "Креатив не найден",
-        columns="id, user_id, status, erid, name",
+        columns="id, user_id, status, erid, name, ord_locked_at, counterparty_id, contract_id, kktu_code",
     )
     owner = str(cur["user_id"])
     await assert_refs_owned(pool, owner, {k: updates.get(k) for k in _REF_TABLES}, _REF_TABLES)
+    if cur["ord_locked_at"] is not None:
+        changed_legal = sorted(
+            k for k in _LEGAL_FIELDS & set(updates)
+            if str(updates[k] or "") != str(cur[k] or "")
+        )
+        if changed_legal:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "ord_locked",
+                    "fields": changed_legal,
+                    "message": (
+                        "Креативу уже выдан erid: контрагент, договор и ККТУ заморожены. "
+                        "Для другого заказчика/договора/тематики создайте новый креатив — "
+                        "он пройдёт модерацию и получит собственный erid."
+                    ),
+                },
+            )
     # Изменение видимого содержимого одобренного креатива (картинка, ссылка,
     # текст, видео) отправляет его обратно на модерацию — иначе после approve
     # можно подменить баннер. Админ модерирует сам себя: статус не сбрасываем,
@@ -176,10 +200,9 @@ async def update_creative(creative_id: str, body: CreativePatch, user: dict = De
     if not row:
         raise HTTPException(status_code=404, detail="Креатив не найден")
     if remoderate or remark:
-        await pool.execute(
-            "UPDATE ord_creatives SET status = 'superseded', updated_at = now() WHERE creative_id = $1 AND status = 'registered'",
-            creative_id,
-        )
+        # Старая версия остаётся в истории со своим erid: статистика за часы до
+        # superseded_at уйдёт в ОРД под ним, новая версия получит новый erid.
+        await supersede_current(pool, creative_id)
     if remark:
         return await _mark_self_approved(pool, row)
     if remoderate:

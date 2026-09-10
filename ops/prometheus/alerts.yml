@@ -298,6 +298,20 @@ groups:
             Список — в ответе /cron/ord-export (skipped_without_erid) и в
             ord_export_log.request. Runbook: rtb_alerts.md#ord-export
 
+      - alert: OrdExportRowsRejected
+        expr: ord_export_rows_rejected > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "ОРД отклонил {{ $value }} строк(и) статистики в последней выгрузке"
+          description: >-
+            /cron/ord-export завершился со статусом partial/failed: часть строк
+            (креатив × версия erid × период) провайдер не принял. Причины
+            построчно — в ord_export_rows (status=rejected, error) и в
+            GET /ord/exports/{log_id}/rows. Такой период не считается
+            выгруженным: cron повторит отправку, externalStatisticId тот же
+            (upsert). Runbook: rtb_alerts.md#ord-export
+
       # --- Consumer событий Go-биддера (audit E-03) ---------------------------
       # Стрим rtb:events ограничен MAXLEN ~200k на стороне Go. Если consumer не
       # успевает, старые события обрезаются — win-rate/eCPM в кабинете теряют

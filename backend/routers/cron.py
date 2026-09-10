@@ -263,69 +263,106 @@ async def domain_quality_recompute(request: Request):
 
 @router.get("/ord-export")
 @_cron_job("ord_export")
-async def ord_monthly_export(request: Request, period: str | None = None):
-    """Месячная выгрузка статистики показов в ОРД (ФЗ-347).
+async def ord_monthly_export(request: Request, period: str | None = None, force: bool = False):
+    """Месячная выгрузка статистики показов в ОРД (ФЗ-347). Спека: docs/audit/ord_spec.md.
 
-    period 'YYYY-MM'; по умолчанию — предыдущий месяц. Идемпотентно:
-    повторный запуск за период, у которого уже есть статус ok, — no-op.
+    period 'YYYY-MM'; по умолчанию — предыдущий месяц.
+    * Статистика относится к версии erid, действовавшей на конец часа
+      (последняя registered_at < ts_hour + 1h) — смена содержимого в середине
+      месяца делит показы между старым и новым erid.
+    * Повтор за период со статусом ok — no-op; force=1 отправляет пересчёт как
+      kind='stats_correction' (externalStatisticId тот же → upsert в ОРД).
+    * Построчный результат в ord_export_rows; статус лога ok | partial | failed | empty.
+      Показы без erid при нулевом числе строк — failed (немаркированная реклама).
+    * Advisory-lock на период: параллельный запуск получает 409.
     """
     _check_secret(request)
     import json as _json
     from datetime import datetime, timezone
 
     from ord import OrdError, get_ord_adapter
+    from ord.service import external_creative_id, external_statistic_id
 
     now = datetime.now(timezone.utc)
     if period is None:
         year, month = (now.year, now.month - 1) if now.month > 1 else (now.year - 1, 12)
         period = f"{year:04d}-{month:02d}"
+    kind = "stats_correction" if force else "stats"
 
     pool = await get_pool()
-    already = await pool.fetchval(
-        "SELECT 1 FROM ord_export_log WHERE period = $1 AND kind = 'stats' AND status = 'ok'",
-        period,
-    )
-    if already:
-        obs_metrics.set_gauge("ord_export_last_success_timestamp_seconds", time.time())
-        return {"period": period, "status": "ok", "skipped": "already exported"}
+    async with pool.acquire() as conn:
+        locked = await conn.fetchval("SELECT pg_try_advisory_lock(hashtext($1))", f"ord_export:{period}")
+        if not locked:
+            raise HTTPException(status_code=409, detail=f"Выгрузка за {period} уже выполняется")
+        try:
+            return await _ord_export_locked(conn, period, kind, force, _json, external_creative_id,
+                                            external_statistic_id, OrdError, get_ord_adapter)
+        finally:
+            await conn.execute("SELECT pg_advisory_unlock(hashtext($1))", f"ord_export:{period}")
 
-    rows = await pool.fetch(
-        """SELECT oc.erid, oc.ord_external_id,
+
+async def _ord_export_locked(conn, period, kind, force, _json, external_creative_id,
+                             external_statistic_id, OrdError, get_ord_adapter):
+    if not force:
+        already = await conn.fetchval(
+            "SELECT 1 FROM ord_export_log WHERE period = $1 AND kind = 'stats' AND status IN ('ok', 'empty')",
+            period,
+        )
+        if already:
+            obs_metrics.set_gauge("ord_export_last_success_timestamp_seconds", time.time())
+            return {"period": period, "status": "ok", "skipped": "already exported"}
+
+    # Версия erid на конец часа: LATERAL берёт последнюю регистрацию, случившуюся
+    # до конца часа. Между supersede и новой регистрацией креатив вне фида для РФ,
+    # поэтому часы этого окна корректно остаются за старой версией.
+    rows = await conn.fetch(
+        """SELECT s.creative_id, oc.version, oc.erid,
                   sum(s.impressions) AS impressions,
                   sum(s.clicks)      AS clicks,
                   sum(s.spend)       AS spend
            FROM stats_hourly s
-           JOIN ord_creatives oc ON oc.creative_id = s.creative_id
-                AND oc.status IN ('registered', 'superseded')
-           WHERE oc.erid IS NOT NULL AND oc.erid <> ''
-             AND to_char(s.ts_hour, 'YYYY-MM') = $1
-           GROUP BY oc.erid, oc.ord_external_id
-           HAVING sum(s.impressions) > 0""",
+           JOIN LATERAL (
+               SELECT version, erid FROM ord_creatives o
+               WHERE o.creative_id = s.creative_id
+                 AND o.erid IS NOT NULL AND o.erid <> ''
+                 AND o.status IN ('registered', 'superseded')
+                 AND COALESCE(o.registered_at, o.created_at) < s.ts_hour + interval '1 hour'
+               ORDER BY COALESCE(o.registered_at, o.created_at) DESC LIMIT 1
+           ) oc ON true
+           WHERE to_char(s.ts_hour, 'YYYY-MM') = $1
+           GROUP BY s.creative_id, oc.version, oc.erid
+           HAVING sum(s.impressions) > 0
+           ORDER BY s.creative_id, oc.version""",
         period,
     )
     stats = [
         {
+            "creative_id": str(r["creative_id"]),
+            "version": int(r["version"]),
             "erid": r["erid"],
-            "creative_external_id": r["ord_external_id"],
+            "external_creative_id": external_creative_id(str(r["creative_id"]), int(r["version"])),
+            "external_statistic_id": external_statistic_id(str(r["creative_id"]), int(r["version"]), period),
             "impressions": int(r["impressions"]),
             "clicks": int(r["clicks"]),
-            "amount": str(r["spend"]),
+            "spend": str(r["spend"]),
         }
         for r in rows
     ]
-    # Показы были, а зарегистрированного erid нет — в ОРД такое отправить нельзя,
+    # Показы были, а действовавшего erid нет — в ОРД такое отправить нельзя,
     # но и молча пропускать нельзя: это реклама без маркировки (ФЗ-347).
-    skipped_rows = await pool.fetch(
-        """SELECT s.creative_id, s.campaign_id,
-                  sum(s.impressions) AS impressions,
-                  max(oc.status)     AS ord_status
+    skipped_rows = await conn.fetch(
+        """SELECT s.creative_id, s.campaign_id, sum(s.impressions) AS impressions
            FROM stats_hourly s
-           LEFT JOIN ord_creatives oc ON oc.creative_id = s.creative_id
-                AND oc.status IN ('registered', 'superseded')
-                AND oc.erid IS NOT NULL AND oc.erid <> ''
            WHERE to_char(s.ts_hour, 'YYYY-MM') = $1
+             AND NOT EXISTS (
+               SELECT 1 FROM ord_creatives o
+               WHERE o.creative_id = s.creative_id
+                 AND o.erid IS NOT NULL AND o.erid <> ''
+                 AND o.status IN ('registered', 'superseded')
+                 AND COALESCE(o.registered_at, o.created_at) < s.ts_hour + interval '1 hour'
+             )
            GROUP BY s.creative_id, s.campaign_id
-           HAVING sum(s.impressions) > 0 AND count(oc.id) = 0
+           HAVING sum(s.impressions) > 0
            ORDER BY sum(s.impressions) DESC""",
         period,
     )
@@ -345,42 +382,87 @@ async def ord_monthly_export(request: Request, period: str | None = None):
             ", ".join(x["creative_id"] for x in skipped_without_erid[:20]),
         )
 
-    log_id = await pool.fetchval(
+    log_id = await conn.fetchval(
         """INSERT INTO ord_export_log (period, kind, rows_sent, request)
-           VALUES ($1, 'stats', $2, $3) RETURNING id""",
-        period, len(stats),
+           VALUES ($1, $2, $3, $4) RETURNING id""",
+        period, kind, len(stats),
         _json.dumps({"stats": stats, "skipped_without_erid": skipped_without_erid}, ensure_ascii=False),
     )
-    if not stats:
-        await pool.execute(
-            "UPDATE ord_export_log SET status='ok', finished_at=now() WHERE id=$1", log_id
+    if stats:
+        await conn.executemany(
+            """INSERT INTO ord_export_rows
+                 (log_id, creative_id, version, erid, external_statistic_id, impressions, clicks, spend)
+               VALUES ($1, $2::uuid, $3, $4, $5, $6, $7, $8::numeric)""",
+            [(log_id, r["creative_id"], r["version"], r["erid"], r["external_statistic_id"],
+              r["impressions"], r["clicks"], r["spend"]) for r in stats],
         )
+    base = {"period": period, "kind": kind, "log_id": str(log_id), "skipped_without_erid": skipped_without_erid}
+
+    if not stats:
+        if skipped_without_erid:
+            # Реклама показывалась, а отчитаться нечем: это не успех.
+            err = f"{len(skipped_without_erid)} креативов с показами без erid, отправить нечего"
+            await conn.execute(
+                "UPDATE ord_export_log SET status='failed', error=$2, finished_at=now() WHERE id=$1", log_id, err
+            )
+            obs_metrics.inc("ord_export_failures_total")
+            return {**base, "status": "failed", "rows": 0, "error": err}
+        await conn.execute("UPDATE ord_export_log SET status='empty', finished_at=now() WHERE id=$1", log_id)
         obs_metrics.set_gauge("ord_export_last_success_timestamp_seconds", time.time())
-        return {"period": period, "status": "ok", "rows": 0, "skipped_without_erid": skipped_without_erid}
+        return {**base, "status": "empty", "rows": 0}
 
     try:
         # OrdNotConfigured (production без ключа) — подкласс OrdError: лог failed + 502.
         adapter = await get_ord_adapter()
         out = await adapter.submit_stats(period, stats)
-        await pool.execute(
-            "UPDATE ord_export_log SET status='ok', response=$2, finished_at=now() WHERE id=$1",
-            log_id, _json.dumps(out, ensure_ascii=False),
-        )
-        obs_metrics.set_gauge("ord_export_last_success_timestamp_seconds", time.time())
-        return {
-            "period": period,
-            "status": "ok",
-            "rows": len(stats),
-            "provider": adapter.provider,
-            "skipped_without_erid": skipped_without_erid,
-        }
     except OrdError as e:
-        await pool.execute(
+        await conn.execute(
             "UPDATE ord_export_log SET status='failed', error=$2, finished_at=now() WHERE id=$1",
             log_id, str(e),
         )
+        await conn.execute(
+            "UPDATE ord_export_rows SET status='rejected', error=$2 WHERE log_id=$1", log_id, str(e)
+        )
         obs_metrics.inc("ord_export_failures_total")
         raise HTTPException(status_code=502, detail=f"ОРД выгрузка не удалась: {e}")
+
+    accepted = set(out.get("accepted") or [])
+    rejected = {r["id"]: r.get("error") or "rejected" for r in (out.get("rejected") or [])}
+    # Строка, о которой провайдер ничего не сказал, — не принята.
+    for r in stats:
+        sid = r["external_statistic_id"]
+        if sid not in accepted and sid not in rejected:
+            rejected[sid] = "no acknowledgement from provider"
+    if accepted:
+        await conn.execute(
+            "UPDATE ord_export_rows SET status='accepted' WHERE log_id=$1 AND external_statistic_id = ANY($2::text[])",
+            log_id, list(accepted),
+        )
+    for sid, err in rejected.items():
+        await conn.execute(
+            "UPDATE ord_export_rows SET status='rejected', error=$3 WHERE log_id=$1 AND external_statistic_id=$2",
+            log_id, sid, err,
+        )
+    status = "ok" if not rejected else ("failed" if not accepted else "partial")
+    await conn.execute(
+        """UPDATE ord_export_log
+              SET status=$2, response=$3, rows_accepted=$4, rows_rejected=$5, finished_at=now()
+            WHERE id=$1""",
+        log_id, status, _json.dumps(out, ensure_ascii=False), len(accepted), len(rejected),
+    )
+    obs_metrics.set_gauge("ord_export_rows_rejected", len(rejected))
+    if status == "ok":
+        obs_metrics.set_gauge("ord_export_last_success_timestamp_seconds", time.time())
+    else:
+        obs_metrics.inc("ord_export_failures_total")
+    return {
+        **base,
+        "status": status,
+        "rows": len(stats),
+        "rows_accepted": len(accepted),
+        "rows_rejected": len(rejected),
+        "provider": adapter.provider,
+    }
 
 
 @router.get("/retention")

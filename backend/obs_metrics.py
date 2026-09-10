@@ -81,6 +81,10 @@ _GAUGE_HELP = {
         "Creatives with impressions in the last exported period but no registered erid "
         "(should be 0; >0 = ads served without ORD marking). Refreshed by GET /cron/ord-export."
     ),
+    "ord_export_rows_rejected": (
+        "Statistic rows the ORD provider rejected (or did not acknowledge) in the last export run; "
+        "log status partial/failed, per-row errors in ord_export_rows. Refreshed by GET /cron/ord-export."
+    ),
     # Consumer событий Go-биддера (E-03). Стрим ограничен MAXLEN ~200k на стороне
     # Go: lag, приближающийся к длине стрима, означает скорую потерю событий.
     "rtb_events_stream_length": "Entries currently in the rtb:events Redis stream (XLEN).",

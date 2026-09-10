@@ -108,9 +108,11 @@ async def register_counterparty(cp_id: str, user: dict = Depends(require_platfor
         return _row(cp)  # идемпотентно
     adapter = await _adapter_or_503()
     try:
+        # external_id = наш UUID: в ОРД это ключ upsert, повторная отправка
+        # обновляет карточку организации, а не создаёт дубль.
         out = await adapter.register_counterparty(
-            {"name": cp["name"], "inn": cp["inn"], "ogrn": cp.get("ogrn"), "legal_type": cp["legal_type"],
-             "role": cp["role"], "address": cp["address"]}
+            {"external_id": str(cp["id"]), "name": cp["name"], "inn": cp["inn"], "ogrn": cp.get("ogrn"),
+             "legal_type": cp["legal_type"], "role": cp["role"], "address": cp["address"]}
         )
         row = await pool.fetchrow(
             """UPDATE counterparties SET ord_external_id=$3, ord_status='registered',
@@ -174,15 +176,29 @@ async def register_contract(contract_id: str, user: dict = Depends(require_platf
     owner = str(c["user_id"])
     if c["ord_status"] == "registered":
         return _row(c)
-    # обе стороны должны быть зарегистрированы в ОРД
+    # обе стороны должны быть зарегистрированы в ОРД — договор ссылается на их внешние ID
+    sides: dict[str, str] = {}
     for side in ("client_id", "contractor_id"):
-        st = await pool.fetchval("SELECT ord_status FROM counterparties WHERE id = $1", c[side])
-        if st != "registered":
+        cp = await pool.fetchrow("SELECT ord_status, ord_external_id FROM counterparties WHERE id = $1", c[side])
+        if not cp or cp["ord_status"] != "registered" or not cp["ord_external_id"]:
             raise HTTPException(409, "Сначала зарегистрируйте обоих контрагентов в ОРД")
+        sides[side] = cp["ord_external_id"]
+    parent_external_id = None
+    if c["parent_contract_id"]:
+        parent_external_id = await pool.fetchval(
+            "SELECT ord_external_id FROM ord_contracts WHERE id = $1 AND ord_status = 'registered'",
+            c["parent_contract_id"],
+        )
+        if not parent_external_id:
+            raise HTTPException(409, "Сначала зарегистрируйте родительский договор в ОРД")
     adapter = await _adapter_or_503()
     try:
         out = await adapter.register_contract(
             {
+                "external_id": str(c["id"]),
+                "client_external_id": sides["client_id"],
+                "contractor_external_id": sides["contractor_id"],
+                "parent_external_id": parent_external_id,
                 "number": c["number"], "signed_at": str(c["signed_at"]),
                 "contract_type": c["contract_type"], "subject_type": c["subject_type"],
                 "amount": str(c["amount"] or 0), "is_vat": c["is_vat"],
@@ -227,10 +243,26 @@ async def list_ord_creatives(user: dict = Depends(current_user)):
     pool = await get_pool()
     scope = await scope_for(user)
     rows = await pool.fetch(
-        f"""SELECT oc.*, c.name AS creative_name, c.campaign_id
+        f"""SELECT oc.*, c.name AS creative_name, c.campaign_id, c.ord_locked_at,
+                  (oc.superseded_at IS NULL) AS is_current
            FROM ord_creatives oc JOIN creatives c ON c.id = oc.creative_id
-           WHERE {scope.where("c.user_id", 1)} ORDER BY oc.created_at DESC""",
+           WHERE {scope.where("c.user_id", 1)}
+           ORDER BY oc.creative_id, oc.version DESC, oc.created_at DESC""",
         *scope.params,
+    )
+    return [dict(r) for r in rows]
+
+
+@router.get("/creatives/{creative_id}/versions")
+async def creative_versions(creative_id: str, user: dict = Depends(current_user)):
+    """История маркировки креатива: все версии с erid и интервалами действия."""
+    pool = await get_pool()
+    await assert_in_scope(pool, "creatives", creative_id, await scope_for(user), "Креатив не найден")
+    rows = await pool.fetch(
+        """SELECT id, version, erid, status, ord_provider, ord_external_id, contract_id,
+                  registered_at, superseded_at, error, (superseded_at IS NULL) AS is_current
+             FROM ord_creatives WHERE creative_id = $1 ORDER BY version""",
+        creative_id,
     )
     return [dict(r) for r in rows]
 
@@ -240,4 +272,20 @@ async def list_ord_creatives(user: dict = Depends(current_user)):
 async def list_exports(user: dict = Depends(current_user)):
     pool = await get_pool()
     rows = await pool.fetch("SELECT * FROM ord_export_log ORDER BY started_at DESC LIMIT 50")
+    return [dict(r) for r in rows]
+
+
+@router.get("/exports/{log_id}/rows")
+async def export_rows(log_id: str, user: dict = Depends(current_user)):
+    """Построчный результат выгрузки: что ОРД принял, что отклонил и почему."""
+    pool = await get_pool()
+    scope = await scope_for(user)
+    rows = await pool.fetch(
+        f"""SELECT r.*, c.name AS creative_name, c.campaign_id
+              FROM ord_export_rows r
+              LEFT JOIN creatives c ON c.id = r.creative_id
+             WHERE r.log_id = $1 AND (c.id IS NULL OR {scope.where("c.user_id", 2)})
+             ORDER BY r.status DESC, r.impressions DESC""",
+        log_id, *scope.params,
+    )
     return [dict(r) for r in rows]

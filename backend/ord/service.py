@@ -142,6 +142,36 @@ async def _kktu_for(pool, creative: dict) -> str | None:
     return camp["kktu_code"] if camp and camp["kktu_code"] else None
 
 
+def external_creative_id(creative_id: str, version: int) -> str:
+    """externalCreativeId для ОРД: одна версия содержимого = один erid."""
+    return f"{creative_id}:v{version}"
+
+
+def external_statistic_id(creative_id: str, version: int, period: str) -> str:
+    """externalStatisticId: повтор за тот же период = upsert (коррекция), не дубль."""
+    return f"{creative_id}:v{version}:{period}"
+
+
+async def current_version(pool, creative_id: str):
+    """Открытая (superseded_at IS NULL) строка ord_creatives или None."""
+    return await pool.fetchrow(
+        "SELECT * FROM ord_creatives WHERE creative_id = $1 AND superseded_at IS NULL", creative_id
+    )
+
+
+async def supersede_current(pool, creative_id: str) -> bool:
+    """Закрывает текущую зарегистрированную версию: erid остаётся в истории,
+    статистика за часы до superseded_at относится к ней. Незарегистрированные
+    (awaiting_*/failed) строки не закрываются — их просто перепробуют."""
+    tag = await pool.execute(
+        """UPDATE ord_creatives
+              SET status = 'superseded', superseded_at = now(), updated_at = now()
+            WHERE creative_id = $1 AND superseded_at IS NULL AND status = 'registered'""",
+        creative_id,
+    )
+    return tag.endswith(" 1")
+
+
 def _payload(creative: dict, contract: dict, kktu: str | None) -> dict[str, Any]:
     # ОРД регистрирует конкретное содержимое: медиа (URL файлов) и тексты.
     # erid выдаётся на него, поэтому смена картинки/текста = новая регистрация
@@ -167,20 +197,41 @@ def _payload(creative: dict, contract: dict, kktu: str | None) -> dict[str, Any]
     }
 
 
+async def _next_version(conn, creative_id: str) -> int:
+    return await conn.fetchval(
+        "SELECT COALESCE(max(version), 0) + 1 FROM ord_creatives WHERE creative_id = $1", creative_id
+    )
+
+
 async def _mark(pool, creative_id: str, contract_id: str | None, status: str,
                 payload: dict | None, error: str | None) -> dict:
-    row = await pool.fetchrow(
-        """INSERT INTO ord_creatives (creative_id, contract_id, status, payload, error)
-           VALUES ($1,$2,$3,$4,$5)
-           ON CONFLICT (creative_id) DO UPDATE
-             SET status = EXCLUDED.status, error = EXCLUDED.error,
-                 contract_id = COALESCE(EXCLUDED.contract_id, ord_creatives.contract_id),
-                 payload = COALESCE(EXCLUDED.payload, ord_creatives.payload),
-                 updated_at = now()
-           RETURNING *""",
-        creative_id, contract_id, status,
-        json.dumps(payload, ensure_ascii=False) if payload else None, error,
-    )
+    """Промежуточный статус (awaiting_*/failed) текущей версии.
+
+    Открытая версия обновляется на месте; если открытой нет (первая регистрация
+    или предыдущая закрыта supersede_current) — создаётся новая версия.
+    """
+    async with pool.acquire() as conn, conn.transaction():
+        cur = await conn.fetchrow(
+            "SELECT id, version FROM ord_creatives WHERE creative_id = $1 AND superseded_at IS NULL FOR UPDATE",
+            creative_id,
+        )
+        payload_json = json.dumps(payload, ensure_ascii=False) if payload else None
+        if cur:
+            row = await conn.fetchrow(
+                """UPDATE ord_creatives
+                      SET status = $2, error = $3,
+                          contract_id = COALESCE($4, contract_id),
+                          payload = COALESCE($5::jsonb, payload),
+                          updated_at = now()
+                    WHERE id = $1 RETURNING *""",
+                cur["id"], status, error, contract_id, payload_json,
+            )
+        else:
+            row = await conn.fetchrow(
+                """INSERT INTO ord_creatives (creative_id, version, contract_id, status, payload, error)
+                   VALUES ($1,$2,$3,$4,$5::jsonb,$6) RETURNING *""",
+                creative_id, await _next_version(conn, creative_id), contract_id, status, payload_json, error,
+            )
     return dict(row)
 
 
@@ -208,9 +259,7 @@ async def register_creative(pool, creative: dict, *, contract_id: str | None = N
     чтобы approve модератора не ломался из-за недоступности ОРД.
     """
     creative = dict(creative)
-    existing = await pool.fetchrow(
-        "SELECT * FROM ord_creatives WHERE creative_id = $1", creative["id"]
-    )
+    existing = await current_version(pool, creative["id"])
     if existing and existing["status"] == "registered" and existing["erid"]:
         return _result("ok", dict(existing))
 
@@ -240,7 +289,11 @@ async def register_creative(pool, creative: dict, *, contract_id: str | None = N
         rec = await _mark(pool, creative["id"], contract["id"], "awaiting_kktu", None, why)
         return _result("awaiting_kktu", rec, why)
 
+    # Номер версии фиксируем до похода в ОРД: он входит в externalCreativeId.
+    version = int(existing["version"]) if existing else await _next_version(pool, creative["id"])
     payload = _payload(creative, contract, kktu)
+    payload["external_creative_id"] = external_creative_id(str(creative["id"]), version)
+    payload["version"] = version
     try:
         # OrdNotConfigured (production без ключа) — тоже OrdError: креатив
         # уходит в failed с понятной причиной, approve модератора не ломается.
@@ -250,25 +303,30 @@ async def register_creative(pool, creative: dict, *, contract_id: str | None = N
         rec = await _mark(pool, creative["id"], contract["id"], "failed", payload, str(e))
         return _result("failed", rec, str(e))
 
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            row = await conn.fetchrow(
-                """INSERT INTO ord_creatives
-                     (creative_id, contract_id, erid, ord_provider, ord_external_id,
-                      status, payload, registered_at, error)
-                   VALUES ($1,$2,$3,$4,$5,'registered',$6, now(), NULL)
-                   ON CONFLICT (creative_id) DO UPDATE
-                     SET erid=EXCLUDED.erid, ord_external_id=EXCLUDED.ord_external_id,
-                         contract_id=EXCLUDED.contract_id, ord_provider=EXCLUDED.ord_provider,
-                         status='registered', payload=EXCLUDED.payload,
-                         error=NULL, registered_at=now(), updated_at=now()
-                   RETURNING *""",
-                creative["id"], contract["id"], out["erid"], adapter.provider,
-                out.get("external_id"), json.dumps(payload, ensure_ascii=False),
-            )
-            await conn.execute(
-                """UPDATE creatives SET erid = $2, contract_id = $3, updated_at = now()
-                   WHERE id = $1""",
-                creative["id"], out["erid"], contract["id"],
-            )
+    async with pool.acquire() as conn, conn.transaction():
+        # Открытая версия (awaiting_*/failed) становится registered; закрытой
+        # версии здесь быть не может — supersede_current выставил superseded_at,
+        # и частичный уникальный индекс ux_ord_creatives_current это гарантирует.
+        row = await conn.fetchrow(
+            """INSERT INTO ord_creatives
+                 (creative_id, version, contract_id, erid, ord_provider, ord_external_id,
+                  status, payload, registered_at, error)
+               VALUES ($1,$2,$3,$4,$5,$6,'registered',$7::jsonb, now(), NULL)
+               ON CONFLICT (creative_id, version) DO UPDATE
+                 SET erid=EXCLUDED.erid, ord_external_id=EXCLUDED.ord_external_id,
+                     contract_id=EXCLUDED.contract_id, ord_provider=EXCLUDED.ord_provider,
+                     status='registered', payload=EXCLUDED.payload,
+                     error=NULL, registered_at=now(), updated_at=now()
+               RETURNING *""",
+            creative["id"], version, contract["id"], out["erid"], adapter.provider,
+            out.get("external_id"), json.dumps(payload, ensure_ascii=False),
+        )
+        await conn.execute(
+            """UPDATE creatives
+                  SET erid = $2, contract_id = $3,
+                      ord_locked_at = COALESCE(ord_locked_at, now()),
+                      updated_at = now()
+                WHERE id = $1""",
+            creative["id"], out["erid"], contract["id"],
+        )
     return _result("ok", dict(row))

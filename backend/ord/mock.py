@@ -21,14 +21,25 @@ class MockOrdAdapter:
     provider = "mock"
 
     async def register_counterparty(self, data: dict[str, Any]) -> dict[str, Any]:
-        return {"external_id": _stable_id("MOCKCP", data)}
+        return {"external_id": data.get("external_id") or _stable_id("MOCKCP", data)}
 
     async def register_contract(self, data: dict[str, Any]) -> dict[str, Any]:
-        return {"external_id": _stable_id("MOCKCT", data)}
+        return {"external_id": data.get("external_id") or _stable_id("MOCKCT", data)}
 
     async def register_creative(self, data: dict[str, Any]) -> dict[str, Any]:
         ext = _stable_id("MOCKCR", data)
         return {"external_id": ext, "erid": f"MOCK-{ext[-12:]}"}
 
+    async def register_platform(self, data: dict[str, Any]) -> dict[str, Any]:
+        return {"external_id": data["external_id"]}
+
     async def submit_stats(self, period: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
-        return {"accepted": len(rows)}
+        """Принимает всё; строка с impressions <= 0 отклоняется — как реальный
+        ОРД (viewsCountByFact обязателен и положителен), чтобы partial-путь
+        экспорта был проверяем без сети."""
+        accepted = [r["external_statistic_id"] for r in rows if int(r.get("impressions") or 0) > 0]
+        rejected = [
+            {"id": r["external_statistic_id"], "error": "viewsCountByFact must be positive"}
+            for r in rows if int(r.get("impressions") or 0) <= 0
+        ]
+        return {"accepted": accepted, "rejected": rejected}

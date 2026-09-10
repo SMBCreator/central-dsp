@@ -350,7 +350,7 @@ https://<host>/cron/<job>` и прочитать JSON ответа. `reset-daily
 безопасен в любое время: он обнуляет только счётчики прошлых бизнес-дней
 (`spent_today_date < сегодня МСК`, ключи `spend:*:<вчера>`), текущий день не трогает.
 
-## ord-export — OrdExportFailed / OrdExportLag / OrdExportSkippedWithoutErid
+## ord-export — OrdExportFailed / OrdExportLag / OrdExportSkippedWithoutErid / OrdExportRowsRejected
 
 **Что значит:** месячная выгрузка статистики показов в ОРД (`/cron/ord-export`,
 ФЗ-347) не удалась (`failed`) или не было успеха более 40 дней (`lag`).
@@ -371,9 +371,25 @@ https://<host>/cron/<job>` и прочитать JSON ответа. `reset-daily
 1. Устранить причину, повторить:
    `curl -H "Authorization: Bearer $CRON_SECRET" "https://<host>/cron/ord-export?period=YYYY-MM"`
    — идемпотентно: если за период уже есть `ok`, вернёт `skipped`.
-2. Если провайдер отклонил часть строк — по каждой найти креатив, проверить
-   регистрацию (`POST /ord/creatives/{id}/register`), повторить выгрузку.
-3. Убедиться, что `ord_export_last_success_timestamp_seconds` обновился.
+2. Если провайдер отклонил часть строк (статус `partial`, alert
+   OrdExportRowsRejected) — причины построчно: `SELECT creative_id, version, erid,
+   status, error FROM ord_export_rows WHERE log_id = '<id>' AND status = 'rejected';`
+   или `GET /ord/exports/{log_id}/rows`. Исправить регистрацию креатива
+   (`POST /ord/creatives/{id}/register`, история версий —
+   `GET /ord/creatives/{id}/versions`) и повторить выгрузку: `partial` не
+   считается выгруженным, cron отправит период снова; `externalStatisticId`
+   (`<creative_id>:v<version>:<YYYY-MM>`) тот же, в ОРД это upsert, дублей нет.
+3. Коррекция уже принятого периода (поздние показы, исправленные суммы):
+   `.../cron/ord-export?period=YYYY-MM&force=1` — запись `kind=stats_correction`,
+   данные в ОРД перезаписываются тем же `externalStatisticId`.
+4. Убедиться, что `ord_export_last_success_timestamp_seconds` обновился.
+
+**Версии erid:** смена содержимого одобренного креатива закрывает текущую
+версию (`ord_creatives.superseded_at`) и регистрирует новую с новым erid;
+показы относятся к версии, действовавшей на конец часа. Контрагент, договор и
+ККТУ после выдачи erid заморожены (`creatives.ord_locked_at`, API отвечает
+`409 ord_locked`) — для другого заказчика/договора создаётся новый креатив.
+Спека: `docs/audit/ord_spec.md`.
 
 **OrdExportSkippedWithoutErid (показы без маркировки):** выгрузка прошла, но
 у части креативов были показы без зарегистрированного erid — такие строки в ОРД
@@ -382,8 +398,9 @@ https://<host>/cron/<job>` и прочитать JSON ответа. `reset-daily
 трафика: проверить, как креатив попал в фид без erid (гейт запуска
 `ord_marking`, ручное снятие `LAUNCH_GATE`, показы до одобрения), немедленно
 поставить кампанию на паузу, зарегистрировать креатив в ОРД и повторить выгрузку
-за период после удаления строки `ok` из `ord_export_log` — либо согласовать с
-ответственным за ОРД подачу вручную. Gauge обновляется на каждом прогоне
+за период с `force=1` — либо согласовать с ответственным за ОРД подачу вручную.
+Если за период были показы, но ни одной строки с erid, выгрузка получает статус
+`failed` (не `ok`): немаркированная реклама — не успех. Gauge обновляется на каждом прогоне
 `/cron/ord-export`; после исправления и повтора он станет 0.
 
 ---

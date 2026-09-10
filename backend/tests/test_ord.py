@@ -34,10 +34,15 @@ def test_factory_with_key_returns_ozon(monkeypatch):
     assert type(asyncio.run(get_ord_adapter())).__name__ == "OzonOrdClient"
 
 
-def test_submit_stats_counts():
+def test_submit_stats_reports_per_row():
     m = MockOrdAdapter()
-    out = asyncio.run(m.submit_stats("2026-07", [{"erid": "a"}, {"erid": "b"}]))
-    assert out == {"accepted": 2}
+    rows = [
+        {"external_statistic_id": "c1:v1:2026-07", "impressions": 10},
+        {"external_statistic_id": "c2:v1:2026-07", "impressions": 0},
+    ]
+    out = asyncio.run(m.submit_stats("2026-07", rows))
+    assert out["accepted"] == ["c1:v1:2026-07"]
+    assert [r["id"] for r in out["rejected"]] == ["c2:v1:2026-07"]
 
 
 # --- erid в разметке ---------------------------------------------------------

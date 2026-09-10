@@ -10,14 +10,24 @@ Retry: 3 попытки с экспоненциальной задержкой �
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any
 
 import httpx
 
-from .adapter import OrdError
+from .adapter import OrdDataError, OrdError
+from .ozon_mapping import (
+    contract_body,
+    creative_body,
+    creative_erid,
+    organisation_body,
+    period_bounds,
+    statistic_body,
+)
 
 _RETRIES = 3
 _TIMEOUT = 30.0
+_STATS_BATCH = 100
 
 
 class OzonOrdClient:
@@ -42,11 +52,11 @@ class OzonOrdClient:
                     raise OrdError(f"ОРД Ozon 5xx: {resp.status_code} {resp.text[:300]}")
                 if resp.status_code >= 400:
                     # ошибка данных — не ретраим
-                    raise OrdError(f"ОРД Ozon {resp.status_code}: {resp.text[:500]}") from None
+                    raise OrdDataError(f"ОРД Ozon {resp.status_code}: {resp.text[:500]}") from None
                 return resp.json()
+            except OrdDataError:
+                raise
             except OrdError as e:
-                if "5xx" not in str(e):
-                    raise
                 last_err = e
             except httpx.HTTPError as e:
                 last_err = OrdError(f"ОРД Ozon network: {e}")
@@ -59,7 +69,7 @@ class OzonOrdClient:
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.post(
-                    f"{self._base}/api/external/v3/organisation/list",
+                    f"{self._base}/api/external/organisation/list",
                     json={"pageSize": 1},
                     headers=self._headers,
                 )
@@ -71,25 +81,60 @@ class OzonOrdClient:
         except httpx.HTTPError as e:
             raise OrdError(f"ОРД Ozon недоступен: {e}")
 
-    # -- Пути ниже сверить со спецификацией при получении ключа --------------
+    # -- Реальные пути API Ozon ОРД (см. ord/ozon_mapping.py, ord_spec.md [V]) --
 
     async def register_counterparty(self, data: dict[str, Any]) -> dict[str, Any]:
-        out = await self._request("POST", "/api/external/v3/organisation", data)
-        return {"external_id": out.get("id") or out.get("external_id")}
+        await self._request("POST", "/api/external/organisation", organisation_body(data))
+        return {"external_id": data["external_id"]}
 
     async def register_contract(self, data: dict[str, Any]) -> dict[str, Any]:
-        out = await self._request("POST", "/api/external/v3/contract", data)
-        return {"external_id": out.get("id") or out.get("external_id")}
+        await self._request("POST", "/api/external/contract", contract_body(data))
+        return {"external_id": data["external_id"]}
 
     async def register_creative(self, data: dict[str, Any]) -> dict[str, Any]:
-        out = await self._request("POST", "/api/external/v3/creative", data)
-        erid = out.get("erid") or out.get("marker") or (out.get("creative") or {}).get("erid")
+        out = await self._request("POST", "/api/external/creative", creative_body(data))
+        erid = creative_erid(out)
         if not erid:
             raise OrdError(f"ОРД Ozon: ответ без erid: {str(out)[:300]}")
-        return {"external_id": out.get("id") or out.get("external_id"), "erid": erid}
+        return {"external_id": data["external_creative_id"], "erid": erid}
+
+    async def register_platform(self, data: dict[str, Any]) -> dict[str, Any]:
+        await self._request("POST", "/api/external/platform", {
+            "externalPlatformId": data["external_id"],
+            "appName": data["name"],
+            "platformType": "PLATFORM_TYPE_SYSTEM",
+            "url": data.get("url") or "",
+        })
+        return {"external_id": data["external_id"]}
 
     async def submit_stats(self, period: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
-        out = await self._request(
-            "POST", "/api/external/v3/statistics", {"period": period, "rows": rows}
-        )
-        return {"accepted": out.get("accepted", len(rows))}
+        """Статистика за месяц: батчи по _STATS_BATCH; батч, отклонённый 4xx,
+        досылается построчно, чтобы отделить принятые строки от отклонённых.
+        Возвращает {"accepted": [ext_id...], "rejected": [{"id", "error"}...]}."""
+        start, end = period_bounds(period)
+        platform_id = os.getenv("ORD_PLATFORM_EXTERNAL_ID", "central-dsp")
+        accepted: list[str] = []
+        rejected: list[dict[str, str]] = []
+
+        async def _send(batch: list[dict[str, Any]]) -> None:
+            body = {"statistics": [statistic_body(start, end, r, platform_id) for r in batch]}
+            await self._request("POST", "/api/external/v2/statistic", body)
+
+        for i in range(0, len(rows), _STATS_BATCH):
+            batch = rows[i:i + _STATS_BATCH]
+            try:
+                await _send(batch)
+                accepted.extend(r["external_statistic_id"] for r in batch)
+                continue
+            except OrdDataError as e:
+                if len(batch) == 1:
+                    rejected.append({"id": batch[0]["external_statistic_id"], "error": str(e)})
+                    continue
+            # 4xx на батче из нескольких строк: ищем виновника построчно
+            for r in batch:
+                try:
+                    await _send([r])
+                    accepted.append(r["external_statistic_id"])
+                except OrdDataError as e:
+                    rejected.append({"id": r["external_statistic_id"], "error": str(e)})
+        return {"accepted": accepted, "rejected": rejected}
