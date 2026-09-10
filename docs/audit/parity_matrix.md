@@ -94,6 +94,7 @@ Go-биддер (`bidder-go/`) доведён до функциональног�
 | Video `start` — только `video_starts`, не viewable (MRC: 50 % пикселей 2 с) | `video_event` | n/a (backend) | `TestVideoStartNotViewable` |
 | Валидация на загрузке: `CreativeIn/CreativePatch` — URL-поля через `validate_creative_url`, `vast_xml` через `validate_vast_xml` (≤64 KiB), `html_snippet` ≤100 KB; `""` → `None` | `schemas.py` | n/a | `TestCreativeSchemas` |
 | Отчётность F-02 (B14a): spend net в БД, наценка `present_spend` одной точкой, `derive` одна арифметика, totals без LIMIT + «Прочее», «Не указано», конверсии из `conversions` в raw-отчёте | ✅ (`stats_math.py`, `routers/stats.py`) | — | n/a | Только read-path backend; Go пишет `bid_events`/`stats_hourly` net и не участвует в представлении. `tests/test_stats_presentation.py` |
+| Наценка на share/guest F-02 (B14b): `markup_mult_snapshot = chain_mult(создатель) × (1+extra/100)` фиксируется при создании; `extra>0` только `rbac.MARKUP_ADD_ROLES` (superadmin/admin/agency); `public_stats`/viewer читают snapshot; блокировка владельца → `share.revoke_all_access_of` (ссылки, гости, сессии гостей) | ✅ (`migrations/044`, `routers/share.py`, `rbac.spend_multiplier`) | — | n/a | Только read-path backend + миграция; Go не участвует. `tests/test_share_markup_snapshot.py`, `tests/test_share_markup_snapshot_db.py` |
 
 `[V]` при онбординге SSP: подтвердить, что площадка исполняет `<script>` в
 banner adm (иначе viewability для banner недоступна — только native eventtrackers).

@@ -3,6 +3,8 @@
 import { useState } from "react"
 import useSWR from "swr"
 import { api, fetcher } from "@/lib/api"
+import { useMe } from "@/lib/use-me"
+import { canAddShareMarkup } from "@/lib/roles"
 import { Button, Card, CardHeader, Field, Modal, EmptyState, Spinner, inputCls } from "@/components/ui"
 
 interface ShareLink {
@@ -15,7 +17,10 @@ interface ShareLink {
   brand_color: string | null
   expires_at: string | null
   revoked: boolean
+  revoked_at: string | null
   created_at: string
+  markup_extra_pct: number
+  markup_mode: "inherited" | "custom_for_share"
 }
 
 interface Guest {
@@ -27,6 +32,9 @@ interface Guest {
   advertiser_name: string | null
   brand_name: string | null
   created_at: string
+  revoked_at: string | null
+  markup_extra_pct: number
+  markup_mode: "inherited" | "custom_for_share"
 }
 
 interface Advertiser {
@@ -42,7 +50,37 @@ function Chip({ children }: { children: React.ReactNode }) {
   )
 }
 
+function MarkupChip({ pct }: { pct: number }) {
+  if (!pct || pct <= 0) return null
+  return <Chip>{`Наценка +${pct} %`}</Chip>
+}
+
+/** Процент сверх цены создателя; пусто/0 = получатель видит цену создателя (F-02). */
+function MarkupExtraField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const extra = Number(value)
+  const hint =
+    value && Number.isFinite(extra) && extra > 0
+      ? `Получатель увидит вашу цену ×${(1 + extra / 100).toFixed(3).replace(/0+$/, "").replace(/\.$/, "")}`
+      : "Сверх вашей цены. Пусто = получатель видит вашу цену"
+  return (
+    <Field label="Наценка для получателя, %" hint={hint}>
+      <input
+        type="number"
+        min={0}
+        max={500}
+        step={0.1}
+        className={inputCls}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="0"
+      />
+    </Field>
+  )
+}
+
 export default function AccessPage() {
+  const { me } = useMe()
+  const canMarkup = canAddShareMarkup(me?.role)
   const { data: links, mutate: mutateLinks } = useSWR<ShareLink[]>("/share/links", fetcher)
   const { data: guests, mutate: mutateGuests } = useSWR<Guest[]>("/share/guests", fetcher)
   const { data: advertisers } = useSWR<Advertiser[]>("/advertisers", fetcher)
@@ -58,6 +96,7 @@ export default function AccessPage() {
   const [lBrand, setLBrand] = useState("")
   const [lColor, setLColor] = useState("#6366f1")
   const [lDays, setLDays] = useState("")
+  const [lExtra, setLExtra] = useState("")
 
   // Guest form
   const [gEmail, setGEmail] = useState("")
@@ -65,6 +104,7 @@ export default function AccessPage() {
   const [gName, setGName] = useState("")
   const [gAdv, setGAdv] = useState("")
   const [gBrand, setGBrand] = useState("")
+  const [gExtra, setGExtra] = useState("")
 
   const createLink = async () => {
     setError(null)
@@ -77,6 +117,7 @@ export default function AccessPage() {
           brand_name: lBrand || null,
           brand_color: lColor || null,
           expires_days: lDays ? Number(lDays) : null,
+          markup_extra_pct: canMarkup && lExtra ? Number(lExtra) : null,
         }),
       })
       setLinkModal(false)
@@ -84,6 +125,7 @@ export default function AccessPage() {
       setLAdv("")
       setLBrand("")
       setLDays("")
+      setLExtra("")
       mutateLinks()
     } catch (e) {
       setError(e instanceof Error ? e.message : "Ошибка создания ссылки")
@@ -101,6 +143,7 @@ export default function AccessPage() {
           name: gName,
           advertiser_id: gAdv || null,
           brand_name: gBrand || null,
+          markup_extra_pct: canMarkup && gExtra ? Number(gExtra) : null,
         }),
       })
       setGuestModal(false)
@@ -109,6 +152,7 @@ export default function AccessPage() {
       setGName("")
       setGAdv("")
       setGBrand("")
+      setGExtra("")
       mutateGuests()
     } catch (e) {
       setError(e instanceof Error ? e.message : "Ошибка создания гостя")
@@ -166,6 +210,7 @@ export default function AccessPage() {
                         </span>
                       )}
                       {l.brand_name && <Chip>{l.brand_name}</Chip>}
+                      <MarkupChip pct={l.markup_extra_pct} />
                     </div>
                     <span className="text-xs text-muted">
                       {l.advertiser_name ? `Рекламодатель: ${l.advertiser_name}` : "Все кампании"}
@@ -217,7 +262,13 @@ export default function AccessPage() {
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="text-sm font-medium text-foreground">{g.name}</span>
                       <Chip>{g.email}</Chip>
+                      {g.revoked_at && (
+                        <span className="inline-flex items-center rounded-full bg-danger/10 px-2.5 py-0.5 text-xs font-medium text-danger">
+                          Доступ отозван
+                        </span>
+                      )}
                       {g.brand_name && <Chip>{g.brand_name}</Chip>}
+                      <MarkupChip pct={g.markup_extra_pct} />
                     </div>
                     <span className="text-xs text-muted">
                       {g.advertiser_name ? `Рекламодатель: ${g.advertiser_name}` : "Все кампании"}
@@ -284,6 +335,7 @@ export default function AccessPage() {
               />
             </Field>
           </div>
+          {canMarkup && <MarkupExtraField value={lExtra} onChange={setLExtra} />}
           <div className="flex justify-end gap-2">
             <Button variant="secondary" onClick={() => setLinkModal(false)}>
               Отмена
@@ -343,6 +395,7 @@ export default function AccessPage() {
               placeholder="Agency Name"
             />
           </Field>
+          {canMarkup && <MarkupExtraField value={gExtra} onChange={setGExtra} />}
           <div className="flex justify-end gap-2">
             <Button variant="secondary" onClick={() => setGuestModal(false)}>
               Отмена

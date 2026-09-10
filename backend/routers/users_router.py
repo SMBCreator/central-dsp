@@ -172,6 +172,11 @@ async def patch_user(user_id: str, body: UserPatch, user: dict = Depends(require
     # должны умереть сразу, а не через 30 дней TTL.
     if body.password is not None or body.status == "blocked":
         await revoke_sessions(user_id)
+    # F-02/B14b: заблокированный владелец не должен продолжать раздавать отчёт
+    # через уже выданные ссылки и гостевые логины.
+    if body.status == "blocked":
+        from routers.share import revoke_all_access_of
+        await revoke_all_access_of(user_id, str(user["id"]))
     return _user_out(row)
 
 

@@ -128,6 +128,30 @@ async def effective_markup_pct(user_id: str) -> float:
     return round((mult - 1.0) * 100.0, 4)
 
 
+# --- Наценка как товарная цепочка (audit F-02) -------------------------------
+# Роли, чей собственный кабинет показывает spend с наценкой по цепочке
+# (остальные — internal/direct, видят net).
+MARKUP_VIEW_ROLES = ("agency", "client")
+# Роли, которые при передаче отчёта (share-ссылка, гость) могут добавить свой
+# процент сверх своей цены. manager — его наценка задана admin-ом в
+# users.markup_pct; advertiser/client/viewer — конечные получатели.
+MARKUP_ADD_ROLES = ("superadmin", "admin", "agency")
+
+
+async def spend_multiplier(user_id: str, role: str) -> float:
+    """Цена, которую видит пользователь: net × это. Единственный источник для
+    stats._resolve_scope и для snapshot на share/guest; зеркало — backfill в
+    migrations/044 (CASE role IN ('agency','client'))."""
+    if role in MARKUP_VIEW_ROLES:
+        return 1.0 + (await effective_markup_pct(str(user_id))) / 100.0
+    return 1.0
+
+
+def share_multiplier(creator_mult: float, extra_pct: float) -> float:
+    """Snapshot для получателя: цена создателя × (1 + его добавка)."""
+    return round(float(creator_mult) * (1.0 + float(extra_pct or 0) / 100.0), 6)
+
+
 def client_can_edit(user: dict) -> bool:
     """client по умолчанию read-only; self-serve включается флагом can_edit_campaigns."""
     if user["role"] != "client":

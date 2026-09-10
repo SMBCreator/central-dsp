@@ -147,6 +147,14 @@ export function canWrite(
 // ---- Обратная совместимость со старым API (app-shell/sidebar до рефактора) ----
 
 /** Разделы только для админов и менеджеров платформы */
+/** F-02: кто может добавить свой процент сверх своей цены при выдаче отчёта (share-ссылка, гость).
+ *  Зеркало backend rbac.MARKUP_ADD_ROLES. */
+export const MARKUP_ADD_ROLES: Role[] = ["superadmin", "admin", "agency"]
+
+export function canAddShareMarkup(role: string | null | undefined): boolean {
+  return MARKUP_ADD_ROLES.includes(role as Role)
+}
+
 export const ADMIN_ROUTES = ["/supply", "/rtb-test", "/users", "/access", "/settings", "/advertisers", "/audit"] as const
 
 export function isAdminRole(role: string | null | undefined): boolean {

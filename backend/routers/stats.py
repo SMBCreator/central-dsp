@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from auth import current_user
 from db import get_pool
-from rbac import effective_markup_pct, visible_user_ids
+from rbac import spend_multiplier, visible_user_ids
 from stats_math import (
     ADDITIVE_METRICS, NOT_SET_LABEL, OTHER_LABEL, ROW_KIND_DATA, ROW_KIND_NOT_SET, ROW_KIND_OTHER,
     DateRangeError, clamp_hours, clamp_limit, derive, money, parse_date_range, present_spend, spend_expr,
@@ -14,7 +14,8 @@ router = APIRouter(prefix="/stats", tags=["stats"])
 async def _resolve_scope(user: dict) -> tuple[list[str], str | None, float]:
     """Return (visible_user_ids, advertiser_filter, spend_multiplier).
 
-    - viewer (гость): данные владельца, опционально один рекламодатель
+    - viewer (гость): данные владельца, опционально один рекламодатель; spend —
+      по snapshot наценки на guest_access (зафиксирован при создании, F-02)
     - agency: свои данные + все потомки (клиенты)
     - client/agency: спенд показывается с наценкой по цепочке (markup_pct)
     - остальные: только свои данные, без наценки
@@ -22,11 +23,15 @@ async def _resolve_scope(user: dict) -> tuple[list[str], str | None, float]:
     if user.get("role") == "viewer":
         pool = await get_pool()
         row = await pool.fetchrow(
-            "SELECT owner_id, advertiser_id FROM guest_access WHERE user_id = $1", user["id"]
+            "SELECT owner_id, advertiser_id, markup_mult_snapshot, revoked_at FROM guest_access WHERE user_id = $1",
+            user["id"],
         )
         if not row:
             raise HTTPException(status_code=403, detail="Гостевой доступ не настроен")
-        return [str(row["owner_id"])], str(row["advertiser_id"]) if row["advertiser_id"] else None, 1.0
+        if row["revoked_at"] is not None:
+            raise HTTPException(status_code=403, detail="Доступ отозван")
+        mult = float(row["markup_mult_snapshot"] or 1)
+        return [str(row["owner_id"])], str(row["advertiser_id"]) if row["advertiser_id"] else None, mult
 
     scope = await visible_user_ids(user)
     uids = scope if scope is not None else [str(user["id"])]
@@ -34,9 +39,7 @@ async def _resolve_scope(user: dict) -> tuple[list[str], str | None, float]:
     if scope is None:
         uids = [str(user["id"])]
 
-    mult = 1.0
-    if user.get("role") in ("agency", "client"):
-        mult = 1.0 + (await effective_markup_pct(str(user["id"]))) / 100.0
+    mult = await spend_multiplier(str(user["id"]), user.get("role", ""))
     return uids, None, mult
 
 
