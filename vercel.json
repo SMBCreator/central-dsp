@@ -13,6 +13,10 @@
       "schedule": "*/5 * * * *"
     },
     {
+      "path": "/api/cron/sweep-burl",
+      "schedule": "* * * * *"
+    },
+    {
       "path": "/api/cron/optimize",
       "schedule": "0 7 * * *"
     },

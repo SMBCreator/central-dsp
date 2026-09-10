@@ -83,7 +83,7 @@ TS = datetime(2026, 9, 1, tzinfo=UTC)
 
 
 def _rec(**kw):
-    base = {"bids": 0, "wins": 0, "impressions": 0, "clicks": 0, "viewable_imps": 0, "spend": 0,
+    base = {"bids": 0, "wins": 0, "impressions": 0, "clicks": 0, "viewable_imps": 0, "billable_imps": 0, "spend": 0,
             "conversions": None, "losses": 0, "avg_bid": None, "avg_bidfloor": None, "avg_min_to_win": None}
     base.update(kw)
     return base

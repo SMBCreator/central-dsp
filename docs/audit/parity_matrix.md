@@ -23,6 +23,7 @@
 | Валюта RUB + Decimal/копейки | ✅ | ❌ (double USD) | 📋 (int64 копейки) | Java-double — одна из причин деприкации |
 | erid (ОРД-маркировка в `bid.ext`) | ✅ | ❌ | ✅ модель + 📋 | |
 | Win notice: идемпотентный биллинг | ✅ | 🟡 | 📋 | Redis SETNX + billing_core |
+| Billing notice `burl` (R-07) | ✅ (`/api/rtb/burl`, `cache.win_pending/expire_burl`, `/cron/sweep-burl`) | ❌ | ✅ `BURL` в bid + `luaSettleWin` (KEYS[13] `pending:burl`, состояния `won`/`won_expired`) байт в байт с Python | `supply_partners.billing_event` ∈ {win, burl} (миграция 046; старые — win, новые — burl); `stats_hourly.billable_imps`, `bid_events.late`; env `BURL_TTL` (600 с) + grace 300 с к дедлайну в `pending:bids`; `ecpm = spend / billable_imps`. Тесты: Go `redisx/burl_test.go` (4) ↔ Python `test_burl_billing.py` (Lua + state machine), `test_burl_handlers.py`, `test_burl_billing_db.py`; алерты `WinWithoutBurlRateHigh`/`PendingBurlQueueStuck`, runbook `billing-burl` |
 | Loss notice: release резерва | ✅ | ❌ | 📋 | |
 | Impression / click трекинг | ✅ | 🟡 | 📋 | |
 | Prometheus-метрики | 🟡 | ✅ | 📋 | Go: с первого дня имплементации |

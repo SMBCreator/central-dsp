@@ -153,6 +153,7 @@
 - Сейчас spend списывается на `nurl` (`bill_win` + `settle_win`, контракт B2 «spend = win.clear_price»); `burl` в BidResponse не отправляем. По OpenRTB `nurl` — win notice, не billable impression.
 - Добавить `burl` в BidResponse (Go + Python) с `${AUCTION_PRICE}`; per-SSP режим биллинга `partners.billing_event` ∈ {`nurl` (как сейчас, default до сверки), `burl`}; при `burl`: на nurl — только `wins` + бронь cap, деньги (`bill_win`, `settle_win`, `spend`) — на burl; `win_without_billing` по TTL; сверка с отчётами SSP.
 - Затрагивает B2/B3 транзакционные контракты, `bid_event_once`, `rtb_events_inbox`, Go `Win`/новый `Burl` handler, stats/UI (метрика «Billable impressions»). Делать после B11 и B14 отдельным коммитом с миграцией; до включения на реальной SSP — `[V]` документация биржи о семантике burl.
+- Решения 2026-09-10: существующие партнёры остаются на `win` до сверки, новые — `burl`; `wins`/`impressions`/`billable_imps` — три разных числа, `ecpm` по billable; late burl после `win_expired` списывается один раз и помечается `late`; burl обрабатывает backend (Python), Go только отдаёт `burl` и делит Lua `luaSettleWin`.
 
 ### B12. S-02 + S-03 — ownership и scopes
 - Helper `assert_owned(pool, table, id, user_scope)` для всех ссылочных полей в create/patch.
@@ -233,7 +234,7 @@
 - [ ] B12 S-02/S-03
 - [ ] B13 L-02/L-03
 - [x] B14 F-02 — B14a, B14b, B14c done (2026-09-10)
-- [ ] B15 R-07 — billing по burl (новый пункт, после B11/B14)
+- [x] B15 R-07 (2026-09-10) — billing по burl: `bid.burl` (`${AUCTION_PRICE}`, Go + Python); `supply_partners.billing_event` ∈ {win, burl} (миграция 046: существующие — `win`, DEFAULT для новых — `burl`; API/UI /supply «Событие расхода» + чекбокс `freq_cap_on_win`); режим `burl`: nurl → событие `win` без денег, `wins`+1, шаг freq cap, резерв остаётся, бид в `pending:burl` (`cache.win_pending`, `BURL_TTL` 600 с, дедлайн в `pending:bids` +300 с grace); `/api/rtb/burl` → `bill_win` + событие `billable` (`clear_price`) + `stats_hourly.billable_imps` + `luaSettleWin` (won → convert / won без резерва → recharge / won_expired → recharge `late=true`); `/cron/sweep-burl` каждую минуту → `win_expired` (резерв возвращён, денег нет); режим `win` — как раньше, burl игнорируется (`rtb_burl_in_win_mode_total`); CPC — деньги на клике в обоих режимах. `stats_math`: `SPEND_FROM_EVENTS_SQL` = win|billable, `BILLABLE_FROM_EVENTS_SQL`, `billable_imps` в summary/breakdown/report, `ecpm = spend/billable_imps`; UI dashboard «N оплачено». Метрики `rtb_burl_*`, `rtb_win_without_burl_total`, `rtb_pending_burl_size/oldest_age_seconds`, `rtb_burl_outcomes_total{partner,outcome}`; алерты `WinWithoutBurlRateHigh`, `PendingBurlQueueStuck`; runbook `billing-burl` с чеклистом включения burl на реальной SSP. Тесты: Python `test_burl_billing.py` (fakeredis Lua), `test_burl_handlers.py`, `test_burl_billing_db.py`; Go `redisx/burl_test.go`; Lua байт-в-байт. `[V]` документация биржи о семантике burl — при онбординге, до переключения партнёра на `burl`
 - [ ] C1 O-01
 - [ ] C2 O-02
 - [ ] C3 O-03/O-04

@@ -29,15 +29,20 @@ from business_day import business_date_str, even_pacing_budget
 from audiences import check_audiences, store_clid_bridge
 from shading import get_factor as shading_get_factor, should_shade
 from cache import (
+    PENDING_BURL_KEY,
     active_caps,
     check_qps,
     confirm_imp,
+    expire_burl,
     gate_and_reserve,
     get_redis,
     mark_once,
+    pending_burl_due,
+    pending_burl_stats,
     reservation_from_bidmeta,
     reserve_budget,
     settle_win,
+    win_pending,
 )
 import fx
 import rtb_compat
@@ -678,32 +683,36 @@ def _event_dims(row) -> dict[str, Any]:
 
 async def _log_event(pool, event_type: str, **kw: Any) -> None:
     """Строка bid_events. Договор о расходе (stats_math): clear_price несёт
-    только оплаченное событие — win (CPM) или click (CPC, audit R-03);
-    impression/viewable/video его не дублируют."""
+    только оплаченное событие — win (CPM, billing_event=win), billable (CPM,
+    billing_event=burl, R-07) или click (CPC, audit R-03); impression/
+    viewable/video/win_expired его не дублируют. `late` (R-07) — событие
+    после зафиксированного истечения дедлайна (billable после win_expired)."""
     await pool.execute(
         """
         INSERT INTO bid_events (event_type, bid_id, imp_id, campaign_id, line_item_id, creative_id,
                                 supply_partner_id, price, clear_price, device_type, geo_country, geo_region, geo_city,
-                                ad_type, domain, bundle, publisher_id, tagid, os, browser, pctr, is_test)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+                                ad_type, domain, bundle, publisher_id, tagid, os, browser, pctr, is_test, late)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
         """,
         event_type, kw.get("bid_id", ""), kw.get("imp_id"), kw.get("campaign_id"),
         kw.get("line_item_id"), kw.get("creative_id"), kw.get("supply_partner_id"),
-        kw.get("price"), kw.get("clear_price") if event_type in ("win", "click") else None,
+        kw.get("price"), kw.get("clear_price") if event_type in PAID_EVENT_TYPES else None,
         kw.get("device_type"), kw.get("geo_country"), kw.get("geo_region"), kw.get("geo_city"),
         kw.get("ad_type"), kw.get("domain"), kw.get("bundle"), kw.get("publisher_id"), kw.get("tagid"),
         kw.get("os"), kw.get("browser"), kw.get("pctr"),
-        bool(kw.get("is_test", False)),
+        bool(kw.get("is_test", False)), bool(kw.get("late", False)),
     )
 
 
-async def _bump_stats(db, col: str, spend: float, campaign_id, line_item_id, creative_id, supply_partner_id) -> None:
+async def _bump_stats(db, col, spend: float, campaign_id, line_item_id, creative_id, supply_partner_id) -> None:
+    """+1 к счётчику(ам) `col` (имя или кортеж имён) и +spend в stats_hourly за текущий час."""
+    cols = (col,) if isinstance(col, str) else tuple(col)
     await db.execute(
         f"""
-        INSERT INTO stats_hourly (ts_hour, campaign_id, line_item_id, creative_id, supply_partner_id, {col}, spend)
-        VALUES (date_trunc('hour', now()), $1, $2, $3, $4, 1, $5)
+        INSERT INTO stats_hourly (ts_hour, campaign_id, line_item_id, creative_id, supply_partner_id, {", ".join(cols)}, spend)
+        VALUES (date_trunc('hour', now()), $1, $2, $3, $4, {", ".join("1" for _ in cols)}, $5)
         ON CONFLICT (ts_hour, campaign_id, line_item_id, creative_id, supply_partner_id)
-        DO UPDATE SET {col} = stats_hourly.{col} + 1, spend = stats_hourly.spend + $5
+        DO UPDATE SET {", ".join(f"{c} = stats_hourly.{c} + 1" for c in cols)}, spend = stats_hourly.spend + $5
         """,
         campaign_id, line_item_id, creative_id, supply_partner_id, spend,
     )
@@ -1294,6 +1303,8 @@ async def process_bid_request(
         if device_id:
             _fire_and_forget(store_clid_bridge(bid_id, device_id))
         nurl = f"{base}/api/rtb/win?bid={event_token}&price=${{AUCTION_PRICE}}"
+        # burl (OpenRTB 2.5 §4.3.3, R-07): billable-событие; тот же токен, что и nurl.
+        burl = f"{base}/api/rtb/burl?bid={event_token}&price=${{AUCTION_PRICE}}"
         adm = _build_adm(c, base, event_token)
 
         # Synchronously cache bid metadata in Redis (sub-ms) so win/imp/click
@@ -1348,6 +1359,7 @@ async def process_bid_request(
             "impid": imp.get("id"),
             "price": round(price / c["_fx_rate"], 4),  # RUB -> валюта ответа
             "nurl": nurl,
+            "burl": burl,
             "adm": adm,
             "crid": str(c["creative_id"]),
             "cid": str(c["campaign_id"]),
@@ -1373,7 +1385,7 @@ async def process_bid_request(
     }
 
 
-async def _bump_domain_stats(db, row, col: str, spend=0):
+async def _bump_domain_stats(db, row, col: str | None, spend=0):
     """Upsert domain_stats_hourly from a found bid_events row. Best-effort.
 
     `db` — пул или соединение с открытой транзакцией. Во втором случае запрос
@@ -1383,13 +1395,22 @@ async def _bump_domain_stats(db, row, col: str, spend=0):
     domain = (row.get("domain") or "").strip().lower() if hasattr(row, "get") else (row["domain"] or "").strip().lower()
     if not domain:
         return
-    sql = f"""
+    if col is None:
+        # R-07: только деньги (burl после win, который уже поднял wins).
+        sql = """
+        INSERT INTO domain_stats_hourly (ts_hour, campaign_id, supply_partner_id, domain, spend)
+        VALUES (date_trunc('hour', now()), $1, $2, $3, $4)
+        ON CONFLICT (ts_hour, campaign_id, supply_partner_id, domain)
+        DO UPDATE SET spend = domain_stats_hourly.spend + $4
+        """
+    else:
+        sql = f"""
         INSERT INTO domain_stats_hourly (ts_hour, campaign_id, supply_partner_id, domain, {col}, spend)
         VALUES (date_trunc('hour', now()), $1, $2, $3, 1, $4)
         ON CONFLICT (ts_hour, campaign_id, supply_partner_id, domain)
         DO UPDATE SET {col} = domain_stats_hourly.{col} + 1,
                       spend = domain_stats_hourly.spend + $4
-    """
+        """
     args = (row["campaign_id"], row["supply_partner_id"], domain, spend or 0)
     try:
         if hasattr(db, "transaction"):
@@ -1420,7 +1441,11 @@ async def win_notice(bid: str, price: str | None = None):
     """Win notice (nurl). `price` is the SSP-substituted ${AUCTION_PRICE};
     it is untrusted input: clamped to [0, our bid price] before billing.
     Billing is transactional and idempotent (see billing_core.bill_win).
-    `bid` is an HMAC-signed event token (see tokens.py)."""
+    `bid` is an HMAC-signed event token (see tokens.py).
+
+    R-07: for partners with supply_partners.billing_event='burl' the win is
+    NOT the billable event — see _win_pending_burl; money moves in
+    billing_notice (/burl). billing_event='win' keeps the pre-R-07 path."""
     bid = verify_event_token(bid)
     if not bid:
         obs_metrics.inc("rtb_event_token_rejects_total")
@@ -1471,10 +1496,14 @@ async def win_notice(bid: str, price: str | None = None):
             obs_metrics.inc("rtb_settle_win_errors_total")
         return {"ok": True, "cpc": True}
 
+    if await _partner_billing_event(pool, row["supply_partner_id"]) == "burl":
+        return await _win_pending_burl(pool, bid, row)
+
     # Audit E-02: списание, событие win и stats_hourly — одна транзакция.
     # bill_win внутри открывает свою transaction() -> под внешней это savepoint.
     # Дедуп — transactions(bid_id) WHERE type='spend': повтор после падения
     # любого шага снова проходит весь путь целиком, а не «duplicate».
+    # billing_event=win: win и есть billable-показ (R-07) — billable_imps растёт здесь.
     async with pool.acquire() as conn:
         async with conn.transaction():
             result = await bill_win(
@@ -1490,7 +1519,7 @@ async def win_notice(bid: str, price: str | None = None):
                 conn, "win", bid_id=bid, price=row["price"], clear_price=clear_price,
                 **_event_dims(row),
             )
-            await _bump_stats(conn, "wins", cost, *_stat_ids(row))
+            await _bump_stats(conn, ("wins", "billable_imps"), cost, *_stat_ids(row))
             await _bump_domain_stats(conn, row, "wins", result.cost)
 
     # Audit M-06: перевести резерв Redis в фактическое списание. Резерв был
@@ -1515,6 +1544,214 @@ async def win_notice(bid: str, price: str | None = None):
     obs_metrics.inc("rtb_wins_total")
     obs_metrics.inc("rtb_win_spend_rub_sum", float(cost))
     return {"ok": True}
+
+
+# --- Биллинг по burl (audit R-07) --------------------------------------------
+#
+# OpenRTB 2.5 §4.3.3: nurl — «вы победили», burl — «показ оплачивается». Для
+# SSP с billing_event='burl' деньги двигаются только на burl; nurl держит
+# бюджетный резерв (полная bid price — верхняя граница обязательства) до burl
+# или BURL_TTL. Состояния bidstate:{bid}: (nil) -> won -> win | won_expired
+# -> win (late). Идемпотентность: bid_event_once(bid, 'win'|'burl'|
+# 'win_expired') + transactions(bid_id, 'spend') в bill_win + prev-check Lua.
+
+PAID_EVENT_TYPES = ("win", "click", "billable")
+
+_BILLING_EVENT_CACHE_TTL = 60.0
+_billing_event_cache: dict[str, tuple[float, str]] = {}
+
+
+async def _partner_billing_event(pool, partner_id) -> str:
+    """supply_partners.billing_event партнёра ('win' | 'burl'), кэш 60 с.
+    Неизвестный/удалённый партнёр и старая схема (до 046) -> 'win'."""
+    import time as _time
+
+    key = str(partner_id or "")
+    if not key:
+        return "win"
+    now = _time.monotonic()
+    hit = _billing_event_cache.get(key)
+    if hit and hit[0] > now:
+        return hit[1]
+    try:
+        value = await pool.fetchval("SELECT billing_event FROM supply_partners WHERE id = $1", partner_id)
+    except Exception:
+        logger.exception("billing_event lookup failed for partner %s", partner_id)
+        return "win"
+    mode = value if value in ("win", "burl") else "win"
+    _billing_event_cache[key] = (now + _BILLING_EVENT_CACHE_TTL, mode)
+    return mode
+
+
+def reset_billing_event_cache() -> None:
+    _billing_event_cache.clear()
+
+
+async def _win_pending_burl(pool, bid: str, row) -> dict:
+    """nurl партнёра с billing_event=burl: событие win без денег, wins+1,
+    резерв остаётся, бид уходит в pending:burl (cache.win_pending)."""
+    counted = False
+    async with _once_txn(pool, "win", bid) as conn:
+        if conn is not None:
+            await _log_event(conn, "win", bid_id=bid, price=row["price"], **_event_dims(row))
+            await _bump_stats(conn, "wins", 0, *_stat_ids(row))
+            await _bump_domain_stats(conn, row, "wins")
+            counted = True
+    if not counted:
+        return {"ok": True, "duplicate": True}
+    try:
+        res = reservation_from_bidmeta(row) if isinstance(row, dict) else None
+        if res:
+            res["bid_id"] = bid
+            code = await win_pending(res)
+            if code == 1:
+                obs_metrics.inc("rtb_win_pending_burl_total")
+            elif code == 2:
+                obs_metrics.inc("rtb_win_pending_unreserved_total")
+    except Exception:
+        # Событие win уже в БД; без записи в pending:burl резерв снимет
+        # sweeper Go по своему TTL, а burl досписает clearing (recharge).
+        logger.exception("win_pending failed for bid %s", bid)
+        obs_metrics.inc("rtb_win_pending_errors_total")
+    obs_metrics.inc("rtb_wins_total")
+    obs_metrics.inc_burl_outcome(row["supply_partner_id"], "won")
+    return {"ok": True, "pending_burl": True}
+
+
+@router.get("/burl")
+async def billing_notice(bid: str, price: str | None = None):
+    """Billing notice (burl, OpenRTB 2.5 §4.3.3). Тот же токен и ${AUCTION_PRICE},
+    что у nurl. Деньги списываются здесь только для партнёров с
+    billing_event='burl'; для 'win' — уже списаны на nurl, burl лишь сигнал,
+    что биржа его шлёт (rtb_burl_in_win_mode_total). Ровно одно списание на
+    бид (bill_win); поздний burl после win_expired списывается и помечается
+    late (R-07)."""
+    bid = verify_event_token(bid)
+    if not bid:
+        obs_metrics.inc("rtb_event_token_rejects_total")
+        raise HTTPException(status_code=403, detail="Invalid event token")
+    pool = await get_pool()
+    row = await _find_bid(pool, bid)
+    if not row:
+        raise HTTPException(status_code=404, detail="Unknown bid")
+    if await _partner_billing_event(pool, row["supply_partner_id"]) != "burl":
+        obs_metrics.inc("rtb_burl_in_win_mode_total")
+        return {"ok": True, "ignored": "billing_event=win"}
+
+    clear_price = clamp_clearing_price(_to_rub_price(price, row), row["price"] or 0)
+    cost = cpm_to_cost(clear_price)
+
+    if _is_test_bid(row):
+        async with _once_txn(pool, "burl", bid) as conn:
+            if conn is not None:
+                await _log_event(
+                    conn, "billable", bid_id=bid, price=row["price"], clear_price=clear_price,
+                    is_test=True, **_event_dims(row),
+                )
+        return {"ok": True, "test": True}
+
+    if _cpc_of(row) is not None:
+        # CPC (R-03): деньги на click; burl — только счётчик billable-показов.
+        async with _once_txn(pool, "burl", bid) as conn:
+            if conn is not None:
+                await _log_event(conn, "billable", bid_id=bid, price=row["price"], **_event_dims(row))
+                await _bump_stats(conn, "billable_imps", 0, *_stat_ids(row))
+        return {"ok": True, "cpc": True}
+
+    # Списание, событие billable и stats_hourly — одна транзакция (как win_notice).
+    # late — по факту в БД (bid_event_once 'win_expired'), а не по Redis.
+    async with pool.acquire() as conn, conn.transaction():
+        result = await bill_win(
+            conn,
+            bid_id=bid,
+            campaign_id=row["campaign_id"],
+            line_item_id=row["line_item_id"],
+            cost=cost,
+        )
+        if not result.billed:
+            obs_metrics.inc("rtb_burl_duplicate_total")
+            return {"ok": True, "duplicate": True}
+        late = bool(await conn.fetchval(
+            "SELECT 1 FROM bid_event_once WHERE bid_id = $1 AND kind = 'win_expired'", bid,
+        ))
+        had_win = bool(await conn.fetchval(
+            "SELECT 1 FROM bid_event_once WHERE bid_id = $1 AND kind = 'win'", bid,
+        ))
+        await _log_event(
+            conn, "billable", bid_id=bid, price=row["price"], clear_price=clear_price,
+            late=late, **_event_dims(row),
+        )
+        await _bump_stats(conn, "billable_imps", cost, *_stat_ids(row))
+        await _bump_domain_stats(conn, row, None, result.cost)
+
+    # Redis: резерв (won) -> clearing; после won_expired/loss/expire — recharge.
+    try:
+        res = reservation_from_bidmeta(row)
+        if res:
+            res["bid_id"] = bid
+            if not res.get("advertiser_id") and result.advertiser_id:
+                res["advertiser_id"] = result.advertiser_id
+            from_pg = not isinstance(row, dict)
+            code = await settle_win(res, float(cost), assume_released=from_pg)
+            obs_metrics.inc({
+                0: "rtb_win_settle_duplicate_total",
+                2: "rtb_win_settle_recharged_total",
+                3: "rtb_win_settle_recharged_total",
+            }.get(code, "rtb_win_settle_converted_total"))
+    except Exception:
+        logger.exception("settle_win (burl) failed for bid %s", bid)
+        obs_metrics.inc("rtb_settle_win_errors_total")
+
+    obs_metrics.inc("rtb_burl_total")
+    obs_metrics.inc("rtb_win_spend_rub_sum", float(cost))
+    if late:
+        obs_metrics.inc("rtb_burl_late_total")
+    if not had_win:
+        obs_metrics.inc("rtb_burl_without_nurl_total")
+    obs_metrics.inc_burl_outcome(row["supply_partner_id"], "late" if late else "billed")
+    return {"ok": True, "late": late, "paused": result.paused}
+
+
+async def sweep_pending_burl(limit: int = 1000) -> dict:
+    """pending:burl -> win_expired для выигрышей без burl за BURL_TTL (R-07).
+    Резерв освобождается (cache.expire_burl), денег нет, событие win_expired
+    остаётся для сверки с отчётом SSP. Вызывается GET /cron/sweep-burl."""
+    import time as _time
+
+    now = int(_time.time())
+    pool = await get_pool()
+    due = await pending_burl_due(now, limit)
+    expired = billed = orphans = reserve_missing = 0
+    for bid in due:
+        row = await _find_bid(pool, bid)
+        res = reservation_from_bidmeta(row) if isinstance(row, dict) else None
+        if not res:
+            # bidmeta истёк или бид без резерва: очередь чистим, деньги не трогаем.
+            await get_redis().zrem(PENDING_BURL_KEY, bid)
+            orphans += 1
+            continue
+        res["bid_id"] = bid
+        code = await expire_burl(res)
+        if code == 0:
+            billed += 1
+            continue
+        if code == 2:
+            reserve_missing += 1
+            obs_metrics.inc("rtb_burl_expire_reserve_missing_total")
+        expired += 1
+        async with _once_txn(pool, "win_expired", bid) as conn:
+            if conn is not None:
+                await _log_event(conn, "win_expired", bid_id=bid, price=row["price"], **_event_dims(row))
+        obs_metrics.inc("rtb_win_without_burl_total")
+        obs_metrics.inc_burl_outcome(row["supply_partner_id"], "expired")
+    size, oldest_age = await pending_burl_stats(now)
+    obs_metrics.set_gauge("rtb_pending_burl_size", size)
+    obs_metrics.set_gauge("rtb_pending_burl_oldest_age_seconds", oldest_age)
+    return {
+        "due": len(due), "expired": expired, "already_billed": billed,
+        "orphans": orphans, "reserve_missing": reserve_missing,
+        "pending": size, "oldest_age_seconds": oldest_age,
+    }
 
 
 def _partner_flag(partner, name: str) -> bool:

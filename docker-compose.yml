@@ -69,6 +69,8 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       # Audit R-06: бронь freq cap на win до imp-пикселя; то же значение у bidder-go.
       WIN_IMP_TTL: ${WIN_IMP_TTL:-120}
+      # Audit R-07: ожидание burl у SSP с billing_event=burl (только backend).
+      BURL_TTL: ${BURL_TTL:-600}
       RTB_API_TOKEN: ${RTB_API_TOKEN:?set RTB_API_TOKEN in .env (openssl rand -hex 32)}
       # production => fail-fast на пустых/плейсхолдерных секретах при старте
       # (backend/startup_checks.py). Для локальной разработки: APP_ENV=dev в .env.

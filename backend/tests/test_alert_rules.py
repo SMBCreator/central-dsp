@@ -26,8 +26,10 @@ def _rules():
 
 def _backend_metric_names() -> set[str]:
     obs_metrics.reset_for_tests()
-    for g in ("bid_events_default_partition_rows", "ord_export_last_success_timestamp_seconds"):
+    for g in ("bid_events_default_partition_rows", "ord_export_last_success_timestamp_seconds",
+              "rtb_pending_burl_size", "rtb_pending_burl_oldest_age_seconds"):
         obs_metrics.set_gauge(g, 1)
+    obs_metrics.inc_burl_outcome("seed", "won")  # R-07: серия появляется только с данными
     for job in obs_metrics.CRON_JOBS:
         obs_metrics.record_cron_run(job, ok=True)
     names = set()

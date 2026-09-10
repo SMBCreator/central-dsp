@@ -58,6 +58,7 @@
 | GET | `/cron/retention` | none | Bearer CRON_SECRET |
 | GET | `/cron/rules` | none | Bearer CRON_SECRET |
 | GET | `/cron/shading` | none | Bearer CRON_SECRET |
+| GET | `/cron/sweep-burl` | none | Bearer CRON_SECRET |
 | GET | `/geo/search` | session | любая роль (scope внутри хендлера) |
 | GET | `/groups` | session | любая роль (scope внутри хендлера) |
 | **POST** | `/groups` | roles | admin, advertiser, agency, manager, superadmin |
@@ -97,6 +98,7 @@
 | GET | `/rtb-feed/campaigns` | none | Bearer RTB_API_TOKEN |
 | GET | `/rtb-feed/partners` | none | Bearer RTB_API_TOKEN |
 | **POST** | `/rtb/bid/{endpoint_key}` | none | endpoint_key / event-токен (HMAC) |
+| GET | `/rtb/burl` | none | endpoint_key / event-токен (HMAC) |
 | GET | `/rtb/click` | none | endpoint_key / event-токен (HMAC) |
 | GET | `/rtb/imp` | none | endpoint_key / event-токен (HMAC) |
 | GET | `/rtb/vevent` | none | endpoint_key / event-токен (HMAC) |

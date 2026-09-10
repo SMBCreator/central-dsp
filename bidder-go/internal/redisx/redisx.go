@@ -309,7 +309,11 @@ return 1
 //	   the win is the impression, counters are incremented right here
 //
 // Returns 0 duplicate win, 1 reserve converted to clearing, 2 clearing
-// re-charged after a prior loss/expire. Frequency cap (R-06): a win notice
+// re-charged after a prior loss/expire, 3 re-charged after the pending:burl
+// sweep expired the win (late burl, R-07). prev == 'won' (billing_event=burl
+// partner: win_pending already did the freq-cap step and kept the reservation)
+// converts the reserve when the bid is still in pending:bids, re-charges
+// otherwise; KEYS[13] = pending:burl. Frequency cap (R-06): a win notice
 // is NOT an impression — the bid's in-flight freqinf member becomes a
 // "w:{bid_id}" reservation that expires at ARGV[12] unless luaConfirmImp
 // turns it into freq:* counters. Only ARGV[13]='1' partners commit on win.
@@ -322,22 +326,26 @@ local has_li    = ARGV[6] == '1'
 local prev = redis.call('GET', KEYS[1])
 if prev == 'win' then return 0 end
 redis.call('SET', KEYS[1], 'win', 'EX', tonumber(ARGV[4]))
-redis.call('ZREM', KEYS[2], ARGV[3])
-local windows = 0
-for i = 1, 3 do if tonumber(ARGV[8 + i]) > 0 then windows = windows + 1 end end
-if windows > 0 then
-  redis.call('ZREM', KEYS[9], ARGV[3])
-  if ARGV[13] == '1' then
-    for i = 1, 3 do
-      local hours = tonumber(ARGV[8 + i])
-      if hours > 0 then
-        redis.call('INCR', KEYS[9 + i])
-        if redis.call('TTL', KEYS[9 + i]) < 0 then redis.call('EXPIRE', KEYS[9 + i], hours * 3600) end
+local held = redis.call('ZREM', KEYS[2], ARGV[3])
+redis.call('ZREM', KEYS[13], ARGV[3])
+local pending = prev == 'won' or prev == 'won_expired'
+if not pending then
+  local windows = 0
+  for i = 1, 3 do if tonumber(ARGV[8 + i]) > 0 then windows = windows + 1 end end
+  if windows > 0 then
+    redis.call('ZREM', KEYS[9], ARGV[3])
+    if ARGV[13] == '1' then
+      for i = 1, 3 do
+        local hours = tonumber(ARGV[8 + i])
+        if hours > 0 then
+          redis.call('INCR', KEYS[9 + i])
+          if redis.call('TTL', KEYS[9 + i]) < 0 then redis.call('EXPIRE', KEYS[9 + i], hours * 3600) end
+        end
       end
+    else
+      redis.call('ZADD', KEYS[9], ARGV[12], 'w:' .. ARGV[3])
+      redis.call('EXPIRE', KEYS[9], 600)
     end
-  else
-    redis.call('ZADD', KEYS[9], ARGV[12], 'w:' .. ARGV[3])
-    redis.call('EXPIRE', KEYS[9], 600)
   end
 end
 local function refund(key, amount)
@@ -353,11 +361,13 @@ local function charge(key, amount)
   redis.call('INCRBYFLOAT', key, amount)
   if redis.call('TTL', key) < 0 then redis.call('EXPIRE', key, spend_ttl) end
 end
-if prev or ARGV[8] == '1' then
+local released = ARGV[8] == '1' or (prev and not pending) or (pending and held == 0)
+if released then
   charge(KEYS[3], clearing)
   if has_li then charge(KEYS[4], clearing) end
   if redis.call('EXISTS', KEYS[5]) == 1 then redis.call('INCRBYFLOAT', KEYS[5], -clearing) end
   if has_total and redis.call('EXISTS', KEYS[6]) == 1 then redis.call('INCRBYFLOAT', KEYS[6], -clearing) end
+  if prev == 'won_expired' then return 3 end
   return 2
 end
 local diff = reserve - clearing
@@ -578,6 +588,11 @@ func freqWindowKeys(campaignID, deviceID string, caps []CapWindow) ([]string, []
 // PendingBidsKey — ZSET bid_id -> unix deadline; sweeper expires overdue bids.
 const PendingBidsKey = "pending:bids"
 
+// PendingBurlKey — ZSET выигранных бидов SSP с billing_event=burl, ждущих burl
+// (R-07). Пишет/чистит backend (cache.win_pending / expire_burl /
+// /cron/sweep-burl); здесь — KEYS[13] luaSettleWin и контракт паритета.
+const PendingBurlKey = "pending:burl"
+
 // DefaultReserveTTL — сколько резерв ждёт win/loss до принудительного expire.
 // Поздний win после expire не теряется: luaSettleWin досписывает clearing.
 const DefaultReserveTTL = 90 * time.Second
@@ -740,7 +755,8 @@ func (r BidReservation) keys() []string {
 		AvailAdvKey(adv), AvailCampKey(r.CampaignID), ResAdvKey(adv), ResCampKey(r.CampaignID),
 		FreqInflightKey(r.CampaignID, r.DeviceID),
 	}
-	return append(keys, freqKeys...)
+	keys = append(keys, freqKeys...)
+	return append(keys, PendingBurlKey)
 }
 
 // freqHoursArgs — ARGV[9..11] luaSettleWin: часы окон (0 = pad).

@@ -264,6 +264,9 @@ API=https://api.example.com
 # audience-sync — ретаргетинг-аудитории (R-06): удалить просроченных в PG, вычистить просроченные
 # score в audz:*, досеять пустые ключи из PG (самовосстановление после потери Redis). Идемпотентно.
 15 * * * *  root curl -fsS -H "Authorization: Bearer $CRON_SECRET" $API/cron/audience-sync >/dev/null
+# sweep-burl — биллинг по burl (R-07): выигрыши SSP с billing_event=burl без burl за BURL_TTL
+# (600 с) -> win_expired, резерв возвращён, денег нет. Каждую минуту, идемпотентно.
+* * * * *   root curl -fsS -H "Authorization: Bearer $CRON_SECRET" $API/cron/sweep-burl >/dev/null
 0 * * * *   root curl -fsS -H "Authorization: Bearer $CRON_SECRET" $API/cron/shading      >/dev/null
 # ОРД: месячная статистика за предыдущий месяц — 2-е число, 06:00 МСК.
 # Идемпотентно: повтор за уже выгруженный период — no-op (ord_export_log).

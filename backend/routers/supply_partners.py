@@ -78,17 +78,22 @@ async def create_partner(body: SupplyPartnerIn, user: dict = Depends(require_adm
     pool = await get_pool()
     endpoint_key = secrets.token_urlsafe(16)
     whitelist = _validated_whitelist(body.ip_whitelist)
+    # billing_event/freq_cap_on_win: не передано -> DEFAULT БД (046: новые
+    # партнёры — burl; 043: freq cap по imp).
     row = await pool.fetchrow(
         """
         INSERT INTO supply_partners
             (user_id, name, endpoint_key, auction_type, bid_floor, qps_limit, allowed_ad_types, notes,
-             protocol_version, currency, tmax_ms, ip_whitelist, seat_id, contact_email, status)
-        VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12::jsonb,$13,$14,'draft') RETURNING *
+             protocol_version, currency, tmax_ms, ip_whitelist, seat_id, contact_email, status,
+             billing_event, freq_cap_on_win)
+        VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12::jsonb,$13,$14,'draft',
+                COALESCE($15, 'burl'), COALESCE($16, false)) RETURNING *
         """,
         user["id"], body.name, endpoint_key, body.auction_type, body.bid_floor,
         body.qps_limit, json.dumps(body.allowed_ad_types), body.notes,
         body.protocol_version, body.currency, body.tmax_ms,
         json.dumps(whitelist), body.seat_id, body.contact_email,
+        body.billing_event, body.freq_cap_on_win,
     )
     return _serialize(row)
 

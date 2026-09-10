@@ -163,22 +163,26 @@ local has_li    = ARGV[6] == '1'
 local prev = redis.call('GET', KEYS[1])
 if prev == 'win' then return 0 end
 redis.call('SET', KEYS[1], 'win', 'EX', tonumber(ARGV[4]))
-redis.call('ZREM', KEYS[2], ARGV[3])
-local windows = 0
-for i = 1, 3 do if tonumber(ARGV[8 + i]) > 0 then windows = windows + 1 end end
-if windows > 0 then
-  redis.call('ZREM', KEYS[9], ARGV[3])
-  if ARGV[13] == '1' then
-    for i = 1, 3 do
-      local hours = tonumber(ARGV[8 + i])
-      if hours > 0 then
-        redis.call('INCR', KEYS[9 + i])
-        if redis.call('TTL', KEYS[9 + i]) < 0 then redis.call('EXPIRE', KEYS[9 + i], hours * 3600) end
+local held = redis.call('ZREM', KEYS[2], ARGV[3])
+redis.call('ZREM', KEYS[13], ARGV[3])
+local pending = prev == 'won' or prev == 'won_expired'
+if not pending then
+  local windows = 0
+  for i = 1, 3 do if tonumber(ARGV[8 + i]) > 0 then windows = windows + 1 end end
+  if windows > 0 then
+    redis.call('ZREM', KEYS[9], ARGV[3])
+    if ARGV[13] == '1' then
+      for i = 1, 3 do
+        local hours = tonumber(ARGV[8 + i])
+        if hours > 0 then
+          redis.call('INCR', KEYS[9 + i])
+          if redis.call('TTL', KEYS[9 + i]) < 0 then redis.call('EXPIRE', KEYS[9 + i], hours * 3600) end
+        end
       end
+    else
+      redis.call('ZADD', KEYS[9], ARGV[12], 'w:' .. ARGV[3])
+      redis.call('EXPIRE', KEYS[9], 600)
     end
-  else
-    redis.call('ZADD', KEYS[9], ARGV[12], 'w:' .. ARGV[3])
-    redis.call('EXPIRE', KEYS[9], 600)
   end
 end
 local function refund(key, amount)
@@ -194,11 +198,13 @@ local function charge(key, amount)
   redis.call('INCRBYFLOAT', key, amount)
   if redis.call('TTL', key) < 0 then redis.call('EXPIRE', key, spend_ttl) end
 end
-if prev or ARGV[8] == '1' then
+local released = ARGV[8] == '1' or (prev and not pending) or (pending and held == 0)
+if released then
   charge(KEYS[3], clearing)
   if has_li then charge(KEYS[4], clearing) end
   if redis.call('EXISTS', KEYS[5]) == 1 then redis.call('INCRBYFLOAT', KEYS[5], -clearing) end
   if has_total and redis.call('EXISTS', KEYS[6]) == 1 then redis.call('INCRBYFLOAT', KEYS[6], -clearing) end
+  if prev == 'won_expired' then return 3 end
   return 2
 end
 local diff = reserve - clearing
@@ -210,6 +216,79 @@ if diff > 0 then
 end
 refund(KEYS[7], reserve)
 if has_total then refund(KEYS[8], reserve) end
+return 1
+"""
+
+# Win notice of a billing_event=burl partner (R-07): the win is NOT the
+# billable event. State -> 'won', the budget reservation stays held (pending:bids
+# deadline pushed to now + BURL_TTL + grace so the bidder-go sweeper does not
+# release it first), the bid joins pending:burl (deadline now + BURL_TTL) and
+# the freq-cap step is identical to luaSettleWin (freqinf -> "w:{bid}" or
+# counters for count_on_win partners). KEYS as luaSettleWin.
+# ARGV: 1 bid_id, 2 bidstate TTL, 3 pending:bids deadline, 4 pending:burl
+# deadline, 5..7 window hours (0 = pad), 8 win->imp deadline, 9 count_on_win.
+# Returns 0 duplicate (won/expired/billed already), 1 pending with reserve
+# held, 2 pending but the reserve was released before the win arrived.
+_WIN_PENDING_LUA = """
+local prev = redis.call('GET', KEYS[1])
+if prev == 'win' or prev == 'won' or prev == 'won_expired' then return 0 end
+redis.call('SET', KEYS[1], 'won', 'EX', tonumber(ARGV[2]))
+local held = redis.call('ZSCORE', KEYS[2], ARGV[1])
+if held then redis.call('ZADD', KEYS[2], 'XX', ARGV[3], ARGV[1]) end
+redis.call('ZADD', KEYS[13], ARGV[4], ARGV[1])
+local windows = 0
+for i = 1, 3 do if tonumber(ARGV[4 + i]) > 0 then windows = windows + 1 end end
+if windows > 0 then
+  redis.call('ZREM', KEYS[9], ARGV[1])
+  if ARGV[9] == '1' then
+    for i = 1, 3 do
+      local hours = tonumber(ARGV[4 + i])
+      if hours > 0 then
+        redis.call('INCR', KEYS[9 + i])
+        if redis.call('TTL', KEYS[9 + i]) < 0 then redis.call('EXPIRE', KEYS[9 + i], hours * 3600) end
+      end
+    end
+  else
+    redis.call('ZADD', KEYS[9], ARGV[8], 'w:' .. ARGV[1])
+    redis.call('EXPIRE', KEYS[9], 600)
+  end
+end
+if held then return 1 end
+return 2
+"""
+
+# pending:burl sweep (R-07): a won bid whose burl never came. State ->
+# 'won_expired', the whole reservation is refunded (a late burl then takes the
+# luaSettleWin re-charge path, code 3). KEYS as luaSettleWin.
+# ARGV: 1 reserve, 2 bid_id, 3 bidstate TTL, 4 has_total, 5 has_li.
+# Returns 0 nothing to do (billed, or never pending), 1 expired + refunded,
+# 2 expired but the reserve was already gone (bidder-go sweeper got there first).
+_EXPIRE_BURL_LUA = """
+local reserve   = tonumber(ARGV[1])
+local has_total = ARGV[4] == '1'
+local has_li    = ARGV[5] == '1'
+local prev = redis.call('GET', KEYS[1])
+redis.call('ZREM', KEYS[13], ARGV[2])
+if prev ~= 'won' then return 0 end
+redis.call('SET', KEYS[1], 'won_expired', 'EX', tonumber(ARGV[3]))
+if redis.call('ZREM', KEYS[2], ARGV[2]) == 0 then return 2 end
+local function refund(key, amount)
+  if redis.call('EXISTS', key) == 1 then
+    local v = tonumber(redis.call('INCRBYFLOAT', key, -amount))
+    if v < 0 then
+      local ttl = redis.call('TTL', key)
+      if ttl > 0 then redis.call('SET', key, '0', 'EX', ttl) else redis.call('SET', key, '0') end
+    end
+  end
+end
+refund(KEYS[3], reserve)
+if has_li then refund(KEYS[4], reserve) end
+if redis.call('EXISTS', KEYS[5]) == 1 then redis.call('INCRBYFLOAT', KEYS[5], reserve) end
+refund(KEYS[7], reserve)
+if has_total then
+  if redis.call('EXISTS', KEYS[6]) == 1 then redis.call('INCRBYFLOAT', KEYS[6], reserve) end
+  refund(KEYS[8], reserve)
+end
 return 1
 """
 
@@ -233,6 +312,7 @@ return counted
 """
 
 PENDING_BIDS_KEY = "pending:bids"
+PENDING_BURL_KEY = "pending:burl"      # won bids of billing_event=burl partners waiting for burl (R-07)
 DEFAULT_RESERVE_TTL = 90          # seconds a reservation waits for win/loss (bidder-go DefaultReserveTTL)
 BID_STATE_TTL = 2 * 3600          # bidstate:{bid} lifetime (bidder-go BidStateTTL)
 MAX_CAP_WINDOWS = 3               # freq windows per bid (bidder-go MaxCapWindows)
@@ -250,6 +330,15 @@ def _env_positive_int(name: str, default: int) -> int:
 # Env WIN_IMP_TTL: must be identical for backend and bidder-go (redisx.WinImpTTL);
 # raise it when the runbook p95 win->imp query shows pixels slower than the TTL.
 WIN_IMP_TTL = _env_positive_int("WIN_IMP_TTL", DEFAULT_WIN_IMP_TTL)
+
+# R-07: how long a won bid of a billing_event=burl partner waits for its burl
+# before the reservation is released and the win is reported as win_without_burl.
+# The pending:bids deadline is pushed BURL_SWEEP_GRACE further so that
+# /cron/sweep-burl (Python, every minute) reaches the bid before the bidder-go
+# reserve sweeper, which cannot refund a 'won' bid (SET NX on bidstate).
+DEFAULT_BURL_TTL = 600
+BURL_TTL = _env_positive_int("BURL_TTL", DEFAULT_BURL_TTL)
+BURL_SWEEP_GRACE = 300
 
 
 class ImpConfirm(NamedTuple):
@@ -328,6 +417,7 @@ def _reservation_keys(res: dict) -> list[str]:
         avail_adv_key(adv), avail_camp_key(campaign_id), res_adv_key(adv), res_camp_key(campaign_id),
         freq_inflight_key(campaign_id, device_id),
         *freq_keys,
+        PENDING_BURL_KEY,
     ]
 
 
@@ -438,7 +528,7 @@ async def release_bid(res: dict, state: str = "loss") -> bool:
         return False
     r = get_redis()
     out = await r.eval(
-        _RELEASE_BID_LUA, 12,
+        _RELEASE_BID_LUA, 13,
         *_reservation_keys(res),
         state, str(res["reserve"]), res["bid_id"], str(BID_STATE_TTL),
         "1" if res.get("has_total") else "0", "1" if res.get("has_li") else "0",
@@ -448,7 +538,8 @@ async def release_bid(res: dict, state: str = "loss") -> bool:
 
 async def settle_win(res: dict, clearing_cost: float, *, assume_released: bool = False) -> int:
     """Reservation -> clearing price. 0 duplicate, 1 converted, 2 re-charged
-    (bid had been released by loss/expire before the win arrived).
+    (bid had been released by loss/expire before the win arrived), 3 re-charged
+    after the pending:burl sweep had expired the win (late burl, R-07).
 
     Frequency cap (R-06): a win notice is not an impression. The first win
     turns the bid's in-flight freqinf member into a "w:{bid}" reservation
@@ -461,7 +552,7 @@ async def settle_win(res: dict, clearing_cost: float, *, assume_released: bool =
     r = get_redis()
     _keys, hours = _freq_window_keys(res["campaign_id"], res.get("device_id") or "", res.get("caps"))
     out = await r.eval(
-        _SETTLE_WIN_LUA, 12,
+        _SETTLE_WIN_LUA, 13,
         *_reservation_keys(res),
         str(res["reserve"]), str(clearing_cost), res["bid_id"], str(BID_STATE_TTL),
         "1" if res.get("has_total") else "0", "1" if res.get("has_li") else "0",
@@ -470,6 +561,57 @@ async def settle_win(res: dict, clearing_cost: float, *, assume_released: bool =
         str(int(_time.time()) + WIN_IMP_TTL), "1" if res.get("count_on_win") else "0",
     )
     return int(out)
+
+
+async def win_pending(res: dict) -> int:
+    """Win notice of a billing_event=burl partner (R-07): hold the reservation
+    until the burl (or BURL_TTL), run the freq-cap step, join pending:burl.
+    0 duplicate, 1 pending with reserve held, 2 pending without reserve."""
+    import time as _time
+
+    r = get_redis()
+    _keys, hours = _freq_window_keys(res["campaign_id"], res.get("device_id") or "", res.get("caps"))
+    now = int(_time.time())
+    out = await r.eval(
+        _WIN_PENDING_LUA, 13,
+        *_reservation_keys(res),
+        res["bid_id"], str(BID_STATE_TTL),
+        str(now + BURL_TTL + BURL_SWEEP_GRACE), str(now + BURL_TTL),
+        *[str(h) for h in hours],
+        str(now + WIN_IMP_TTL), "1" if res.get("count_on_win") else "0",
+    )
+    return int(out)
+
+
+async def expire_burl(res: dict) -> int:
+    """pending:burl sweep (R-07): the burl never came. 0 nothing to do,
+    1 expired + reservation refunded, 2 expired but the reserve was gone."""
+    r = get_redis()
+    out = await r.eval(
+        _EXPIRE_BURL_LUA, 13,
+        *_reservation_keys(res),
+        str(res["reserve"]), res["bid_id"], str(BID_STATE_TTL),
+        "1" if res.get("has_total") else "0", "1" if res.get("has_li") else "0",
+    )
+    return int(out)
+
+
+async def pending_burl_due(now: int, limit: int = 1000) -> list[str]:
+    """Bid ids of pending:burl whose deadline has passed."""
+    r = get_redis()
+    out = await r.zrangebyscore(PENDING_BURL_KEY, "-inf", now, start=0, num=limit)
+    return [x.decode() if isinstance(x, bytes) else str(x) for x in out]
+
+
+async def pending_burl_stats(now: int) -> tuple[int, int]:
+    """(size, age of the oldest pending win in seconds) for gauges."""
+    r = get_redis()
+    size = int(await r.zcard(PENDING_BURL_KEY) or 0)
+    oldest = await r.zrange(PENDING_BURL_KEY, 0, 0, withscores=True)
+    if not oldest:
+        return size, 0
+    deadline = float(oldest[0][1])
+    return size, max(0, int(now - (deadline - BURL_TTL)))
 
 
 async def confirm_imp(res: dict) -> ImpConfirm:

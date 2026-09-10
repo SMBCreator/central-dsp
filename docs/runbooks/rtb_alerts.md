@@ -472,6 +472,62 @@ CPA/CVR по любым срезам занижают конверсии; backen
 4. `raw_payload` / `external_conversion_id` (`oid` в beacon) — сверить спорные
    конверсии с CRM рекламодателя.
 
+## billing-burl — WinWithoutBurlRateHigh / PendingBurlQueueStuck
+
+**Что значит:** у SSP с `supply_partners.billing_event = 'burl'` расход
+списывается на billing notice (`/api/rtb/burl`, OpenRTB 2.5 §4.3.3), а не на
+win notice (audit R-07). `WinWithoutBurlRateHigh` — по партнёру более 20 %
+выигрышей за час так и не получили burl за `BURL_TTL` (600 с): резерв бюджета
+возвращён, денег не списано, `bid_event_once` получил `win_expired`.
+`PendingBurlQueueStuck` — очередь `pending:burl` не чистится: `/cron/sweep-burl`
+(каждую минуту) не работает.
+
+**Почему важно:** win — не показ и не деньги. Если биржа биллит по burl, а мы
+списывали по nurl (режим `win`), при сверке SSP покажет меньше, чем наши
+отчёты (win без рендера). Если биржа вовсе не шлёт burl, а партнёр в режиме
+`burl`, мы недосписываем: `spend` и `billable_imps` занижены, а кампании
+крутятся «бесплатно».
+
+**Модель (одна на Python и Go, `luaSettleWin` байт в байт):**
+`bidstate:{bid}`: `(nil, резерв) --nurl--> won --burl--> win` (резерв →
+clearing, код 1); `won --sweep--> won_expired` (резерв возвращён, код 0/2 у
+sweeper); `won_expired --burl--> win` (clearing досписан, код 3, событие
+`billable` с `late = true`). Повторные nurl/burl/sweep ничего не двигают
+(`rtb_burl_duplicate_total`). Режим `win`: burl игнорируется, деньги уже сняты
+на nurl (`rtb_burl_in_win_mode_total` растёт → партнёр кандидат на `burl`).
+
+**Диагностика:**
+1. Разрез по партнёру: `rtb_burl_outcomes_total{partner, outcome}` — `won` без
+   `billed`/`late` → burl не приходит вовсе; много `late` → burl приходит, но
+   позже `BURL_TTL` (поднять `BURL_TTL` у backend; grace до sweeper Go
+   `BURL_SWEEP_GRACE` = 300 с добавляется автоматически).
+2. В БД: `SELECT supply_partner_id, count(*) FILTER (WHERE event_type='win') wins,
+   count(*) FILTER (WHERE event_type='billable') billable,
+   count(*) FILTER (WHERE event_type='billable' AND late) late
+   FROM bid_events WHERE created_at > now() - interval '1 hour' GROUP BY 1;`
+3. `rtb_burl_without_nurl_total` растёт → биржа шлёт только burl без nurl:
+   допустимо (расход и `billable_imps` считаются, `wins` — нет); учесть при
+   сверке win rate.
+4. `rtb_burl_expire_reserve_missing_total` растёт → sweeper Go добрался до
+   `pending:bids` раньше `/cron/sweep-burl`: cron не каждую минуту или
+   `BURL_SWEEP_GRACE` мал. Деньги не теряются (burl → recharge), но метрика
+   `rtb_win_without_burl_total` недосчитывает.
+5. `PendingBurlQueueStuck`: `cron_job_runs_total{job="sweep_burl",result="error"}`,
+   логи `/cron/sweep-burl`, Redis `ZCARD pending:burl`.
+
+**Действия:**
+- Биржа не шлёт burl (по документации или по факту) →
+  `UPDATE supply_partners SET billing_event = 'win' WHERE id = ...` (или в UI
+  /supply → «Событие расхода»). Кеш режима в backend — 60 с.
+- Биржа шлёт burl, но партнёр ещё на `win` → включать `burl` только по
+  чеклисту онбординга: (а) в документации биржи burl = billable event и
+  содержит `${AUCTION_PRICE}`; (б) в тестовом трафике видны `billable` с
+  `clear_price`; (в) сверка `billable_imps` с отчётом SSP за сутки сходится.
+  Новые партнёры создаются сразу с `burl` (DEFAULT миграции 046).
+- Сверка с SSP: наша billable-цифра — `stats_hourly.billable_imps` /
+  `stats_math.BILLABLE_FROM_EVENTS_SQL`; `wins` и `impressions` для сверки
+  денег не годятся.
+
 ## Куда смотреть в первую очередь при любом алерте
 
 1. `bidder :8090/metrics` и `backend /metrics` — снапшот всех счётчиков.

@@ -71,7 +71,8 @@ def test_expected_ctr_uses_segment_when_matched():
 
 def test_spend_contract_counts_cpm_wins_and_cpc_clicks():
     sql = SPEND_FROM_EVENTS_SQL.format(e="e")
-    assert "event_type = 'win'" in sql and "/ 1000.0" in sql
+    # R-07: деньги CPM несут win (billing_event=win) или billable (burl) — ровно одно из них на бид.
+    assert "event_type IN ('win', 'billable')" in sql and "/ 1000.0" in sql
     assert "event_type = 'click'" in sql
 
 

@@ -170,6 +170,19 @@ async def reconcile_reserves(request: Request):
             "campaigns_checked": len(camps), "campaigns_fixed": fixed_camp}
 
 
+@router.get("/sweep-burl")
+@_cron_job("sweep_burl")
+async def sweep_burl(request: Request):
+    """Биллинг по burl (audit R-07): выигрыши SSP с billing_event=burl, чей burl
+    не пришёл за BURL_TTL, -> win_expired: резерв освобождается, денег нет,
+    событие остаётся для сверки с SSP. Каждую минуту — раньше, чем sweeper
+    Go добирается до pending:bids (дедлайн там сдвинут на BURL_SWEEP_GRACE)."""
+    _check_secret(request)
+    from routers.rtb import sweep_pending_burl
+
+    return await sweep_pending_burl()
+
+
 @router.get("/audience-sync")
 @_cron_job("audience_sync")
 async def audience_sync(request: Request):

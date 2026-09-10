@@ -251,6 +251,7 @@ type Bid struct {
 	Attr    []int           `json:"attr,omitempty"` // creative attributes (creatives.attrs)
 	CrID    string          `json:"crid,omitempty"`
 	NURL    string          `json:"nurl,omitempty"` // win notice -> /rtb/win
+	BURL    string          `json:"burl,omitempty"` // billing notice -> /rtb/burl (R-07)
 	LURL    string          `json:"lurl,omitempty"` // loss notice -> /rtb/loss
 	W       int             `json:"w,omitempty"`
 	H       int             `json:"h,omitempty"`

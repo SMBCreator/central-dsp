@@ -201,6 +201,12 @@ func TestBidBannerMatchReturnsBid(t *testing.T) {
 	if !strings.Contains(bid.NURL, "/api/rtb/win?bid=v1.") {
 		t.Fatalf("nurl not signed: %s", bid.NURL)
 	}
+	if !strings.Contains(bid.BURL, "/api/rtb/burl?bid=v1.") || !strings.Contains(bid.BURL, "price=${AUCTION_PRICE}") {
+		t.Fatalf("burl missing/unsigned: %s", bid.BURL)
+	}
+	if nt, bt := bid.NURL[strings.Index(bid.NURL, "bid="):], bid.BURL[strings.Index(bid.BURL, "bid="):]; nt != bt {
+		t.Fatalf("nurl and burl must carry the same event token: %s vs %s", nt, bt)
+	}
 	if bid.W != 300 || bid.H != 250 {
 		t.Fatalf("size mismatch: %dx%d", bid.W, bid.H)
 	}

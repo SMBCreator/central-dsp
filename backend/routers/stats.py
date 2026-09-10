@@ -8,7 +8,7 @@ from stats_math import (
     ADDITIVE_METRICS, CONFIDENCE_LOW, NOT_SET_LABEL, OTHER_LABEL, OUT_OF_WINDOW_LABEL, ROW_KIND_DATA,
     ROW_KIND_NOT_SET, ROW_KIND_OTHER, ROW_KIND_OUT_OF_WINDOW, ROW_KIND_UNATTRIBUTED, ROW_KINDS_WITHOUT_CPA,
     UNATTRIBUTED_LABEL, DateRangeError, clamp_hours, clamp_limit, coverage_confidence, derive, money,
-    parse_date_range, present_spend, spend_expr,
+    billable_expr, parse_date_range, present_spend, spend_expr,
 )
 
 router = APIRouter(prefix="/stats", tags=["stats"])
@@ -75,6 +75,7 @@ async def summary(hours: int = 24, campaign_id: str | None = None, user: dict = 
           COALESCE(SUM(s.impressions), 0) AS impressions,
           COALESCE(SUM(s.clicks), 0)      AS clicks,
           COALESCE(SUM(s.viewable_imps), 0) AS viewable_imps,
+          COALESCE(SUM(s.billable_imps), 0) AS billable_imps,
           COALESCE(SUM(s.spend), 0)       AS spend
         FROM stats_hourly s
         JOIN campaigns c ON c.id = s.campaign_id
@@ -95,6 +96,7 @@ async def summary(hours: int = 24, campaign_id: str | None = None, user: dict = 
     bids, wins = int(row["bids"]), int(row["wins"])
     imps, clicks = int(row["impressions"]), int(row["clicks"])
     viewable = int(row["viewable_imps"])
+    billable = int(row["billable_imps"])
     spend = float(row["spend"]) * mult
     return {
         "bids": bids,
@@ -102,8 +104,10 @@ async def summary(hours: int = 24, campaign_id: str | None = None, user: dict = 
         "impressions": imps,
         "clicks": clicks,
         "viewable_imps": viewable,
+        "billable_imps": billable,
         "spend": spend,
-        **derive(bids=bids, wins=wins, impressions=imps, clicks=clicks, viewable_imps=viewable, spend=spend),
+        **derive(bids=bids, wins=wins, impressions=imps, clicks=clicks, viewable_imps=viewable, spend=spend,
+                 billable_imps=billable),
         **{k: int(v) for k, v in dict(counts).items()},
     }
 
@@ -184,7 +188,8 @@ _DIMENSIONS = {
                COALESCE(SUM(s.bids), 0) AS bids, COALESCE(SUM(s.wins), 0) AS wins,
                COALESCE(SUM(s.impressions), 0) AS impressions,
                COALESCE(SUM(s.clicks), 0) AS clicks, COALESCE(SUM(s.spend), 0) AS spend,
-               COALESCE(SUM(s.viewable_imps), 0) AS viewable_imps
+               COALESCE(SUM(s.viewable_imps), 0) AS viewable_imps,
+               COALESCE(SUM(s.billable_imps), 0) AS billable_imps
         FROM campaigns c
         LEFT JOIN stats_hourly s ON s.campaign_id = c.id AND s.ts_hour >= now() - ($2 || ' hours')::interval
         WHERE c.user_id = ANY($1::uuid[])
@@ -198,7 +203,8 @@ _DIMENSIONS = {
                COALESCE(SUM(s.bids), 0) AS bids, COALESCE(SUM(s.wins), 0) AS wins,
                COALESCE(SUM(s.impressions), 0) AS impressions,
                COALESCE(SUM(s.clicks), 0) AS clicks, COALESCE(SUM(s.spend), 0) AS spend,
-               COALESCE(SUM(s.viewable_imps), 0) AS viewable_imps
+               COALESCE(SUM(s.viewable_imps), 0) AS viewable_imps,
+               COALESCE(SUM(s.billable_imps), 0) AS billable_imps
         FROM supply_partners p
         LEFT JOIN stats_hourly s ON s.supply_partner_id = p.id AND s.ts_hour >= now() - ($2 || ' hours')::interval
         WHERE p.user_id = ANY($1::uuid[])
@@ -212,7 +218,8 @@ _DIMENSIONS = {
                COALESCE(SUM(s.bids), 0) AS bids, COALESCE(SUM(s.wins), 0) AS wins,
                COALESCE(SUM(s.impressions), 0) AS impressions,
                COALESCE(SUM(s.clicks), 0) AS clicks, COALESCE(SUM(s.spend), 0) AS spend,
-               COALESCE(SUM(s.viewable_imps), 0) AS viewable_imps
+               COALESCE(SUM(s.viewable_imps), 0) AS viewable_imps,
+               COALESCE(SUM(s.billable_imps), 0) AS billable_imps
         FROM creatives cr
         LEFT JOIN stats_hourly s ON s.creative_id = cr.id AND s.ts_hour >= now() - ($2 || ' hours')::interval
         WHERE cr.user_id = ANY($1::uuid[])
@@ -322,15 +329,17 @@ async def breakdown(hours: int = 168, dimension: str = "campaign", user: dict = 
         bids, wins = int(r["bids"]), int(r["wins"])
         imps, clicks = int(r["impressions"]), int(r["clicks"])
         viewable = int(r["viewable_imps"] or 0)
+        billable = int(r["billable_imps"] or 0)
         spend = present_spend(r["spend"], mult)
         out.append({
             "id": str(r["id"]),
             "name": r["name"],
             "status": r["status"],
             "bids": bids, "wins": wins, "impressions": imps, "clicks": clicks,
-            "viewable_imps": viewable,
+            "viewable_imps": viewable, "billable_imps": billable,
             "spend": spend,
-            **derive(bids=bids, wins=wins, impressions=imps, clicks=clicks, viewable_imps=viewable, spend=spend),
+            **derive(bids=bids, wins=wins, impressions=imps, clicks=clicks, viewable_imps=viewable, spend=spend,
+                     billable_imps=billable),
         })
     return out
 
@@ -513,6 +522,7 @@ async def report(body: ReportRequest, user: dict = Depends(current_user)):
                    count(*) FILTER (WHERE e.event_type = 'impression') AS impressions,
                    count(*) FILTER (WHERE e.event_type = 'click')      AS clicks,
                    count(*) FILTER (WHERE e.event_type = 'viewable')   AS viewable_imps,
+                   {billable_expr("e")} AS billable_imps,
                    {spend_expr("e")} AS spend,
                    NULL::bigint AS conversions,
                    count(*) FILTER (WHERE e.event_type = 'loss')       AS losses,
@@ -545,6 +555,7 @@ async def report(body: ReportRequest, user: dict = Depends(current_user)):
                    COALESCE(sum(s.impressions), 0) AS impressions,
                    COALESCE(sum(s.clicks), 0)      AS clicks,
                    COALESCE(sum(s.viewable_imps), 0) AS viewable_imps,
+                   COALESCE(sum(s.billable_imps), 0) AS billable_imps,
                    COALESCE(sum(s.spend), 0)       AS spend,
                    COALESCE(sum(s.conversions), 0) AS conversions,
                    NULL::bigint AS losses, NULL::numeric AS avg_bid,
@@ -600,6 +611,7 @@ async def report(body: ReportRequest, user: dict = Depends(current_user)):
             "bids": int(r["bids"] or 0), "wins": int(r["wins"] or 0),
             "impressions": int(r["impressions"] or 0), "clicks": int(r["clicks"] or 0),
             "viewable_imps": int(r["viewable_imps"] or 0),
+            "billable_imps": int(r["billable_imps"] or 0),
             "spend": spend, "conversions": conversions,
             # hourly-агрегат проигрыши не измеряет: None, а не ноль
             "losses": int(r["losses"]) if r["losses"] is not None else None,
@@ -609,7 +621,8 @@ async def report(body: ReportRequest, user: dict = Depends(current_user)):
             "avg_min_to_win": money(float(r["avg_min_to_win"]) * mult) if r["avg_min_to_win"] is not None else None,
         }
         m.update(derive(bids=m["bids"], wins=m["wins"], impressions=m["impressions"], clicks=m["clicks"],
-                        viewable_imps=m["viewable_imps"], spend=spend, conversions=conversions, losses=m["losses"]))
+                        viewable_imps=m["viewable_imps"], spend=spend, conversions=conversions, losses=m["losses"],
+                        billable_imps=m["billable_imps"]))
         return m
 
     def conversions_of(r) -> int | None:
@@ -654,7 +667,8 @@ async def report(body: ReportRequest, user: dict = Depends(current_user)):
         other_row.update({"avg_bid": None, "avg_bidfloor": None, "avg_min_to_win": None})
         other_row.update(derive(bids=other["bids"], wins=other["wins"], impressions=other["impressions"],
                                 clicks=other["clicks"], viewable_imps=other["viewable_imps"], spend=other["spend"],
-                                conversions=other["conversions"], losses=other["losses"]))
+                                conversions=other["conversions"], losses=other["losses"],
+                                billable_imps=other["billable_imps"]))
         out_rows.append(other_row)
 
     # Служебные строки уровня рекламодателя: конверсии без campaign_id. В totals

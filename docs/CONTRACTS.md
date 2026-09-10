@@ -30,6 +30,8 @@
 | `bidmeta:{bid_id}` | JSON | Go (`persistBidMeta`), Python-биддер | Python `win/imp/click` (`_find_bid`), Go `loss` | 1 ч | биллинг выигрыша; `is_test` блокирует списание |
 | `bidfreq:{bid_id}` | string `device|caps` | Go, Python-биддер | Python `/imp` | 1 ч | инкремент frequency-cap после показа |
 | `lossdone:{bid_id}` | flag (SETNX) | Go `loss` | Go | 1 ч | идемпотентность возврата бюджета по loss |
+| `pending:burl` | ZSET bid_id → deadline | Python `cache.win_pending` (nurl партнёра `billing_event=burl`) | Python `/cron/sweep-burl` (`expire_burl`), `luaSettleWin` (ZREM, KEYS[13]) | score = now + `BURL_TTL` | R-07: выигрыши, ждущие burl; резерв в `pending:bids` при этом сдвинут на `BURL_TTL + 300 с`, чтобы sweeper Go не снял его раньше |
+| `bidstate:{bid_id}` | string `won\|won_expired\|win\|loss\|expired` | Python `win_pending`/`expire_burl`, `luaSettleWin` (оба) | `luaSettleWin` | как бронь | R-07: состояние бида между nurl и burl; `won`+резерв → convert (1), `won` без резерва → recharge (2), `won_expired` → recharge late (3) |
 | `rtb:events` | stream (MAXLEN ~200k) | Go `EmitEvent` (bid, loss) | Python `events_consumer` (группа `backend`) | обрезка по длине | `bid_events` + `stats_hourly.bids` |
 | `freq:{campaign_id}:{device}` / `...:{hours}h:{device}` | counter | Python `/imp` | Go, Python при биде | `hours*3600` | frequency capping |
 | `qps:{partner_id}:{sec}` | counter | Python | Python | 2 с | лимит QPS SSP |
@@ -74,7 +76,9 @@ JSON: `bid_id`, `imp_id`, `campaign_id`, `line_item_id`, `creative_id`,
 | Колонка | Писатель | Триггер |
 |---|---|---|
 | `bids` | `events_consumer.py` (агрегат батча) | событие `bid` из `rtb:events`, не test |
-| `impressions`, `spend`, `clicks` … | `routers/rtb.py` (`/win`, `/imp`, `/click`) | биллинг через `billing_core.bill_win` |
+| `wins` | `routers/rtb.py` `/win` | win notice; деньги — только при `supply_partners.billing_event = 'win'` |
+| `billable_imps`, `spend` | `routers/rtb.py` `/win` (режим `win`) или `/burl` (режим `burl`, R-07) | ровно одно из событий бида несёт `clear_price` (`bid_events.event_type` `win` либо `billable`); `stats_math.SPEND_FROM_EVENTS_SQL`/`BILLABLE_FROM_EVENTS_SQL` — зеркало |
+| `impressions`, `clicks` … | `routers/rtb.py` (`/imp`, `/click`) | биллинг через `billing_core.bill_win` (CPC — на клике) |
 | pixel-метрики | `routers/pixel.py` | пиксель сайта |
 
 Legacy Python-биддер (`rtb.py:553`) тоже инкрементит `bids` — в проде он

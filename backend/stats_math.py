@@ -40,10 +40,24 @@ raw-отчёт расходятся (в raw был ноль при ненуле�
 """
 
 # Алиас таблицы bid_events в запросе — подставляется в выражение.
+# win — billing_event=win (nurl); billable — billing_event=burl (R-07); в одном
+# биде clear_price несёт ровно одно из них (rtb._log_event), поэтому сумма не удваивает.
 SPEND_FROM_EVENTS_SQL = (
-    "(COALESCE(sum({e}.clear_price) FILTER (WHERE {e}.event_type = 'win'), 0) / 1000.0"
+    "(COALESCE(sum({e}.clear_price) FILTER (WHERE {e}.event_type IN ('win', 'billable')), 0) / 1000.0"
     " + COALESCE(sum({e}.clear_price) FILTER (WHERE {e}.event_type = 'click'), 0))"
 )
+
+# Billable-показы по журналу событий (R-07): billable (burl) либо win с
+# деньгами (billing_event=win). Зеркало stats_hourly.billable_imps.
+BILLABLE_FROM_EVENTS_SQL = (
+    "count(*) FILTER (WHERE {e}.event_type = 'billable'"
+    " OR ({e}.event_type = 'win' AND {e}.clear_price IS NOT NULL))"
+)
+
+
+def billable_expr(alias: str = "e") -> str:
+    """SQL-выражение числа billable-показов по строкам bid_events с алиасом `alias`."""
+    return BILLABLE_FROM_EVENTS_SQL.format(e=alias)
 
 
 def spend_expr(alias: str = "e") -> str:
@@ -100,7 +114,7 @@ CONFIDENCE_NA = "n/a"          # конверсий нет вовсе — пок
 CONVERSION_KPI_METRICS = frozenset({"cpa", "cvr", "conversions"})
 
 # Аддитивные метрики: суммируются в totals и вычитаются для строки «Прочее».
-ADDITIVE_METRICS = ("bids", "wins", "impressions", "clicks", "viewable_imps", "spend", "conversions", "losses")
+ADDITIVE_METRICS = ("bids", "wins", "impressions", "clicks", "viewable_imps", "billable_imps", "spend", "conversions", "losses")
 
 
 def money(value) -> float | None:
@@ -120,12 +134,17 @@ def pct(num, den, decimals: int = PCT_DECIMALS) -> float:
 
 
 def derive(*, bids=0, wins=0, impressions=0, clicks=0, viewable_imps=0, spend=0.0,
-           conversions=None, losses=None) -> dict:
+           conversions=None, losses=None, billable_imps=0) -> dict:
     """Производные метрики из аддитивных. `spend` уже в цене получателя.
 
     conversions=None — конверсии для этого среза недоступны (cpa=None),
     0 — известно, что их не было (cpa=0.0). losses=None — источник их не
     отдаёт (hourly), loss_rate не считается.
+
+    R-07: wins (выигрыши), impressions (доставка по пикселю) и billable_imps
+    (показы с расходом) — три разных числа. cpm — по доставленным показам
+    (как раньше); ecpm — spend / billable_imps × 1000, т.е. фактическая цена
+    оплаченного показа; без billable-показов ecpm совпадает с cpm.
     """
     imps = int(impressions or 0)
     clk = int(clicks or 0)
@@ -138,7 +157,8 @@ def derive(*, bids=0, wins=0, impressions=0, clicks=0, viewable_imps=0, spend=0.
         "cpc": round(sp / clk, MONEY_DECIMALS) if clk else 0.0,
         "viewability": pct(viewable_imps or 0, imps),
     }
-    out["ecpm"] = out["cpm"]  # исторический алиас в summary/breakdown
+    billable = int(billable_imps or 0)
+    out["ecpm"] = round(sp / billable * 1000.0, MONEY_DECIMALS) if billable else out["cpm"]
     if conversions is None:
         out["cpa"] = None
     else:

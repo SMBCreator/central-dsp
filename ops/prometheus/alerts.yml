@@ -379,3 +379,37 @@ groups:
             лендинг, clid теряется на редиректе, либо окно слишком короткое.
             Пока покрытие низкое, правила и оптимизатор не действуют по
             CPA/CVR/conversions. Runbook: rtb_alerts.md#conversion-attribution
+
+      # R-07: биллинг по burl. У партнёров с billing_event=burl деньги списываются на
+      # burl, nurl лишь ставит бид в pending:burl. Доля expired (burl не пришёл за
+      # BURL_TTL) к won по партнёру — либо биржа не шлёт burl (переключить на win),
+      # либо ${AUCTION_PRICE}/URL сломаны. Label partner = supply_partners.id.
+      - alert: WinWithoutBurlRateHigh
+        expr: |
+          sum by (partner) (increase(rtb_burl_outcomes_total{outcome="expired"}[1h]))
+            > 0.2 * sum by (partner) (increase(rtb_burl_outcomes_total{outcome="won"}[1h]))
+          and sum by (partner) (increase(rtb_burl_outcomes_total{outcome="won"}[1h])) > 20
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SSP {{ $labels.partner }}: более 20 % выигрышей без burl за час (расход не подтверждён)"
+          description: >-
+            Партнёр в режиме billing_event=burl, но billing notice не приходит:
+            резервы возвращаются без списания, отчёты SSP покажут больше, чем
+            мы. Проверить, шлёт ли биржа burl вообще; если нет — вернуть
+            партнёра на billing_event=win. Runbook: rtb_alerts.md#billing-burl
+
+      - alert: PendingBurlQueueStuck
+        expr: rtb_pending_burl_oldest_age_seconds > 1800
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "pending:burl не чистится — самый старый win ждёт burl дольше 30 мин"
+          description: >-
+            /cron/sweep-burl не запускается или падает (BURL_TTL по умолчанию
+            600 с): резервы выигрышей без burl не освобождаются, бюджет кампаний
+            занят. Проверить cron_job_runs_total{job="sweep_burl"} и Redis.
+            Runbook: rtb_alerts.md#billing-burl
+

@@ -39,6 +39,8 @@ type FormState = {
   ip_whitelist: string
   seat_id: string
   contact_email: string
+  billing_event: "win" | "burl"
+  freq_cap_on_win: boolean
   notes: string
 }
 
@@ -54,6 +56,8 @@ const EMPTY_FORM: FormState = {
   ip_whitelist: "",
   seat_id: "",
   contact_email: "",
+  billing_event: "burl",
+  freq_cap_on_win: false,
   notes: "",
 }
 
@@ -70,6 +74,9 @@ function partnerToForm(p: SupplyPartner): FormState {
     ip_whitelist: (p.ip_whitelist || []).join("\n"),
     seat_id: p.seat_id || "",
     contact_email: p.contact_email || "",
+    // партнёры до миграции 046 остаются на win
+    billing_event: p.billing_event === "burl" ? "burl" : "win",
+    freq_cap_on_win: Boolean(p.freq_cap_on_win),
     notes: p.notes || "",
   }
 }
@@ -90,6 +97,8 @@ function formToPayload(f: FormState) {
       .filter(Boolean),
     seat_id: f.seat_id.trim() || null,
     contact_email: f.contact_email.trim() || null,
+    billing_event: f.billing_event,
+    freq_cap_on_win: f.freq_cap_on_win,
     notes: f.notes.trim() || null,
   }
 }
@@ -296,8 +305,9 @@ export default function SupplyPage() {
           )}{" "}
           и{" "}
           <span className="font-medium text-foreground">секретный токен</span> (заголовок{" "}
-          <code className="rounded bg-panel px-1.5 py-0.5 font-mono text-xs">X-CentralDSP-Token</code>). Win-notice —
-          макрос <code className="rounded bg-panel px-1.5 py-0.5 font-mono text-xs">{"${AUCTION_PRICE}"}</code> в nurl.
+          <code className="rounded bg-panel px-1.5 py-0.5 font-mono text-xs">X-CentralDSP-Token</code>). Макрос{" "}
+          <code className="rounded bg-panel px-1.5 py-0.5 font-mono text-xs">{"${AUCTION_PRICE}"}</code> — в nurl (win
+          notice) и burl (billable impression); расход списывается по событию из настроек партнёра.
         </div>
       </Card>
 
@@ -388,6 +398,8 @@ export default function SupplyPage() {
                       {(p.allowed_ad_types || []).map((t) => AD_TYPE_LABELS[t] || t).join(", ")}
                       {p.ip_whitelist && p.ip_whitelist.length > 0 ? ` · IP-whitelist: ${p.ip_whitelist.length}` : ""}
                       {p.seat_id ? ` · seat ${p.seat_id}` : ""}
+                      {` · расход по ${p.billing_event === "burl" ? "burl" : "nurl"}`}
+                      {p.freq_cap_on_win ? " · cap по win" : ""}
                       {p.has_auth_token ? ` · токен ${p.auth_token_hint || "задан"}` : " · токен не выдан"}
                     </p>
                   </div>
@@ -619,6 +631,36 @@ export default function SupplyPage() {
                 className={inputCls}
                 placeholder="rtb@ssp.example"
               />
+            </Field>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field
+              label="Событие расхода"
+              hint="burl — деньги списываются по billable impression (OpenRTB), nurl — только выигрыш и бронь. win — списание на nurl, как до сверки с отчётами SSP."
+            >
+              <select
+                value={form.billing_event}
+                onChange={(e) => setForm({ ...form, billing_event: e.target.value === "win" ? "win" : "burl" })}
+                className={inputCls}
+              >
+                <option value="burl">burl — billable impression (рекомендуется)</option>
+                <option value="win">win — списание на nurl</option>
+              </select>
+            </Field>
+            <Field
+              label="Частотный лимит"
+              hint="По умолчанию частота учитывается по пикселю показа. Включите, если SSP не отдаёт imp-пиксель — тогда лимит считается по выигрышу."
+            >
+              <label className="flex items-center gap-2 py-2 text-sm text-foreground">
+                <input
+                  type="checkbox"
+                  checked={form.freq_cap_on_win}
+                  onChange={(e) => setForm({ ...form, freq_cap_on_win: e.target.checked })}
+                  className="h-4 w-4 rounded border-border accent-accent"
+                />
+                Считать частоту по выигрышу (nurl)
+              </label>
             </Field>
           </div>
 

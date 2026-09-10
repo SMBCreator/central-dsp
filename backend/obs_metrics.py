@@ -47,6 +47,17 @@ _COUNTER_HELP = {
     "rtb_win_settle_recharged_total": "Late wins re-charged after the reservation had been released (loss/expire).",
     "rtb_win_settle_duplicate_total": "Win settle calls for bids already in state win (no money moved).",
     "rtb_settle_win_errors_total": "settle_win Redis failures after a successful DB bill (reconcile fixes drift).",
+    # R-07: billing by burl. Wins of billing_event=burl partners hold the budget reservation until the burl.
+    "rtb_win_pending_burl_total": "Win notices of billing_event=burl partners: reservation kept, bid queued in pending:burl (R-07).",
+    "rtb_win_pending_unreserved_total": "Wins queued in pending:burl whose reservation had already been released (loss/expire before the nurl).",
+    "rtb_win_pending_errors_total": "win_pending Redis failures after the win event was committed (reservation may be released by the bidder-go sweeper).",
+    "rtb_burl_total": "Billing notices (burl) that charged money (billing_event=burl partners, non-test, non-CPC).",
+    "rtb_burl_duplicate_total": "Billing notices for bids already billed (no money moved).",
+    "rtb_burl_late_total": "Billing notices that arrived after the pending:burl sweep had expired the win: charged once, event flagged late (R-07).",
+    "rtb_burl_in_win_mode_total": "Billing notices from billing_event=win partners: ignored (money was charged on the win); the partner is a candidate for burl.",
+    "rtb_burl_without_nurl_total": "Billing notices with no prior win notice for the bid (partner sends burl only).",
+    "rtb_win_without_burl_total": "Won bids of billing_event=burl partners whose burl never came within BURL_TTL: reservation released, no spend, event win_expired (R-07).",
+    "rtb_burl_expire_reserve_missing_total": "pending:burl expirations that found the reservation already gone (bidder-go sweeper reached the bid first: raise BURL_SWEEP_GRACE or cron frequency).",
     "rtb_freq_win_without_imp_total": "Won bids whose frequency-cap reservation expired without an imp pixel (R-06); high share = broken SSP pixel.",
     "rtb_imp_late_after_reservation_total": "Imp pixels that arrived after the bid's frequency-cap reservation had expired (WIN_IMP_TTL) or without a prior win (R-06); rising together with rtb_freq_win_without_imp_total means the SSP pixel is slow, not broken — raise WIN_IMP_TTL.",
     "rtb_imp_freq_uncounted_total": "Impressions that could not be committed to the frequency cap (no bidmeta fdev/fcaps, e.g. PG fallback).",
@@ -75,7 +86,16 @@ _GAUGE_HELP = {
     "rtb_events_stream_length": "Entries currently in the rtb:events Redis stream (XLEN).",
     "rtb_events_pending": "Delivered-but-unacked entries in the backend consumer group (PEL size).",
     "rtb_events_lag": "Entries in rtb:events not yet delivered to the backend group (XINFO GROUPS lag).",
+    # R-07: очередь выигрышей, ждущих burl. Обновляется GET /cron/sweep-burl.
+    "rtb_pending_burl_size": "Won bids of billing_event=burl partners still waiting for their burl (ZCARD pending:burl).",
+    "rtb_pending_burl_oldest_age_seconds": "Age of the oldest win still waiting for its burl (0 when the queue is empty).",
 }
+
+# R-07: исходы биллинга по burl per SSP — для агрегированного алерта
+# WinWithoutBurlRateHigh (доля expired к won по партнёру за окно), а не на каждый
+# единичный win без burl. Label partner = supply_partners.id (bounded: партнёров
+# десятки); outcome — фиксированный список.
+BURL_OUTCOMES = ("won", "billed", "late", "expired")
 
 # Фиксированный список cron-задач (routers/cron.py) — bounded label `job`.
 CRON_JOBS = (
@@ -88,6 +108,9 @@ CRON_JOBS = (
     "domain_quality",
     "ord_export",
     "retention",
+    "reconcile_reserves",
+    "audience_sync",
+    "sweep_burl",
 )
 _CRON_RESULTS = ("ok", "error")
 
@@ -145,6 +168,7 @@ _cron_last_ok: dict[str, float | None] = {j: None for j in CRON_JOBS}
 _http: dict[str, int] = {c: 0 for c in HTTP_CLASSES}
 _conv_unattributed: dict[str, int] = {s: 0 for s in UNATTRIBUTED_STATUSES}
 _coverage: dict[str, float | None] = {d: None for d in COVERAGE_DIMENSIONS}
+_burl_outcomes: dict[tuple[str, str], int] = {}
 
 
 def inc(name: str, value: float = 1.0) -> None:
@@ -185,6 +209,15 @@ def inc_conversion_unattributed(status: str) -> None:
         raise KeyError(f"unknown attribution status: {status}")
     with _lock:
         _conv_unattributed[status] += 1
+
+
+def inc_burl_outcome(partner_id: str | None, outcome: str) -> None:
+    """Исход биллинга по burl для SSP (R-07). Неизвестный outcome — KeyError."""
+    if outcome not in BURL_OUTCOMES:
+        raise KeyError(f"unknown burl outcome: {outcome}")
+    key = (str(partner_id or "unknown"), outcome)
+    with _lock:
+        _burl_outcomes[key] = _burl_outcomes.get(key, 0) + 1
 
 
 def set_coverage(dimension: str, ratio: float | None) -> None:
@@ -253,6 +286,7 @@ def snapshot() -> dict:
             "cron_runs": dict(_cron_runs),
             "cron_last_ok": dict(_cron_last_ok),
             "http": dict(_http),
+            "burl_outcomes": dict(_burl_outcomes),
         }
 
 
@@ -290,6 +324,11 @@ def render_prometheus() -> str:
         for d in COVERAGE_DIMENSIONS:
             if _coverage[d] is not None:
                 lines.append(f'conversion_attribution_coverage{{dimension="{d}"}} {_coverage[d]}')
+
+        lines.append("# HELP rtb_burl_outcomes_total Billing-by-burl outcomes per SSP (R-07): won = win notice queued for burl, billed = burl charged in time, late = burl after expire (charged once), expired = burl never came (no spend).")
+        lines.append("# TYPE rtb_burl_outcomes_total counter")
+        for (partner, outcome) in sorted(_burl_outcomes):
+            lines.append(f'rtb_burl_outcomes_total{{partner="{partner}",outcome="{outcome}"}} {_burl_outcomes[(partner, outcome)]}')
 
         lines.append("# HELP rtb_bid_latency_seconds Bid request handling latency.")
         lines.append("# TYPE rtb_bid_latency_seconds histogram")
@@ -366,3 +405,4 @@ def reset_for_tests() -> None:
             _conv_unattributed[st] = 0
         for d in _coverage:
             _coverage[d] = None
+        _burl_outcomes.clear()

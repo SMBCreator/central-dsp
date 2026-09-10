@@ -607,6 +607,10 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 		}
 
 		nurl := fmt.Sprintf("%s/api/rtb/win?bid=%s&price=${AUCTION_PRICE}", h.base, token)
+		// burl (OpenRTB 2.5 §4.3.3): billable-событие SSP. Отдаём всегда — на
+		// каком из двух списываются деньги, решает supply_partners.billing_event
+		// в backend (R-07): win — как раньше, burl — резерв держится до burl.
+		burl := fmt.Sprintf("%s/api/rtb/burl?bid=%s&price=${AUCTION_PRICE}", h.base, token)
 		// lurl (OpenRTB 2.5 §4.2.3): SSP сообщает о проигрыше с кодом причины и
 		// ценой, которой не хватило. Идёт в Go (/rtb/* -> биддер): освобождаем
 		// бюджетный резерв сразу и пишем событие loss для отчёта «почему проигрываем».
@@ -628,7 +632,7 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 			ID: bidID, ImpID: imp.ID, Price: roundPrice(sc.price / sc.fxRate),
 			AdM: adm, ADomain: admomains(c), CrID: c.CreativeID,
 			Cat: c.IABCategories, Attr: c.Attrs,
-			NURL: nurl, LURL: lurl, W: w, H: hgt, DealID: dealID, Ext: ext,
+			NURL: nurl, BURL: burl, LURL: lurl, W: w, H: hgt, DealID: dealID, Ext: ext,
 		}, sc.price
 	}
 	return nil, 0

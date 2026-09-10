@@ -256,6 +256,10 @@ export interface SupplyPartner {
   has_auth_token?: boolean
   auth_token_hint?: string | null
   last_check?: SspCheckResult | null
+  // R-07: событие расхода — burl (billable imp, default для новых) или win (nurl, до сверки с SSP)
+  billing_event?: "win" | "burl"
+  // R-06: freq cap бронируется на nurl, а не на пикселе показа (SSP без imp-пикселя)
+  freq_cap_on_win?: boolean
 }
 
 export interface SupplyPartnerMetrics {
@@ -303,6 +307,8 @@ export interface StatsSummary {
   impressions: number
   clicks: number
   spend: number
+  // R-07: показы с расходом (burl либо win с деньгами); ecpm = spend / billable_imps
+  billable_imps?: number
   win_rate: number
   ctr: number
   ecpm: number
@@ -326,6 +332,7 @@ export interface BreakdownRow {
   impressions: number
   clicks: number
   viewable_imps?: number
+  billable_imps?: number
   spend: number
   win_rate: number
   ctr: number

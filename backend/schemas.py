@@ -315,6 +315,10 @@ class SupplyPartnerIn(BaseModel):
     ip_whitelist: list[str] = Field(default_factory=list, max_length=64)
     seat_id: str | None = Field(default=None, max_length=100)
     contact_email: str | None = Field(default=None, max_length=200)
+    # R-07/R-06: событие расхода и основание freq cap — независимые решения
+    # per SSP (см. миграции 046/043). None -> DEFAULT БД ('burl' / false).
+    billing_event: str | None = Field(default=None, pattern="^(win|burl)$")
+    freq_cap_on_win: bool | None = None
 
 
 class SupplyPartnerPatch(BaseModel):
@@ -331,6 +335,8 @@ class SupplyPartnerPatch(BaseModel):
     ip_whitelist: list[str] | None = Field(default=None, max_length=64)
     seat_id: str | None = Field(default=None, max_length=100)
     contact_email: str | None = Field(default=None, max_length=200)
+    billing_event: str | None = Field(default=None, pattern="^(win|burl)$")
+    freq_cap_on_win: bool | None = None
 
 
 # --- Rules ---------------------------------------------------------------------
