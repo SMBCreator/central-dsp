@@ -197,17 +197,25 @@ async def _full_report(pool, user, dimension, profile_id, campaign_id, group_id,
     if hit and not force and _time.monotonic() - hit[0] < _REPORT_CACHE_TTL:
         return hit[1], hit[2]
 
+    # Отчёт строится в кабинете владельца кампании/папки (admin/agency смотрят
+    # клиента); без campaign_id/group_id — собственный кабинет запрашивающего.
+    owner = str(user["id"])
     if campaign_id:
-        await _campaign_in_scope(pool, campaign_id, user)
+        camp = await _campaign_in_scope(pool, campaign_id, user)
+        owner = str(camp["user_id"])
+    elif group_id:
+        grp = await assert_in_scope(pool, "campaign_groups", group_id, await scope_for(user), "Группа не найдена",
+                                    columns="id, user_id")
+        owner = str(grp["user_id"])
 
-    profile = await _resolve_profile(pool, user["id"], profile_id, campaign_id, group_id)
+    profile = await _resolve_profile(pool, owner, profile_id, campaign_id, group_id)
 
     if dimension == "domain":
         if group_id and not campaign_id:
             # Папка кампаний: объединяем отчёты по всем кампаниям папки.
             rows_by_dom: dict[str, dict] = {}
-            for cid in await _campaign_ids_in_group(pool, user["id"], group_id):
-                for r in await scoring.domain_metrics(pool, str(user["id"]), profile, campaign_id=cid):
+            for cid in await _campaign_ids_in_group(pool, owner, group_id):
+                for r in await scoring.domain_metrics(pool, owner, profile, campaign_id=cid):
                     acc = rows_by_dom.get(r["domain"])
                     if not acc:
                         rows_by_dom[r["domain"]] = dict(r)
@@ -222,9 +230,9 @@ async def _full_report(pool, user, dimension, profile_id, campaign_id, group_id,
                 d = derive(impressions=m["impressions"], clicks=m["clicks"], viewable_imps=m["viewable_imps"])
                 m["ctr"], m["viewability"] = d["ctr"], d["viewability"]
         else:
-            rows = await scoring.domain_metrics(pool, str(user["id"]), profile, campaign_id=campaign_id)
+            rows = await scoring.domain_metrics(pool, owner, profile, campaign_id=campaign_id)
     else:
-        rows = await _ssp_rows(pool, user, profile, campaign_id)
+        rows = await _ssp_rows(pool, owner, profile, campaign_id)
 
     _report_cache[key] = (_time.monotonic(), profile, rows)
     return profile, rows
@@ -427,10 +435,10 @@ async def list_blocks(campaign_id: str, user: dict = Depends(current_user)):
     return out
 
 
-async def _ssp_rows(pool, user, profile, campaign_id) -> list[dict]:
+async def _ssp_rows(pool, owner: str, profile, campaign_id) -> list[dict]:
     """SSP-разрез: агрегируем bid_events по supply_partner за окно профиля."""
     window_days = int(profile.get("window_days") or 7)
-    params: list = [user["id"], window_days]
+    params: list = [owner, window_days]
     camp_filter = ""
     if campaign_id:
         params.append(campaign_id)

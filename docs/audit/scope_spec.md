@@ -9,9 +9,9 @@
 
 | Роль | `scope_for` (CRUD, billing) | Права на запись | Отчёты (`report_scope_for`) |
 |---|---|---|---|
-| superadmin, admin | вся платформа (`all=True`) | полные (guards `require_*`) | как CRUD (B12b) |
-| analyst | вся платформа | нет — 403 от guard, **не** 404 от scope | как CRUD (B12b) |
-| finance | вся платформа | только `/billing/deposit`, `/billing/adjust` | как CRUD (B12b) |
+| superadmin, admin | вся платформа (`all=True`) | полные (guards `require_*`) | вся платформа, без наценки |
+| analyst | вся платформа | нет — 403 от guard, **не** 404 от scope | вся платформа, без наценки |
+| finance | вся платформа | только `/billing/deposit`, `/billing/adjust` | вся платформа, без наценки |
 | agency | сам + всё поддерево клиентов (`parent_user_id`, рекурсивно) | CAMPAIGN_WRITE | те же владельцы, spend × наценка цепочки |
 | manager, advertiser | только свои объекты | manager: CAMPAIGN_WRITE + PLATFORM_WRITE; advertiser: CAMPAIGN_WRITE | свои |
 | client | только свои объекты | по флагам `permissions` | свои, spend × наценка цепочки |
@@ -26,6 +26,28 @@
   `require_*` до обращения к БД.
 * `Scope.where(column, n)` разворачивается в `($n::boolean OR column = ANY($n+1::uuid[]))` —
   один и тот же предикат для всех запросов, параметры `Scope.params`.
+* Отчётная форма того же scope — один параметр `Scope.owner_ids_param`: `NULL` = вся
+  платформа, список = владельцы, **пустой список = никого** (пустой scope не может стать
+  сентинелом «все»). Предикат `Scope.owner_in(column, n)` =
+  `($n::uuid[] IS NULL OR column = ANY($n::uuid[]))`.
+
+## 1a. Отчёты и статистика (`report_scope_for`, B12b)
+
+* `stats._resolve_scope(user)` → `(owner_ids | None, advertiser_id | None, spend_mult)` —
+  единственная точка scope для `/stats/summary`, `/timeseries`, `/breakdown`, `/domains`,
+  `/domain-quality`, `POST /stats/report`; конверсии (`conversion_attribution.owner_breakdown`)
+  считаются по тем же владельцам.
+* Граница гостя (`guest_access.advertiser_id`) обязательна во **всех** ручках, включая
+  счётчики summary (`total_campaigns`, `active_campaigns`, `total_creatives` — через кампании
+  рекламодателя; `active_partners` = 0, SSP не относятся к рекламодателю), `/domains`,
+  `/domain-quality` и `POST /stats/report`: набор кампаний владельца режется по рекламодателю
+  **до** применения `body.campaign_ids`/`group_id`, чужой id в body — как несуществующий
+  (`rows=[]`, `totals=None`).
+* `GET /scoring/report[.csv]`: `campaign_id`/`group_id` проверяются `assert_in_scope`
+  (404 вне scope), отчёт и профиль разрешаются в кабинете **владельца** кампании/папки
+  (admin/agency смотрят клиента); без параметров — собственный кабинет запрашивающего.
+* Наценка: платформенные роли и manager/advertiser — ×1; agency/client — цепочка;
+  viewer — `markup_mult_snapshot` (см. B14b). Тесты: `tests/test_report_scope_db.py`.
 
 ## 2. Владелец создаваемого объекта
 
@@ -76,6 +98,6 @@ admin, у которого в scope и alice, и bob, не может повес
 * **B12a (этот документ, разделы 1–4 для CRUD/billing)** — реализовано:
   `campaigns`, `advertisers`, `groups`, `line_items`, `creatives`, `scoring` (профили,
   блок-листы, recompute), `ord_router`, `billing`.
-* **B12b** — `stats.*` и `scoring/report` на `report_scope_for` (сейчас: платформенные роли
-  в статистике видят только свой кабинет), viewer `advertiser_id` во всех GET
-  (`/stats/domains`, счётчики summary), IDOR-тесты на все ссылочные поля.
+* **B12b (раздел 1a)** — реализовано (2026-09-10): `stats.*` и `scoring/report` на
+  `report_scope_for`, `Scope.owner_ids_param`/`owner_in`, граница viewer во всех ручках
+  статистики и в `/stats/report`; тесты `tests/test_report_scope_db.py`.

@@ -131,35 +131,41 @@ class _ViewerPool:
         return self.row
 
 
+# B12b: stats._resolve_scope делегирует rbac.report_scope_for (guest_access читается там,
+# через db.get_pool), и возвращает owner_ids | None (None = платформенный scope).
+
 def test_viewer_scope_uses_snapshot(monkeypatch):
     from decimal import Decimal
+
+    import db
     async def pool():
-        return _ViewerPool({"owner_id": "o", "advertiser_id": None,
+        return _ViewerPool({"owner_id": "o", "advertiser_id": "adv-1",
                             "markup_mult_snapshot": Decimal("1.320000"), "revoked_at": None})
-    monkeypatch.setattr(stats, "get_pool", pool)
+    monkeypatch.setattr(db, "get_pool", pool)
     uids, adv, mult = _run(stats._resolve_scope({"id": "g", "role": "viewer"}))
-    assert uids == ["o"] and adv is None
+    assert uids == ["o"] and adv == "adv-1"
     assert mult == pytest.approx(1.32)
 
 
 def test_viewer_scope_403_when_revoked(monkeypatch):
     from datetime import datetime
+
+    import db
     async def pool():
         return _ViewerPool({"owner_id": "o", "advertiser_id": None, "markup_mult_snapshot": 1,
                             "revoked_at": datetime.now(UTC)})
-    monkeypatch.setattr(stats, "get_pool", pool)
+    monkeypatch.setattr(db, "get_pool", pool)
     with pytest.raises(HTTPException) as ei:
         _run(stats._resolve_scope({"id": "g", "role": "viewer"}))
     assert ei.value.status_code == 403
 
 
 def test_non_viewer_scope_delegates_to_spend_multiplier(monkeypatch, chain_pct):
-    async def vis(_u):
-        return None
-    monkeypatch.setattr(stats, "visible_user_ids", vis)
-    _, _, m_client = _run(stats._resolve_scope({"id": "c", "role": "client"}))
-    _, _, m_admin = _run(stats._resolve_scope({"id": "a", "role": "admin"}))
+    uids_client, adv_c, m_client = _run(stats._resolve_scope({"id": "c", "role": "client"}))
+    uids_admin, adv_a, m_admin = _run(stats._resolve_scope({"id": "a", "role": "admin"}))
     assert m_client == pytest.approx(1.2) and m_admin == 1.0
+    assert uids_client == ["c"] and adv_c is None
+    assert uids_admin is None and adv_a is None  # платформенная роль видит всех
 
 
 # --- public_stats: цена из snapshot, не из текущего markup ------------------------------

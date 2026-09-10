@@ -146,6 +146,18 @@ class Scope:
     def params(self) -> list:
         return [self.all, list(self.user_ids)]
 
+    @property
+    def owner_ids_param(self) -> list[str] | None:
+        """Тот же scope одним параметром для отчётных запросов с $1::uuid[]:
+        None = все владельцы (платформенный scope), иначе список. Пустой список —
+        «никого» (не сентинел «все»): пустой scope не может раскрыть данные."""
+        return None if self.all else list(self.user_ids)
+
+    @staticmethod
+    def owner_in(column: str, param: int = 1) -> str:
+        """Предикат к owner_ids_param: `($n::uuid[] IS NULL OR column = ANY($n::uuid[]))`."""
+        return f"(${param}::uuid[] IS NULL OR {column} = ANY(${param}::uuid[]))"
+
     def includes(self, owner_id) -> bool:
         return self.all or str(owner_id) in self.user_ids
 

@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 import conversion_attribution as attribution
 from auth import current_user
 from db import get_pool
-from rbac import spend_multiplier, visible_user_ids
+from rbac import report_scope_for
 from stats_math import (
     ADDITIVE_METRICS, CONFIDENCE_LOW, NOT_SET_LABEL, OTHER_LABEL, OUT_OF_WINDOW_LABEL, ROW_KIND_DATA,
     ROW_KIND_NOT_SET, ROW_KIND_OTHER, ROW_KIND_OUT_OF_WINDOW, ROW_KIND_UNATTRIBUTED, ROW_KINDS_WITHOUT_CPA,
@@ -14,36 +14,18 @@ from stats_math import (
 router = APIRouter(prefix="/stats", tags=["stats"])
 
 
-async def _resolve_scope(user: dict) -> tuple[list[str], str | None, float]:
-    """Return (visible_user_ids, advertiser_filter, spend_multiplier).
+async def _resolve_scope(user: dict) -> tuple[list[str] | None, str | None, float]:
+    """Return (owner_ids | None, advertiser_filter, spend_multiplier) — тот же scope,
+    что и в CRUD (rbac.report_scope_for, спецификация docs/audit/scope_spec.md).
 
-    - viewer (гость): данные владельца, опционально один рекламодатель; spend —
-      по snapshot наценки на guest_access (зафиксирован при создании, F-02)
-    - agency: свои данные + все потомки (клиенты)
-    - client/agency: спенд показывается с наценкой по цепочке (markup_pct)
-    - остальные: только свои данные, без наценки
+    - owner_ids None = платформенный scope (superadmin/admin/analyst/finance);
+      в SQL — `($1::uuid[] IS NULL OR c.user_id = ANY($1::uuid[]))`
+    - viewer (гость): владелец из guest_access, опционально один рекламодатель
+      (advertiser_filter обязателен во ВСЕХ ручках ниже); spend — по snapshot наценки
+    - agency: свои данные + все потомки; client/agency: spend × наценка цепочки
     """
-    if user.get("role") == "viewer":
-        pool = await get_pool()
-        row = await pool.fetchrow(
-            "SELECT owner_id, advertiser_id, markup_mult_snapshot, revoked_at FROM guest_access WHERE user_id = $1",
-            user["id"],
-        )
-        if not row:
-            raise HTTPException(status_code=403, detail="Гостевой доступ не настроен")
-        if row["revoked_at"] is not None:
-            raise HTTPException(status_code=403, detail="Доступ отозван")
-        mult = float(row["markup_mult_snapshot"] or 1)
-        return [str(row["owner_id"])], str(row["advertiser_id"]) if row["advertiser_id"] else None, mult
-
-    scope = await visible_user_ids(user)
-    uids = scope if scope is not None else [str(user["id"])]
-    # can_see_all-роли в статистике видят только свой кабинет (как раньше)
-    if scope is None:
-        uids = [str(user["id"])]
-
-    mult = await spend_multiplier(str(user["id"]), user.get("role", ""))
-    return uids, None, mult
+    scope = await report_scope_for(user)
+    return scope.owner_ids_param, scope.advertiser_id, scope.spend_mult
 
 
 def _date_range_or_422(date_from, date_to):
@@ -79,19 +61,26 @@ async def summary(hours: int = 24, campaign_id: str | None = None, user: dict = 
           COALESCE(SUM(s.spend), 0)       AS spend
         FROM stats_hourly s
         JOIN campaigns c ON c.id = s.campaign_id
-        WHERE c.user_id = ANY($1::uuid[]) AND s.ts_hour >= now() - ($2 || ' hours')::interval {filters}
+        WHERE ($1::uuid[] IS NULL OR c.user_id = ANY($1::uuid[])) AND s.ts_hour >= now() - ($2 || ' hours')::interval {filters}
         """,
         uid, str(hours), *extra,
     )
+    # Граница гостя (один рекламодатель) — и на счётчиках: иначе гость видит,
+    # сколько кампаний/креативов у владельца в других рекламодателях. SSP не
+    # относятся к рекламодателю — гостю с границей их не показываем.
+    adv_filter = " AND advertiser_id = $2" if adv_scope else ""
+    cr_filter = " AND campaign_id IN (SELECT id FROM campaigns WHERE advertiser_id = $2)" if adv_scope else ""
+    partners_sql = ("0" if adv_scope else
+                    "(SELECT count(*) FROM supply_partners WHERE ($1::uuid[] IS NULL OR user_id = ANY($1::uuid[])) AND status = 'active')")
     counts = await pool.fetchrow(
-        """
+        f"""
         SELECT
-          (SELECT count(*) FROM campaigns WHERE user_id = ANY($1::uuid[]) AND status = 'active')       AS active_campaigns,
-          (SELECT count(*) FROM campaigns WHERE user_id = ANY($1::uuid[]))                             AS total_campaigns,
-          (SELECT count(*) FROM creatives WHERE user_id = ANY($1::uuid[]))                             AS total_creatives,
-          (SELECT count(*) FROM supply_partners WHERE user_id = ANY($1::uuid[]) AND status = 'active') AS active_partners
+          (SELECT count(*) FROM campaigns WHERE ($1::uuid[] IS NULL OR user_id = ANY($1::uuid[])) AND status = 'active'{adv_filter}) AS active_campaigns,
+          (SELECT count(*) FROM campaigns WHERE ($1::uuid[] IS NULL OR user_id = ANY($1::uuid[])){adv_filter})                       AS total_campaigns,
+          (SELECT count(*) FROM creatives WHERE ($1::uuid[] IS NULL OR user_id = ANY($1::uuid[])){cr_filter})                        AS total_creatives,
+          {partners_sql} AS active_partners
         """,
-        uid,
+        uid, *([adv_scope] if adv_scope else []),
     )
     bids, wins = int(row["bids"]), int(row["wins"])
     imps, clicks = int(row["impressions"]), int(row["clicks"])
@@ -163,7 +152,7 @@ async def timeseries(
                SUM(s.impressions) AS impressions, SUM(s.clicks) AS clicks, SUM(s.spend) AS spend
         FROM stats_hourly s
         JOIN campaigns c ON c.id = s.campaign_id
-        WHERE c.user_id = ANY($1::uuid[]) {period_filter} {filters}
+        WHERE ($1::uuid[] IS NULL OR c.user_id = ANY($1::uuid[])) {period_filter} {filters}
         GROUP BY bucket ORDER BY bucket
         """,
         *params,
@@ -192,7 +181,7 @@ _DIMENSIONS = {
                COALESCE(SUM(s.billable_imps), 0) AS billable_imps
         FROM campaigns c
         LEFT JOIN stats_hourly s ON s.campaign_id = c.id AND s.ts_hour >= now() - ($2 || ' hours')::interval
-        WHERE c.user_id = ANY($1::uuid[])
+        WHERE ($1::uuid[] IS NULL OR c.user_id = ANY($1::uuid[]))
         GROUP BY c.id, c.name, c.status
         ORDER BY spend DESC
         """
@@ -207,7 +196,7 @@ _DIMENSIONS = {
                COALESCE(SUM(s.billable_imps), 0) AS billable_imps
         FROM supply_partners p
         LEFT JOIN stats_hourly s ON s.supply_partner_id = p.id AND s.ts_hour >= now() - ($2 || ' hours')::interval
-        WHERE p.user_id = ANY($1::uuid[])
+        WHERE ($1::uuid[] IS NULL OR p.user_id = ANY($1::uuid[]))
         GROUP BY p.id, p.name, p.status
         ORDER BY bids DESC
         """
@@ -222,7 +211,7 @@ _DIMENSIONS = {
                COALESCE(SUM(s.billable_imps), 0) AS billable_imps
         FROM creatives cr
         LEFT JOIN stats_hourly s ON s.creative_id = cr.id AND s.ts_hour >= now() - ($2 || ' hours')::interval
-        WHERE cr.user_id = ANY($1::uuid[])
+        WHERE ($1::uuid[] IS NULL OR cr.user_id = ANY($1::uuid[]))
         GROUP BY cr.id, cr.name, cr.status
         ORDER BY spend DESC
         """
@@ -233,11 +222,12 @@ _DIMENSIONS = {
 @router.get("/domains")
 async def domain_breakdown(hours: int = 168, limit: int = 100, user: dict = Depends(current_user)):
     """Domain-level stats for one-click blacklisting. Scoped to the user's campaigns."""
-    uid, _adv, mult = await _resolve_scope(user)
+    uid, adv_scope, mult = await _resolve_scope(user)
     hours, limit = clamp_hours(hours), clamp_limit(limit, 100)
     pool = await get_pool()
+    adv_filter = " AND c.advertiser_id = $4" if adv_scope else ""
     rows = await pool.fetch(
-        """
+        f"""
         SELECT d.domain,
                sum(d.wins)          AS wins,
                sum(d.impressions)   AS impressions,
@@ -246,12 +236,12 @@ async def domain_breakdown(hours: int = 168, limit: int = 100, user: dict = Depe
                sum(d.spend)         AS spend
         FROM domain_stats_hourly d
         JOIN campaigns c ON c.id = d.campaign_id
-        WHERE c.user_id = ANY($1::uuid[]) AND d.ts_hour >= now() - ($2 || ' hours')::interval
+        WHERE ($1::uuid[] IS NULL OR c.user_id = ANY($1::uuid[])) AND d.ts_hour >= now() - ($2 || ' hours')::interval{adv_filter}
         GROUP BY d.domain
         ORDER BY sum(d.spend) DESC, sum(d.impressions) DESC
         LIMIT $3
         """,
-        uid, str(hours), limit,
+        uid, str(hours), limit, *([adv_scope] if adv_scope else []),
     )
     blocked = await pool.fetch(
         "SELECT domain FROM domain_lists WHERE user_id = $1 AND list_type = 'black'", user["id"]
@@ -279,22 +269,23 @@ async def domain_quality_panel(limit: int = 100, user: dict = Depends(current_us
     """
     from ml.quality import CLEAN_SCORE_THRESHOLD
 
-    uid, _adv, _mult = await _resolve_scope(user)
+    uid, adv_scope, _mult = await _resolve_scope(user)
     limit = clamp_limit(limit, 100)
     pool = await get_pool()
+    adv_filter = " AND c.advertiser_id = $3" if adv_scope else ""
     rows = await pool.fetch(
-        """
+        f"""
         SELECT dq.domain, dq.score, dq.imps, dq.clicks, dq.wins, dq.reasons, dq.updated_at
         FROM domain_quality dq
         WHERE EXISTS (
             SELECT 1 FROM domain_stats_hourly d
             JOIN campaigns c ON c.id = d.campaign_id
-            WHERE c.user_id = ANY($1::uuid[]) AND lower(d.domain) = dq.domain
+            WHERE ($1::uuid[] IS NULL OR c.user_id = ANY($1::uuid[])) AND lower(d.domain) = dq.domain{adv_filter}
         )
         ORDER BY dq.score ASC, dq.imps DESC
         LIMIT $2
         """,
-        uid, limit,
+        uid, limit, *([adv_scope] if adv_scope else []),
     )
     import json as _json
     out = []
@@ -320,7 +311,9 @@ async def breakdown(hours: int = 168, dimension: str = "campaign", user: dict = 
         dimension = "campaign"
     sql = _DIMENSIONS.get(dimension, _DIMENSIONS["campaign"])
     if adv_scope:
-        sql = sql.replace("WHERE c.user_id = ANY($1::uuid[])", "WHERE c.user_id = ANY($1::uuid[]) AND c.advertiser_id = $3")
+        sql = sql.replace("WHERE ($1::uuid[] IS NULL OR c.user_id = ANY($1::uuid[]))",
+                          "WHERE ($1::uuid[] IS NULL OR c.user_id = ANY($1::uuid[])) AND c.advertiser_id = $3")
+        assert "c.advertiser_id = $3" in sql, "граница гостя не применилась к breakdown"
     pool = await get_pool()
     args = [uid, str(clamp_hours(hours))] + ([adv_scope] if adv_scope else [])
     rows = await pool.fetch(sql, *args)
@@ -477,14 +470,19 @@ async def report(body: ReportRequest, user: dict = Depends(current_user)):
 
     # --- resolve campaign scope (ownership + optional group filter) ---
     async with pool.acquire() as conn:
+        # Граница гостя (один рекламодатель) режет набор кампаний до фильтров body.
+        adv_filter = " AND advertiser_id = $2" if _adv_filter else ""
+        adv_args = [_adv_filter] if _adv_filter else []
         if body.group_id:
             rows = await conn.fetch(
-                "SELECT id FROM campaigns WHERE user_id = ANY($1::uuid[]) AND group_id = $2::uuid",
-                owner_ids, body.group_id,
+                f"SELECT id FROM campaigns WHERE ($1::uuid[] IS NULL OR user_id = ANY($1::uuid[])){adv_filter}"
+                f" AND group_id = ${2 + len(adv_args)}::uuid",
+                owner_ids, *adv_args, body.group_id,
             )
         else:
             rows = await conn.fetch(
-                "SELECT id FROM campaigns WHERE user_id = ANY($1::uuid[])", owner_ids
+                f"SELECT id FROM campaigns WHERE ($1::uuid[] IS NULL OR user_id = ANY($1::uuid[])){adv_filter}",
+                owner_ids, *adv_args,
             )
         allowed = {str(r["id"]) for r in rows}
         if body.campaign_ids:

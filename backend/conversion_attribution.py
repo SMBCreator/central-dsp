@@ -78,11 +78,12 @@ async def record(pool, *, conversion_id, owner_user_id, pixel_id, goal_id, statu
         obs_metrics.inc_conversion_unattributed(status)
 
 
-async def owner_breakdown(pool, owner_ids: list[str], d_from: date, d_to: date, dims: list[str]) -> dict:
+async def owner_breakdown(pool, owner_ids: list[str] | None, d_from: date, d_to: date, dims: list[str]) -> dict:
     """Счётчики по статусам + покрытие по запрошенным измерениям за период.
 
     coverage[dim] = attributed с ненулевым значением измерения / все конверсии
     владельцев (включая out_of_window/unattributed). Тестовые не считаются.
+    owner_ids None = платформенный scope (все владельцы), см. rbac.Scope.owner_ids_param.
     """
     cols = [DIM_COLUMNS[d] for d in dims if d in DIM_COLUMNS]
     covered_sql = "".join(
@@ -95,7 +96,7 @@ async def owner_breakdown(pool, owner_ids: list[str], d_from: date, d_to: date, 
                    count(*) FILTER (WHERE attribution_status = 'unattributed')  AS unattributed
                    {covered_sql}
             FROM conversion_attributions
-            WHERE owner_user_id = ANY($1::uuid[]) AND NOT is_test
+            WHERE ($1::uuid[] IS NULL OR owner_user_id = ANY($1::uuid[])) AND NOT is_test
               AND converted_at >= $2::date AND converted_at < ($3::date + interval '1 day')""",
         owner_ids, d_from, d_to,
     )
