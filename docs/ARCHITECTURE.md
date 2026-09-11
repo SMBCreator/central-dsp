@@ -1,214 +1,187 @@
-# Central DSP — Architecture
+# Central DSP — целевая архитектура
 
-## Обзор системы
+Документ описывает **текущую** production-архитектуру по состоянию кода
+(2026-09-11). Планы и незакрытые долги — только в
+`docs/audit/remediation_plan_2026-09-06.md`. Исторические варианты
+(Java RTB4FREE, Python-биддер как serving runtime, Celery, старый Vue) удалены
+из репозитория; их описание доступно только через Git history.
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    INTERNET / SSP / Exchange                 │
-└───────────────────────────┬─────────────────────────────────┘
-                            │ Bid Request (OpenRTB 2.5, <50ms)
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│              RTB4FREE Java Bidder (:8080)                    │
-│   - Принимает bid requests от SSP                           │
-│   - Запрашивает кампании из RTB Bridge                      │
-│   - Отвечает bid response за <50ms                          │
-│   - Отправляет win/loss notices                             │
-└───────────┬────────────────────────┬────────────────────────┘
-            │ GET /api/rtb/campaigns  │ POST /api/rtb/win-notice
-            ▼                        ▼
-┌─────────────────────────────────────────────────────────────┐
-│              FastAPI Backend (:8000)                         │
-│                                                              │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐  │
-│  │  RTB Bridge  │  │   Tracker    │  │   AutoPilot      │  │
-│  │  /api/rtb/*  │  │  /s/ /px/    │  │  Celery tasks    │  │
-│  │              │  │  /postback   │  │  Rules engine    │  │
-│  └──────┬───────┘  └──────┬───────┘  └──────┬───────────┘  │
-│         │                 │                  │              │
-│  ┌──────▼─────────────────▼──────────────────▼───────────┐  │
-│  │              PostgreSQL (:5432)                        │  │
-│  │  users, campaigns, links, pixels, events,              │  │
-│  │  clicks, postbacks, stats, rules, auction_logs         │  │
-│  └────────────────────────────────────────────────────────┘  │
-│                                                              │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │                  Redis (:6379)                       │    │
-│  │  Celery broker + results + bid cache                │    │
-│  └─────────────────────────────────────────────────────┘    │
-└─────────────────────────────┬───────────────────────────────┘
-                              │ REST API
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│              Vue 3 Frontend (:3000)                          │
-│   Dashboard | Campaigns | Links | Pixels | RTB | Analytics  │
-└─────────────────────────────────────────────────────────────┘
+## 0. Зафиксированные решения
+
+```text
+Production RTB bidder:        Go bidder only (bidder-go/).
+Legacy Java RTB4FREE:         deprecated and removed (C1c, 2026-09-11).
+Python RTB serving:           deprecated; POST /rtb/bid в backend удаляется
+                              отдельным шагом C1d.
+Python process_bid_request:   reference implementation for parity tests only,
+                              not a production RTB serving runtime.
+Scheduler:                    PostgreSQL scheduled_jobs + backend/scheduler.py.
+Celery / Beat / Flower:       not used in target production architecture.
+Vercel:                       may be used only for preview/frontend deployment;
+                              not part of production runtime and not a source
+                              of scheduler configuration.
+Simulator:                    в production вызывает только Go bidder; при его
+                              недоступности — 503, без подмены на Python (C1d).
 ```
 
----
+## 1. Компоненты
 
-## RTB Flow — полная цепочка
+```text
+                 SSP (OpenRTB 2.5/2.6)                  Браузер пользователя
+                        │                                       │
+            POST /rtb/bid/{key}  /rtb/loss          nurl/burl/imp/click/view
+                        │                                       │
+   ┌────────────────────▼───────────────────────────────────────▼────────────┐
+   │ Caddy (compose.prod.yml, :80/:443)                                      │
+   │   /rtb/*  → bidder-go:8090      /api/* → backend:8000 (prefix strip)    │
+   │   /uploads/* → backend:8000     остальное → frontend:3000               │
+   └──────────┬───────────────────────────────┬──────────────────┬───────────┘
+              │                               │                  │
+      ┌───────▼────────┐             ┌────────▼───────┐   ┌──────▼──────┐
+      │ bidder-go      │  /rtb-feed  │ backend        │   │ frontend    │
+      │ Go, :8090      │◄────────────│ FastAPI, :8000 │◄──│ Next.js     │
+      │ аукцион        │  reload ►   │ management API │   │ кабинет     │
+      └───┬────────┬───┘             └──┬─────────┬───┘   └─────────────┘
+          │        │                    │         │
+          │   rtb:events (stream)       │         │      ┌──────────────┐
+          │        └────────────────────►         │      │ scheduler    │
+          │           events_consumer   │         │◄─────│ python       │
+          │                             │         │ /cron│ scheduler.py │
+      ┌───▼──────────┐          ┌───────▼───────┐ │      └──────┬───────┘
+      │ Redis 7      │          │ PostgreSQL 15 │◄┘             │
+      │ бюджет-гейт, │          │ источник      │◄──────────────┘
+      │ freq-cap,    │          │ истины,       │   scheduled_jobs
+      │ кэш, stream  │          │ ledger        │
+      └──────────────┘          └───────────────┘
 
-```
-1. SSP отправляет Bid Request →
-   RTB4FREE Bidder (:8080/bidder)
-
-2. Bidder запрашивает активные кампании →
-   GET /api/rtb/campaigns
-   ← [{id, name, bid_floor, bid_ceiling, targeting, creatives}]
-
-3. Bidder считает ставку и отвечает SSP ←
-   Bid Response (< 50ms)
-
-4. SSP выбирает победителя:
-   a) Победа → Win Notice → POST /api/rtb/win-notice
-      → Event(event_name='impression', win_price=X)
-      → AuctionLog(won=True)
-   b) Проигрыш → POST /api/rtb/loss-notice
-      → AuctionLog(won=False)
-
-5. Пользователь кликает на баннер →
-   /s/{code}?auction_id={auction_id}
-   → Click(auction_id=...)
-
-6. Пользователь совершает целевое действие →
-   Постбэк от партнёрки → /postback?click_id={click_id}
-   → Event(event_name='conversion')
-   → Attribution: impression → click → conversion ✅
-```
-
----
-
-## Сервисы и порты
-
-| Сервис | Порт | Описание |
-|--------|------|----------|
-| `frontend` | 3000 | Vue 3 UI |
-| `backend` | 8000 | FastAPI REST API |
-| `bidder` | 8080 | RTB4FREE Java Bidder (OpenRTB endpoint) |
-| `postgres` | 5432 | PostgreSQL |
-| `redis` | 6379 | Redis |
-| `flower` | 5555 | Celery мониторинг |
-| `caddy` | 80/443 | Reverse proxy + SSL |
-| `grafana` | 3001 | Мониторинг |
-
----
-
-## Модели данных
-
-### Существующие (v2+)
-```
-User          → id, email, password_hash, role, is_active
-Campaign      → id, user_id, name, camp_code, status, budgets
-Link          → id, campaign_id, short_code, original_url, geo_rules, device_rules
-Pixel         → id, campaign_id, pixel_id, name, total_events
-Event         → id, pixel_id, link_id, click_id, event_name, value, geo, device
-Click         → id, link_id, click_id(uuid), sub_id, creative_id, ip, country, device, cost
-Postback      → id, click_id, payout, currency, status, raw_params
-Stat          → id, link_id, sub_id, creative_id, clicks, conversions, cost, revenue
-Rule          → id, campaign_id, metric, condition, threshold, action
-RuleLog       → id, rule_id, campaign_id, triggered_at, action_taken
-AdAccount     → id, user_id, platform, account_id, credentials
-Setting       → id, user_id, key, value
+      Prometheus (profile monitoring) ← /metrics backend, bidder-go, scheduler
 ```
 
-### Новые RTB (Фаза 2)
-```
-Advertiser    → id, user_id, name, daily_budget, total_budget, currency, status
-Creative      → id, campaign_id, format, width, height, image_url, title, click_url, status
-TargetingRule → id, campaign_id, bid_floor, bid_ceiling, geo_countries[], device_types[],
-                site_whitelist[], site_blacklist[], hour_schedule(jsonb)
-AuctionLog    → id, campaign_id, creative_id, bid_request_id, bid_price, win_price,
-                clearing_price, won, site_domain, geo_country, device_type, created_at
-BidAdjustment → id, campaign_id, dimension, value, multiplier, created_at
-```
+| Сервис | Образ / код | Порт (dev) | Роль |
+|---|---|---|---|
+| `bidder-go` | `bidder-go/` (distroless, `/bidder -healthcheck`) | 8090 | OpenRTB endpoint, единственный auction runtime |
+| `backend` | `backend/` (FastAPI, uvicorn) | 8000 | Management API, callbacks, ОРД, биллинг, статистика, feed |
+| `scheduler` | образ backend, `python scheduler.py` | 8001 (metrics) | Планировщик `/cron/*` |
+| `frontend` | `frontend/` (Next.js) | 3000 | Кабинет |
+| `postgres` | `postgres:15-alpine` | — | Источник истины |
+| `redis` | `redis:7-alpine`, AOF | — | Горячее состояние |
+| `caddy` | только `compose.prod.yml` | 80/443 | TLS и маршрутизация |
+| `prometheus` | profile `monitoring` | 127.0.0.1:9091 | Метрики и алерты |
 
----
+`compose.external.yml` заменяет `postgres`/`redis` на managed-инстансы; всё
+остальное без изменений (`docs/DEPLOYMENT.md`).
 
-## RTB Bridge API
+## 2. Go bidder (`bidder-go/`)
 
-### Endpoints
+Единственный процесс, который отвечает SSP. В Postgres **не ходит** — латентность
+торгов. Все данные для решения либо в памяти, либо в Redis.
 
-```http
-GET  /api/rtb/campaigns
-# Возвращает активные кампании в формате RTB4FREE
-# Response: [{id, name, bid_floor, bid_ceiling, targeting, creatives, budget_remaining}]
+- **Вход:** `POST /rtb/bid/{endpoint_key}` + `X-CentralDSP-Token` партнёра
+  (в БД хранится только sha256-хэш). `GET|POST /rtb/loss` — lurl.
+- **Feed кандидатов:** периодический `GET {BACKEND_INTERNAL_URL}/rtb-feed/campaigns`
+  и `/rtb-feed/partners` (Bearer `RTB_API_TOKEN`) в `internal/feed`; backend
+  дёргает `POST /internal/feed/reload` при изменениях (`ssp_check.py`).
+- **Решение:** `internal/prefilter` (боты/UA), `internal/targeting`
+  (гео, устройство, dayparting в UTC, домены/списки, ключевые слова, аудитории),
+  `internal/rtb` (OpenRTB-совместимость: PMP, native, video; сборка adm/VAST,
+  erid в креативе), `internal/pctr` и `internal/shading` (цена),
+  `internal/fx` (курсы, торги в RUB).
+- **Деньги:** копейки `int64`; резерв бюджета — Lua-скрипт в Redis
+  (`internal/redisx`, атомарный гейт), freq-cap и счётчики бизнес-дня там же.
+- **Callbacks:** в BidResponse уходят подписанные (HMAC, `EVENT_TOKEN_SECRET`)
+  URL на **backend**: `${EVENT_BASE_URL}/api/rtb/win?bid=…&price=${AUCTION_PRICE}`,
+  `/api/rtb/burl`, `/api/rtb/click`, imp/view/vevent-пиксели. `EVENT_BASE_URL`
+  обязан быть публичным — в production loopback/внутренний адрес = fail-fast.
+- **События:** каждый bid/no-bid/loss → Redis Stream `rtb:events`
+  (`redisx.EmitEvent`), схема в `docs/CONTRACTS.md` §2.1.
+- **Наблюдаемость:** `GET /healthz`, `GET /metrics` (Prometheus).
 
-GET  /api/rtb/creatives/{creative_id}
-# Отдаёт креатив: banner(w,h,url) / native(title,desc,img) / video(vast_url)
+Parity с Python-референсом: `internal/targeting/parity_test.go`,
+`internal/rtb/parity_r03_test.go`, фикстуры `bidder-go/testdata/openrtb/*.json`
+(их же гоняет `backend/tests/test_openrtb_compat.py`). Матрица —
+`docs/audit/parity_matrix.md`.
 
-POST /api/rtb/win-notice
-# Тело: {auction_id, imp_id, price, campaign_id, creative_id, site_domain, country, device}
-# Создаёт: Event(event_name='impression'), AuctionLog(won=True)
+## 3. Backend (`backend/`, FastAPI)
 
-POST /api/rtb/loss-notice  
-# Тело: {auction_id, imp_id, campaign_id, loss_reason_code}
-# Создаёт: AuctionLog(won=False)
+Слушает без префикса (`/auth/me`, `/campaigns`, …); Caddy срезает `/api`.
 
-GET  /api/rtb/status
-# Response: {bidder_alive: bool, qps: int, win_rate: float, avg_latency_ms: int}
+| Область | Модули | Замечания |
+|---|---|---|
+| Auth, сессии, RBAC | `auth.py`, `rbac.py`, `csrf.py`, `routers/auth_router.py`, `users_router.py` | 9 ролей (`rbac.ALL_ROLES`), матрица — `docs/audit/rbac_matrix.md`; `REGISTRATION_MODE=closed` в проде |
+| Кампании и настройки закупки | `routers/campaigns.py`, `line_items.py`, `creatives.py`, `audiences_router.py`, `rules.py`, `scoring.py`, `targeting_contract.py` | `line_items.targeting` — JSONB-контракт UI → Pydantic → Go (`docs/CONTRACTS.md` §1) |
+| Feed для Go | `routers/bidder_feed.py` | `/rtb-feed/campaigns`, `/rtb-feed/partners`; ОРД-гейт `feed_gate_sql` не отдаёт непромаркированные креативы |
+| Event callbacks | `routers/rtb.py`: `/rtb/win`, `/burl`, `/imp`, `/click`, `/view`, `/vevent` | Проверка HMAC-токена, clamp `${AUCTION_PRICE}` к нашей ставке, идемпотентный биллинг (`billing_core.bill_win`), R-07: партнёр с `billing_event='burl'` списывается по burl |
+| Python reference | `routers/rtb.py::process_bid_request`, `rtb_compat.py`, `prefilter.py`, `shading.py`, `scoring.py` | Только эталон для parity-тестов. `POST /rtb/bid/{key}` в backend удаляется в C1d |
+| Биллинг | `billing_core.py`, `money.py`, `routers/billing.py`, `business_day.py` | Ledger в Postgres — источник истины по деньгам; наценка/представление — `stats_math.py` (`CONTRACTS.md` §5) |
+| События и статистика | `events_consumer.py` (фоновая задача backend), `routers/stats.py`, `routers/share.py` | Единственный писатель `bid_events` с `event_type IN ('bid','loss')` для Go-трафика; `stats_hourly` — `CONTRACTS.md` §3 |
+| ОРД / ЕРИР | `ord/` (`service.py`, `chain.py`, `ozon.py`, `mock.py`, `invoices.py`, `notifications.py`), `routers/ord_router.py` | Регистрация креативов (erid), цепочки договоров, месячная статистика (`/cron/ord-export`), ошибки ЕРИР; `ORD_LAUNCH_GUARD=on` блокирует активацию без erid |
+| Supply | `routers/supply_partners.py`, `ssp_tokens.py`, `ssp_check.py` | Endpoint key + одноразовый токен партнёра; публичный URL биддера из `GET /settings/public` |
+| Cron-задачи | `routers/cron.py` | `GET /cron/<job>` под `Bearer CRON_SECRET`; вызываются только планировщиком |
+| Планировщик API | `routers/scheduler_router.py` | `GET/PATCH /scheduler/jobs`, `POST /scheduler/jobs/{name}/run` (admin/superadmin) |
+| Симулятор | `routers/simulator.py` | Диагностический прогон BidRequest через Go bidder; правило C1d в §0 |
+| Прочее | `audit.py` (audit_log мутаций), `notify.py`, `obs_metrics.py` (`/metrics`), `startup_checks.py` (fail-fast на секретах в проде), `migrate.py` | |
 
-GET  /api/rtb/stats/{campaign_id}
-# RTB статистика кампании: auctions, wins, spend, win_rate, avg_cpm
-```
+## 4. Планировщик (`backend/scheduler.py`)
 
----
+- Расписание — таблица `scheduled_jobs` (cron из 5 полей, UTC), сеется из
+  `DEFAULT_JOBS` при первом старте, дальше правится через API/UI и переживает релизы.
+- Тик 15 с: захват просроченных задач `FOR UPDATE SKIP LOCKED` + lease с
+  heartbeat (20 с) и expiry (90 с) — несколько реплик без дублей, упавшая реплика
+  не блокирует задачу; результат пишет только владелец lease
+  (`scheduler_lease_lost_total` = 0 в норме).
+- Пропущенные запуски схлопываются в один; concurrency 4; каждая задача —
+  `GET http://backend:8000/cron/<path>` с общим бюджетом `timeout_seconds`.
+- Метрики `:8001/metrics`, алерты `SchedulerDown` / `SchedulerJobsOverdue` /
+  `SchedulerDispatchFailing` / `SchedulerLeaseLost`; runbook
+  `docs/runbooks/rtb_alerts.md#scheduler`. Детали — `docs/DEPLOYMENT.md` §9.1.
 
-## Bidding Algorithm (MVP)
+## 5. Хранилища
 
-```python
-def calculate_bid(campaign_id: int, context: dict) -> float:
-    """
-    context = {
-        country: str,
-        device_type: str,  # mobile|desktop|tablet
-        os: str,
-        hour: int,         # 0-23 UTC
-        site_domain: str
-    }
-    """
-    # Получаем целевой CPA и исторический CVR для данного контекста
-    cpa_target = get_cpa_target(campaign_id)        # из campaign settings
-    cvr = get_historical_cvr(campaign_id, context)  # из auction_logs + postbacks
-    
-    # Базовая ставка
-    base_bid = cpa_target * cvr
-    
-    # Применяем bid adjustments по срезам
-    multiplier = get_bid_multiplier(campaign_id, context)  # из bid_adjustments
-    
-    # Ограничения
-    bid = base_bid * multiplier * 0.8  # safety margin
-    bid_floor = get_bid_floor(campaign_id, context)
-    bid_ceiling = get_bid_ceiling(campaign_id)
-    
-    return max(bid_floor, min(bid, bid_ceiling))
-```
+**PostgreSQL** (миграции `backend/migrations/*.sql`, runner `migrate.py`,
+только аддитивные): пользователи и роли, рекламодатели/кампании/line items/
+креативы/аудитории, `supply_partners`, ledger и балансы, `bid_events`
+(партиции по дню, ретеншн `/cron/retention`), `stats_hourly`, ОРД-сущности
+(договоры, версии креативов, выгрузки, ошибки ЕРИР), `scheduled_jobs` +
+`scheduled_job_runs`, `audit_log`, `schema_migrations`.
 
----
+**Redis** (см. `docs/CONTRACTS.md` §2 — кто пишет, кто читает, TTL):
+бюджет-гейт и резервы (Lua), freq-cap, счётчики бизнес-дня (МСК-дата в ключе),
+кэш кандидатов, `bidmeta:{bid_id}` для callbacks, stream `rtb:events`.
+Потеря Redis допустима — деньги восстанавливаются из ledger,
+`/cron/reconcile-reserves` сверяет резервы с БД.
 
-## Environment Variables
+## 6. Потоки
 
-```env
-# Database
-DATABASE_URL=postgresql://dsp:dsp@postgres:5432/dsp
+**Аукцион.** SSP → Caddy `/rtb/bid/{key}` → bidder-go: токен партнёра →
+prefilter → кандидаты из памяти (feed) → таргетинг → цена (pCTR, shading, FX)
+→ Lua-резерв в Redis → BidResponse с erid и подписанными callback-URL →
+событие в `rtb:events`.
 
-# Redis
-REDIS_URL=redis://redis:6379/0
+**Показ и деньги.** Браузер/SSP → `/api/rtb/win|burl` (backend): проверка
+HMAC, clamp цены, идемпотентное списание в ledger, снятие резерва;
+`/imp`, `/click`, `/view`, `/vevent` — счётчики и атрибуция. `events_consumer`
+переносит `rtb:events` в `bid_events`/`stats_hourly` — знаменатель win-rate/eCPM.
 
-# Security
-SECRET_KEY=your-secret-key-change-in-production
-FIRST_ADMIN_EMAIL=admin@example.com
-FIRST_ADMIN_PASSWORD=changeme
+**Изменение в кабинете.** UI → backend → Postgres → (при необходимости)
+`POST bidder-go/internal/feed/reload`; иначе Go подтянет feed по TTL. Пауза
+кампании видна биддеру в пределах TTL кэша.
 
-# RTB Bidder
-BIDDER_URL=http://bidder:8080
-BIDDER_ENDPOINT=/bidder  # OpenRTB endpoint path
+**ОРД.** Креатив → регистрация (erid) через адаптер (`ozon.py` / `mock.py` без
+ключа) → без erid feed не отдаёт креатив и активация блокируется →
+`ord_export` раз в месяц (`scheduled_jobs`, `0 3 2 * *` UTC) → ошибки ЕРИР
+подтягивает `ord_notifications`.
 
-# GeoIP
-GEOIP_DB_PATH=/app/geoip/GeoLite2-City.mmdb
+## 7. Безопасность и эксплуатация
 
-# Celery
-CELERY_BROKER_URL=redis://redis:6379/1
-CELERY_RESULT_BACKEND=redis://redis:6379/2
-```
+- Секреты только через `.env`/окружение (`.env.example` — полный список);
+  `startup_checks.py` и Go `config` падают на старте в production без
+  `SESSION_SECRET`, `EVENT_TOKEN_SECRET`, `CRON_SECRET`, публичного `EVENT_BASE_URL`.
+- Внутренние порты в production закрыты (`compose.prod.yml`, `!reset`), наружу
+  только Caddy; backend доверяет `X-Forwarded-*` только из сети compose.
+- Все мутации management API — в `audit_log`; финансовые операции — только роли
+  `FINANCE_WRITE`.
+- Тесты контрактов между слоями (`test_targeting_contract.py`,
+  `test_redis_contracts.py`) парсят исходники соседних слоёв и падают при
+  рассинхроне — правило «меняешь одну сторону — прогоняешь оба».
+- Развёртывание, бэкапы, smoke-чеклист и пилот — `docs/DEPLOYMENT.md`;
+  реакция на алерты — `docs/runbooks/rtb_alerts.md`; релиз — `docs/runbooks/release.md`.

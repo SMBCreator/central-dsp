@@ -364,6 +364,38 @@ Prometheus с правилами `ops/prometheus/alerts.yml` уже в стек�
 или VPN, **никогда** не публиковать в интернет без auth. Grafana и Alertmanager —
 тем же профилем на следующем этапе (C4); runbook алертов — `docs/runbooks/rtb_alerts.md`.
 
+### 10.1. Smoke-чеклист после каждого деплоя
+
+1. `GET https://<domain>/api/health` → 200; `docker compose ps` — все сервисы `healthy`
+   (bidder-go — `/bidder -healthcheck`, scheduler — `python scheduler.py --healthcheck`).
+2. `GET /scheduler/jobs` (admin): все задачи `enabled`, `next_run_at` в будущем,
+   `last_status` не `failed`; в Prometheus нет `SchedulerDown`.
+3. Создать SSP-партнёра в UI «Supply» → получить `endpoint_key` и токен
+   (показывается один раз). Адрес для SSP — `${PUBLIC_BIDDER_BASE_URL}/rtb/bid/{key}`
+   (Go bidder за Caddy `/rtb/*`), не `/api/rtb/...`.
+4. Тестовый BidRequest с валидным `X-CentralDSP-Token` → 200 с `adm`;
+   без токена → 401; чужой токен → 403.
+5. В `adm` присутствует `erid` (кампания с зарегистрированным креативом);
+   кампания без erid → активация блокируется с 409 (`ORD_LAUNCH_GUARD=on`).
+6. Win notice по подписанному `nurl` (`/api/rtb/win`) → списание в ledger ровно
+   один раз; повторный nurl → duplicate без списания. Для партнёра с
+   `billing_event=burl` списание — по `/api/rtb/burl`.
+7. `imp`/`click` пиксели → счётчики в статистике растут; через несколько минут
+   `events_consumer` перенёс события Go в `bid_events` (win-rate в отчёте не пустой).
+8. Роль `manager` не может `POST /billing/deposit` (403); мутация видна в `audit_log`.
+
+### 10.2. Пилот (после smoke)
+
+1. Один SSP, QPS-лимит партнёра 10; одна кампания с маленьким дневным бюджетом,
+   все креативы с erid.
+2. Неделя наблюдения: списания vs статистика SSP, ledger сходится
+   (`/cron/reconcile-reserves` без drift), p99 биддера со стороны SSP ≤ 80 мс.
+3. Ramp-up QPS 10 → 50 → 200; масштабировать `bidder-go` репликами
+   (`docker compose up -d --scale bidder-go=N`, Caddy балансирует).
+4. По получении ключа ОРД: `ORD_OZON_API_KEY` в `.env`, сверить пути API со
+   спекой (`docs/audit/ord_spec.md`), перерегистрировать пилотные креативы,
+   проверить месячную выгрузку 2-го числа (`ord_export`).
+
 ## 11. Типичные проблемы
 
 | Симптом | Причина | Решение |

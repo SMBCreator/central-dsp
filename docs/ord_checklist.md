@@ -70,7 +70,7 @@
 | # | Вопрос | Статус | Где в коде | Риск | Рекомендация |
 |---|---|---|---|---|---|
 | 5.1 | Журнал взаимодействий с ОРД | **Частично** | `ord_export_log` (request/response/error) для статистики; для регистраций — только итоговый статус и `ord_error` | Нет полного лога запрос/ответ регистраций для разбора споров | Бэклог S: таблица `ord_request_log` или запись в `audit_log` через `audit.py` |
-| 5.2 | Секрет cron | **Реализовано** | `cron.py::_check_secret` — Bearer `CRON_SECRET`; без переменной — открыт (dev) | В prod без `CRON_SECRET` любой может дёрнуть выгрузку | `PROD_RUNBOOK.md` требует `CRON_SECRET` — добавить проверку в стартовый health |
+| 5.2 | Секрет cron | **Реализовано** | `cron.py::_check_secret` — Bearer `CRON_SECRET`; без переменной — открыт (dev) | В prod без `CRON_SECRET` любой может дёрнуть выгрузку | `startup_checks.py` требует `CRON_SECRET` в production (fail-fast на старте); см. `docs/DEPLOYMENT.md` |
 | 5.3 | Мониторинг «креатив без erid набрал показы» | **Нет** | `notify.py`, `rules_engine.py` — упоминаний erid нет | Нарушение 38-ФЗ обнаружится только вручную | Бэклог S: в `cron/rules` или `cron/ord-export` — запрос `stats_hourly ⨝ creatives WHERE erid IS NULL AND impressions > 0` за период → уведомление владельцу + админу |
 | 5.4 | RBAC | **Реализовано** | Чтение — `current_user` (свои `user_id`), мутации — `require_platform_write` | `GET /ord/exports` возвращает **все** выгрузки без фильтра по пользователю (лог платформенный) | Ограничить чтение `/ord/exports` ролью admin/platform |
 | 5.5 | Тесты | **Частично** | `test_ord.py` (mock-адаптер, идемпотентность), `test_launch_gate.py` (блокер erid) | Нет теста на `cron/ord-export` (агрегат + идемпотентность) | Добавить в рамках аудита |
