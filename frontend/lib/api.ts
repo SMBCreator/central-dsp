@@ -12,6 +12,20 @@ export class ApiError extends Error {
   }
 }
 
+/** Текст для `409 ord_locked` (B13a): юр. поля креатива заморожены после выдачи erid. */
+export const ORD_LOCKED_MESSAGE =
+  "Данные ОРД зафиксированы после запуска кампании: контрагент, договор и ККТУ креатива с erid менять нельзя. Для другого заказчика или договора создайте новый креатив."
+
+/** Человекочитаемое сообщение об ошибке API с учётом структурированных кодов ОРД. */
+export function describeApiError(err: unknown, fallback = "Ошибка"): string {
+  if (err instanceof ApiError) {
+    const d = err.detail as { code?: string } | undefined
+    if (d && typeof d === "object" && d.code === "ord_locked") return ORD_LOCKED_MESSAGE
+    return err.message
+  }
+  return err instanceof Error ? err.message : fallback
+}
+
 /**
  * Приводит тело ошибки FastAPI к человекочитаемой строке.
  * FastAPI на 422 отдаёт detail массивом объектов {loc, msg, type} — без обработки

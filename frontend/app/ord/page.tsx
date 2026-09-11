@@ -6,6 +6,7 @@ import { api, fetcher } from "@/lib/api"
 import { isAdminRole } from "@/lib/roles"
 import { useMe } from "@/lib/use-me"
 import { Button, Card, CardHeader, EmptyState, Field, inputCls, Modal, PillTabs, Spinner, StatusBadge, Table } from "@/components/ui"
+import { OrdInvoicesTab } from "@/components/ord-invoices"
 
 interface Counterparty {
   id: string
@@ -26,10 +27,13 @@ interface OrdContract {
   number: string
   signed_at: string
   contract_type: string
+  client_id: string
+  contractor_id: string
   client_name: string
   contractor_name: string
   ord_status: string
   ord_error?: string | null
+  is_vat?: boolean | null
 }
 
 interface OrdCreative {
@@ -40,6 +44,19 @@ interface OrdCreative {
   status: string
   error?: string | null
   registered_at?: string | null
+}
+
+/** Версия маркировки креатива (ord_creatives): erid действует с registered_at до superseded_at. */
+interface EridVersion {
+  id: string
+  version: number
+  erid?: string | null
+  status: string
+  contract_id?: string | null
+  registered_at?: string | null
+  superseded_at?: string | null
+  error?: string | null
+  is_current: boolean
 }
 
 interface OrdExport {
@@ -60,12 +77,13 @@ interface CreativeLite {
 const LEGAL_LABELS: Record<string, string> = { ul: "Юрлицо", ip: "ИП", fl: "Физлицо", foreign: "Иностр." }
 const ROLE_LABELS: Record<string, string> = { advertiser: "Рекламодатель", agency: "Агентство", publisher: "Издатель", ors: "ОРС" }
 
-type Tab = "counterparties" | "contracts" | "creatives" | "exports"
+type Tab = "counterparties" | "contracts" | "creatives" | "invoices" | "exports"
 
 const TABS = [
   { key: "counterparties", label: "Контрагенты" },
   { key: "contracts", label: "Договоры" },
   { key: "creatives", label: "Креативы / erid" },
+  { key: "invoices", label: "Акты" },
   { key: "exports", label: "Выгрузки" },
 ] as const
 
@@ -95,6 +113,10 @@ export default function OrdPage() {
   const [crOpen, setCrOpen] = useState(false)
   const [crSaving, setCrSaving] = useState(false)
   const [crForm, setCrForm] = useState({ creative_id: "", contract_id: "" })
+
+  // --- история версий erid креатива
+  const [versionsOf, setVersionsOf] = useState<OrdCreative | null>(null)
+  const { data: versions } = useSWR<EridVersion[]>(versionsOf ? `/ord/creatives/${versionsOf.creative_id}/versions` : null, fetcher)
 
   const registeredContracts = (contracts || []).filter((c) => c.ord_status === "registered")
   const unregisteredCreatives = (allCreatives || []).filter((c) => !c.erid)
@@ -200,6 +222,10 @@ export default function OrdPage() {
         <li aria-hidden className="text-border">/</li>
         <li className="flex items-center gap-1.5">
           <span className="font-mono text-foreground">4</span> Статистика уходит автоматически 2-го числа за прошлый месяц
+        </li>
+        <li aria-hidden className="text-border">/</li>
+        <li className="flex items-center gap-1.5">
+          <span className="font-mono text-foreground">5</span> Акт за месяц по исполнительскому договору → «Отправить в ОРД»
         </li>
       </ol>
 
@@ -322,7 +348,7 @@ export default function OrdPage() {
               }
             />
           ) : (
-            <Table headers={["Креатив", "erid", "Статус", "Зарегистрирован"]}>
+            <Table headers={["Креатив", "erid", "Статус", "Зарегистрирован", ""]}>
               {ordCreatives.map((oc) => (
                 <tr key={oc.id}>
                   <td className="px-4 py-3 font-medium text-foreground">{oc.creative_name}</td>
@@ -342,11 +368,18 @@ export default function OrdPage() {
                   <td className="px-4 py-3 text-muted">
                     {oc.registered_at ? String(oc.registered_at).slice(0, 10) : "—"}
                   </td>
+                  <td className="px-4 py-3 text-right">
+                    <Button variant="secondary" onClick={() => setVersionsOf(oc)}>Версии</Button>
+                  </td>
                 </tr>
               ))}
             </Table>
           )}
         </Card>
+      ) : null}
+
+      {tab === "invoices" ? (
+        <OrdInvoicesTab contracts={contracts} counterparties={counterparties} canWrite={isAdminRole(me?.role)} />
       ) : null}
 
       {tab === "exports" ? (
@@ -374,6 +407,36 @@ export default function OrdPage() {
           )}
         </Card>
       ) : null}
+
+      <Modal
+        open={!!versionsOf}
+        onClose={() => setVersionsOf(null)}
+        title={`Версии erid — ${versionsOf?.creative_name ?? ""}`}
+        subtitle="Новая версия появляется при смене контрагента или договора после выдачи erid; статистика привязывается к версии, действовавшей в час показа. Юридические поля креатива с erid заморожены (409 ord_locked) — для другого клиента создайте новый креатив."
+        size="lg"
+      >
+        {!versions ? (
+          <Spinner />
+        ) : versions.length === 0 ? (
+          <EmptyState title="Версий нет" description="Креатив ещё не регистрировался в ОРД" />
+        ) : (
+          <Table headers={["Версия", "erid", "Статус", "Действует с", "по", ""]}>
+            {versions.map((v) => (
+              <tr key={v.id}>
+                <td className="px-4 py-2 font-mono text-xs text-foreground">v{v.version}</td>
+                <td className="px-4 py-2 font-mono text-xs text-foreground">{v.erid || "—"}</td>
+                <td className="px-4 py-2">
+                  <StatusBadge status={v.status} />
+                  {v.error ? <p className="mt-1 max-w-xs text-xs text-danger">{v.error}</p> : null}
+                </td>
+                <td className="px-4 py-2 text-muted">{v.registered_at ? String(v.registered_at).slice(0, 16).replace("T", " ") : "—"}</td>
+                <td className="px-4 py-2 text-muted">{v.superseded_at ? String(v.superseded_at).slice(0, 16).replace("T", " ") : "—"}</td>
+                <td className="px-4 py-2 text-xs text-primary">{v.is_current ? "текущая" : ""}</td>
+              </tr>
+            ))}
+          </Table>
+        )}
+      </Modal>
 
       <Modal open={cpOpen} onClose={() => setCpOpen(false)} title="Новый контрагент">
         <form onSubmit={saveCp} className="space-y-4">

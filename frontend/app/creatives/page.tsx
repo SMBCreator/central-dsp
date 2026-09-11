@@ -2,7 +2,7 @@
 
 import { useState } from "react"
 import useSWR, { mutate } from "swr"
-import { api, assetUrl, fetcher } from "@/lib/api"
+import { api, assetUrl, fetcher, describeApiError } from "@/lib/api"
 import { kktuShortLabel } from "@/lib/kktu"
 import { AD_TYPE_LABELS, type Campaign, type Creative } from "@/lib/types"
 import { Button, Card, CardHeader, EmptyState, Spinner, StatusBadge, Table } from "@/components/ui"
@@ -47,7 +47,12 @@ export default function CreativesPage() {
 
   const resubmit = async (c: Creative) => {
     setNotice(null)
-    await api(`/creatives/${c.id}`, { method: "PATCH", body: { status: "pending" } })
+    try {
+      await api(`/creatives/${c.id}`, { method: "PATCH", body: { status: "pending" } })
+    } catch (err) {
+      setNotice({ kind: "warn", text: `«${c.name}»: ${describeApiError(err)}` })
+      return
+    }
     await mutate("/creatives")
   }
 

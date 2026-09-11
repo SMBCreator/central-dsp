@@ -969,7 +969,24 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
     }
     return row ?? { ok: true }
   }
-  if (path === "/ord/creatives") return mockCreatives.filter((c) => c.erid)
+  if (path === "/ord/creatives")
+    return mockCreatives
+      .filter((c) => c.erid)
+      .map((c) => ({
+        id: `${c.id}-v2`, creative_id: c.id, creative_name: c.name, erid: c.erid, status: "registered", version: 2,
+        contract_id: "ct-1", registered_at: iso(40 * 864e5), error: null,
+      }))
+  const verMatch = path.match(/^\/ord\/creatives\/([^/]+)\/versions$/)
+  if (verMatch) {
+    const cr = mockCreatives.find((c) => c.id === verMatch[1])
+    if (!cr?.erid) return []
+    return [
+      { id: `${cr.id}-v1`, version: 1, erid: `${cr.erid}0`, status: "superseded", contract_id: "ct-1", registered_at: iso(80 * 864e5), superseded_at: iso(40 * 864e5), error: null, is_current: false },
+      { id: `${cr.id}-v2`, version: 2, erid: cr.erid, status: "registered", contract_id: "ct-1", registered_at: iso(40 * 864e5), superseded_at: null, error: null, is_current: true },
+    ]
+  }
+  const invoices = resolveInvoiceMock(method, path, search, body)
+  if (invoices !== undefined) return invoices
   if (path === "/ord/exports") return []
   if (path === "/settings/ord")
     return { configured: true, environment: "sandbox", api_key_masked: "demo····key", last_check: iso(36e5), last_check_ok: true }
@@ -1429,3 +1446,209 @@ const mockScoringSsp = [
   { id: "ssp-2", name: "Between Exchange", impressions: 64000, clicks: 410, viewable_imps: 28000, spend: 8960, ctr: 0.64, viewability: 43.8, avg_depth: null, avg_time: null, bounce_rate: null, cpa: null, score: 1.0, reasons: [], flagged: false },
   { id: "ssp-3", name: "GetIntent (тест)", impressions: 21000, clicks: 2510, viewable_imps: 7100, spend: 2940, ctr: 11.95, viewability: 33.8, avg_depth: null, avg_time: null, bounce_rate: null, cpa: null, score: 0.0, reasons: ["low_ctr", "low_viewability"], flagged: true },
 ]
+
+
+// --- ОРД: акты по ОРС-модели (B13e/B13f). Факт — детерминированный по месяцу,
+// чтобы демо было воспроизводимым; суммы/разбивка считаются как в бэке.
+interface MockInvoiceItem {
+  creative_id: string
+  creative_name: string
+  contract_id: string
+  version: number
+  erid: string | null
+  period: string
+  payment_type: string
+  fact_impressions: number
+  fact_clicks: number
+  fact_spend: string
+  impressions: number
+  clicks: number
+  spend: string
+  unit_cost: string
+  external_statistic_id: string
+  status?: string
+  error?: string | null
+  in_invoice?: { id: string; number: string; status: string } | null
+}
+interface MockInvoice extends MockRow {
+  id: string
+  contract_id: string
+  contract_number: string
+  number: string
+  status: string
+  invoice_date: string
+  period_start: string
+  period_end: string
+  amount_gross: number
+  amount_net: number
+  vat_rate: number
+  is_vat: boolean
+  ord_external_id: string | null
+  submitted_at: string | null
+  error: string | null
+  items: MockInvoiceItem[]
+  contracts: { initial_contract_id: string; number: string; ord_status: string; client: { name: string }; amount_gross: number; amount_net: number; items_count: number }[]
+  statistics_amount_gross: number
+  items_count: number
+  items_accepted: number
+  items_rejected: number
+}
+export const mockInvoices: MockInvoice[] = []
+
+const q2 = (v: number) => Math.round(v * 100) / 100
+const netOf = (gross: number, rate: number) => q2(gross / (1 + rate / 100))
+
+function monthsBetween(start: string, end: string): string[] {
+  const out: string[] = []
+  const d = new Date(`${start.slice(0, 7)}-01T00:00:00Z`)
+  const last = end.slice(0, 7)
+  for (let i = 0; i < 24; i++) {
+    const p = d.toISOString().slice(0, 7)
+    out.push(p)
+    if (p >= last) break
+    d.setUTCMonth(d.getUTCMonth() + 1)
+  }
+  return out
+}
+
+function mockFactItems(contractId: string, start: string, end: string, excludeInvoiceId?: string): MockInvoiceItem[] {
+  // Кампании исполнительского договора: в демо все креативы с erid идут по ct-1 → изначальный ct-1.
+  const contract = mockContracts.find((c) => c.id === contractId)
+  if (!contract || contract.contractor_id !== "cp-2") return []
+  const creatives = mockCreatives.filter((c) => c.erid && c.counterparty_id === contract.client_id)
+  const items: MockInvoiceItem[] = []
+  for (const period of monthsBetween(start, end)) {
+    const seed = Number(period.replace("-", "")) % 97
+    creatives.forEach((cr, i) => {
+      const imps = 12_000 + seed * 130 + i * 4_100
+      const clicks = Math.round(imps * 0.011)
+      const spend = q2(imps * 0.145)
+      const ext = `${cr.id}:v2:${period}`
+      const taken = mockInvoices.find((inv) => inv.id !== excludeInvoiceId && inv.items.some((it) => it.external_statistic_id === ext))
+      items.push({
+        creative_id: cr.id, creative_name: cr.name, contract_id: "ct-1", version: 2, erid: cr.erid, period,
+        payment_type: "cpm", fact_impressions: imps, fact_clicks: clicks, fact_spend: spend.toFixed(2),
+        impressions: imps, clicks, spend: spend.toFixed(2), unit_cost: q2((spend / imps) * 1000).toFixed(4),
+        external_statistic_id: ext, in_invoice: taken ? { id: taken.id, number: taken.number, status: taken.status } : null,
+      })
+    })
+  }
+  return items
+}
+
+function mockSplit(items: MockInvoiceItem[], amount: number, rate: number, manual?: { initial_contract_id: string; amount_gross: number }[]) {
+  const byContract = new Map<string, { fact: number; n: number }>()
+  for (const it of items) {
+    const cur = byContract.get(it.contract_id) ?? { fact: 0, n: 0 }
+    byContract.set(it.contract_id, { fact: cur.fact + Number(it.spend), n: cur.n + 1 })
+  }
+  const total = Array.from(byContract.values()).reduce((s, v) => s + v.fact, 0)
+  return Array.from(byContract.entries()).map(([id, v]) => {
+    const ct = mockContracts.find((c) => c.id === id)
+    const gross = manual?.find((m) => m.initial_contract_id === id)?.amount_gross ?? (total > 0 ? q2((amount * v.fact) / total) : 0)
+    return {
+      initial_contract_id: id, id, number: ct?.number ?? id, ord_status: ct?.ord_status ?? "draft",
+      client: { name: ct?.client_name ?? "—" }, amount_gross: gross, amount_net: netOf(gross, rate), items_count: v.n,
+    }
+  })
+}
+
+function resolveInvoiceMock(method: string, path: string, search: URLSearchParams, body?: unknown): unknown {
+  if (path === "/ord/invoices/preview") {
+    const contractId = search.get("contract_id") ?? ""
+    const start = search.get("period_start") ?? ""
+    const end = search.get("period_end") ?? ""
+    const contract = mockContracts.find((c) => c.id === contractId)
+    const items = mockFactItems(contractId, start, end, search.get("invoice_id") ?? undefined)
+    const includable = items.filter((it) => !it.in_invoice)
+    const rate = contract?.is_vat === false ? 0 : 22
+    const gross = q2(includable.reduce((s, it) => s + Number(it.spend), 0))
+    const stats = q2(items.reduce((s, it) => s + Number(it.fact_spend), 0))
+    return {
+      contract_id: contractId, period_start: start, period_end: end, months: monthsBetween(start, end),
+      client_role: "advertiser", contractor_role: "ors", is_vat: rate > 0, vat_rate: rate, spend_multiplier: 1,
+      items, contracts: mockSplit(includable, gross, rate),
+      amount_gross: gross.toFixed(2), amount_net: netOf(gross, rate).toFixed(2),
+      statistics_amount_gross: stats.toFixed(2), statistics_amount_net: netOf(stats, rate).toFixed(2),
+      warnings: {
+        already_invoiced: items.filter((it) => it.in_invoice).map((it) => ({ external_statistic_id: it.external_statistic_id, ...it.in_invoice })),
+        without_erid: [], contracts_unregistered: [],
+        ...(contract && contract.contractor_id !== "cp-2" ? { contract_not_executive: true } : {}),
+      },
+    }
+  }
+  if (path === "/ord/invoices" && method === "GET") return mockInvoices
+  const one = path.match(/^\/ord\/invoices\/([^/]+)(\/submit)?$/)
+  if (path === "/ord/invoices" && method === "POST" || (one && method === "PUT" && !one[2])) {
+    const b = body as {
+      contract_id: string; number: string; invoice_date: string; period_start: string; period_end: string
+      amount_gross?: number | null; vat_rate?: number | null; is_vat?: boolean | null
+      contracts?: { initial_contract_id: string; amount_gross: number }[]
+      items: { creative_id: string; version: number; period: string; impressions?: number; clicks?: number; spend?: number }[]
+    }
+    const existing = one ? mockInvoices.find((i) => i.id === one[1]) : undefined
+    const contract = mockContracts.find((c) => c.id === b.contract_id)
+    const fact = mockFactItems(b.contract_id, b.period_start, b.period_end, existing?.id)
+    const items: MockInvoiceItem[] = b.items.map((it) => {
+      const f = fact.find((x) => x.creative_id === it.creative_id && x.period === it.period)
+      const imps = it.impressions ?? f?.fact_impressions ?? 0
+      const clicks = it.clicks ?? f?.fact_clicks ?? 0
+      const spend = it.spend ?? Number(f?.fact_spend ?? 0)
+      return {
+        ...(f ?? { creative_id: it.creative_id, creative_name: it.creative_id, contract_id: "ct-1", version: it.version, erid: null, period: it.period,
+          payment_type: "cpm", fact_impressions: 0, fact_clicks: 0, fact_spend: "0.00", unit_cost: "0", external_statistic_id: `${it.creative_id}:v${it.version}:${it.period}` }),
+        impressions: imps, clicks, spend: spend.toFixed(2), status: "pending", error: null, in_invoice: null,
+      }
+    })
+    const rate = b.vat_rate ?? (b.is_vat === false ? 0 : 22)
+    const gross = q2(b.amount_gross ?? items.reduce((s, it) => s + Number(it.spend), 0))
+    const stats = q2(fact.reduce((s, it) => s + Number(it.fact_spend), 0))
+    if (b.contracts?.length) {
+      const sum = q2(b.contracts.reduce((s, c) => s + c.amount_gross, 0))
+      if (Math.abs(sum - gross) > 0.005) throw new Error(`Сумма разбивки ${sum.toFixed(2)} не сходится с суммой акта ${gross.toFixed(2)}`)
+    }
+    const inv: MockInvoice = {
+      ...(existing ?? {}),
+      id: existing?.id ?? `inv-${Date.now().toString(36).slice(-5)}`,
+      contract_id: b.contract_id, contract_number: contract?.number ?? "—", number: b.number, status: "draft",
+      invoice_date: b.invoice_date, period_start: b.period_start, period_end: b.period_end,
+      amount_gross: gross, amount_net: netOf(gross, rate), vat_rate: rate, is_vat: rate > 0,
+      ord_external_id: existing?.ord_external_id ?? null, submitted_at: existing?.submitted_at ?? null, error: null,
+      items, contracts: mockSplit(items, gross, rate, b.contracts), statistics_amount_gross: stats,
+      items_count: items.length, items_accepted: 0, items_rejected: 0,
+      created_at: existing?.created_at ?? iso(0),
+    }
+    const diff = stats > 0 ? Math.abs((gross - stats) / stats) * 100 : 0
+    ;(inv as MockRow).amount_diff_pct = q2(diff)
+    ;(inv as MockRow).warnings = diff > 1 ? { amount_diff: { invoice: gross.toFixed(2), statistics: stats.toFixed(2), pct: q2(diff) } } : {}
+    if (existing) Object.assign(existing, inv)
+    else mockInvoices.unshift(inv)
+    return inv
+  }
+  if (one) {
+    const inv = mockInvoices.find((i) => i.id === one[1])
+    if (!inv) throw new Error("Акт не найден")
+    if (method === "DELETE") {
+      if (inv.ord_external_id) throw new Error("Отправленный в ОРД акт удалить нельзя")
+      mockInvoices.splice(mockInvoices.indexOf(inv), 1)
+      return null
+    }
+    if (one[2] && method === "POST") {
+      const unregistered = inv.contracts.find((c) => c.ord_status !== "registered")
+      if (unregistered) throw new Error(`Изначальный договор ${unregistered.number} не зарегистрирован в ОРД`)
+      inv.items.forEach((it, i) => {
+        const reject = inv.items.length > 1 && i === inv.items.length - 1 && inv.number.endsWith("!")
+        it.status = reject ? "rejected" : "accepted"
+        it.error = reject ? "impressions must be positive" : null
+      })
+      inv.items_accepted = inv.items.filter((it) => it.status === "accepted").length
+      inv.items_rejected = inv.items.length - inv.items_accepted
+      inv.status = inv.items_rejected ? "partial" : "ok"
+      inv.ord_external_id = inv.ord_external_id ?? `inv-ord-${Date.now().toString(36).slice(-4)}`
+      inv.submitted_at = iso(0)
+      return { status: inv.status, items: inv.items }
+    }
+    return inv
+  }
+  return undefined
+}
