@@ -301,6 +301,7 @@ export const mockCounterparties = [
     ogrn: "1027700132195",
     legal_type: "ul",
     role: "ors",
+    is_self: true,
     advertiser_id: null,
     address: "г. Москва, ул. Тверская, д. 7",
     ord_status: "registered",
@@ -417,6 +418,69 @@ export function mockSummary(hours: number, campaignId?: string | null) {
     win_rate: bids ? Math.round((wins / bids) * 10000) / 100 : 0,
     ctr: impressions ? Math.round((clicks / impressions) * 10000) / 100 : 0,
     ecpm: impressions ? Math.round((spend / impressions) * 1000 * 100) / 100 : 0,
+  }
+}
+
+const ORD_MODE_LABEL: Record<string, string> = {
+  self: "Свои товары и услуги",
+  own_client: "Своего клиента (прямой договор)",
+  partner_client: "Клиента партнёра",
+}
+const ORD_PROBLEM_LABEL: Record<string, string> = {
+  mode_missing: "Не выбрано, кого вы рекламируете",
+  advertiser_missing: "Не выбран рекламодатель",
+  advertiser_unregistered: "Рекламодатель не зарегистрирован в ОРД",
+  initial_missing: "Не выбран изначальный договор",
+  initial_unregistered: "Изначальный договор не зарегистрирован в ОРД",
+  executive_missing: "Не выбран исполнительский договор",
+  executive_unregistered: "Исполнительский договор не зарегистрирован в ОРД",
+  self_org_missing: "Не задана наша организация (ОРС)",
+}
+
+/** Сводка цепочки ОРД — та же структура, что отдаёт GET /campaigns/{id}/ord-chain */
+function mockOrdChain(campaignId: string | null, src: MockRow) {
+  const cps = mockCounterparties as MockRow[]
+  const cts = mockContracts as MockRow[]
+  const party = (id: unknown) => {
+    const cp = cps.find((c) => c.id === id)
+    return cp ? { id: cp.id, name: cp.name, inn: cp.inn, ord_status: cp.ord_status, is_self: !!cp.is_self, legal_type: cp.legal_type } : null
+  }
+  const contract = (id: unknown) => {
+    const c = cts.find((x) => x.id === id)
+    return c
+      ? { id: c.id, number: c.number, signed_at: c.signed_at, contract_type: c.contract_type, ord_status: c.ord_status, client: party(c.client_id), contractor: party(c.contractor_id) }
+      : null
+  }
+  const mode = (src.ord_mode as string | null) ?? null
+  const advertiser = party(src.counterparty_id)
+  const initial = contract(src.initial_contract_id)
+  const executive = contract(src.executive_contract_id)
+  const selfOrg = party(cps.find((c) => c.is_self)?.id)
+  const problems: string[] = []
+  if (!mode) problems.push("mode_missing")
+  if (!advertiser) problems.push("advertiser_missing")
+  else if (advertiser.ord_status !== "registered") problems.push("advertiser_unregistered")
+  if (mode && mode !== "self") {
+    if (!initial) problems.push("initial_missing")
+    else if (initial.ord_status !== "registered") problems.push("initial_unregistered")
+  }
+  if (!executive) problems.push("executive_missing")
+  else if (executive.ord_status !== "registered") problems.push("executive_unregistered")
+  if (!selfOrg) problems.push("self_org_missing")
+  return {
+    campaign_id: campaignId,
+    mode,
+    mode_label: mode ? ORD_MODE_LABEL[mode] : null,
+    advertiser,
+    initial_contract: initial,
+    executive_contract: executive,
+    self_org: selfOrg,
+    registration_contract_id: mode === "self" ? executive?.id ?? null : initial?.id ?? null,
+    problems,
+    problem_labels: problems.map((p) => ORD_PROBLEM_LABEL[p]),
+    ready: problems.length === 0,
+    confirmed: !!src.ord_confirmed_at,
+    confirmed_at: (src.ord_confirmed_at as string | null) ?? null,
   }
 }
 
@@ -657,6 +721,19 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
 
   // --- Кампании ---
   if (path === "/campaigns" && method === "GET") return mockCampaigns
+  // Цепочка ОРД (B13d): та же форма ответа, что у GET /campaigns/{id}/ord-chain
+  if (path === "/campaigns/ord-chain/preview" && method === "POST") return mockOrdChain(null, body as MockRow)
+  const chainMatch = path.match(/^\/campaigns\/([^/]+)\/ord-chain(\/confirm)?$/)
+  if (chainMatch) {
+    const camp = (mockCampaigns as MockRow[]).find((c) => c.id === chainMatch[1]) ?? (mockCampaigns[0] as MockRow)
+    if (chainMatch[2] && method === "POST") {
+      const s = mockOrdChain(camp.id as string, camp)
+      if (!s.ready) throw new Error("Цепочка ОРД не готова: " + s.problem_labels.join(", "))
+      if (!camp.ord_confirmed_at) camp.ord_confirmed_at = new Date().toISOString()
+      return mockOrdChain(camp.id as string, camp)
+    }
+    return mockOrdChain(camp.id as string, camp)
+  }
   const diagMatch = path.match(/^\/campaigns\/([^/]+)\/diagnostics$/)
   if (diagMatch) return mockDiagnostics(diagMatch[1])
   const blocksMatch = path.match(/^\/campaigns\/([^/]+)\/blocks$/)

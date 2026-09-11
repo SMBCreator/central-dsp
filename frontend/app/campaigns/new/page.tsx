@@ -8,6 +8,7 @@ import { Button, Card, CardHeader, Field, HelpTip, inputCls } from "@/components
 import { CreativeBuilder, type CreativeDraft, FORMAT_LABELS } from "@/components/creative-builder"
 import { TargetingEditor, targetingSummary } from "@/components/targeting-editor"
 import { KktuSelect } from "@/components/kktu-select"
+import { EMPTY_CHAIN, OrdChainEditor, OrdChainSummaryView, type OrdChainSummary, type OrdChainValues } from "@/components/ord-chain-setup"
 import { kktuShortLabel } from "@/lib/kktu"
 import type { Counterparty, Targeting } from "@/lib/types"
 
@@ -27,7 +28,7 @@ const OBJECTIVES = [
   { key: "conversions", label: "Конверсии (CPA)" },
 ]
 
-const STEPS = ["Формат", "Основное", "Бюджет и ставка", "Таргетинг", "Креативы"]
+const STEPS = ["Данные ОРД", "Формат", "Основное", "Бюджет и ставка", "Таргетинг", "Креативы"]
 
 
 export default function NewCampaignPage() {
@@ -36,6 +37,12 @@ export default function NewCampaignPage() {
   const { data: groups } = useSWR<Group[]>("/groups", fetcher)
 
   const [step, setStep] = useState(0)
+  // Шаг 0 — данные ОРД (B13d): режим/рекламодатель/договоры → превью → «Всё верно».
+  const [chain, setChain] = useState<OrdChainValues>(EMPTY_CHAIN)
+  const [chainPreview, setChainPreview] = useState<OrdChainSummary | null>(null)
+  const [chainReview, setChainReview] = useState(false)
+  const [chainConfirmed, setChainConfirmed] = useState(false)
+  const [chainBusy, setChainBusy] = useState(false)
   // Step 0: format
   const [format, setFormat] = useState("")
   // Step 1: basics
@@ -66,21 +73,40 @@ export default function NewCampaignPage() {
   // без ККТУ и контрагента /creatives примет запись, но регистрация erid в ОРД не пройдёт —
   // поэтому мастер требует то же, что и модалка «Новый креатив»)
   const [creatives, setCreatives] = useState<CreativeDraft[]>([])
-  const [counterpartyId, setCounterpartyId] = useState("")
   const [kktuCode, setKktuCode] = useState("")
   const [kktuLabel, setKktuLabel] = useState("")
-  const { data: counterparties } = useSWR<Counterparty[]>(step === 4 ? "/ord/counterparties" : null, fetcher)
-  const selectedCp = useMemo(() => (counterparties || []).find((cp) => cp.id === counterpartyId) || null, [counterparties, counterpartyId])
+  const { data: counterparties } = useSWR<Counterparty[]>(step === 5 ? "/ord/counterparties" : null, fetcher)
+  const selectedCp = useMemo(() => (counterparties || []).find((cp) => cp.id === chain.counterparty_id) || null, [counterparties, chain.counterparty_id])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState("")
 
   const canNext = useMemo(() => {
-    if (step === 0) return !!format
-    if (step === 1) return !!name.trim() && !!advertiserId
-    if (step === 2) return Number(dailyBudget) > 0 && Number(bidPrice) > 0
-    if (step === 3) return true // targeting is optional (empty = no restrictions)
+    if (step === 0) return chainConfirmed
+    if (step === 1) return !!format
+    if (step === 2) return !!name.trim() && !!advertiserId
+    if (step === 3) return Number(dailyBudget) > 0 && Number(bidPrice) > 0
+    if (step === 4) return true // targeting is optional (empty = no restrictions)
     return creatives.length > 0 && !!kktuCode
-  }, [step, format, name, advertiserId, dailyBudget, bidPrice, creatives, kktuCode])
+  }, [step, chainConfirmed, format, name, advertiserId, dailyBudget, bidPrice, creatives, kktuCode])
+
+  // Превью цепочки считает бэкенд (тот же валидатор, что и подтверждение).
+  // Рекламодатель (аккаунт) ещё не выбран на шаге 0 — берём первого доступного:
+  // владелец всех справочников ОРД один и тот же для текущего пользователя.
+  const previewChain = async () => {
+    setChainBusy(true)
+    setError("")
+    try {
+      const advId = advertiserId || advertisers?.[0]?.id
+      if (!advId) throw new Error("Сначала создайте рекламодателя (аккаунт) в разделе «Рекламодатели»")
+      const s = await api<OrdChainSummary>("/campaigns/ord-chain/preview", { method: "POST", body: { advertiser_id: advId, ...chain } })
+      setChainPreview(s)
+      setChainReview(true)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Не удалось проверить данные ОРД")
+    } finally {
+      setChainBusy(false)
+    }
+  }
 
   const launch = async () => {
     setSaving(true)
@@ -95,6 +121,7 @@ export default function NewCampaignPage() {
         method: "POST",
         body: {
           advertiser_id: advertiserId,
+          ...chain,
           name: name.trim(),
           objective,
           daily_budget: Number(dailyBudget),
@@ -112,6 +139,8 @@ export default function NewCampaignPage() {
             : null,
         },
       })
+      // Цепочка ОРД подтверждена на шаге 0 — фиксируем на созданной кампании.
+      await api(`/campaigns/${camp.id}/ord-chain/confirm`, { method: "POST" })
       // Optimizer targets + auto-optimize
       if (targetCpa || targetCpc || targetCpm || targetCpv || autoOptimize) {
         await api(`/campaigns/${camp.id}`, {
@@ -146,7 +175,7 @@ export default function NewCampaignPage() {
             ...cr,
             campaign_id: camp.id,
             line_item_id: li.id,
-            counterparty_id: counterpartyId || null,
+            counterparty_id: chain.counterparty_id,
             kktu_code: kktuCode || null,
             kktu_label: kktuLabel || null,
           },
@@ -173,6 +202,37 @@ export default function NewCampaignPage() {
 
       {step === 0 ? (
         <Card>
+          <CardHeader
+            title={chainReview ? "Проверьте данные для ОРД" : "Данные для ОРД"}
+            subtitle={chainReview
+              ? "Так цепочка уйдёт в ОРД при регистрации креативов. После подтверждения изменить нельзя — для другого рекламодателя создаётся новая кампания."
+              : "По 38-ФЗ каждое объявление маркируется: рекламодатель и договоры регистрируются в ОРД. Заполните один раз для кампании."}
+          />
+          {chainReview && chainPreview ? (
+            <>
+              <OrdChainSummaryView summary={chainPreview} />
+              <div className="flex justify-end gap-2 border-t border-border px-4 py-3">
+                <Button type="button" variant="secondary" onClick={() => { setChainReview(false); setChainConfirmed(false) }}>Изменить</Button>
+                <Button type="button" disabled={!chainPreview.ready} onClick={() => { setChainConfirmed(true); setStep(1) }}>
+                  Всё верно
+                </Button>
+              </div>
+            </>
+          ) : (
+            <>
+              <OrdChainEditor value={chain} onChange={(v) => { setChain(v); setChainConfirmed(false) }} />
+              <div className="flex justify-end gap-2 border-t border-border px-4 py-3">
+                <Button type="button" disabled={!chain.ord_mode || !chain.counterparty_id || chainBusy} onClick={previewChain}>
+                  {chainBusy ? "Проверка…" : "Проверить данные →"}
+                </Button>
+              </div>
+            </>
+          )}
+        </Card>
+      ) : null}
+
+      {step === 1 ? (
+        <Card>
           <CardHeader title="Выберите формат" subtitle="Формат определяет, какие креативы вы загрузите на последнем шаге" />
           <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2">
             {FORMATS.map((f) => (
@@ -193,7 +253,7 @@ export default function NewCampaignPage() {
         </Card>
       ) : null}
 
-      {step === 1 ? (
+      {step === 2 ? (
         <Card>
           <CardHeader title="Основные настройки" subtitle={`Формат: ${FORMAT_LABELS[format] || format}`} />
           <div className="divide-y divide-border">
@@ -332,7 +392,7 @@ export default function NewCampaignPage() {
         </Card>
       ) : null}
 
-      {step === 2 ? (
+      {step === 3 ? (
         <div className="space-y-4">
           <Card>
             <CardHeader title="Бюджет и ставка" subtitle="Ставка используется биддером в RTB-аукционе" />
@@ -383,7 +443,7 @@ export default function NewCampaignPage() {
         </div>
       ) : null}
 
-      {step === 3 ? (
+      {step === 4 ? (
         <Card>
           <CardHeader title="Таргетинг" subtitle="Пустые поля — без ограничений. Всё применяется биддером к каждому bid request" />
           <div className="p-4">
@@ -392,7 +452,7 @@ export default function NewCampaignPage() {
         </Card>
       ) : null}
 
-      {step === 4 ? (
+      {step === 5 ? (
         <div className="space-y-4">
           <Card>
             <CardHeader title="Сводка" subtitle="Проверьте настройки перед запуском" />
@@ -412,16 +472,8 @@ export default function NewCampaignPage() {
               subtitle="Применяется ко всем креативам кампании. По 38-ФЗ данные рекламодателя показываются в инфо-значке на креативе и уходят в ОРД при регистрации erid."
             />
             <div className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2">
-              <Field label="Контрагент (рекламодатель)">
-                <select value={counterpartyId} onChange={(e) => setCounterpartyId(e.target.value)} className={inputCls}>
-                  <option value="">Не выбран</option>
-                  {(counterparties || []).map((cp) => (
-                    <option key={cp.id} value={cp.id}>
-                      {cp.name}
-                      {cp.inn ? ` · ИНН ${cp.inn}` : ""}
-                    </option>
-                  ))}
-                </select>
+              <Field label="Рекламодатель (из данных ОРД)" hint="Задан на шаге «Данные ОРД» и наследуется всеми креативами кампании">
+                <input className={inputCls} disabled value={selectedCp ? `${selectedCp.name}${selectedCp.inn ? ` · ИНН ${selectedCp.inn}` : ""}` : "—"} />
               </Field>
               <Field label="Классификатор ККТУ *">
                 <KktuSelect
@@ -449,7 +501,7 @@ export default function NewCampaignPage() {
                     </div>
                   </dl>
                 ) : (
-                  <p className="text-xs text-warning">Без контрагента креативы не пройдут регистрацию в ОРД. Добавить: раздел «Маркировка (ОРД)».</p>
+                  <p className="text-xs text-warning">Рекламодатель не задан — вернитесь на шаг «Данные ОРД».</p>
                 )}
                 <p className="mt-2 text-xs text-muted">
                   {kktuCode ? (
@@ -520,7 +572,7 @@ export default function NewCampaignPage() {
               <Button variant="ghost" onClick={() => (step === 0 ? router.push("/campaigns") : setStep(step - 1))}>
                 {step === 0 ? "Отмена" : "Назад"}
               </Button>
-              {step < 4 ? (
+              {step < STEPS.length - 1 ? (
                 <Button className="flex-1" onClick={() => setStep(step + 1)} disabled={!canNext}>
                   Далее
                 </Button>
@@ -530,7 +582,7 @@ export default function NewCampaignPage() {
                 </Button>
               )}
             </div>
-            {step === 4 && !canNext ? (
+            {step === 5 && !canNext ? (
               <p className="text-[11px] leading-relaxed text-muted">
                 {creatives.length === 0 ? "Добавьте хотя бы один креатив." : "Выберите классификатор ККТУ в блоке «Маркировка (ОРД)»."}
               </p>

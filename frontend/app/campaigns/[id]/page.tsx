@@ -19,6 +19,7 @@ import {
 } from "@/lib/types"
 import { Button, Card, CardHeader, EmptyState, Field, HelpTip, inputCls, KpiCard, Modal, Spinner, StatusBadge, Table } from "@/components/ui"
 import { DEVICES, TargetingEditor } from "@/components/targeting-editor"
+import { OrdChainCampaignCard, type OrdChainValues } from "@/components/ord-chain-setup"
 
 type PixelRow = { id: string; name: string; domain: string }
 type GoalRow = { id: string; name: string; goal_type: string; match_value: string }
@@ -450,6 +451,7 @@ const CHECK_TAB: Record<string, TabKey> = {
   line_items: "groups",
   creatives: "creatives",
   ord_marking: "creatives",
+  ord_chain: "settings",
   schedule: "settings",
   balance: "settings",
   daily_budget: "settings",
@@ -877,7 +879,31 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
         ))}
       </div>
 
-      {tab === "settings" ? <SettingsCard campaign={campaign} /> : null}
+      {tab === "settings" ? (
+        <>
+          <Card>
+            <CardHeader
+              title="Данные ОРД"
+              subtitle="Рекламодатель и договоры, на которые регистрируются erid креативов. Без подтверждения кампания не запустится."
+            />
+            <OrdChainCampaignCard
+              campaignId={campaign.id}
+              canEdit={!campaign.ord_confirmed_at}
+              values={{
+                ord_mode: campaign.ord_mode ?? null,
+                counterparty_id: campaign.counterparty_id ?? null,
+                initial_contract_id: campaign.initial_contract_id ?? null,
+                executive_contract_id: campaign.executive_contract_id ?? null,
+              }}
+              onValuesChange={async (v: OrdChainValues) => {
+                await api(`/campaigns/${campaign.id}`, { method: "PATCH", body: v })
+                await mutate(`/campaigns/${campaign.id}`)
+              }}
+            />
+          </Card>
+          <SettingsCard campaign={campaign} />
+        </>
+      ) : null}
 
       {tab === "groups" ? (
         <Card>

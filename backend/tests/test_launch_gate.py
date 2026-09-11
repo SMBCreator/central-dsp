@@ -6,7 +6,7 @@ Unit-тесты без Postgres: пул подменяется заглушко�
 import asyncio
 import os
 import sys
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from fastapi import HTTPException
@@ -69,6 +69,9 @@ def _camp(**over):
         "daily_budget": 1000, "total_budget": 0, "spent_today": 0, "spent_total": 0,
         "frequency_caps": None, "group_id": None, "pixel_id": None, "goal_id": None,
         "scoring_profile_id": None,
+        # B13d: «готовая» кампания с РФ-трафиком имеет подтверждённую цепочку ОРД
+        "ord_mode": "own_client", "counterparty_id": "cp1", "initial_contract_id": "ct1",
+        "executive_contract_id": "ct2", "ord_confirmed_at": datetime(2026, 9, 1, tzinfo=UTC),
     }
     base.update(over)
     return base
@@ -103,6 +106,16 @@ def test_launch_blockers_collected():
     assert codes == {"schedule", "balance", "line_items", "creatives"}
     assert d["ready_to_launch"] is False
     assert "campaign_status" not in codes
+
+
+def test_ord_chain_blocks_only_for_ru_traffic():
+    """Неподтверждённая цепочка ОРД — блокер запуска только при РФ-гео (ord_spec §7 D2)."""
+    ru = _diag(FakePool(), _camp(ord_confirmed_at=None), assume_active=True)
+    assert "ord_chain" in {c["code"] for c in ru["launch_blockers"]}
+    assert ru["ready_to_launch"] is False
+    non_ru = _diag(FakePool(targets_ru=False), _camp(ord_confirmed_at=None), assume_active=True)
+    assert "ord_chain" not in {c["code"] for c in non_ru["launch_blockers"]}
+    assert non_ru["ready_to_launch"] is True
 
 
 def test_ord_marking_blocks_only_for_ru_traffic():

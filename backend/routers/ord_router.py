@@ -18,6 +18,7 @@ from ord import OrdError, OrdNotConfigured, get_ord_adapter
 from ord import invoices as ord_invoices
 from ord.adapter import OrdDataError
 from ord.platform import ensure_platform, load_platform, org_payload, platform_status
+from ord.chain import assert_counterparty_ref
 from ord.service import register_creative as ord_register_creative
 
 router = APIRouter(prefix="/ord", tags=["ord"])
@@ -88,8 +89,14 @@ def _row(r) -> dict:
 async def list_counterparties(user: dict = Depends(current_user)):
     pool = await get_pool()
     scope = await scope_for(user)
+    # Наша организация (ОРС) видна всем, у кого есть свой scope: она — исполнитель
+    # исполнительского договора любого клиента (ord_spec §7 D3). Viewer (пустой
+    # scope) не видит ничего.
+    self_visible = scope.all or bool(scope.user_ids)
     rows = await pool.fetch(
-        f"SELECT * FROM counterparties WHERE {scope.where('user_id', 1)} ORDER BY created_at DESC", *scope.params
+        f"SELECT * FROM counterparties WHERE {scope.where('user_id', 1)} OR (is_self AND $3::bool) "
+        "ORDER BY created_at DESC",
+        *scope.params, self_visible,
     )
     return [dict(r) for r in rows]
 
@@ -226,7 +233,9 @@ async def create_contract(body: ContractIn, user: dict = Depends(require_platfor
     client = await assert_in_scope(pool, "counterparties", body.client_id, scope, "Контрагент не найден",
                                    columns="id, user_id")
     owner = str(client["user_id"])
-    await assert_owned_by(pool, "counterparties", body.contractor_id, owner, "Контрагент не найден")
+    # Исполнитель — контрагент владельца либо наша организация (ОРС):
+    # исполнительский договор клиента заключается именно с ней.
+    await assert_counterparty_ref(pool, body.contractor_id, owner)
     if body.parent_contract_id:
         await assert_owned_by(pool, "ord_contracts", body.parent_contract_id, owner, "Договор не найден")
     row = await pool.fetchrow(

@@ -196,7 +196,7 @@ counterparty(self, ОРС, isOpc)  ──►  платформа «Central DSP»
 поэтому после `POST /platform` наша организация пересылается повторно. `GET /ord/platform` — статус и список `missing`.
 UI: переключатель «Наша организация (ОРС)» в карточке контрагента, URL площадки и статус регистрации в настройках ОРД.
 
-**B13d — цепочка на кампании (backend + UI, поток как в Avito: «Данные ОРД» до настройки кампании).** Миграция 050: `campaigns.ord_mode` (`self|own_client|partner_client`),
+**B13d — цепочка на кампании (backend + UI, поток как в Avito: «Данные ОРД» до настройки кампании). DONE 2026-09-11.** Как реализовано (отличия от плана ниже): шаг «Данные ОРД» — **первый** шаг мастера (до «Формат»); режим `self` = свои товары/услуги с **одним** исполнительским договором (рекламодатель ↔ ОРС), самореклама рекламной системы (`isSelfPromotion`) не поддерживается (`self_promotion_not_supported`); `own_client` = изначальный (рекламодатель ↔ агентство) + исполнительский (агентство ↔ ОРС); `partner_client` — то же, посреднический договор через `parent_contract_id`. Логика в `ord/chain.py`; эндпоинты `POST /campaigns/ord-chain/preview`, `GET /campaigns/{id}/ord-chain`, `POST /campaigns/{id}/ord-chain/confirm`. План: Миграция 050: `campaigns.ord_mode` (`self|own_client|partner_client`),
 `campaigns.counterparty_id` (рекламодатель), `campaigns.initial_contract_id`, `campaigns.executive_contract_id`,
 `campaigns.ord_confirmed_at`. Бэкфилл из креативов (все креативы кампании с одним `counterparty_id/contract_id` →
 кампания; иначе `ord_mode=NULL`, предупреждение). `ord.service.resolve_contract` → из кампании; `creatives.counterparty_id/contract_id`

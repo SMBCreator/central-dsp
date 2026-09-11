@@ -106,14 +106,50 @@ async def campaign_targets_ru(pool, campaign_id: str) -> bool:
 
 
 # ----------------------------------------------------------- contract lookup --
+CHAIN_NOT_CONFIRMED = (
+    "Цепочка ОРД кампании не подтверждена. Откройте кампанию → «Данные ОРД», проверьте "
+    "рекламодателя и договоры и нажмите «Подтвердить данные»."
+)
+
+
+async def campaign_chain(pool, creative: dict) -> dict | None:
+    """Кампания креатива, если у неё задана цепочка ОРД (ord_spec §7 D2).
+    NULL ord_mode = кампания до B13d, контрагент/договор берутся с креатива."""
+    if not creative.get("campaign_id"):
+        return None
+    camp = await pool.fetchrow(
+        """SELECT id, user_id, ord_mode, counterparty_id, initial_contract_id,
+                  executive_contract_id, ord_confirmed_at
+             FROM campaigns WHERE id = $1""",
+        creative["campaign_id"],
+    )
+    return dict(camp) if camp and camp["ord_mode"] else None
+
+
 async def resolve_contract(pool, creative: dict) -> dict | None:
     """Договор для регистрации креатива.
 
+    0. Цепочка кампании (B13d): подтверждённая — изначальный договор
+       (в режиме self — исполнительский); контрагент креатива = рекламодатель
+       кампании (снапшот). Неподтверждённая — None.
     1. Явно выбранный creatives.contract_id — если он зарегистрирован в ОРД.
     2. Иначе единственный зарегистрированный договор владельца, где заказчик
        (client_id) — контрагент креатива. Если подходящих несколько — None:
        выбирать за пользователя нельзя, это юридический документ.
     """
+    from ord.chain import load_chain, registration_contract
+
+    camp = await campaign_chain(pool, creative)
+    if camp:
+        if not camp["ord_confirmed_at"]:
+            return None
+        chain = await load_chain(pool, camp)
+        objs = chain["_objects"]
+        contract = registration_contract(camp, objs["initial"], objs["executive"])
+        if not contract or contract.get("ord_status") != "registered":
+            return None
+        creative["counterparty_id"] = str(camp["counterparty_id"])
+        return contract
     if creative.get("contract_id"):
         row = await pool.fetchrow(
             """SELECT * FROM ord_contracts
@@ -267,12 +303,19 @@ async def register_creative(pool, creative: dict, *, contract_id: str | None = N
         creative["contract_id"] = contract_id
     contract = await resolve_contract(pool, creative)
     if not contract:
-        why = (
-            "Нет зарегистрированного в ОРД договора для контрагента креатива. "
-            "Зарегистрируйте договор в разделе «Маркировка (ОРД)» или выберите его на шаге «Маркировка» креатива."
-            if creative.get("counterparty_id")
-            else "К креативу не привязан контрагент (рекламодатель) — выберите его на шаге «Маркировка»."
-        )
+        camp = await campaign_chain(pool, creative)
+        if camp and not camp["ord_confirmed_at"]:
+            why = CHAIN_NOT_CONFIRMED
+        elif camp:
+            why = ("Договор цепочки ОРД кампании не зарегистрирован в ОРД. "
+                   "Зарегистрируйте его в разделе «Маркировка (ОРД)».")
+        else:
+            why = (
+                "Нет зарегистрированного в ОРД договора для контрагента креатива. "
+                "Зарегистрируйте договор в разделе «Маркировка (ОРД)» или выберите его на шаге «Маркировка» креатива."
+                if creative.get("counterparty_id")
+                else "К креативу не привязан контрагент (рекламодатель) — выберите его на шаге «Маркировка»."
+            )
         rec = await _mark(pool, creative["id"], creative.get("contract_id"), "awaiting_contract", None, why)
         return _result("awaiting_contract", rec, why)
 
@@ -324,9 +367,10 @@ async def register_creative(pool, creative: dict, *, contract_id: str | None = N
         await conn.execute(
             """UPDATE creatives
                   SET erid = $2, contract_id = $3,
+                      counterparty_id = COALESCE($4::uuid, counterparty_id),
                       ord_locked_at = COALESCE(ord_locked_at, now()),
                       updated_at = now()
                 WHERE id = $1""",
-            creative["id"], out["erid"], contract["id"],
+            creative["id"], out["erid"], contract["id"], creative.get("counterparty_id"),
         )
     return _result("ok", dict(row))

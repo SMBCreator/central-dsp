@@ -9,9 +9,10 @@ from business_day import normalize_spent_today
 from cache import reset_available
 from rbac import assert_in_scope, assert_refs_owned, require_campaign_editor, require_campaign_write, scope_for
 from db import get_pool
+from ord import chain as ord_chain
 from ord.adapter import mock_allowed
 from ord.service import campaign_targets_ru, unmarked_creative_sql
-from schemas import CampaignIn, CampaignPatch
+from schemas import CampaignIn, CampaignPatch, OrdChainPreview
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 
@@ -29,9 +30,12 @@ def _serialize(row) -> dict:
             d["frequency_caps"] = None
     for k in ("id", "advertiser_id", "user_id"):
         d[k] = str(d[k])
-    for k in ("group_id", "pixel_id", "goal_id", "scoring_profile_id"):
+    for k in ("group_id", "pixel_id", "goal_id", "scoring_profile_id",
+              "counterparty_id", "initial_contract_id", "executive_contract_id"):
         if d.get(k) is not None:
             d[k] = str(d[k])
+    if d.get("ord_confirmed_at") is not None:
+        d["ord_confirmed_at"] = d["ord_confirmed_at"].isoformat()
     for k in _NUMERIC:
         if k in d and d[k] is not None:
             d[k] = float(d[k])
@@ -52,7 +56,10 @@ _REF_TABLES = {
     "pixel_id": ("pixels", "Пиксель не найден"),
     "goal_id": ("goals", "Цель не найдена"),
     "scoring_profile_id": ("scoring_profiles", "Профиль скоринга не найден"),
+    "initial_contract_id": ("ord_contracts", "Договор не найден"),
+    "executive_contract_id": ("ord_contracts", "Договор не найден"),
 }
+_CHAIN_FIELDS = ord_chain.CHAIN_FIELDS
 
 
 async def _assert_campaign_refs(pool, owner_id, updates: dict, current: dict | None = None) -> None:
@@ -60,6 +67,9 @@ async def _assert_campaign_refs(pool, owner_id, updates: dict, current: dict | N
     относиться к пикселю кампании (после применения этого же PATCH)."""
     refs = {k: updates.get(k) for k in _REF_TABLES}
     rows = await assert_refs_owned(pool, owner_id, refs, _REF_TABLES)
+    # Рекламодатель цепочки ОРД: свой контрагент либо наша организация (ОРС).
+    if updates.get("counterparty_id"):
+        await ord_chain.assert_counterparty_ref(pool, updates["counterparty_id"], owner_id, "Рекламодатель (контрагент) не найден")
     goal = rows.get("goal_id")
     if goal is not None:
         pixel_id = updates.get("pixel_id") or (current or {}).get("pixel_id")
@@ -94,21 +104,56 @@ async def create_campaign(body: CampaignIn, user: dict = Depends(require_campaig
     )
     # Кампания принадлежит владельцу рекламодателя (admin/agency создают клиенту).
     owner = str(adv["user_id"])
-    await _assert_campaign_refs(pool, owner, {"group_id": body.group_id})
+    chain = {k: getattr(body, k) for k in _CHAIN_FIELDS}
+    await _assert_campaign_refs(pool, owner, {"group_id": body.group_id, **chain})
     row = await pool.fetchrow(
         """
         INSERT INTO campaigns (advertiser_id, user_id, name, objective, daily_budget, total_budget,
                                start_date, end_date, pacing, frequency_cap_impressions, frequency_cap_period_hours,
-                               group_id, kktu_code, kktu_label, bid_shading, frequency_caps)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *
+                               group_id, kktu_code, kktu_label, bid_shading, frequency_caps,
+                               ord_mode, counterparty_id, initial_contract_id, executive_contract_id)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING *
         """,
         body.advertiser_id, owner, body.name, body.objective, body.daily_budget,
         body.total_budget, _parse_date(body.start_date), _parse_date(body.end_date),
         body.pacing, body.frequency_cap_impressions, body.frequency_cap_period_hours, body.group_id,
         body.kktu_code, body.kktu_label, body.bid_shading,
         json.dumps([w.model_dump() for w in body.frequency_caps]) if body.frequency_caps else None,
+        body.ord_mode, body.counterparty_id, body.initial_contract_id, body.executive_contract_id,
     )
     return _serialize(row)
+
+
+@router.post("/ord-chain/preview")
+async def preview_ord_chain(body: OrdChainPreview, user: dict = Depends(require_campaign_editor)):
+    """Сводка/валидация цепочки ОРД до создания кампании — тот же валидатор,
+    что и у GET /{id}/ord-chain, ссылки проверяются на владельца рекламодателя."""
+    pool = await get_pool()
+    adv = await assert_in_scope(pool, "advertisers", body.advertiser_id, await scope_for(user), "Рекламодатель не найден")
+    owner = str(adv["user_id"])
+    chain = {k: getattr(body, k) for k in _CHAIN_FIELDS}
+    await _assert_campaign_refs(pool, owner, chain)
+    fake = {"id": None, "user_id": owner, "ord_confirmed_at": None, **chain}
+    out = ord_chain.public_chain(await ord_chain.load_chain(pool, fake))
+    out["campaign_id"] = None
+    return out
+
+
+@router.get("/{campaign_id}/ord-chain")
+async def get_ord_chain(campaign_id: str, user: dict = Depends(current_user)):
+    """Сводка цепочки ОРД для окна «Данные в ОРД» (рекламодатель → договоры → ОРС)."""
+    pool = await get_pool()
+    camp = await _campaign_in_scope(pool, campaign_id, user)
+    return ord_chain.public_chain(await ord_chain.load_chain(pool, dict(camp)))
+
+
+@router.post("/{campaign_id}/ord-chain/confirm")
+async def confirm_ord_chain(campaign_id: str, user: dict = Depends(require_campaign_editor)):
+    """«Всё верно»: фиксирует цепочку (ord_confirmed_at). 422 ord_chain_required,
+    если цепочка неполная/невалидная; после подтверждения поля заморожены."""
+    pool = await get_pool()
+    camp = await _campaign_in_scope(pool, campaign_id, user)
+    return ord_chain.public_chain(await ord_chain.confirm_chain(pool, dict(camp)))
 
 
 @router.get("/{campaign_id}")
@@ -127,9 +172,13 @@ async def update_campaign(campaign_id: str, body: CampaignPatch, user: dict = De
             updates[k] = _parse_date(updates[k])
     if "frequency_caps" in updates:
         updates["frequency_caps"] = json.dumps(updates["frequency_caps"])
+    if updates.get("ord_mode") == "self":
+        # В режиме «свои товары» изначального договора нет (exclude_none не даёт обнулить его явно).
+        updates["initial_contract_id"] = None
     pool = await get_pool()
     camp = await _campaign_in_scope(pool, campaign_id, user)
     owner = str(camp["user_id"])
+    ord_chain.assert_not_locked(dict(camp), updates)
     await _assert_campaign_refs(pool, owner, updates, dict(camp))
     sets, values = [], []
     for i, (k, v) in enumerate(updates.items(), start=3):
@@ -393,9 +442,22 @@ async def compute_diagnostics(pool, camp, *, assume_active: bool = False) -> dic
         ),
     )
 
-    # 8. Маркировка ОРД (erid) — блокер только для РФ-трафика. Критерий общий
-    # с фидом биддера и авторегистрацией при approve (ord.service).
+    # 8. Цепочка ОРД подтверждена (ord_spec §7 D2) — блокер только для РФ-трафика:
+    # без подтверждённой цепочки креативы не регистрируются, erid не выдаётся.
     ru_relevant = await campaign_targets_ru(pool, campaign_id)
+    chain_confirmed = camp.get("ord_confirmed_at") is not None
+    add(
+        "ord_chain",
+        not ru_relevant or chain_confirmed,
+        "blocker",
+        "Данные ОРД (цепочка договоров)",
+        "Маркировка не требуется для выбранного гео" if not ru_relevant
+        else ("Цепочка подтверждена" if chain_confirmed
+              else "Подтвердите данные ОРД кампании: кого рекламируете, рекламодатель, договоры (38-ФЗ)."),
+    )
+
+    # 8a. Маркировка ОРД (erid) — блокер только для РФ-трафика. Критерий общий
+    # с фидом биддера и авторегистрацией при approve (ord.service).
     unmarked = 0
     if ru_relevant and cr_approved:
         unmarked = await pool.fetchval(

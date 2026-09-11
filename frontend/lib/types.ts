@@ -19,6 +19,11 @@ export interface Advertiser {
 
 export interface Campaign {
   id: string
+  ord_mode?: "self" | "own_client" | "partner_client" | null
+  counterparty_id?: string | null
+  initial_contract_id?: string | null
+  executive_contract_id?: string | null
+  ord_confirmed_at?: string | null
   display_id: number
   advertiser_id: string
   name: string
@@ -389,6 +394,8 @@ export interface Counterparty {
   ord_status: "draft" | "sending" | "registered" | "failed" | string
   ord_error: string | null
   ord_external_id: string | null
+  is_self?: boolean
+  rs_url?: string | null
   created_at: string
 }
 
@@ -400,6 +407,7 @@ export interface OrdContract {
   contractor_name?: string
   contract_type: string
   subject_type: string
+  parent_contract_id?: string | null
   number: string | null
   signed_at: string | null
   amount: number | null

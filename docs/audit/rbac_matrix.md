@@ -33,6 +33,7 @@
 | GET | `/billing/transactions` | roles+flag | admin, advertiser, agency, analyst, finance, manager, superadmin + client[can_view_billing] |
 | GET | `/campaigns` | session | любая роль (scope внутри хендлера) |
 | **POST** | `/campaigns` | roles+flag | admin, advertiser, agency, manager, superadmin + client[can_edit_campaigns] |
+| **POST** | `/campaigns/ord-chain/preview` | roles+flag | admin, advertiser, agency, manager, superadmin + client[can_edit_campaigns] |
 | **DELETE** | `/campaigns/{campaign_id}` | roles+flag | admin, advertiser, agency, manager, superadmin + client[can_edit_campaigns] |
 | GET | `/campaigns/{campaign_id}` | session | любая роль (scope внутри хендлера) |
 | **PATCH** | `/campaigns/{campaign_id}` | roles+flag | admin, advertiser, agency, manager, superadmin + client[can_edit_campaigns] |
@@ -40,6 +41,8 @@
 | **DELETE** | `/campaigns/{campaign_id}/blocks/{block_id}` | roles+flag | admin, advertiser, agency, manager, superadmin + client[can_edit_campaigns] |
 | GET | `/campaigns/{campaign_id}/diagnostics` | session | любая роль (scope внутри хендлера) |
 | **POST** | `/campaigns/{campaign_id}/duplicate` | roles+flag | admin, advertiser, agency, manager, superadmin + client[can_edit_campaigns] |
+| GET | `/campaigns/{campaign_id}/ord-chain` | session | любая роль (scope внутри хендлера) |
+| **POST** | `/campaigns/{campaign_id}/ord-chain/confirm` | roles+flag | admin, advertiser, agency, manager, superadmin + client[can_edit_campaigns] |
 | GET | `/campaigns/{campaign_id}/shading` | session | любая роль (scope внутри хендлера) |
 | GET | `/creatives` | session | любая роль (scope внутри хендлера) |
 | **POST** | `/creatives` | roles+flag | admin, advertiser, agency, manager, superadmin + client[can_manage_creatives] |

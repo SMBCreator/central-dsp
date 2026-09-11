@@ -102,8 +102,14 @@ async def create_creative(body: CreativeIn, user: dict = Depends(require_creativ
     _validate_type_fields(body)
     pool = await get_pool()
     camp = await assert_in_scope(
-        pool, "campaigns", body.campaign_id, await scope_for(user), "Кампания не найдена", columns="id, user_id"
+        pool, "campaigns", body.campaign_id, await scope_for(user), "Кампания не найдена",
+        columns="id, user_id, ord_mode, counterparty_id",
     )
+    # Цепочка ОРД задана на кампании (B13d): креатив наследует её рекламодателя,
+    # договор выбирается из цепочки при регистрации (ord.service.resolve_contract).
+    if camp["ord_mode"]:
+        body.counterparty_id = str(camp["counterparty_id"]) if camp["counterparty_id"] else None
+        body.contract_id = None
     # Креатив принадлежит владельцу кампании. Ссылочные id должны принадлежать
     # ему же (и группа — этой кампании): иначе креатив можно повесить на чужую
     # группу (уйдёт в чужой фид) или подписать в ОРД чужим контрагентом/договором.

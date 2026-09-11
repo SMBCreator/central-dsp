@@ -138,6 +138,20 @@ class CampaignIn(BaseModel):
     kktu_code: str | None = Field(default=None, max_length=20)
     kktu_label: str | None = Field(default=None, max_length=300)
     bid_shading: bool = False
+    # Цепочка ОРД (ord_spec §7, B13d): кого рекламируем, рекламодатель, договоры.
+    ord_mode: str | None = Field(default=None, pattern="^(self|own_client|partner_client)$")
+    counterparty_id: str | None = None
+    initial_contract_id: str | None = None
+    executive_contract_id: str | None = None
+
+
+class OrdChainPreview(BaseModel):
+    """Проверка цепочки ОРД до создания кампании (мастер, шаг «Данные ОРД»)."""
+    advertiser_id: str
+    ord_mode: str | None = Field(default=None, pattern="^(self|own_client|partner_client)$")
+    counterparty_id: str | None = None
+    initial_contract_id: str | None = None
+    executive_contract_id: str | None = None
 
 
 class CampaignPatch(BaseModel):
@@ -168,6 +182,11 @@ class CampaignPatch(BaseModel):
     clean_traffic_only: bool | None = None
     # Профиль скоринга качества площадок (Часть 3b)
     scoring_profile_id: str | None = None
+    # Цепочка ОРД — до подтверждения (после → 409 ord_locked)
+    ord_mode: str | None = Field(default=None, pattern="^(self|own_client|partner_client)$")
+    counterparty_id: str | None = None
+    initial_contract_id: str | None = None
+    executive_contract_id: str | None = None
 
 
 # --- Line items ---------------------------------------------------------------
