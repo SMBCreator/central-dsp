@@ -6,6 +6,7 @@ app_settings — key/value (jsonb) на пользователя; domain_lists �
 """
 import json
 import os
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -194,6 +195,8 @@ _ORD_BASE_URLS = {
 class OrdSettingsIn(BaseModel):
     api_key: str = Field(min_length=8, max_length=512)
     environment: str = Field(default="production", pattern="^(production|sandbox)$")
+    # URL рекламной системы для сводной площадки ОРС (ord_spec §7); пусто = не менять.
+    platform_url: Optional[str] = Field(default=None, max_length=500)
 
 
 def _mask(key: str) -> str:
@@ -217,15 +220,22 @@ async def get_ord_settings_api(user: dict = Depends(_require_superadmin)):
     env = "sandbox" if "sandbox" in cfg["base_url"] else "production"
     return {"configured": True, "provider": "ozon", "environment": env,
             "base_url": cfg["base_url"], "api_key_masked": _mask(cfg["api_key"]),
+            "platform_url": cfg.get("platform_url") or os.getenv("ORD_PLATFORM_URL") or "",
             "source": cfg.get("source", "db")}
 
 
 @router.put("/ord")
 async def put_ord_settings(body: OrdSettingsIn, user: dict = Depends(_require_superadmin)):
     pool = await get_pool()
+    prev = await pool.fetchval("SELECT value FROM platform_settings WHERE key = 'ord_ozon'")
+    prev_cfg = (prev if isinstance(prev, dict) else json.loads(prev)) if prev else {}
+    platform_url = (body.platform_url or "").strip() or prev_cfg.get("platform_url") or ""
+    if platform_url and not platform_url.startswith(("http://", "https://")):
+        raise HTTPException(400, "URL рекламной системы должен начинаться с http:// или https://")
     value = json.dumps({
         "api_key": body.api_key.strip(),
         "base_url": _ORD_BASE_URLS[body.environment],
+        "platform_url": platform_url,
     })
     await pool.execute(
         """INSERT INTO platform_settings (key, value, updated_by)

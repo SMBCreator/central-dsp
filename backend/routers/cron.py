@@ -432,7 +432,11 @@ async def _ord_export_locked(conn, period, kind, force, _json, external_creative
 
     try:
         # OrdNotConfigured (production без ключа) — подкласс OrdError: лог failed + 502.
+        from ord.platform import ensure_platform
+
         adapter = await get_ord_adapter()
+        # Сводная площадка ОРС должна существовать до первой строки статистики (ord_spec §7).
+        await ensure_platform(conn, adapter)
         out = await adapter.submit_stats(period, stats)
     except OrdError as e:
         await conn.execute(

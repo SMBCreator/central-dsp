@@ -152,3 +152,79 @@ agency→RA, publisher→RR, ors→ORS. Срок подачи актов и ст
   статистики к акту, или ОРД связывает статистику с актом сам по креативу и датам.
 * Нужны ли в акте `violation`/`comment`; формат `price` при `withNds=false`.
 * Excel-шаблоны Ozon (акты) — маппинг колонок для импорта/экспорта в B13c.
+
+
+## 7. ОРС-модель (B13c–B13g, решения 2026-09-11)
+
+Central DSP — **Оператор рекламной системы (ОРС)**, не рекламораспространитель. Источники: шаблоны Ozon ОРД
+(`organisation/contract/creative/platform/statistic/invoice_template.xlsx`), модели API (`OrganisationData{isOpc,isPp,rsUrl}`,
+`ExternalContract{externalContractId,price,withNds}`, `CreativeLinkItem`), кабинеты Avito («Данные ОРД» на кампании) и VK Ads
+(«Отчёты для ОРД» / «Добавление актов»).
+
+### Решения
+
+| # | Вопрос | Решение |
+|---|---|---|
+| D1 | Площадки | **Одна сводная площадка Central DSP** (правило РКН для DSP/сетей, как `yandex.ru`/`vk.com`): тип «Сайт», URL = домен рекламной системы, владелец = наша организация. В отчётах ОРД по SSP не разделяем. Сейчас `register_platform` нигде не вызывается, а статистика ссылается на `central-dsp` → площадку надо регистрировать до первого экспорта. |
+| D2 | Где цепочка | **На кампании**, креативы наследуют. Режимы как у Avito: `self` (своё), `own_client` (свой клиент, прямой договор), `partner_client` (клиент партнёра, через посредника). После подтверждения (`ord_confirmed_at`) поля цепочки заморожены. |
+| D3 | Роли | Central DSP = ОРС (`isOpc=true`, `rsUrl`), SSP/паблишер = РР (`isPp=true`), клиент/агентство = заказчик исполнительского договора. |
+| D4 | НДС | Расход в БД и в статистике — **без НДС**; 22 % добавляется поверх (клиент платит 122 000 → бюджет 100 000). Акт: `amount_gross = amount_net × (1 + vat_rate/100)`, ставка по умолчанию 22, `unit_cost` в акте тоже с НДС. В Ozon уходит `price` (с НДС) + `withNds=true`. |
+
+### Цепочка в терминах таблиц
+
+```
+counterparty(advertiser)  ──initial contract (client=advertiser, contractor=agency | self)──►
+counterparty(agency)?     ──executive contract (client=agency|advertiser, contractor=self)──►
+counterparty(self, ОРС, isOpc)  ──►  платформа «Central DSP» (SITE, владелец = self)
+```
+
+- `self` (самореклама): договоров нет; креатив `isSelfPromotion=true`, `externalOrganisationId=self`; акты не подаются.
+- `own_client`: `initial = executive` — один договор (рекламодатель ↔ мы). В креативе `externalContractId=initial`.
+- `partner_client`: `initial` (рекламодатель ↔ агентство) + `executive` (агентство ↔ мы, `externalParentId=initial`).
+  Креатив регистрируется на **изначальный** договор; акт выставляется по **исполнительскому** с разбивкой `contracts[]`
+  по изначальным договорам (лист «Изначальные договоры» шаблона).
+
+### Этапы
+
+**B13c — организация-ОРС и сводная площадка (backend + настройки). DONE 2026-09-11.** Миграция 049: `counterparties.is_self bool`
+(частичный уникальный индекс — ровно одна), `counterparties.rs_url`. `organisation_body`: `isOpc = is_self`, `isPp = role=='publisher'`,
+`rsUrl`. Площадка: `ord.service.ensure_platform()` — регистрирует `central-dsp` (`PLATFORM_TYPE_SITE`, `url` из настроек
+`ord_ozon.platform_url`, `isOwner=true`, `externalOrganisationId = self`) один раз (`platform_settings.ord_platform`), вызывается
+перед экспортом статистики (крон, акт) и из `POST /ord/platform/register` (force); без `is_self`-организации/URL экспорт
+через реальный Ozon → `failed: self_org_missing|self_org_unregistered|platform_url_missing`, через mock/тестовый адаптер — пропуск.
+Владелец площадки задаётся со стороны организации: `organisation.platforms[] = [{externalPlatformId, isPlatformOwner: true}]`,
+поэтому после `POST /platform` наша организация пересылается повторно. `GET /ord/platform` — статус и список `missing`.
+UI: переключатель «Наша организация (ОРС)» в карточке контрагента, URL площадки и статус регистрации в настройках ОРД.
+
+**B13d — цепочка на кампании (backend + UI, поток как в Avito: «Данные ОРД» до настройки кампании).** Миграция 050: `campaigns.ord_mode` (`self|own_client|partner_client`),
+`campaigns.counterparty_id` (рекламодатель), `campaigns.initial_contract_id`, `campaigns.executive_contract_id`,
+`campaigns.ord_confirmed_at`. Бэкфилл из креативов (все креативы кампании с одним `counterparty_id/contract_id` →
+кампания; иначе `ord_mode=NULL`, предупреждение). `ord.service.resolve_contract` → из кампании; `creatives.counterparty_id/contract_id`
+остаются как снапшот на момент регистрации (не редактируются, из модалки убираются). Валидации: `initial.client = counterparty`,
+`executive.contractor = self`, в `partner_client` `executive.client = initial.contractor`; запуск кампании (`launch_checks` блокер `ord_chain`, вместо текущего `ord_marking` только для РФ) / регистрация erid
+без подтверждения → `422 ord_chain_required`; изменение после `ord_confirmed_at` → `409 ord_locked`.
+`GET /campaigns/{id}/ord-chain` — сводка для окна «Данные в ОРД». UI мастера `/campaigns/new`: шаг «Данные ОРД» сразу после «Основное» (радио «кого рекламируете», рекламодатель
+(+ «добавить» inline), изначальный/исполнительский договор, «Подтвердить данные» → окно цепочки «Всё верно / Есть ошибки»),
+блок контрагента/ККТУ со шага «Креативы» уходит (ККТУ остаётся). В карточке кампании блок read-only после подтверждения.
+`rbac_matrix.py --write`, `assert_refs_owned` для новых ссылок.
+
+**B13e — акты по ОРС-модели (backend).** Миграция 051: `ord_invoices.vat_rate int DEFAULT 22`, `amount_net`, `amount_gross`
+(`amount` → `amount_gross`), `ord_invoice_contracts(invoice_id, initial_contract_id, amount_gross, amount_net, vat_rate)`.
+Preview: по **исполнительскому** договору + период → строки как сейчас + группировка по изначальным договорам кампаний;
+`statistics_amount_net/gross` (факт, колонка «Статистика, сумма» VK). `invoice_body`: `contractorRole=ORS`,
+`clientRole` из роли контрагента (`ADVERTISER|AGENCY`), `contracts[]` = изначальные договоры, `v3/creative/link` по изначальному
+договору. `own_client`: `contracts[] = [initial]`. Разница акт ≠ факт > 1 % → предупреждение, не блок.
+
+**B13f — UI `/ord` вкладка «Акты» (VK-style).** Выбор месяца → таблица по исполнительским договорам/клиентам:
+ОРД-статус, Отчёт (Не заполнен / Черновик / Отправлен / Ошибка), Сумма без НДС, Сумма с НДС, Статистика (факт), «Заполнить»/✎.
+Drawer «Добавление акта»: шапка договора (номер, тип, заказчик/исполнитель + ИНН), номер акта, период, сумма с НДС, ставка НДС,
+дата акта, авто «без НДС», разбивка по изначальным договорам (редактируемые суммы, сумма = итогу), строки креативов (свернуто),
+«Сохранить» / «Отправить в ОРД»; построчный статус и повтор; кнопка «Отправить все в ОРД» для черновиков месяца.
+В карточке креатива: история версий erid; на `409 ord_locked` — текст «данные ОРД зафиксированы после запуска кампании».
+
+**B13g — ошибки ОРД.** Крон `/cron/ord-notifications` (раз в час): `GET /api/external/notification/error` →
+по `objectType/externalId` проставить `ord_status='error'`, `ord_error=text` (организации, договоры, креативы, площадки, акты),
+`ord_notification_cursor` в `settings`. Бейдж «Ошибки ОРД: N» на `/ord`, метрика `ord_notification_errors_total`, алерт, runbook.
+
+Порядок: B13c → B13d → B13e → B13f → B13g → C1–C6. Каждый этап: миграция идемпотентна, тесты (`tests/test_ord_*`,
+`*_db.py`), `parity_matrix` не затрагивается (Go-биддер не участвует, кроме чтения `supply_partner_id` в `stats_hourly`).

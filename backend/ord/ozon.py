@@ -10,7 +10,6 @@ Retry: 3 попытки с экспоненциальной задержкой �
 from __future__ import annotations
 
 import asyncio
-import os
 from typing import Any
 
 import httpx
@@ -25,8 +24,10 @@ from .ozon_mapping import (
     invoice_unlink_all_body,
     organisation_body,
     period_bounds,
+    platform_body,
     statistic_body,
 )
+from .platform import platform_external_id
 
 _RETRIES = 3
 _TIMEOUT = 30.0
@@ -102,12 +103,7 @@ class OzonOrdClient:
         return {"external_id": data["external_creative_id"], "erid": erid}
 
     async def register_platform(self, data: dict[str, Any]) -> dict[str, Any]:
-        await self._request("POST", "/api/external/platform", {
-            "externalPlatformId": data["external_id"],
-            "appName": data["name"],
-            "platformType": "PLATFORM_TYPE_SYSTEM",
-            "url": data.get("url") or "",
-        })
+        await self._request("POST", "/api/external/platform", platform_body(data))
         return {"external_id": data["external_id"]}
 
     async def register_invoice(self, data: dict[str, Any]) -> dict[str, Any]:
@@ -132,7 +128,7 @@ class OzonOrdClient:
         досылается построчно, чтобы отделить принятые строки от отклонённых.
         Возвращает {"accepted": [ext_id...], "rejected": [{"id", "error"}...]}."""
         start, end = period_bounds(period)
-        platform_id = os.getenv("ORD_PLATFORM_EXTERNAL_ID", "central-dsp")
+        platform_id = platform_external_id()
         accepted: list[str] = []
         rejected: list[dict[str, str]] = []
 

@@ -25,6 +25,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from .adapter import OrdError, get_ord_adapter
+from .platform import ensure_platform
 from .service import external_creative_id, external_statistic_id
 
 ROLES = ("advertiser", "agency", "publisher", "ors")
@@ -430,6 +431,7 @@ async def submit(pool, invoice: dict) -> dict:
     contract_ext = full["contract_external_id"]
     try:
         adapter = await get_ord_adapter()
+        await ensure_platform(pool, adapter)
         await adapter.register_invoice({
             "external_id": inv_id, "contract_external_id": contract_ext,
             "number": full["number"], "invoice_date": full["invoice_date"],

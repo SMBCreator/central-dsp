@@ -3,6 +3,8 @@
 import { useState } from "react"
 import useSWR, { mutate } from "swr"
 import { api, fetcher } from "@/lib/api"
+import { isAdminRole } from "@/lib/roles"
+import { useMe } from "@/lib/use-me"
 import { Button, Card, CardHeader, EmptyState, Field, inputCls, Modal, PillTabs, Spinner, StatusBadge, Table } from "@/components/ui"
 
 interface Counterparty {
@@ -14,6 +16,9 @@ interface Counterparty {
   role: string
   ord_status: string
   ord_error?: string | null
+  /** наша организация (ОРС): isOpc в ОРД, владелец сводной площадки */
+  is_self?: boolean
+  rs_url?: string | null
 }
 
 interface OrdContract {
@@ -65,6 +70,7 @@ const TABS = [
 ] as const
 
 export default function OrdPage() {
+  const { me } = useMe()
   const [tab, setTab] = useState<Tab>("counterparties")
   const { data: counterparties } = useSWR<Counterparty[]>("/ord/counterparties", fetcher)
   const { data: contracts } = useSWR<OrdContract[]>("/ord/contracts", fetcher)
@@ -78,7 +84,7 @@ export default function OrdPage() {
   // --- модалка контрагента
   const [cpOpen, setCpOpen] = useState(false)
   const [cpSaving, setCpSaving] = useState(false)
-  const [cpForm, setCpForm] = useState({ name: "", inn: "", ogrn: "", legal_type: "ul", role: "advertiser", address: "" })
+  const [cpForm, setCpForm] = useState({ name: "", inn: "", ogrn: "", legal_type: "ul", role: "advertiser", address: "", is_self: false, rs_url: "" })
 
   // --- модалка договора
   const [ctOpen, setCtOpen] = useState(false)
@@ -98,10 +104,13 @@ export default function OrdPage() {
     setCpSaving(true)
     setError(null)
     try {
-      await api("/ord/counterparties", { method: "POST", body: cpForm })
+      await api("/ord/counterparties", {
+        method: "POST",
+        body: { ...cpForm, rs_url: cpForm.rs_url.trim() || null, role: cpForm.is_self ? "ors" : cpForm.role },
+      })
       await mutate("/ord/counterparties")
       setCpOpen(false)
-      setCpForm({ name: "", inn: "", ogrn: "", legal_type: "ul", role: "advertiser", address: "" })
+      setCpForm({ name: "", inn: "", ogrn: "", legal_type: "ul", role: "advertiser", address: "", is_self: false, rs_url: "" })
     } catch (err) {
       setError(err instanceof Error ? err.message : "Ошибка сохранения")
     } finally {
@@ -212,7 +221,14 @@ export default function OrdPage() {
                   <td className="px-4 py-3 font-medium text-foreground">{cp.name}</td>
                   <td className="px-4 py-3 font-mono text-xs text-muted">{cp.inn}</td>
                   <td className="px-4 py-3 text-muted">{LEGAL_LABELS[cp.legal_type] || cp.legal_type}</td>
-                  <td className="px-4 py-3 text-muted">{ROLE_LABELS[cp.role] || cp.role}</td>
+                  <td className="px-4 py-3 text-muted">
+                    {ROLE_LABELS[cp.role] || cp.role}
+                    {cp.is_self ? (
+                      <span className="ml-2 inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                        наша
+                      </span>
+                    ) : null}
+                  </td>
                   <td className="px-4 py-3">
                     <StatusBadge status={cp.ord_status} />
                     {cp.ord_status === "failed" && cp.ord_error ? (
@@ -391,6 +407,35 @@ export default function OrdPage() {
               </select>
             </Field>
           </div>
+          {isAdminRole(me?.role) && me?.role !== "manager" ? (
+            <div className="space-y-3 rounded-xl border border-border bg-surface px-3 py-3">
+              <label className="flex items-start gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={cpForm.is_self}
+                  onChange={(e) => setCpForm({ ...cpForm, is_self: e.target.checked, role: e.target.checked ? "ors" : cpForm.role })}
+                />
+                <span>
+                  <span className="font-medium text-foreground">Наша организация (ОРС)</span>
+                  <span className="block text-xs text-muted">
+                    Оператор рекламной системы Central DSP. В ОРД уходит как ОРС, на неё регистрируется сводная площадка. Ровно одна — флаг переедет с прежней.
+                  </span>
+                </span>
+              </label>
+              {cpForm.is_self ? (
+                <Field label="URL рекламной системы" hint="Домен Central DSP — он же URL сводной площадки в ОРД">
+                  <input
+                    className={inputCls}
+                    type="url"
+                    value={cpForm.rs_url}
+                    onChange={(e) => setCpForm({ ...cpForm, rs_url: e.target.value })}
+                    placeholder="https://central-dsp.ru"
+                  />
+                </Field>
+              ) : null}
+            </div>
+          ) : null}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="secondary" onClick={() => setCpOpen(false)}>Отмена</Button>
             <Button type="submit" disabled={cpSaving}>{cpSaving ? "Сохранение…" : "Сохранить"}</Button>

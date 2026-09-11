@@ -16,6 +16,8 @@ from rbac import assert_in_scope, assert_owned_by, require_platform_write, scope
 from db import get_pool
 from ord import OrdError, OrdNotConfigured, get_ord_adapter
 from ord import invoices as ord_invoices
+from ord.adapter import OrdDataError
+from ord.platform import ensure_platform, load_platform, org_payload, platform_status
 from ord.service import register_creative as ord_register_creative
 
 router = APIRouter(prefix="/ord", tags=["ord"])
@@ -30,6 +32,9 @@ class CounterpartyIn(BaseModel):
     role: str = "advertiser"         # advertiser | agency | publisher | ors
     advertiser_id: Optional[str] = None
     address: Optional[str] = Field(default=None, max_length=500)  # местонахождение (юрадрес)
+    # Наша организация (ОРС): isOpc в ОРД, владелец сводной площадки. Ровно одна на платформу.
+    is_self: bool = False
+    rs_url: Optional[str] = Field(default=None, max_length=500)   # URL рекламной системы (rsUrl)
 
 
 class ContractIn(BaseModel):
@@ -106,14 +111,32 @@ async def create_counterparty(body: CounterpartyIn, user: dict = Depends(require
             columns="id, user_id",
         )
         owner = str(adv["user_id"])
-    row = await pool.fetchrow(
-        """INSERT INTO counterparties (user_id, advertiser_id, name, inn, ogrn, legal_type, role, address)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-           ON CONFLICT (user_id, inn, role) DO UPDATE
-             SET name = EXCLUDED.name, ogrn = COALESCE(EXCLUDED.ogrn, counterparties.ogrn), address = COALESCE(EXCLUDED.address, counterparties.address), updated_at = now()
-           RETURNING *""",
-        owner, body.advertiser_id, body.name, body.inn, body.ogrn, body.legal_type, body.role, body.address,
-    )
+    role = body.role
+    if body.is_self:
+        # Наша организация — платформенная сущность: только superadmin/admin, роль всегда ОРС.
+        if user["role"] not in ("superadmin", "admin"):
+            raise HTTPException(403, "Отметить «Наша организация (ОРС)» может только администратор")
+        role = "ors"
+    async with pool.acquire() as conn, conn.transaction():
+        if body.is_self:
+            await conn.execute("UPDATE counterparties SET is_self = false, updated_at = now() WHERE is_self AND inn <> $1", body.inn)
+        row = await conn.fetchrow(
+            """INSERT INTO counterparties (user_id, advertiser_id, name, inn, ogrn, legal_type, role, address, is_self, rs_url)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+               ON CONFLICT (user_id, inn, role) DO UPDATE
+                 SET name = EXCLUDED.name, ogrn = COALESCE(EXCLUDED.ogrn, counterparties.ogrn),
+                     address = COALESCE(EXCLUDED.address, counterparties.address),
+                     is_self = counterparties.is_self OR EXCLUDED.is_self,
+                     rs_url = COALESCE(EXCLUDED.rs_url, counterparties.rs_url),
+                     ord_status = CASE WHEN counterparties.ord_status = 'registered'
+                                        AND (counterparties.is_self <> (counterparties.is_self OR EXCLUDED.is_self)
+                                             OR counterparties.rs_url IS DISTINCT FROM COALESCE(EXCLUDED.rs_url, counterparties.rs_url))
+                                       THEN 'pending' ELSE counterparties.ord_status END,
+                     updated_at = now()
+               RETURNING *""",
+            owner, body.advertiser_id, body.name, body.inn, body.ogrn, body.legal_type, role, body.address,
+            body.is_self, body.rs_url,
+        )
     return _row(row)
 
 
@@ -136,9 +159,10 @@ async def register_counterparty(cp_id: str, user: dict = Depends(require_platfor
     try:
         # external_id = наш UUID: в ОРД это ключ upsert, повторная отправка
         # обновляет карточку организации, а не создаёт дубль.
+        # Наша организация уходит вместе со сводной площадкой (если та уже зарегистрирована),
+        # иначе ОРД потеряет признак владельца при обновлении карточки.
         out = await adapter.register_counterparty(
-            {"external_id": str(cp["id"]), "name": cp["name"], "inn": cp["inn"], "ogrn": cp.get("ogrn"),
-             "legal_type": cp["legal_type"], "role": cp["role"], "address": cp["address"]}
+            org_payload(cp, await load_platform(pool) if cp.get("is_self") else None)
         )
         row = await pool.fetchrow(
             """UPDATE counterparties SET ord_external_id=$3, ord_status='registered',
@@ -151,6 +175,27 @@ async def register_counterparty(cp_id: str, user: dict = Depends(require_platfor
             "UPDATE counterparties SET ord_status='failed', ord_error=$3, updated_at=now() WHERE id=$1 AND user_id=$2",
             cp_id, owner, str(e),
         )
+        raise HTTPException(502, f"ОРД: {e}")
+
+
+# ------------------------------------------------------------------ platform --
+@router.get("/platform")
+async def get_platform(user: dict = Depends(current_user)):
+    """Сводная площадка ОРС: URL, наша организация, что зарегистрировано, чего не хватает."""
+    return await platform_status(await get_pool())
+
+
+@router.post("/platform/register")
+async def register_platform(user: dict = Depends(require_platform_write)):
+    """Регистрирует площадку central-dsp и привязывает к нашей организации (isPlatformOwner)."""
+    if user["role"] not in ("superadmin", "admin"):
+        raise HTTPException(403, "Регистрация площадки доступна только администратору")
+    adapter = await _adapter_or_503()
+    try:
+        return await ensure_platform(await get_pool(), adapter, force=True)
+    except OrdDataError as e:
+        raise HTTPException(422, str(e))
+    except OrdError as e:
         raise HTTPException(502, f"ОРД: {e}")
 
 

@@ -257,6 +257,12 @@ def test_export_partial_and_failed_statuses(env, monkeypatch):
         def __init__(self, reject_all: bool):
             self.reject_all = reject_all
 
+        async def register_platform(self, data):
+            return {"external_id": data["external_id"]}
+
+        async def register_counterparty(self, data):
+            return {"external_id": data["external_id"]}
+
         async def submit_stats(self, period, rows):
             if self.reject_all:
                 return {"accepted": [], "rejected": [{"id": r["external_statistic_id"], "error": "boom"} for r in rows]}

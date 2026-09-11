@@ -28,6 +28,7 @@ from ord.ozon_mapping import (
     invoice_unlink_all_body,
     organisation_body,
     period_bounds,
+    platform_body,
     statistic_body,
 )
 from ord.service import external_creative_id, external_statistic_id
@@ -53,6 +54,32 @@ def test_organisation_body_maps_legal_type_and_ogrn():
     ip = organisation_body({"external_id": "cp-2", "name": "ИП Иванов", "inn": "770000000001",
                             "legal_type": "ip", "ogrn": "3"})
     assert ip["legalType"] == "LEGAL_TYPE_ENTREPRENEUR" and ip["ogrnip"] == "3"
+
+
+def test_organisation_body_marks_ors_and_publisher_flags():
+    """ord_spec §7 D2: мы — ОРС (isOpc + rsUrl + владелец площадки), издатель — isPp."""
+    plain = organisation_body({"external_id": "cp-1", "name": "ООО Тест", "inn": "7700000001", "legal_type": "ul"})
+    assert plain["isOpc"] is False and plain["isPp"] is False and "rsUrl" not in plain and "platforms" not in plain
+    ors = organisation_body({
+        "external_id": "cp-self", "name": "ООО Централ", "inn": "7700000002", "legal_type": "ul", "role": "ors",
+        "is_self": True, "rs_url": "https://central-dsp.ru",
+        "platforms": [{"external_id": "central-dsp", "name": "Central DSP", "platform_type": "site",
+                       "url": "https://central-dsp.ru", "is_owner": True}],
+    })
+    assert ors["isOpc"] is True and ors["isPp"] is False and ors["rsUrl"] == "https://central-dsp.ru"
+    assert ors["platforms"] == [{"externalPlatformId": "central-dsp", "appName": "Central DSP",
+                                 "platformType": "PLATFORM_TYPE_SITE", "url": "https://central-dsp.ru",
+                                 "isPlatformOwner": True}]
+    pub = organisation_body({"external_id": "cp-p", "name": "ООО СМИ", "inn": "7700000003", "legal_type": "ul",
+                             "role": "publisher", "rs_url": "https://smi.ru"})
+    assert pub["isPp"] is True and pub["isOpc"] is False and "rsUrl" not in pub  # rsUrl только у ОРС
+
+
+def test_platform_body_is_site_with_url():
+    body = platform_body({"external_id": "central-dsp", "name": "Central DSP", "url": "https://central-dsp.ru"})
+    assert body == {"externalPlatformId": "central-dsp", "appName": "Central DSP",
+                    "platformType": "PLATFORM_TYPE_SITE", "url": "https://central-dsp.ru"}
+    assert platform_body({"external_id": "x", "name": "x", "platform_type": "app"})["platformType"] == "PLATFORM_TYPE_APP"
 
 
 def test_contract_body_requires_party_external_ids_and_parent():

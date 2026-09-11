@@ -93,6 +93,7 @@ async def get_ord_settings() -> dict:
                 return {
                     "api_key": cfg["api_key"],
                     "base_url": cfg.get("base_url") or "https://api-ord.ozon.ru",
+                    "platform_url": cfg.get("platform_url") or "",
                     "source": "db",
                 }
     except Exception:

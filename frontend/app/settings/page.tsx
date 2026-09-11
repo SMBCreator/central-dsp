@@ -43,12 +43,110 @@ type OrdSettings = {
   blocking?: boolean
   environment?: string
   api_key_masked?: string
+  /** URL рекламной системы — сводная площадка ОРС (ord_spec §7) */
+  platform_url?: string
   note?: string
+}
+
+type OrdPlatform = {
+  external_id: string
+  name: string
+  url: string
+  self_org: { id: string; name: string; inn: string; ord_status: string } | null
+  registered: { url: string; registered_at: string; provider: string } | null
+  missing: string[]
+}
+
+const PLATFORM_MISSING: Record<string, string> = {
+  self_org: "не отмечена наша организация (ОРС) на странице «Маркировка»",
+  self_org_registration: "наша организация не зарегистрирована в ОРД",
+  platform_url: "не задан URL рекламной системы",
+}
+
+function OrdPlatformCard() {
+  const { data: platform, mutate } = useSWR<OrdPlatform>("/ord/platform", fetcher)
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null)
+
+  async function register() {
+    setBusy(true)
+    setMsg(null)
+    try {
+      const out = await api<{ status: string; url?: string }>("/ord/platform/register", { method: "POST" })
+      await mutate()
+      setMsg({ kind: "ok", text: `Площадка «${platform?.name ?? "Central DSP"}» зарегистрирована (${out.url ?? ""})` })
+    } catch (e) {
+      setMsg({ kind: "err", text: e instanceof Error ? e.message : "Не удалось зарегистрировать площадку" })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (!platform) return null
+  const ready = platform.missing.length === 0
+  return (
+    <div className="space-y-3 rounded-lg border border-border bg-surface px-3 py-3 text-sm">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="font-medium text-foreground">Сводная площадка ОРС</p>
+          <p className="text-xs text-muted">
+            Одна площадка на всю рекламную систему (тип «Сайт», URL = домен Central DSP), владелец — наша организация. Статистика по SSP в ОРД не делится.
+          </p>
+        </div>
+        <span
+          className={
+            "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium " +
+            (platform.registered ? "bg-success/10 text-success" : ready ? "bg-warning/10 text-warning" : "bg-danger/10 text-danger")
+          }
+        >
+          {platform.registered ? "Зарегистрирована" : ready ? "Готова к регистрации" : "Не готова"}
+        </span>
+      </div>
+      <dl className="grid grid-cols-1 gap-x-6 gap-y-1 text-xs sm:grid-cols-3">
+        <div>
+          <dt className="text-muted">ID площадки</dt>
+          <dd className="font-mono text-foreground">{platform.external_id}</dd>
+        </div>
+        <div>
+          <dt className="text-muted">URL</dt>
+          <dd className="text-foreground">{platform.url || "—"}</dd>
+        </div>
+        <div>
+          <dt className="text-muted">Наша организация</dt>
+          <dd className="text-foreground">
+            {platform.self_org ? `${platform.self_org.name} (ИНН ${platform.self_org.inn}, ${platform.self_org.ord_status})` : "—"}
+          </dd>
+        </div>
+      </dl>
+      {platform.registered ? (
+        <p className="text-xs text-muted">
+          В ОРД: {platform.registered.url}, {new Date(platform.registered.registered_at).toLocaleString("ru-RU")}
+          {platform.registered.url !== platform.url ? " — URL изменился, зарегистрируйте заново" : ""}
+        </p>
+      ) : null}
+      {platform.missing.length > 0 ? (
+        <ul className="list-disc pl-5 text-xs text-danger">
+          {platform.missing.map((m) => (
+            <li key={m}>{PLATFORM_MISSING[m] ?? m}</li>
+          ))}
+        </ul>
+      ) : null}
+      {msg && (
+        <p className={"text-xs " + (msg.kind === "ok" ? "text-success" : "text-danger")} role="status">
+          {msg.text}
+        </p>
+      )}
+      <Button variant="secondary" onClick={register} disabled={busy || !ready}>
+        {busy ? "Регистрация…" : platform.registered ? "Зарегистрировать заново" : "Зарегистрировать площадку"}
+      </Button>
+    </div>
+  )
 }
 
 function OrdCard() {
   const { data: ord, mutate } = useSWR<OrdSettings>("/settings/ord", fetcher)
   const [apiKey, setApiKey] = useState("")
+  const [platformUrl, setPlatformUrl] = useState("")
   const [env, setEnv] = useState<"production" | "sandbox">("production")
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
@@ -72,9 +170,10 @@ function OrdCard() {
       // иначе получалась двойная JSON.stringify и бэкенд отвечал 422 (ожидал объект, получал строку).
       await api("/settings/ord", {
         method: "PUT",
-        body: { api_key: key, environment: env },
+        body: { api_key: key, environment: env, platform_url: platformUrl.trim() || null },
       })
       setApiKey("")
+      setPlatformUrl("")
       await mutate()
       setMsg({ kind: "ok", text: "Ключ сохранён. Нажмите «Проверить связь», чтобы убедиться, что ОРД отвечает." })
     } catch (e) {
@@ -159,7 +258,20 @@ function OrdCard() {
               <option value="sandbox">Песочница (ord-sandbox.ozon.ru)</option>
             </select>
           </Field>
+          <div className="sm:col-span-3">
+            <Field label="URL рекламной системы" hint="Сводная площадка ОРС; пусто — оставить текущий">
+              <input
+                className={inputCls}
+                type="url"
+                value={platformUrl}
+                onChange={(e) => setPlatformUrl(e.target.value)}
+                placeholder={ord?.platform_url || "https://central-dsp.ru"}
+              />
+            </Field>
+          </div>
         </div>
+
+        <OrdPlatformCard />
 
         {msg && (
           <p className={"text-sm " + (msg.kind === "ok" ? "text-success" : "text-danger")} role="status">

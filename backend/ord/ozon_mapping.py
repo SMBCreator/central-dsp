@@ -62,6 +62,30 @@ def _address(data: dict[str, Any]) -> dict[str, str]:
     }
 
 
+PLATFORM_TYPE = {"site": "PLATFORM_TYPE_SITE", "app": "PLATFORM_TYPE_APP", "system": "PLATFORM_TYPE_SYSTEM"}
+
+
+def platform_body(data: dict[str, Any]) -> dict[str, Any]:
+    """ord.platform -> POST /api/external/platform (сводная площадка ОРС)."""
+    return {
+        "externalPlatformId": data["external_id"],
+        "appName": data["name"],
+        "platformType": PLATFORM_TYPE.get(data.get("platform_type") or "site", "PLATFORM_TYPE_SITE"),
+        "url": data.get("url") or "",
+    }
+
+
+def platform_link(data: dict[str, Any]) -> dict[str, Any]:
+    """Элемент organisation.platforms[]: связь организации с площадкой и признак владельца."""
+    return {
+        "externalPlatformId": data["external_id"],
+        "appName": data["name"],
+        "platformType": PLATFORM_TYPE.get(data.get("platform_type") or "site", "PLATFORM_TYPE_SITE"),
+        "url": data.get("url") or "",
+        "isPlatformOwner": bool(data.get("is_owner", True)),
+    }
+
+
 def organisation_body(data: dict[str, Any]) -> dict[str, Any]:
     """counterparties -> POST /api/external/organisation."""
     body: dict[str, Any] = {
@@ -69,11 +93,17 @@ def organisation_body(data: dict[str, Any]) -> dict[str, Any]:
         "inn": data["inn"],
         "fullOpf": data["name"],
         "legalType": LEGAL_TYPE.get(data.get("legal_type") or "ul", "LEGAL_TYPE_LEGAL"),
-        "isOpc": False,
-        "isPp": False,
+        # isOpc = оператор рекламной системы (мы), isPp = рекламораспространитель
+        # (владелец площадки). Латинские двойники кириллических ОРС/РР в API Ozon.
+        "isOpc": bool(data.get("is_self")),
+        "isPp": data.get("role") == "publisher",
         "legalAddress": _address(data),
         "postAddress": _address(data),
     }
+    if data.get("is_self") and data.get("rs_url"):
+        body["rsUrl"] = data["rs_url"]
+    if data.get("platforms"):
+        body["platforms"] = [platform_link(p) for p in data["platforms"]]
     if data.get("ogrn"):
         key = "ogrnip" if data.get("legal_type") == "ip" else "ogrn"
         body[key] = data["ogrn"]
