@@ -353,7 +353,7 @@ https://<host>/cron/<job>` и прочитать JSON ответа. `reset-daily
 безопасен в любое время: он обнуляет только счётчики прошлых бизнес-дней
 (`spent_today_date < сегодня МСК`, ключи `spend:*:<вчера>`), текущий день не трогает.
 
-## scheduler — SchedulerDown / SchedulerJobsOverdue / SchedulerDispatchFailing
+## scheduler — SchedulerDown / SchedulerJobsOverdue / SchedulerDispatchFailing / SchedulerLeaseLost
 
 **Что это.** Фоновые задачи (`/cron/*`) запускает сервис `scheduler` из compose
 (`backend/scheduler.py`, audit O-01 / C1b). Расписание — таблица
@@ -385,6 +385,19 @@ lease протух и висит (`locked_at` старше 2×timeout — зах
 задача стала долгой; `unreachable` — backend не поднят / имя `backend` не
 резолвится; `5xx` — исключение внутри задачи, дальше по
 [cron](#cron) (лог backend по пути `/cron/<job>`).
+
+**SchedulerLeaseLost (critical).** Выполняющаяся задача не продлевала lease
+(heartbeat раз в 20 с) дольше 90 с, и её захватила другая реплика — задача
+могла выполниться **дважды параллельно**. Причины: пауза процесса scheduler
+(OOM/stop-the-world, `docker pause`), недоступность PostgreSQL с точки зрения
+scheduler при живом backend. В логе scheduler — `lease taken over by another
+worker` с именем задачи; у второй реплики — обычный запуск. Действия: убедиться,
+что БД отвечала (`pg_isready`, логи PG), проверить идемпотентность конкретного
+прогона (`ord_export` — `ord_export_log` за период, `reconcile_reserves` —
+`reserve_reconcile_drift_total`; поминутные `sweep_burl`/`audience_sync`
+идемпотентны по построению). Если метрика растёт без сбоев БД — scheduler
+задыхается (CPU/лимиты контейнера): смотреть `scheduler_jobs_inflight` и
+длительности в `GET /scheduler/jobs`.
 
 ## ord-export — OrdExportFailed / OrdExportLag / OrdExportSkippedWithoutErid / OrdExportRowsRejected
 

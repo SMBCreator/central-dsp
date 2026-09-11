@@ -260,13 +260,18 @@ Celery/beat, системный crontab и `vercel.json` для production **н�
   `backend/scheduler.py::DEFAULT_JOBS` (`ON CONFLICT DO NOTHING`), правки
   админа переживают релизы;
 - тик каждые `SCHEDULER_TICK` секунд (15): захват просроченных задач
-  `FOR UPDATE SKIP LOCKED` + lease на 2×`timeout_seconds` — несколько реплик
-  планировщика не дублируют запуск, зависший экземпляр не блокирует задачу навсегда;
+  `FOR UPDATE SKIP LOCKED` + lease — несколько реплик планировщика не дублируют
+  запуск. Пока задача выполняется, воркер продлевает lease каждые 20 с
+  (heartbeat); lease без продления 90 с считается брошенным (упавший экземпляр)
+  и задачу забирает другая реплика. Захватывается не больше свободных слотов
+  (concurrency − выполняющиеся), результат записывается только владельцем lease
+  (`scheduler_lease_lost_total` должен быть 0 — иначе задача выполнилась дважды);
 - пропущенные запуски (простой планировщика, долгий backend) **схлопываются в
   один** — следующий `next_run_at` считается от момента завершения, «догона» нет;
 - каждая задача = `GET http://backend:8000/cron/<path>` с
-  `Authorization: Bearer $CRON_SECRET` (`BACKEND_INTERNAL_URL`), таймаут
-  `timeout_seconds` (по умолчанию 600, у поминутных 50). Сами задачи и их метрики
+  `Authorization: Bearer $CRON_SECRET` (`BACKEND_INTERNAL_URL`); `timeout_seconds`
+  — общий бюджет запроса (по умолчанию 600, у поминутных 50), connect ≤ 10 с.
+  Сами задачи и их метрики
   `cron_job_runs_total` / `cron_job_last_success_timestamp_seconds` не изменились;
 - параллельно до 4 задач.
 
@@ -295,7 +300,8 @@ POST  /api/scheduler/jobs/{name}/run     # запустить на ближай�
 | `fx_refresh` / `ml_train` / `domain_quality` | `/cron/fx-refresh` `10 0`, `/cron/ml-train` `0 4`, `/cron/domain-quality` `0 5` | — | **выключены** по умолчанию (включать PATCH-ом, когда нужны: курс ЦБ, ML-модель, domain quality) |
 
 Наблюдаемость: `scheduler:8001/metrics` (`scheduler_last_tick_timestamp_seconds`,
-`scheduler_jobs_overdue`, `scheduler_job_failures_total`), healthcheck
+`scheduler_jobs_overdue`, `scheduler_jobs_inflight`, `scheduler_job_failures_total`,
+`scheduler_lease_lost_total`), healthcheck
 `python scheduler.py --healthcheck`; алерты `SchedulerDown` /
 `SchedulerJobsOverdue` / `SchedulerDispatchFailing`
 (`docs/runbooks/rtb_alerts.md#scheduler`). Логи: `docker compose logs -f scheduler`.

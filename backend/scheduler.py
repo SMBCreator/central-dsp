@@ -10,8 +10,15 @@
 * каждые SCHEDULER_TICK секунд — `SELECT ... FOR UPDATE SKIP LOCKED` по
   просроченным задачам (`enabled AND next_run_at <= now()`): несколько
   экземпляров планировщика не запустят одну задачу дважды;
-* захват = lease (`locked_at/locked_by`), протухающий через 2×timeout —
-  упавший планировщик не блокирует задачу навсегда;
+* захват = lease (`locked_at/locked_by`); пока задача выполняется, воркер
+  продлевает `locked_at` каждые HEARTBEAT_SECONDS, поэтому lease протухает
+  через LEASE_SECONDS *после последнего heartbeat* — упавший планировщик не
+  блокирует задачу дольше ~1.5 минут независимо от её timeout;
+* захватывается не больше свободных слотов (concurrency − inflight): задача
+  не лежит захваченной в очереди семафора, где её lease мог бы протухнуть и
+  привести ко второму параллельному запуску;
+* timeout_seconds — общий бюджет запроса (asyncio.wait_for), а не пауза между
+  байтами: медленно отдающий тело backend не растягивает задачу;
 * misfire: пропущенные запуски схлопываются в один — `next_run_at`
   считается от момента завершения, а не от прошлого `next_run_at`;
 * исход пишется в строку (`last_status`, `last_http_status`, `last_error`,
@@ -46,6 +53,16 @@ import obs_metrics
 from cronexpr import CronError, CronExpr
 
 log = logging.getLogger("scheduler")
+
+# Lease: воркер продлевает locked_at каждые HEARTBEAT_SECONDS; строка без
+# продления дольше LEASE_SECONDS считается брошенной и захватывается снова.
+# LEASE > 3×HEARTBEAT — один пропущенный heartbeat (кратковременный сбой БД)
+# не отдаёт задачу другому экземпляру.
+HEARTBEAT_SECONDS = 20
+LEASE_SECONDS = 90
+# Установка соединения не входит в бюджет медленных задач: недоступный backend
+# должен давать unreachable быстро, а не через timeout_seconds.
+CONNECT_TIMEOUT_SECONDS = 10.0
 
 # Все известные задачи. Расписание — UTC (МСК = UTC+3). `name` совпадает с
 # obs_metrics.CRON_JOBS (label `job` в метриках backend), `path` — с маршрутом
@@ -141,7 +158,9 @@ class Claimed:
 async def claim_due(conn: asyncpg.Connection, worker: str, limit: int = 8) -> list[Claimed]:
     """Захватить просроченные незанятые задачи. Один UPDATE с подзапросом
     FOR UPDATE SKIP LOCKED — параллельные планировщики получают непересекающиеся
-    наборы; протухший lease (2×timeout) считается свободным."""
+    наборы; lease без heartbeat дольше LEASE_SECONDS считается свободным."""
+    if limit <= 0:
+        return []
     rows = await conn.fetch(
         """
         UPDATE scheduled_jobs j
@@ -149,27 +168,41 @@ async def claim_due(conn: asyncpg.Connection, worker: str, limit: int = 8) -> li
          WHERE j.name IN (
                SELECT name FROM scheduled_jobs
                 WHERE enabled AND next_run_at IS NOT NULL AND next_run_at <= now()
-                  AND (locked_at IS NULL OR locked_at < now() - make_interval(secs => 2 * timeout_seconds))
+                  AND (locked_at IS NULL OR locked_at < now() - make_interval(secs => $3))
                 ORDER BY next_run_at
                 FOR UPDATE SKIP LOCKED
                 LIMIT $2)
         RETURNING name, path, schedule, timeout_seconds
         """,
-        worker, limit,
+        worker, limit, float(LEASE_SECONDS),
     )
     return [Claimed(r["name"], r["path"], r["schedule"], r["timeout_seconds"]) for r in rows]
 
 
+async def heartbeat(conn: asyncpg.Connection, job: Claimed, worker: str) -> bool:
+    """Продлить lease выполняющейся задачи. False = строка уже не наша
+    (lease перехвачен после долгой паузы) — исполнитель залогирует потерю."""
+    res = await conn.execute(
+        "UPDATE scheduled_jobs SET locked_at = now() WHERE name = $1 AND locked_by = $2 AND locked_at IS NOT NULL",
+        job.name, worker,
+    )
+    return res.endswith(" 1")
+
+
 async def complete(
     conn: asyncpg.Connection, job: Claimed, *, status: str, http_status: int | None,
-    duration_ms: int, error: str | None, finished: datetime | None = None,
+    duration_ms: int, error: str | None, finished: datetime | None = None, worker: str | None = None,
 ) -> datetime | None:
+    """Записать исход и запланировать следующий запуск. С `worker` строка
+    обновляется только если lease всё ещё наш: результат воркера, у которого
+    lease перехватили, не затирает состояние нового владельца. -> next_run_at
+    (None, если расписание невалидно или строка уже не наша)."""
     finished = finished or utcnow()
     try:
         nxt: datetime | None = CronExpr.parse(job.schedule).next_after(finished)
     except CronError:
         nxt = None  # fill_next_run выключит задачу на следующем тике
-    await conn.execute(
+    res = await conn.execute(
         """
         UPDATE scheduled_jobs
            SET locked_at = NULL, locked_by = NULL,
@@ -178,21 +211,31 @@ async def complete(
                runs_total = runs_total + 1,
                errors_total = errors_total + CASE WHEN $3 = 'ok' THEN 0 ELSE 1 END,
                updated_at = now()
-         WHERE name = $1
+         WHERE name = $1 AND ($8::text IS NULL OR locked_by = $8)
         """,
-        job.name, finished, status, http_status, duration_ms, (error or None) and error[:2000], nxt,
+        job.name, finished, status, http_status, duration_ms, (error or None) and error[:2000], nxt, worker,
     )
+    if not res.endswith(" 1"):
+        log.error("job %s: lease lost before completion (worker=%s, status=%s) — result not recorded", job.name, worker, status)
+        return None
     return nxt
 
 
 async def run_job(client: httpx.AsyncClient, job: Claimed, base_url: str, secret: str) -> tuple[str, int | None, int, str | None]:
     """-> (status, http_status, duration_ms, error). ok = 2xx; 4xx/5xx = error;
-    таймаут = timeout; сетевой сбой = unreachable."""
+    таймаут = timeout; сетевой сбой = unreachable.
+
+    timeout_seconds — общий бюджет (wait_for); httpx-таймаут только на connect:
+    read-таймаут httpx — пауза между байтами, а не длительность запроса."""
     url = base_url.rstrip("/") + job.path
     t0 = time.monotonic()
+    http_timeout = httpx.Timeout(None, connect=min(CONNECT_TIMEOUT_SECONDS, job.timeout_seconds))
     try:
-        resp = await client.get(url, headers={"Authorization": f"Bearer {secret}"}, timeout=job.timeout_seconds)
-    except httpx.TimeoutException:
+        resp = await asyncio.wait_for(
+            client.get(url, headers={"Authorization": f"Bearer {secret}"}, timeout=http_timeout),
+            timeout=job.timeout_seconds,
+        )
+    except (httpx.TimeoutException, TimeoutError):
         return "timeout", None, int((time.monotonic() - t0) * 1000), f"no response within {job.timeout_seconds}s"
     except httpx.HTTPError as e:
         return "unreachable", None, int((time.monotonic() - t0) * 1000), f"{type(e).__name__}: {e}"
@@ -214,17 +257,23 @@ class Scheduler:
         self.worker = worker or f"{socket.gethostname()}:{os.getpid()}"
         self.tick = tick
         self.client = client or httpx.AsyncClient()
-        self._sem = asyncio.Semaphore(concurrency)
+        self.concurrency = max(1, concurrency)
+        self.heartbeat_seconds = float(HEARTBEAT_SECONDS)
         self._stop = asyncio.Event()
         self._inflight: set[asyncio.Task] = set()
         self.last_tick_at: float | None = None
 
+    @property
+    def free_slots(self) -> int:
+        return self.concurrency - len(self._inflight)
+
     async def tick_once(self) -> list[Claimed]:
-        """Один цикл: досев, пересчёт NULL, захват, запуск. -> захваченные."""
+        """Один цикл: досев, пересчёт NULL, захват (не больше свободных слотов),
+        запуск. -> захваченные."""
         async with self.pool.acquire() as conn:
             await ensure_seed(conn)
             await fill_next_run(conn)
-            claimed = await claim_due(conn, self.worker)
+            claimed = await claim_due(conn, self.worker, limit=self.free_slots)
             overdue = await conn.fetchval(
                 "SELECT count(*) FROM scheduled_jobs WHERE enabled AND next_run_at < now() - interval '5 minutes' AND locked_at IS NULL"
             )
@@ -233,13 +282,31 @@ class Scheduler:
             task = asyncio.create_task(self._execute(job), name=f"job:{job.name}")
             self._inflight.add(task)
             task.add_done_callback(self._inflight.discard)
+        obs_metrics.set_gauge("scheduler_jobs_inflight", float(len(self._inflight)))
         self.last_tick_at = time.time()
         obs_metrics.set_gauge("scheduler_last_tick_timestamp_seconds", self.last_tick_at)
         return claimed
 
+    async def _heartbeat_loop(self, job: Claimed) -> None:
+        while True:
+            await asyncio.sleep(self.heartbeat_seconds)
+            try:
+                async with self.pool.acquire() as conn:
+                    ours = await heartbeat(conn, job, self.worker)
+            except Exception:  # noqa: BLE001 — БД моргнула: lease переживёт пропуск (LEASE > 3×HEARTBEAT)
+                log.warning("job %s: heartbeat failed", job.name, exc_info=True)
+                continue
+            if not ours:
+                log.error("job %s: lease taken over by another worker while running", job.name)
+                obs_metrics.inc("scheduler_lease_lost_total")
+                return
+
     async def _execute(self, job: Claimed) -> None:
-        async with self._sem:
+        hb = asyncio.create_task(self._heartbeat_loop(job), name=f"heartbeat:{job.name}")
+        try:
             status, http_status, ms, error = await run_job(self.client, job, self.base_url, self.secret)
+        finally:
+            hb.cancel()
         if status != "ok":
             obs_metrics.inc("scheduler_job_failures_total")
         log.log(
@@ -247,7 +314,8 @@ class Scheduler:
             "job %s %s http=%s %dms%s", job.name, status, http_status, ms, f" error={error}" if error else "",
         )
         async with self.pool.acquire() as conn:
-            await complete(conn, job, status=status, http_status=http_status, duration_ms=ms, error=error)
+            await complete(conn, job, status=status, http_status=http_status, duration_ms=ms, error=error, worker=self.worker)
+        obs_metrics.set_gauge("scheduler_jobs_inflight", float(max(0, len(self._inflight) - 1)))
 
     async def run_forever(self) -> None:
         log.info("scheduler %s started: backend=%s tick=%ss", self.worker, self.base_url, self.tick)

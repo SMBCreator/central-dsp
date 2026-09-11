@@ -68,6 +68,7 @@ _COUNTER_HELP = {
     "ord_notification_errors_total": "ERIR error notifications pulled from the ORD provider by GET /cron/ord-notifications (B13g); each marks its object erir_error.",
     # O-01 (C1b): процесс scheduler — вызов /cron/* не вернул 2xx (timeout/unreachable/4xx/5xx).
     "scheduler_job_failures_total": "Scheduled job dispatches that did not end with HTTP 2xx from the backend (timeout, connection error, 4xx/5xx).",
+    "scheduler_lease_lost_total": "Running scheduled jobs whose lease was taken over by another scheduler instance (no heartbeat for LEASE_SECONDS). Must stay 0: >0 means a job ran twice in parallel.",
 }
 
 # Gauges (D8): значения, которые нельзя вывести из счётчиков. None = ещё не
@@ -103,6 +104,7 @@ _GAUGE_HELP = {
     # O-01 (C1b): экспортирует процесс scheduler (backend/scheduler.py, :8001/metrics), не backend.
     "scheduler_last_tick_timestamp_seconds": "Unix time of the scheduler's last completed tick (claim + dispatch of due scheduled_jobs).",
     "scheduler_jobs_overdue": "Enabled scheduled_jobs whose next_run_at is more than 5 minutes in the past and that nobody has claimed.",
+    "scheduler_jobs_inflight": "Scheduled jobs currently executing in this scheduler instance (bounded by its concurrency; claims stop at the limit).",
 }
 
 # R-07: исходы биллинга по burl per SSP — для агрегированного алерта

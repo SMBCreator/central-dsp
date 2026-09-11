@@ -299,6 +299,19 @@ groups:
             Подробности — last_status/last_error в GET /scheduler/jobs
             и логи scheduler. Runbook: rtb_alerts.md#scheduler
 
+      - alert: SchedulerLeaseLost
+        expr: increase(scheduler_lease_lost_total[1h]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Задача планировщика выполнилась параллельно дважды"
+          description: >-
+            Другая реплика scheduler перехватила lease выполняющейся задачи:
+            heartbeat не доходил до PostgreSQL дольше 90 с (пауза процесса,
+            недоступность БД). Задача могла выполниться дважды — проверить
+            идемпотентность прогона (ord_export, reconcile) по last_error/логам.
+            Runbook: rtb_alerts.md#scheduler
+
       - alert: OrdExportFailed
         expr: increase(ord_export_failures_total[1d]) > 0
         labels:

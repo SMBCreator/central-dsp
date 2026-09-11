@@ -191,6 +191,17 @@ def test_complete_updates_row_and_schedules_next(env):
             await scheduler.complete(conn, job, status="ok", http_status=200, duration_ms=1, error=None, finished=finished)
             r = await conn.fetchrow("SELECT runs_total, errors_total, last_error FROM scheduled_jobs WHERE name = 't_job'")
             assert (r["runs_total"], r["errors_total"], r["last_error"]) == (2, 1, None)
+
+            # lease-guard: чужой/перехваченный lease не затирает состояние владельца
+            await conn.execute("UPDATE scheduled_jobs SET locked_at = now(), locked_by = 'OWNER' WHERE name = 't_job'")
+            assert await scheduler.heartbeat(conn, job, "OTHER") is False
+            assert await scheduler.heartbeat(conn, job, "OWNER") is True
+            assert await scheduler.complete(conn, job, status="ok", http_status=200, duration_ms=1, error=None, worker="OTHER") is None
+            r = await conn.fetchrow("SELECT runs_total, locked_by FROM scheduled_jobs WHERE name = 't_job'")
+            assert (r["runs_total"], r["locked_by"]) == (2, "OWNER")
+            assert await scheduler.complete(conn, job, status="ok", http_status=200, duration_ms=1, error=None, worker="OWNER") is not None
+            r = await conn.fetchrow("SELECT runs_total, locked_by FROM scheduled_jobs WHERE name = 't_job'")
+            assert (r["runs_total"], r["locked_by"]) == (3, None)
         finally:
             await conn.close()
 
@@ -233,6 +244,43 @@ def test_tick_once_end_to_end(env):
             assert "scheduler_last_tick_timestamp_seconds" in snap and "scheduler_jobs_overdue 0" in snap
             # второй тик сразу — дефолтные задачи запланированы в будущее, ничего не просрочено
             assert await sched.tick_once() == []
+        finally:
+            await client.aclose()
+            await pool.close()
+
+    _run(run())
+
+
+def test_tick_claims_no_more_than_free_slots(env):
+    """concurrency=1 и две просроченные: вторая остаётся незахваченной (locked_at NULL)
+    до освобождения слота, а не лежит с lease в очереди семафора."""
+    async def run():
+        pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=3)
+        release = asyncio.Event()
+
+        async def handler(req: httpx.Request):
+            await release.wait()
+            return httpx.Response(200, json={"ok": True})
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        sched = scheduler.Scheduler(pool, base_url="http://backend:8000", secret="sek", worker="T", client=client, concurrency=1)
+        try:
+            async with pool.acquire() as conn:
+                past = datetime.now(UTC) - timedelta(minutes=10)
+                await _insert(conn, "t_a", next_run_at=past - timedelta(minutes=1))
+                await _insert(conn, "t_b", next_run_at=past)
+            first = await sched.tick_once()
+            assert [j.name for j in first] == ["t_a"] and sched.free_slots == 0
+            assert await sched.tick_once() == []  # слот занят — ничего не захватываем
+            async with pool.acquire() as conn:
+                rows = {r["name"]: r for r in await conn.fetch("SELECT name, locked_by FROM scheduled_jobs WHERE name IN ('t_a','t_b')")}
+            assert rows["t_a"]["locked_by"] == "T" and rows["t_b"]["locked_by"] is None
+            release.set()
+            await asyncio.gather(*sched._inflight)
+            assert [j.name for j in await sched.tick_once()] == ["t_b"]
+            await asyncio.gather(*sched._inflight)
+            async with pool.acquire() as conn:
+                assert await conn.fetchval("SELECT count(*) FROM scheduled_jobs WHERE name IN ('t_a','t_b') AND last_status = 'ok' AND runs_total = 1") == 2
         finally:
             await client.aclose()
             await pool.close()
