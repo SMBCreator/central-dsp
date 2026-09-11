@@ -58,7 +58,7 @@
 | # | Вопрос | Статус | Где в коде | Риск | Рекомендация |
 |---|---|---|---|---|---|
 | 4.1 | Месячная статистика показов | **Реализовано** | `GET /cron/ord-export?period=YYYY-MM` — агрегат `stats_hourly` по erid (`impressions`, `clicks`, `amount`), `adapter.submit_stats` | Считаются только креативы `ord_creatives.status='registered'` и `erid IS NOT NULL` — показы креативов без erid **не попадут и не подсветятся** | См. 5.3 (мониторинг) |
-| 4.2 | Расписание | **Реализовано в этом этапе** | `vercel.json` / `deploy/vercel.services.json`: `0 3 2 * *` (2-е число, 03:00 UTC = 06:00 МСК) | Раньше cron **не был зарегистрирован** — выгрузка не запускалась автоматически. На VPS (docker-compose) планировщика для `/cron/*` нет: `legacy/backend/celery_app.py` не используется | Для VPS — добавить системный crontab (`curl -H "Authorization: Bearer $CRON_SECRET" https://api/.../cron/ord-export`) — см. `docs/DEPLOYMENT.md` |
+| 4.2 | Расписание | **Реализовано** (C1b, 2026-09-11) | Сервис `scheduler` (compose) по таблице `scheduled_jobs`: задача `ord_export`, `0 3 2 * *` UTC (2-е число, 06:00 МСК); ручной запуск `POST /scheduler/jobs/ord_export/run` | Раньше выгрузка зависела от `vercel.json`, который на VPS не действует; Vercel — только preview и не источник расписания | Для VPS — добавить системный crontab (`curl -H "Authorization: Bearer $CRON_SECRET" https://api/.../cron/ord-export`) — см. `docs/DEPLOYMENT.md` |
 | 4.3 | Идемпотентность выгрузки | **Реализовано** | `ord_export_log (period, kind='stats', status='ok')` — повтор за период = no-op | Если `failed` — повторный запуск создаёт новую запись (это правильно) | — |
 | 4.4 | Разбивка по площадкам | **Нет** | Агрегат по erid без разреза `domain`/`supply_partner` | ОРД Ozon ожидает статистику в разрезе площадки | Бэклог: агрегировать из `domain_stats_hourly` (есть с миграции 015) по `(erid, domain)`; зависит от 3.9, M |
 | 4.5 | Акты / разаллокация денег по договорам | **Нет** | `ord_export_log.kind='acts'` зарезервирован, реализации нет | Без актов ОРД не закроет отчётный период по договору | Нужно решение бизнеса: кто формирует акты (DSP или агентство). Если DSP — бэклог L |
@@ -91,8 +91,7 @@
 **Готово к работе с реальным ОРД после сверки спецификации Ozon (1.4).** Контур «контрагент → договор → креатив → erid → показ с маркировкой → месячная статистика» замкнут и идемпотентен.
 
 **Сделано в этом этапе (мелкие правки):**
-- cron `ord-export` зарегистрирован в `vercel.json` и `deploy/vercel.services.json` (`0 3 2 * *`);
-- инструкция для VPS crontab в `docs/DEPLOYMENT.md`;
+- задача `ord_export` в `scheduled_jobs` (`0 3 2 * *` UTC), запускает сервис `scheduler` — см. `docs/DEPLOYMENT.md` §9.1;
 - подсказки в UI `/ord` (порядок регистрации, расписание, что делать при `failed`).
 
 **Бэклог (оценка S/M/L):**

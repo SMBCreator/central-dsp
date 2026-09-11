@@ -1,42 +1,4 @@
 {
-  "crons": [
-    {
-      "path": "/api/cron/rules",
-      "schedule": "0 6 * * *"
-    },
-    {
-      "path": "/api/cron/reset-daily",
-      "schedule": "30 21 * * *"
-    },
-    {
-      "path": "/api/cron/reconcile-reserves",
-      "schedule": "*/5 * * * *"
-    },
-    {
-      "path": "/api/cron/sweep-burl",
-      "schedule": "* * * * *"
-    },
-    {
-      "path": "/api/cron/optimize",
-      "schedule": "0 7 * * *"
-    },
-    {
-      "path": "/api/cron/ord-export",
-      "schedule": "0 3 2 * *"
-    },
-    {
-      "path": "/api/cron/retention",
-      "schedule": "30 2 * * *"
-    },
-    {
-      "path": "/api/cron/audience-sync",
-      "schedule": "15 * * * *"
-    },
-    {
-      "path": "/api/cron/ord-notifications",
-      "schedule": "45 * * * *"
-    }
-  ],
   "services": {
     "frontend": {
       "root": "frontend/"
