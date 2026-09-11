@@ -230,6 +230,15 @@
   *Follow-up (не блокирует C1d):* parity-метрики симулятора `simulator_engine_mismatch_total` /
   `simulator_parity_failures_total` — считать в parity-прогоне (Go vs `process_bid_request` на одном BidRequest),
   а не в `/simulator/run`; добавить вместе с алертом в C4.
+  *Guard (закрыт):* `backend/tests/test_simulator_python_reference_guard.py` фиксирует инвариант целиком —
+  production падает на старте при `SIMULATOR_ALLOW_PYTHON_REFERENCE=true`; в production `engine=python_reference`
+  = 404 независимо от флага; вне production reference только при явном truthy-флаге (иначе 403); Go недоступен →
+  503 с `fallback_used=false`; ни одна комбинация env/флага не переключает Go-unavailable на Python reference.
+- **C1e-tech — GitHub Actions: Node 20 deprecation (не блокирует C2).** CI печатает предупреждение о Node 20 для
+  `actions/checkout@v4` и соседних actions. В рамках C1d actions не обновляются. Перед обновлением — отдельный audit:
+  список используемых actions и текущих версий, Node-совместимость целевых версий, требуемые `permissions`,
+  потенциальные breaking changes (inputs/outputs, поведение checkout/setup-*), план проверки CI (все джобы зелёные
+  на ветке до merge). Обновление — отдельным маленьким commit после audit.
 
 ### C2. O-02 — backup/restore
 - Единый артефакт `backup-<ts>.tar` (pg dump custom format файл, redis rdb, uploads tar, manifest.json с sha256); restore принимает только его, сравнивает checksum, использует `--jobs` с файлом; SQL verify по `transactions`; проверка `schema_migrations.filename`. Тест: shell-тест на локальном PG (backup → drop → restore → сверка балансов и count событий).
