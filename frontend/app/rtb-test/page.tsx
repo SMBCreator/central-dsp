@@ -3,7 +3,7 @@
 import { useState } from "react"
 import Link from "next/link"
 import useSWR, { mutate } from "swr"
-import { api, fetcher } from "@/lib/api"
+import { api, ApiError, fetcher } from "@/lib/api"
 import { AD_TYPE_LABELS, fmtNum, type SupplyPartner } from "@/lib/types"
 import { Button, Card, CardHeader, EmptyState, Field, inputCls, Spinner } from "@/components/ui"
 
@@ -18,8 +18,11 @@ interface SimResult {
     errors: number
   }
   sample: { request: unknown; response: unknown } | null
-  /** Какой биддер отвечал: боевой Go по HTTP или встроенный Python (dev). */
-  mode?: "go" | "python"
+  /** Какой движок отвечал: боевой Go-биддер или Python reference (только dev, по явному запросу). */
+  engine?: "go" | "python_reference"
+  requested_engine?: "go" | "python_reference"
+  /** Всегда false: автоматического переключения движка нет (C1d). */
+  fallback_used?: boolean
   /** Все запросы шли с OpenRTB test=1 — деньги и статистика клиента не затронуты. */
   test?: boolean
 }
@@ -55,7 +58,13 @@ export default function RtbTestPage() {
       setResult(res)
       await mutate((key) => typeof key === "string" && key.startsWith("/stats"), undefined, { revalidate: true })
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Ошибка симуляции")
+      if (err instanceof ApiError && err.status === 503) {
+        setError(
+          "Go-биддер недоступен — симуляция не выполнена. Автоматического переключения на Python reference нет; повторите после восстановления биддера.",
+        )
+      } else {
+        setError(err instanceof Error ? err.message : "Ошибка симуляции")
+      }
     } finally {
       setRunning(false)
     }
@@ -161,7 +170,7 @@ export default function RtbTestPage() {
                 <p className="mb-3 rounded-md border border-border bg-surface px-3 py-2 text-xs text-muted">
                   Тестовый режим (OpenRTB test=1): ставки, выигрыши и клики записаны в журнал с пометкой
                   «тест», но не списывают бюджет и не попадают в статистику кампаний.
-                  {result.mode ? ` Биддер: ${result.mode === "go" ? "боевой Go" : "встроенный Python"}.` : ""}
+                  {result.engine ? ` Движок: ${result.engine === "go" ? "боевой Go-биддер" : "Python reference (dev)"}.` : ""}
                 </p>
               ) : null}
               <div className="space-y-2">
