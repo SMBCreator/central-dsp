@@ -178,8 +178,8 @@ groups:
 
       - alert: PrefilterDropRateHigh
         expr: |
-          sum(rate(rtb_prefilter_drops_total[15m]))
-            / (sum(rate(rtb_bid_requests_total[15m])) + 0.001) > 0.5
+          sum(rate(bidder_prefilter_drops_total[15m]))
+            / (sum(rate(bidder_bid_requests_total[15m])) + 0.001) > 0.5
         for: 15m
         labels:
           severity: warning
@@ -189,7 +189,7 @@ groups:
             Либо SSP шлёт мусор (боты, чужое гео, datacenter-IP) — обсудить
             с партнёром, либо предфильтр переусердствовал (проверить
             THROTTLE_COUNTRIES и список подсетей после недавних изменений).
-            Разбивка по причинам: rtb_prefilter_drops_total{reason=...}.
+            Разбивка по причинам: bidder_prefilter_drops_total{reason=...}.
             Runbook: rtb_alerts.md#prefilter-drops
 
   # Чеклист D8 (2026-09-05): доля gate-ошибок, 5xx бэкенда, DEFAULT-партиция,

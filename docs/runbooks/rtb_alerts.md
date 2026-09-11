@@ -224,11 +224,12 @@ Freq cap занимает слот на win временно (env `WIN_IMP_TTL`,
 
 ## prefilter-drops — PrefilterDropRateHigh
 
-**Что значит:** throttling-предфильтр (`backend/prefilter.py`) отсекает более
-50% входящих bid-запросов 15+ минут.
+**Что значит:** throttling-предфильтр Go-биддера (`bidder-go/internal/prefilter`)
+отсекает более 50% входящих bid-запросов 15+ минут. Метрики — только у Go
+(`bidder_*`): после C1d backend bid-запросы не принимает.
 
 **Диагностика:**
-1. Разбивка по причинам: `rtb_prefilter_drops_total{reason=...}`:
+1. Разбивка по причинам: `bidder_prefilter_drops_total{reason=...}`:
    - `bot_ua` доминирует — SSP шлёт бот-трафик; собрать примеры UA из
      семпла логов, эскалировать партнёру.
    - `geo_unserved` — партнёр шлёт чужое гео; проверить настройки
