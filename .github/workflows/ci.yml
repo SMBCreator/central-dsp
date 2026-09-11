@@ -136,6 +136,57 @@ jobs:
         run: |
           docker run --rm -v "$PWD/ops/prometheus:/etc/prometheus:ro" --entrypoint promtool \
             prom/prometheus:v2.55.1 check config /etc/prometheus/prometheus.yml
+      - name: drill override renders isolated (own network, own volumes, _ci database)
+        env:
+          COMPOSE_PROJECT_NAME: centraldsp-ci-config
+        run: |
+          docker compose -f compose.yml -f ops/tests/compose.ci-drill.yml --env-file ops/tests/drill.env config --format json > /tmp/drill.json
+          python3 - <<'PY'
+          import json
+          c = json.load(open('/tmp/drill.json'))
+          assert c['name'] == 'centraldsp-ci-config'
+          assert all(v['name'].startswith('centraldsp-ci-config_') for v in c['volumes'].values()), c['volumes']
+          assert all(n['name'].startswith('centraldsp-ci-config-') for n in c['networks'].values()), c['networks']
+          assert c['services']['postgres']['environment']['POSTGRES_DB'].endswith('_ci')
+          assert c['services']['postgres']['ports'][0]['host_ip'] == '127.0.0.1'
+          PY
+      - name: shellcheck ops scripts
+        run: |
+          sudo apt-get install -y -q shellcheck >/dev/null
+          shellcheck -x -S warning ops/backup.sh ops/restore.sh ops/lib/backup_common.sh ops/tests/backup_restore_drill.sh ops/preprod_check.sh
+
+  # Disaster-recovery drill (C2 / audit O-02): изолированный compose-проект,
+  # migrations -> seed -> backup.sh --with-redis (VERIFY=always) -> проверка
+  # manifest/checksums -> negative tests -> down -v -> restore.sh -> независимая
+  # финансовая сверка -> tamper -> verification FAILED. Guard внутри скрипта:
+  # CENTRALDSP_TEST_MODE=1 и COMPOSE_PROJECT_NAME=centraldsp-ci-*, иначе exit 3
+  # до любых destructive действий. Production .env/секреты не читаются.
+  backup-restore-drill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CENTRALDSP_TEST_MODE: "1"
+      COMPOSE_PROJECT_NAME: centraldsp-ci-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install drill dependencies (asyncpg for migrate.py / seed)
+        run: pip install asyncpg
+      - name: Run drill
+        run: ops/tests/backup_restore_drill.sh
+      - name: Upload drill report (logs, manifest, artifact)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backup-restore-drill-report
+          path: /tmp/cdsp-drill-*/report/
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Remove test stack (belt and braces; the drill already does this in its trap)
+        if: always()
+        run: docker compose -f compose.yml -f ops/tests/compose.ci-drill.yml --env-file ops/tests/drill.env down -v --remove-orphans || true
 
   security:
     runs-on: ubuntu-latest

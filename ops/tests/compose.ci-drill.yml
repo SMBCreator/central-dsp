@@ -1,0 +1,17 @@
+# Override для ops/tests/backup_restore_drill.sh: публикует postgres/redis на
+# 127.0.0.1, чтобы seed/migrate с хоста могли подключиться. Используется ТОЛЬКО
+# вместе с COMPOSE_PROJECT_NAME=centraldsp-ci-* и CENTRALDSP_TEST_MODE=1
+# (guard в drill-скрипте); в production-стек не подключать.
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:${DRILL_PG_PORT:-55432}:5432"
+  redis:
+    ports:
+      - "127.0.0.1:${DRILL_REDIS_PORT:-56379}:6379"
+
+# compose.yml фиксирует имя сети centraldsp-network; drill не должен делить сеть
+# с production-стеком на той же машине.
+networks:
+  centraldsp:
+    name: ${COMPOSE_PROJECT_NAME}-network

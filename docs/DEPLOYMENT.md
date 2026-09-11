@@ -213,38 +213,72 @@ docker compose logs backend --tail 10   # миграции применилис�
 ## 9. Бэкапы (обязательно с первого дня)
 
 Целевые показатели: **RPO ≤ 24 ч** (ежедневный полный дамп), **RTO ≤ 1 ч**
-(восстановление скриптом в новую базу и переключение `DATABASE_URL`).
-Redis не бэкапится: счётчики бюджетов/капов пересчитываются из Postgres при старте.
+(restore скриптом + переключение `DATABASE_URL`). Redis по умолчанию **не восстанавливается**
+из бэкапа — источник истины Postgres, счётчики пересобираются (см. ниже); копия Redis
+снимается только для полного DR (`--with-redis`).
 
-Скрипты в `ops/`:
+Один бэкап = один файл `backup-<ts>.tar` (формат 2). Внутри: `postgres.dump` (custom format,
+`pg_dump --snapshot` — дамп и контрольные снимки из **одного** снапшота), `ledger_snapshot.tsv`
+(баланс каждого рекламодателя vs `SUM(transactions)`), `counts.tsv`, `schema_migrations.tsv`,
+`pg_restore_toc.txt`, `uploads.tar` (volume `uploads_data`), опционально `redis/dump.rdb`,
+`manifest.json` (метаданные, sha256 всех файлов, результат финансовой сверки на момент
+бэкапа) и `SHA256SUMS`. `ops/restore.sh` принимает **только** этот формат.
 
 | Скрипт | Что делает |
 |---|---|
-| `ops/backup.sh` | `pg_dump -Fc` + `uploads/` → `/var/backups/centraldsp/<ts>/`, `manifest.json` с sha256, ротация (`KEEP_DAYS`, по умолчанию 14), опционально `pg_restore --list` как проверка целостности и `rclone` в S3 (`BACKUP_REMOTE`) |
-| `ops/restore.sh` | восстанавливает дамп в **новую** базу `centraldsp_restore_<ts>`, печатает контрольные счётчики, распаковывает `uploads` рядом; в существующую базу — только `--target-db NAME --yes` |
+| `ops/backup.sh [--with-redis]` | артефакт в `$BACKUP_DIR` (default `/var/backups/centraldsp`), ротация `RETENTION_DAYS` (14), `VERIFY=weekly\|always\|never` — реальный `restore.sh --scratch` во временную базу + сверка, `OFFSITE_CMD` (получает путь к `.tar`), `ALERT_CMD` (получает текст ошибки). Exit 0 только если всё прошло; 4 — VERIFY не прошёл (артефакт сохранён), 5 — offsite не удался |
+| `ops/restore.sh <tar>` | восстанавливает в **новую** базу `<db>_restore_<ts>`, сверяет с артефактом байт в байт, база остаётся для осмотра |
+| `… --scratch` | то же во временную базу + DROP после сверки (учения) |
+| `… --target-db centraldsp --yes` | боевое: DROP+CREATE базы, restore, сверка. Без `--yes` — exit 3 |
+| `… --verify-only --target-db NAME` | только сверка существующей базы с артефактом |
+| `… --restore-uploads --yes` | заменить содержимое volume `uploads_data` (backend должен быть остановлен) |
+| `… --with-redis --yes-replace-redis` | полный DR Redis из `dump.rdb` через пересборку AOF (см. шапку скрипта) |
+
+Порядок в `restore.sh` жёсткий: `sha256sum -c` (не сошлось → exit 5, к базе не прикасаемся)
+→ `pg_restore --jobs` → «restore completed» → **verification**: из восстановленной базы снимаются
+те же `ledger_snapshot`/`counts`/`schema_migrations` и сравниваются с артефактом. Любое
+расхождение → «verification FAILED», exit 4: баланс **не** правится, проводки **не** дописываются,
+rollback **не** делается — разбирается человек. Restore без «verification passed» успешным
+не считается. Расхождение `balance ≠ SUM(transactions)`, которое было уже на момент бэкапа
+(записано в manifest), сверку не валит, а печатается как «pre-existing».
 
 ```bash
 # /etc/cron.d/centraldsp-backup  (03:30 UTC, до месячной выгрузки ОРД)
 30 3 * * *  root  cd /opt/central-dsp && ops/backup.sh >> /var/log/centraldsp-backup.log 2>&1
 ```
 
-Переменные (`.env` или окружение cron): `PG_CONTAINER`, `PG_USER`, `PG_DB`,
-`UPLOADS_DIR`, `BACKUP_ROOT`, `KEEP_DAYS`, `BACKUP_REMOTE` (например `s3:centraldsp-backups`).
-Хотя бы одна копия должна лежать **вне** VPS — иначе бэкап не защищает от потери сервера.
+Переменные (`/etc/default/centraldsp-backup` или окружение cron): `COMPOSE_DIR`, `BACKUP_DIR`,
+`RETENTION_DAYS`, `POSTGRES_USER`/`POSTGRES_DB` (как в `.env`), `VERIFY`, `OFFSITE_CMD`, `ALERT_CMD`.
+Хотя бы одна копия должна лежать **вне** VPS — `OFFSITE_CMD` намеренно провайдер-нейтрален
+(`rclone copyto …`, `aws s3 cp …`); без него `backup.sh` пишет WARN в каждом запуске.
+S3 Object Lock / write-only креды — отдельная задача (см. release plan, «immutable offsite»).
 
-Учения по восстановлению — раз в месяц (запишите дату в журнал):
+Учения по восстановлению — раз в месяц (дата в журнал), боевую базу не трогают:
 
 ```bash
-ops/restore.sh /var/backups/centraldsp/<последний>   # в новую БД, боевую не трогает
-docker compose exec -T postgres psql -U centraldsp -d centraldsp_restore_<ts> -c "select count(*) from campaigns"
-docker compose exec -T postgres dropdb -U centraldsp centraldsp_restore_<ts>
+ops/restore.sh /var/backups/centraldsp/backup-<ts>.tar --scratch     # restore -> сверка -> DROP
 ```
 
-Реальное восстановление после потери базы: `ops/restore.sh <бэкап>` → остановить
-`backend`/`bidder-go` → сменить `DATABASE_URL` на новую базу (или `ALTER DATABASE ... RENAME`)
-→ поднять сервисы → `redis-cli FLUSHDB` (счётчики пересчитаются) → проверить
-`GET /health` и фид биддера: `GET /rtb-feed/partners` и `GET /rtb-feed/campaigns`
-(заголовок `Authorization: Bearer ${RTB_API_TOKEN}`).
+Тот же сценарий целиком гоняет CI job `backup-restore-drill` (`ops/tests/backup_restore_drill.sh`):
+изолированный compose-проект → миграции → seed → `backup.sh --with-redis` → уничтожение
+volume'ов → `restore.sh` → независимая сверка → подмена баланса → «verification FAILED».
+Отчёт (логи, manifest, артефакт) — в artifacts прогона.
+
+Реальное восстановление после потери базы:
+
+```bash
+docker compose stop backend scheduler bidder-go
+ops/restore.sh /var/backups/centraldsp/backup-<ts>.tar --target-db centraldsp --yes --restore-uploads
+#  -> «restore completed AND verification passed», иначе НЕ продолжать
+docker compose start backend scheduler
+docker compose exec backend python scripts/redis_rebuild_spend.py --apply   # spend:* из bid_events
+curl -H "Authorization: Bearer $CRON_SECRET" http://127.0.0.1:8000/cron/reconcile-reserves   # резервы res:*
+docker compose start bidder-go
+```
+
+Затем `GET /health` и фид биддера: `GET /rtb-feed/partners`, `GET /rtb-feed/campaigns`
+(`Authorization: Bearer ${RTB_API_TOKEN}`). `freq:*` из Postgres не восстанавливаются
+(`docs/runbooks/rtb_alerts.md`, раздел redis-down).
 
 ## 9.1. Планировщик `/cron/*` — сервис `scheduler`
 
