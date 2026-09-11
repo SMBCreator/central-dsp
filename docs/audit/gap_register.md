@@ -28,7 +28,7 @@ Severity: `blocker` > `critical` > `high` > `medium` > `low`.
 | GAP-015 | medium | backend/auth | Refresh-токены без ротации/отзыва списком | Ротация при каждом refresh + `jti` denylist в Redis |
 | GAP-016 | medium | frontend | Дашборд не показывает причину остановки кампании (бюджет/капы/модерация) | Поле `pause_reason` в API кампаний + бейдж в UI |
 | GAP-017 | medium | bidder-go | GeoIP: Java использует GeoLite2-volume, Go-скелет читает только `device.geo` | Подключить mmdb-ридер в Go при имплементации targeting |
-| GAP-018 | low | repo | Java-биддер остаётся в репо (deprecated) — риск случайных правок | Удалить каталог `bidder/` после cutover Go |
+| GAP-018 | low | repo | ~~Java-биддер остаётся в репо (deprecated)~~ — **закрыт C1c (2026-09-11)**: `bidder/` удалён, Go bidder единственный auction runtime | ~~Удалить каталог `bidder/` после cutover Go |
 | GAP-019 | low | docs | README репо описывает Java как основной биддер | Обновить при merge этой ветки |
 
 ## Исправлено по аудиту 2026-09 (`prod_readiness_2026-09.md`, 03.09.2026)

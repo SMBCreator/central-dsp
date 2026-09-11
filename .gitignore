@@ -45,14 +45,6 @@ dist/
 next-env.d.ts
 .vercel/
 
-# Java / Maven
-target/
-*.class
-*.jar
-*.war
-*.ear
-.mvn/
-
 # Docker volumes
 postgres_data/
 redis_data/

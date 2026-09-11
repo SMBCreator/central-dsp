@@ -1,8 +1,9 @@
-"""Internal feed for the Java bidder (Phase D).
+"""Internal feed for the Go bidder (bidder-go/internal/feed).
 
-The Java bidder keeps campaigns/partners in memory and refreshes them
-periodically. These endpoints expose the same candidate rows the Python
-hot path uses, so both bidders make identical decisions.
+The Go bidder keeps campaigns/partners in memory and refreshes them
+periodically (plus POST /internal/feed/reload on changes). These endpoints
+expose the same candidate rows the Python reference implementation uses, so
+the Go/Python parity tests compare decisions made from identical inputs.
 
 Auth: Authorization: Bearer ${RTB_API_TOKEN}. The token is shared infra
 config (not a user credential) — set it in both services' environments.
