@@ -152,6 +152,34 @@ services:
       - centraldsp
 
   # ─────────────────────────────────────────
+  # SCHEDULER — планировщик /cron/* (audit O-01, C1b). Тот же образ, что backend;
+  # расписание в PostgreSQL (scheduled_jobs), правится через /scheduler/jobs.
+  # Заменяет crontab/Vercel Cron; отдельных воркеров/beat в проекте нет.
+  # ─────────────────────────────────────────
+  scheduler:
+    image: centraldsp/backend:local
+    restart: unless-stopped
+    <<: [*env-file, *logging]
+    command: ["python", "scheduler.py"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-centraldsp}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-centraldsp}}
+      CRON_SECRET: ${CRON_SECRET:?set CRON_SECRET in .env (openssl rand -hex 32)}
+      BACKEND_INTERNAL_URL: http://backend:8000
+      SCHEDULER_TICK: ${SCHEDULER_TICK:-15}
+      SCHEDULER_METRICS_ADDR: ":8001"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "scheduler.py", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - centraldsp
+
+  # ─────────────────────────────────────────
   # BIDDER-GO (Go OpenRTB 2.5 Engine) — единственный боевой биддер.
   # Backend ходит в него по BIDDER_URL для автопроверки SSP и рефреша фида.
   # ─────────────────────────────────────────

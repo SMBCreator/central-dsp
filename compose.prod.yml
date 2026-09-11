@@ -30,6 +30,9 @@ services:
       - geoip_data:/data:ro
       - uploads_data:/data/uploads
 
+  scheduler:
+    restart: always
+
   bidder-go:
     restart: always
     ports: !reset []

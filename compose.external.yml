@@ -23,6 +23,10 @@ services:
       DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env (managed Postgres)}
       REDIS_URL: ${REDIS_URL:?set REDIS_URL in .env (managed Redis, noeviction)}
 
+  scheduler:
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env (managed Postgres)}
+
   bidder-go:
     depends_on: !override
       backend:

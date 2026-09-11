@@ -32,6 +32,7 @@ from routers.ord_router import router as ord_router
 from routers.users_router import router as users_router
 from routers.rules import router as rules_router
 from routers.scoring import router as scoring_router
+from routers.scheduler_router import router as scheduler_router
 from routers.share import router as share_router
 from routers.simulator import router as simulator_router
 from routers.stats import router as stats_router
@@ -118,6 +119,7 @@ app.include_router(ord_router)
 app.include_router(users_router)
 app.include_router(simulator_router)
 app.include_router(cron_router)
+app.include_router(scheduler_router)
 app.include_router(billing_router)
 app.include_router(share_router)
 app.include_router(pixel_router)

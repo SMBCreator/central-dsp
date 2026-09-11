@@ -66,6 +66,8 @@ _COUNTER_HELP = {
     "reserve_reconcile_drift_total": "avail:* keys whose value drifted from DB balance minus outstanding reserves.",
     "csrf_rejected_total": "State-changing requests rejected by the Origin guard (S-01).",
     "ord_notification_errors_total": "ERIR error notifications pulled from the ORD provider by GET /cron/ord-notifications (B13g); each marks its object erir_error.",
+    # O-01 (C1b): процесс scheduler — вызов /cron/* не вернул 2xx (timeout/unreachable/4xx/5xx).
+    "scheduler_job_failures_total": "Scheduled job dispatches that did not end with HTTP 2xx from the backend (timeout, connection error, 4xx/5xx).",
 }
 
 # Gauges (D8): значения, которые нельзя вывести из счётчиков. None = ещё не
@@ -98,6 +100,9 @@ _GAUGE_HELP = {
     # R-07: очередь выигрышей, ждущих burl. Обновляется GET /cron/sweep-burl.
     "rtb_pending_burl_size": "Won bids of billing_event=burl partners still waiting for their burl (ZCARD pending:burl).",
     "rtb_pending_burl_oldest_age_seconds": "Age of the oldest win still waiting for its burl (0 when the queue is empty).",
+    # O-01 (C1b): экспортирует процесс scheduler (backend/scheduler.py, :8001/metrics), не backend.
+    "scheduler_last_tick_timestamp_seconds": "Unix time of the scheduler's last completed tick (claim + dispatch of due scheduled_jobs).",
+    "scheduler_jobs_overdue": "Enabled scheduled_jobs whose next_run_at is more than 5 minutes in the past and that nobody has claimed.",
 }
 
 # R-07: исходы биллинга по burl per SSP — для агрегированного алерта
@@ -375,7 +380,9 @@ def render_prometheus() -> str:
                 continue
             lines.append(f"# HELP {name} {_GAUGE_HELP[name]}")
             lines.append(f"# TYPE {name} gauge")
-            lines.append(f"{name} {value:g}")
+            # Не `:g`: 6 значащих цифр режут unix-время до ±5000 с, и алерты
+            # вида `time() - *_timestamp_seconds > N` врут.
+            lines.append(f"{name} {int(value) if value.is_integer() else value!r}")
 
         lines.append("# HELP process_uptime_seconds Seconds since process start.")
         lines.append("# TYPE process_uptime_seconds gauge")

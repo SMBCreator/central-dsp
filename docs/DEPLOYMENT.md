@@ -246,48 +246,65 @@ docker compose exec -T postgres dropdb -U centraldsp centraldsp_restore_<ts>
 `GET /health` и фид биддера: `GET /rtb-feed/partners` и `GET /rtb-feed/campaigns`
 (заголовок `Authorization: Bearer ${RTB_API_TOKEN}`).
 
-## 9.1. Планировщик `/cron/*` на VPS
+## 9.1. Планировщик `/cron/*` — сервис `scheduler`
 
-> Целевая модель (audit O-01, этап C1b): расписание хранится в PostgreSQL
-> (`scheduled_jobs`) и исполняется сервисом `scheduler` из compose — без Celery и
-> без `vercel.json` (тот относится только к Vercel-preview). До появления
-> `scheduler` в стеке используйте системный crontab ниже.
+Фоновые задачи (`/cron/*`) запускает сервис `scheduler` из `compose.yml`
+(audit O-01, C1b): тот же образ, что backend, команда `python scheduler.py`.
+Celery/beat, системный crontab и `vercel.json` для production **не нужны**
+(`vercel.json` относится только к Vercel-preview и с production не синхронизируется).
 
-В Compose-стеке до C1b планировщика **нет** — эндпоинты `/cron/*` нужно дёргать
-системным crontab на хосте. Все вызовы требуют `Authorization: Bearer $CRON_SECRET`
-(см. `.env`); в production внутренние порты закрыты, поэтому `API=https://ваш-домен.ру/api`.
+Как работает:
+
+- расписание — таблица `scheduled_jobs` (cron-выражение из 5 полей, **UTC**;
+  МСК = UTC+3). При первом старте планировщик сеет 13 задач из
+  `backend/scheduler.py::DEFAULT_JOBS` (`ON CONFLICT DO NOTHING`), правки
+  админа переживают релизы;
+- тик каждые `SCHEDULER_TICK` секунд (15): захват просроченных задач
+  `FOR UPDATE SKIP LOCKED` + lease на 2×`timeout_seconds` — несколько реплик
+  планировщика не дублируют запуск, зависший экземпляр не блокирует задачу навсегда;
+- пропущенные запуски (простой планировщика, долгий backend) **схлопываются в
+  один** — следующий `next_run_at` считается от момента завершения, «догона» нет;
+- каждая задача = `GET http://backend:8000/cron/<path>` с
+  `Authorization: Bearer $CRON_SECRET` (`BACKEND_INTERNAL_URL`), таймаут
+  `timeout_seconds` (по умолчанию 600, у поминутных 50). Сами задачи и их метрики
+  `cron_job_runs_total` / `cron_job_last_success_timestamp_seconds` не изменились;
+- параллельно до 4 задач.
+
+Управление (роли admin/superadmin; матрица — `docs/audit/rbac_matrix.md`):
 
 ```bash
-# /etc/cron.d/centraldsp  (время — UTC; МСК = UTC+3)
-CRON_SECRET=<из .env>
-API=https://ваш-домен.ру/api   # через Caddy; внутри compose-сети — http://backend:8000
-
-0 6 * * *   root curl -fsS -H "Authorization: Bearer $CRON_SECRET" $API/cron/rules        >/dev/null
-# reset-daily — только housekeeping (чистит счётчики ПРОШЛЫХ бизнес-дней); граница дня —
-# дата Europe/Moscow в ключах spend:* и spent_today_date, а не этот cron. Безопасно в любое время.
-30 21 * * *  root curl -fsS -H "Authorization: Bearer $CRON_SECRET" $API/cron/reset-daily  >/dev/null
-# reconcile-reserves — сверка Redis avail:adv/avail:camp с БД (баланс − невыполненные резервы).
-# Идемпотентно; чинит дрейф после потери bidmeta или сбоя Redis между bill_win и settle_win.
-*/5 * * * * root curl -fsS -H "Authorization: Bearer $CRON_SECRET" $API/cron/reconcile-reserves >/dev/null
-0 7 * * *   root curl -fsS -H "Authorization: Bearer $CRON_SECRET" $API/cron/optimize     >/dev/null
-# audience-sync — ретаргетинг-аудитории (R-06): удалить просроченных в PG, вычистить просроченные
-# score в audz:*, досеять пустые ключи из PG (самовосстановление после потери Redis). Идемпотентно.
-15 * * * *  root curl -fsS -H "Authorization: Bearer $CRON_SECRET" $API/cron/audience-sync >/dev/null
-# sweep-burl — биллинг по burl (R-07): выигрыши SSP с billing_event=burl без burl за BURL_TTL
-# (600 с) -> win_expired, резерв возвращён, денег нет. Каждую минуту, идемпотентно.
-* * * * *   root curl -fsS -H "Authorization: Bearer $CRON_SECRET" $API/cron/sweep-burl >/dev/null
-0 * * * *   root curl -fsS -H "Authorization: Bearer $CRON_SECRET" $API/cron/shading      >/dev/null
-# ОРД: месячная статистика за предыдущий месяц — 2-е число, 06:00 МСК.
-# Идемпотентно: повтор за уже выгруженный период — no-op (ord_export_log).
-0 3 2 * *   root curl -fsS -H "Authorization: Bearer $CRON_SECRET" $API/cron/ord-export   >/dev/null
-# Ретенция bid_events: партиции на неделю вперёд + DROP старше BID_EVENTS_RETENTION_DAYS (90).
-30 2 * * *  root curl -fsS -H "Authorization: Bearer $CRON_SECRET" $API/cron/retention    >/dev/null
+GET   /api/scheduler/jobs                # список: schedule, enabled, next_run_at, last_status/error/duration
+PATCH /api/scheduler/jobs/{name}         # {"enabled": bool, "schedule": "m h dom mon dow", "timeout_seconds": 5..21600}
+POST  /api/scheduler/jobs/{name}/run     # запустить на ближайшем тике (409 — выключена или уже выполняется)
 ```
 
-Проверка вручную (например, после `failed` в разделе «Маркировка (ОРД) → Выгрузки»):
+Расписание по умолчанию (UTC):
+
+| name | path | schedule | комментарий |
+|---|---|---|---|
+| `sweep_burl` | `/cron/sweep-burl` | `* * * * *` | биллинг по burl (R-07), таймаут 50 с |
+| `reconcile_reserves` | `/cron/reconcile-reserves` | `*/5 * * * *` | сверка Redis-резервов с БД |
+| `audience_sync` | `/cron/audience-sync` | `15 * * * *` | ретаргетинг-аудитории (R-06) |
+| `shading` | `/cron/shading` | `0 * * * *` | bid shading |
+| `ord_notifications` | `/cron/ord-notifications` | `45 * * * *` | ошибки ЕРИР |
+| `retention` | `/cron/retention` | `30 2 * * *` | партиции `bid_events` |
+| `rules` | `/cron/rules` | `0 6 * * *` | правила автоматизации |
+| `optimize` | `/cron/optimize` | `0 7 * * *` | оптимизатор |
+| `reset_daily` | `/cron/reset-daily` | `30 21 * * *` | housekeeping счётчиков прошлых дней (граница дня — МСК-дата в ключах, не этот cron) |
+| `ord_export` | `/cron/ord-export` | `0 3 2 * *` | ОРД-статистика за прошлый месяц (06:00 МСК 2-го числа) |
+| `fx_refresh` / `ml_train` / `domain_quality` | `/cron/fx-refresh` `10 0`, `/cron/ml-train` `0 4`, `/cron/domain-quality` `0 5` | — | **выключены** по умолчанию (включать PATCH-ом, когда нужны: курс ЦБ, ML-модель, domain quality) |
+
+Наблюдаемость: `scheduler:8001/metrics` (`scheduler_last_tick_timestamp_seconds`,
+`scheduler_jobs_overdue`, `scheduler_job_failures_total`), healthcheck
+`python scheduler.py --healthcheck`; алерты `SchedulerDown` /
+`SchedulerJobsOverdue` / `SchedulerDispatchFailing`
+(`docs/runbooks/rtb_alerts.md#scheduler`). Логи: `docker compose logs -f scheduler`.
+
+Ручной запуск, если нужно немедленно (после `failed` в «Маркировка (ОРД) → Выгрузки»
+и т.п.) — `POST /api/scheduler/jobs/ord_export/run` либо напрямую:
 
 ```bash
-curl -fsS -H "Authorization: Bearer $CRON_SECRET" "$API/cron/ord-export?period=2026-08"
+docker compose exec backend python -c "import urllib.request as u,os;print(u.urlopen(u.Request('http://127.0.0.1:8000/cron/ord-export?period=2026-08',headers={'Authorization':'Bearer '+os.environ['CRON_SECRET']})).read().decode())"
 ```
 
 ## 9.2. Партиционирование `bid_events` (миграция 033)

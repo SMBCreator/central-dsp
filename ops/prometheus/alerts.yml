@@ -261,6 +261,44 @@ groups:
             считаются). Смотреть логи backend по пути /cron/{{ $labels.job }}.
             Runbook: rtb_alerts.md#cron
 
+      - alert: SchedulerDown
+        expr: absent(scheduler_last_tick_timestamp_seconds) or time() - scheduler_last_tick_timestamp_seconds > 180
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Планировщик фоновых задач не тикает"
+          description: >-
+            Сервис scheduler (compose) не завершал цикл захвата задач более
+            3 минут или не отдаёт /metrics. Ни одна /cron/* задача не
+            запускается: sweep-burl, reconcile-reserves, ретенция, ОРД.
+            Runbook: rtb_alerts.md#scheduler
+
+      - alert: SchedulerJobsOverdue
+        expr: scheduler_jobs_overdue > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Есть просроченные задачи планировщика ({{ $value }})"
+          description: >-
+            Включённые scheduled_jobs с next_run_at старше 5 минут, которые
+            никто не захватил: планировщик перегружен (concurrency) или не
+            видит БД. Список — GET /scheduler/jobs.
+            Runbook: rtb_alerts.md#scheduler
+
+      - alert: SchedulerDispatchFailing
+        expr: increase(scheduler_job_failures_total[1h]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Планировщик не смог выполнить задачу"
+          description: >-
+            Вызов /cron/* из scheduler завершился не 2xx: timeout,
+            backend недоступен, 401 (CRON_SECRET расходится) или 5xx.
+            Подробности — last_status/last_error в GET /scheduler/jobs
+            и логи scheduler. Runbook: rtb_alerts.md#scheduler
+
       - alert: OrdExportFailed
         expr: increase(ord_export_failures_total[1d]) > 0
         labels:

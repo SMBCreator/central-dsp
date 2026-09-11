@@ -335,20 +335,56 @@ Freq cap занимает слот на win временно (env `WIN_IMP_TTL`,
 ## cron — CronRetentionStale / CronJobFailing
 
 **Что значит:** cron-ручка не запускалась успешно (stale) или упала с
-исключением/5xx (failing). Расписание — `crontab`/systemd timers на VPS или
-Vercel Cron; ручки защищены `CRON_SECRET`.
+исключением/5xx (failing). Запускает их сервис `scheduler` (compose,
+расписание в `scheduled_jobs`, см. [scheduler](#scheduler)); ручки защищены
+`CRON_SECRET`.
 
 **Диагностика:**
-1. `crontab -l` / `systemctl list-timers` — расписание на месте, секрет в
-   команде совпадает с `.env`.
-2. Логи nginx по `/cron/<job>`: 401 = секрет не совпал; 503 = `CRON_SECRET`
-   пустой в production (startup_checks не даст так стартовать, но проверить).
+1. `GET /scheduler/jobs` — задача `enabled`, `next_run_at` в будущем,
+   `last_status`/`last_error`; если планировщик вообще не тикает — сработает
+   `SchedulerDown`.
+2. `last_http_status`: 401 = `CRON_SECRET` у scheduler и backend разошлись;
+   503 = `CRON_SECRET` пустой в production (startup_checks не даст так
+   стартовать, но проверить); `timeout` — поднять `timeout_seconds`.
 3. Логи backend: трейсбек задачи.
 
 **Действия:** запустить руками `curl -H "Authorization: Bearer $CRON_SECRET"
 https://<host>/cron/<job>` и прочитать JSON ответа. `reset-daily` идемпотентен и
 безопасен в любое время: он обнуляет только счётчики прошлых бизнес-дней
 (`spent_today_date < сегодня МСК`, ключи `spend:*:<вчера>`), текущий день не трогает.
+
+## scheduler — SchedulerDown / SchedulerJobsOverdue / SchedulerDispatchFailing
+
+**Что это.** Фоновые задачи (`/cron/*`) запускает сервис `scheduler` из compose
+(`backend/scheduler.py`, audit O-01 / C1b). Расписание — таблица
+`scheduled_jobs`; смотреть и править — `GET/PATCH /scheduler/jobs` (admin) или
+`docker compose exec postgres psql -c "select name, enabled, schedule, next_run_at, last_status, last_error from scheduled_jobs order by name"`.
+Метрики планировщика — `scheduler:8001/metrics`; факт успешного выполнения
+самой задачи по-прежнему в backend: `cron_job_last_success_timestamp_seconds{job}`.
+
+**SchedulerDown.** `docker compose ps scheduler`, `docker compose logs --tail 200 scheduler`.
+Типично: контейнер в рестарт-цикле из-за конфигурации (в логе `config: ...` —
+не задан `CRON_SECRET`/`DATABASE_URL`), либо `tick failed` — БД недоступна
+(см. [postgres-down](#postgres-down)). Планировщик не падает при сбое тика и
+сам продолжит, когда БД вернётся; после длительного простоя пропущенные
+запуски схлопываются в один (misfire policy), «догонять» ничего не нужно.
+Если задачи критичны прямо сейчас — `POST /scheduler/jobs/{name}/run` или
+временно вручную: `curl -H "Authorization: Bearer $CRON_SECRET" http://backend:8000/cron/<job>`.
+
+**SchedulerJobsOverdue.** Задачи просрочены, но не захвачены. Причины: планировщик
+жив, но все слоты заняты долгой задачей (`locked_at` не NULL у `ord_export`/
+`retention`, concurrency 4) — дождаться или поднять `timeout_seconds`; либо
+lease протух и висит (`locked_at` старше 2×timeout — захватится на следующем
+тике сам). `next_run_at IS NULL` — планировщик ещё не пересчитал новое
+расписание (1 тик).
+
+**SchedulerDispatchFailing.** Смотреть `last_status`/`last_http_status`/`last_error`:
+`401` — `CRON_SECRET` у scheduler и backend разошлись (оба берут его из `.env`,
+пересоздать оба контейнера); `503` — backend в production без `CRON_SECRET`;
+`timeout` — поднять `timeout_seconds` задачи (PATCH) или разбираться, почему
+задача стала долгой; `unreachable` — backend не поднят / имя `backend` не
+резолвится; `5xx` — исключение внутри задачи, дальше по
+[cron](#cron) (лог backend по пути `/cron/<job>`).
 
 ## ord-export — OrdExportFailed / OrdExportLag / OrdExportSkippedWithoutErid / OrdExportRowsRejected
 

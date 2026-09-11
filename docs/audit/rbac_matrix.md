@@ -127,6 +127,9 @@
 | GET | `/rules/templates` | session | любая роль (scope внутри хендлера) |
 | **DELETE** | `/rules/{rule_id}` | roles | admin, manager, superadmin |
 | **PATCH** | `/rules/{rule_id}` | roles | admin, manager, superadmin |
+| GET | `/scheduler/jobs` | roles | admin, superadmin |
+| **PATCH** | `/scheduler/jobs/{name}` | roles | admin, superadmin |
+| **POST** | `/scheduler/jobs/{name}/run` | roles | admin, superadmin |
 | GET | `/scoring/blocks` | session | любая роль (scope внутри хендлера) |
 | **POST** | `/scoring/blocks` | roles | admin, manager, superadmin |
 | **DELETE** | `/scoring/blocks/{campaign_id}/{domain}` | roles | admin, manager, superadmin |
