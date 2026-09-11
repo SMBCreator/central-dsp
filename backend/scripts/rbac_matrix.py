@@ -49,7 +49,7 @@ CURRENT_USER_ONLY = {
     ("PATCH", "/auth/me"): "self-service: только свой профиль",
     ("POST", "/notifications/read-all"): "self-service: только свои уведомления",
     ("POST", "/notifications/{notification_id}/read"): "self-service: WHERE user_id = me",
-    ("POST", "/simulator/run"): "владелец SSP-партнёра (WHERE user_id = me); идёт через Python-RTB без test=1 — события не помечены is_test",
+    ("POST", "/simulator/run"): "владелец SSP-партнёра (WHERE user_id = me); engine=go (по умолчанию) — боевой Go-биддер, все запросы OpenRTB test=1 (события is_test); engine=python_reference — только вне production и с SIMULATOR_ALLOW_PYTHON_REFERENCE=1, без тихого фолбэка",
     ("POST", "/stats/report"): "чтение через POST (тело = фильтры), scope visible_user_ids",
 }
 

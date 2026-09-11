@@ -114,7 +114,6 @@
 | GET | `/pixels/{pixel_id}/stats` | session | любая роль (scope внутри хендлера) |
 | GET | `/rtb-feed/campaigns` | none | Bearer RTB_API_TOKEN |
 | GET | `/rtb-feed/partners` | none | Bearer RTB_API_TOKEN |
-| **POST** | `/rtb/bid/{endpoint_key}` | none | endpoint_key / event-токен (HMAC) |
 | GET | `/rtb/burl` | none | endpoint_key / event-токен (HMAC) |
 | GET | `/rtb/click` | none | endpoint_key / event-токен (HMAC) |
 | GET | `/rtb/imp` | none | endpoint_key / event-токен (HMAC) |
@@ -163,7 +162,7 @@
 | **DELETE** | `/share/links/{link_id}` | roles+flag | admin, advertiser, agency, manager, superadmin + client[can_share_stats] |
 | GET | `/share/my-scope` | session | любая роль (scope внутри хендлера) |
 | GET | `/share/public/{token}` | none | share-токен в URL |
-| **POST** | `/simulator/run` | session | любая роль (scope внутри хендлера) — владелец SSP-партнёра (WHERE user_id = me); идёт через Python-RTB без test=1 — события не помечены is_test |
+| **POST** | `/simulator/run` | session | любая роль (scope внутри хендлера) — владелец SSP-партнёра (WHERE user_id = me); engine=go (по умолчанию) — боевой Go-биддер, все запросы OpenRTB test=1 (события is_test); engine=python_reference — только вне production и с SIMULATOR_ALLOW_PYTHON_REFERENCE=1, без тихого фолбэка |
 | GET | `/stats/breakdown` | session | любая роль (scope внутри хендлера) |
 | GET | `/stats/domain-quality` | session | любая роль (scope внутри хендлера) |
 | GET | `/stats/domains` | session | любая роль (scope внутри хендлера) |
