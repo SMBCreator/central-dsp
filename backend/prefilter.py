@@ -5,7 +5,11 @@
 infra-ресурсы. Это НЕ бизнес-логика качества трафика (clean traffic, Часть B) —
 только O(1)-проверки над уже распарсенным JSON.
 
-Причины отсечения (bounded enum, идут в метрику rtb_prefilter_drops_total):
+C1d: hot path обслуживает Go (bidder-go/internal/prefilter, метрика
+bidder_prefilter_drops_total). Этот модуль — эталон для parity-тестов и владелец
+админ-API списка datacenter-подсетей (Redis SET prefilter:dc_subnets общий с Go).
+
+Причины отсечения (bounded enum, те же строки, что в Go):
   bot_ua        — User-Agent содержит паттерн бота/краулера/CLI-клиента
   geo_unserved  — страна ЯВНО указана и не входит в THROTTLE_COUNTRIES
   no_device_id  — нет ни device.ifa, ни device.ip/ipv6 (нечем считать freq cap)

@@ -1,10 +1,16 @@
-"""OpenRTB 2.5 bid endpoint + win/impression/click event tracking.
+"""RTB event tracking callbacks (win / burl / impression / view / click).
 
-Flow:
-  POST /rtb/bid/{endpoint_key}  <- BidRequest from SSP, returns BidResponse or 204
+C1d: this backend no longer serves bid requests — the Go bidder (bidder-go/)
+is the only auction runtime. The functions here handle the tracking callbacks
+that every bid, whoever served it, calls back into:
   GET  /rtb/win                 <- win notice (nurl), records win + spend
-  GET  /rtb/imp                 <- impression tracker (burl)
+  GET  /rtb/burl                <- billing notice (burl) for billing_event=burl
+  GET  /rtb/imp                 <- impression tracker
+  GET  /rtb/view                <- viewability (MRC 50%/1s) tracker
+  GET  /rtb/vevent              <- VAST video events
   GET  /rtb/click               <- click tracker
+process_bid_request below has no HTTP route: it is the parity oracle for the
+Go bidder and the engine=python_reference simulator mode (non-production only).
 """
 import json
 import logging
@@ -21,7 +27,6 @@ from fastapi import APIRouter, HTTPException, Request, Response
 logger = logging.getLogger("rtb")
 
 import obs_metrics
-import prefilter
 import ssp_check
 import ssp_tokens
 from billing_core import bill_win
@@ -54,21 +59,11 @@ from tokens import sign_event_token, verify_event_token
 
 router = APIRouter(prefix="/rtb", tags=["rtb"])
 
-# Python RTB — reference-имплементация и dev/симулятор. Прод-трафик обслуживает
-# Go-биддер (bidder-go/). Флаг выключает bid-эндпоинт в прод-топологии;
-# win/imp/click-нотификации остаются активными для доигрывания in-flight бидов.
-# Audit S-04: в production дефолт — выключено (забытая переменная не должна
-# включать второй биддер); явное включение там же валит старт (startup_checks).
-
-
-def _python_serving_enabled() -> bool:
-    raw = os.getenv("RTB_PYTHON_SERVING")
-    if raw is None or not raw.strip():
-        return os.getenv("APP_ENV", "").strip().lower() not in {"production", "prod"}
-    return raw.strip().lower() in {"1", "true", "yes"}
-
-
-_RTB_PYTHON_SERVING = _python_serving_enabled()
+# C1d: этот backend НЕ принимает bid-запросы. Единственный auction endpoint —
+# Go-биддер (bidder-go/, POST /rtb/bid/{key}). process_bid_request ниже — эталон
+# для Go/Python parity-тестов и явного режима симулятора engine=python_reference
+# вне production; HTTP-маршрута у него нет. Здесь остаются только event
+# callbacks (/win /burl /imp /click /view /vevent), общие для всех бидов.
 
 DEVICE_TYPES = {1: "mobile", 2: "desktop", 3: "ctv", 4: "phone", 5: "tablet", 6: "connected", 7: "settopbox"}
 
@@ -808,40 +803,6 @@ def _parse_freq_caps(c) -> list[tuple[int, int]]:
                 hrs = 24
             windows.append((legacy, hrs))
     return windows
-
-
-@router.post("/bid/{endpoint_key}")
-async def bid(endpoint_key: str, request: Request):
-    obs_metrics.inc("rtb_bid_requests_total")
-    started = time.monotonic()
-    if not _RTB_PYTHON_SERVING:
-        # 204 no-bid: SSP-совместимый ответ, не ломает партнёрские интеграции
-        obs_metrics.inc_no_bid("python_serving_off")
-        return Response(status_code=204)
-    try:
-        req = await request.json()
-    except Exception:
-        obs_metrics.inc_no_bid("parse_error")
-        raise HTTPException(status_code=400, detail="Invalid BidRequest JSON")
-    # Throttling-предфильтр (Часть C): O(1)-отсев ботов/чужого гео/datacenter-IP
-    # ДО полного цикла (Redis/Postgres). Отдельная метрика — это не no-bid.
-    drop_reason = prefilter.check(req)
-    if drop_reason is not None:
-        obs_metrics.inc_prefilter(drop_reason)
-        return Response(status_code=204)
-    ssp_token = request.headers.get("x-centraldsp-token")
-    client_ip = request.client.host if request.client else None
-    try:
-        result = await process_bid_request(endpoint_key, req, ssp_token=ssp_token, client_ip=client_ip)
-    finally:
-        obs_metrics.observe_bid_latency(time.monotonic() - started)
-    if result is None:
-        obs_metrics.inc_no_bid("no_candidates")
-        return Response(status_code=204)
-    bids = [b for sb in result.get("seatbid", []) for b in sb.get("bid", [])]
-    obs_metrics.inc("rtb_bid_responses_total")
-    obs_metrics.inc("rtb_bids_total", len(bids))
-    return result
 
 
 # ---------------------------------------------------------------------------

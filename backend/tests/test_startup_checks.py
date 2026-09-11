@@ -92,14 +92,14 @@ def test_warnings_are_not_fatal_but_logged(caplog):
 
 
 @pytest.mark.parametrize("value", ["1", "true", "yes", "on", " TRUE "])
-def test_python_serving_enabled_is_fatal_in_production(value):
-    env = dict(PROD_OK, RTB_PYTHON_SERVING=value)
-    with pytest.raises(RuntimeError, match="RTB_PYTHON_SERVING"):
+def test_simulator_python_reference_is_fatal_in_production(value):
+    env = dict(PROD_OK, SIMULATOR_ALLOW_PYTHON_REFERENCE=value)
+    with pytest.raises(RuntimeError, match="SIMULATOR_ALLOW_PYTHON_REFERENCE"):
         sc.assert_production_config(env)
 
 
-def test_python_serving_off_or_unset_is_fine():
-    assert sc.collect_problems(dict(PROD_OK, RTB_PYTHON_SERVING="false")) == []
+def test_simulator_python_reference_off_or_unset_is_fine():
+    assert sc.collect_problems(dict(PROD_OK, SIMULATOR_ALLOW_PYTHON_REFERENCE="false")) == []
     assert sc.collect_problems(PROD_OK) == []
 
 

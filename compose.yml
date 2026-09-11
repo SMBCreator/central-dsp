@@ -116,9 +116,12 @@ services:
       # production => fail-fast на пустых/плейсхолдерных секретах при старте
       # (backend/startup_checks.py). Для локальной разработки: APP_ENV=dev в .env.
       APP_ENV: ${APP_ENV:-production}
-      # Автопроверка SSP из кабинета бьёт в боевой Go-биддер по HTTP
+      # Автопроверка SSP и симулятор из кабинета бьют в боевой Go-биддер по HTTP
       # (ssp_check.go_bidder_caller). Тот же RTB_API_TOKEN подписывает запрос.
+      # Python reference engine симулятора (C1d) — только вне production и только
+      # с SIMULATOR_ALLOW_PYTHON_REFERENCE=1; в production включённый флаг валит старт.
       BIDDER_URL: http://bidder-go:8090
+      SIMULATOR_ALLOW_PYTHON_REFERENCE: ${SIMULATOR_ALLOW_PYTHON_REFERENCE:-false}
       # Consumer событий Go-биддера (rtb:events -> bid_events/stats_hourly);
       # RTB_EVENTS_CONSUMER=0 выключает (например, на реплике backend'а).
       RTB_EVENTS_CONSUMER: ${RTB_EVENTS_CONSUMER:-1}

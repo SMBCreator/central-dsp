@@ -7,23 +7,40 @@ bid path therefore skips budget reservation and marks bidmeta/bid_events with
 do not bill and do not touch stats_hourly — a demo run from the cabinet can no
 longer distort a client's spend, CTR or win-rate.
 
-The bid step goes through the production Go bidder over HTTP when it is
-reachable (the same path SSPs hit), falling back to the in-process Python
-bidder otherwise; ``mode`` in the response tells which one answered.
-"""
-import random
-import uuid
+Engine selection (C1d) is explicit and never silently changes:
 
-from fastapi import APIRouter, Depends, HTTPException
+* ``engine=go`` (default) — the production Go bidder over HTTP, the same path
+  SSPs hit. If it is unreachable the run fails with 503 and
+  ``fallback_used=false``; the Python reference is never substituted, because
+  a simulation that does not exercise the real bidder is not a diagnostic.
+* ``engine=python_reference`` — the in-process Python reference
+  implementation used as the parity oracle. Available only outside production
+  and only when ``SIMULATOR_ALLOW_PYTHON_REFERENCE`` is set; in production the
+  mode does not exist (404).
+"""
+import logging
+import os
+import random
+import time
+import uuid
+from typing import Literal
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+import obs_metrics
 import ssp_check
 from auth import current_user
 from db import get_pool
 from routers.rtb import click, impression, process_bid_request, win_notice
+from startup_checks import is_production
 from tokens import sign_event_token
 
 router = APIRouter(prefix="/simulator", tags=["simulator"])
+log = logging.getLogger("simulator")
+
+Engine = Literal["go", "python_reference"]
 
 COUNTRIES = ["RUS", "KAZ", "UZB", "BLR", "KGZ"]
 DOMAINS = ["news.example.ru", "sport.example.kz", "auto.example.uz", "tech.example.by", "media.example.kg"]
@@ -38,6 +55,43 @@ class SimulateIn(BaseModel):
     ctr: float = Field(default=0.02, ge=0, le=1)
     geo_country: str | None = None
     device_type: str | None = Field(default=None, pattern="^(mobile|desktop|ctv)$")
+
+
+class GoBidderUnavailable(Exception):
+    """Go bidder answered 503 / was unreachable — the run is refused, not rerouted."""
+
+    def __init__(self, detail: str):
+        super().__init__(detail)
+        self.detail = detail
+
+
+def python_reference_allowed() -> bool:
+    """Python reference engine: only outside production and only when explicitly enabled."""
+    if is_production():
+        return False
+    return os.getenv("SIMULATOR_ALLOW_PYTHON_REFERENCE", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def resolve_engine(requested: Engine):
+    """Return (callable, engine) for the requested engine or raise.
+
+    python_reference in production -> 404 (the mode does not exist there);
+    outside production without the flag -> 403 with the flag name.
+    """
+    if requested == "go":
+        return ssp_check.go_bidder_caller(), "go"
+    if is_production():
+        raise HTTPException(status_code=404, detail="Unknown simulator engine")
+    if not python_reference_allowed():
+        raise HTTPException(
+            status_code=403,
+            detail="Python reference engine is disabled. Set SIMULATOR_ALLOW_PYTHON_REFERENCE=1 (development/test only).",
+        )
+
+    async def python_reference(endpoint_key: str, req: dict, **_):
+        return await process_bid_request(endpoint_key, req)
+
+    return python_reference, "python_reference"
 
 
 def _make_bid_request(ad_type: str, geo: str | None, device: str | None) -> dict:
@@ -74,29 +128,47 @@ def _make_bid_request(ad_type: str, geo: str | None, device: str | None) -> dict
     }
 
 
-async def _python_bidder(endpoint_key: str, req: dict, **_):
-    return await process_bid_request(endpoint_key, req)
-
-
-async def _pick_bidder(endpoint_key: str, first_req: dict):
-    """Go bidder over HTTP if reachable (production path), else in-process Python.
-
-    Returns (callable, mode, first_response). The probe is a real test=1
-    request, so its answer is reused rather than wasted.
-    """
-    go_call = ssp_check.go_bidder_caller()
+async def call_engine(bidder, engine: str, endpoint_key: str, req: dict):
+    """One bid call with latency accounting. Go 503 -> GoBidderUnavailable (never rerouted)."""
+    started = time.monotonic()
     try:
-        data = await go_call(endpoint_key, first_req, verify_token=False)
-        return go_call, "go", data
+        return await bidder(endpoint_key, req, verify_token=False)
     except HTTPException as e:
-        if e.status_code != 503:
-            raise
-    # Go bidder unavailable (dev/CI without the container) — Python path.
-    return _python_bidder, "python", await _python_bidder(endpoint_key, first_req)
+        if engine == "go" and e.status_code == 503:
+            raise GoBidderUnavailable(str(e.detail)) from e
+        raise
+    finally:
+        obs_metrics.observe_simulator_latency(engine, time.monotonic() - started)
+
+
+def _log_run(request: Request, user: dict, body: SimulateIn, requested: str, actual: str | None,
+             outcome: str, go_status: str | None = None) -> None:
+    log.info(
+        "simulator run",
+        extra={
+            "requested_engine": requested,
+            "actual_engine": actual,
+            "fallback_used": False,
+            "outcome": outcome,
+            "go_bidder_status": go_status,
+            "caller_id": user.get("id"),
+            "tenant_id": user.get("agency_id"),
+            "endpoint_key": body.endpoint_key,
+            "request_id": request.headers.get("x-request-id"),
+            "environment": os.getenv("APP_ENV", ""),
+        },
+    )
 
 
 @router.post("/run")
-async def run_simulation(body: SimulateIn, user: dict = Depends(current_user)):
+async def run_simulation(
+    body: SimulateIn,
+    request: Request,
+    engine: Engine = Query(default="go"),
+    user: dict = Depends(current_user),
+):
+    bidder, actual_engine = resolve_engine(engine)
+
     pool = await get_pool()
     partner = await pool.fetchrow(
         "SELECT id FROM supply_partners WHERE endpoint_key = $1 AND user_id = $2",
@@ -107,17 +179,25 @@ async def run_simulation(body: SimulateIn, user: dict = Depends(current_user)):
 
     results = {"requests": 0, "bids": 0, "no_bids": 0, "wins": 0, "impressions": 0, "clicks": 0, "errors": 0}
     sample_response = None
-    bidder = None
-    mode = None
 
     for _ in range(body.requests):
         results["requests"] += 1
         bid_req = _make_bid_request(body.ad_type, body.geo_country, body.device_type)
         try:
-            if bidder is None:
-                bidder, mode, data = await _pick_bidder(body.endpoint_key, bid_req)
-            else:
-                data = await bidder(body.endpoint_key, bid_req, verify_token=False)
+            data = await call_engine(bidder, actual_engine, body.endpoint_key, bid_req)
+        except GoBidderUnavailable as e:
+            obs_metrics.inc("simulator_go_unavailable_total")
+            _log_run(request, user, body, engine, None, "go_unavailable", go_status=e.detail)
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "detail": "Go bidder is unavailable. Python reference fallback is disabled"
+                              + (" in production." if is_production() else "; select engine=python_reference explicitly if you need the reference run."),
+                    "engine": "go",
+                    "requested_engine": engine,
+                    "fallback_used": False,
+                },
+            )
         except HTTPException:
             raise
         except Exception:
@@ -133,8 +213,8 @@ async def run_simulation(body: SimulateIn, user: dict = Depends(current_user)):
         the_bid = data["seatbid"][0]["bid"][0]
         if random.random() < body.win_probability:
             clear = round(float(the_bid["price"]) * random.uniform(0.7, 1.0), 4)
-            # Event handlers require HMAC-signed tokens (tokens.py); Go and
-            # Python share the secret, so signing here matches either bidder.
+            # Event handlers require HMAC-signed tokens (tokens.py); Go and the
+            # Python reference share the secret, so signing here matches either.
             event_token = sign_event_token(the_bid["id"])
             try:
                 await win_notice(bid=event_token, price=clear)
@@ -147,10 +227,17 @@ async def run_simulation(body: SimulateIn, user: dict = Depends(current_user)):
             except Exception:
                 results["errors"] += 1
 
+    obs_metrics.inc_simulator_request(actual_engine)
+    if actual_engine == "python_reference":
+        obs_metrics.inc("simulator_reference_requests_total")
+    _log_run(request, user, body, engine, actual_engine, "ok")
+
     return {
         "results": results,
         "sample": sample_response,
-        "mode": mode or "python",
+        "engine": actual_engine,
+        "requested_engine": engine,
+        "fallback_used": False,
         # Все события помечены is_test: в отчётах клиента их нет, в bid_events — есть.
         "test": True,
     }

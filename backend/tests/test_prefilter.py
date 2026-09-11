@@ -2,19 +2,17 @@
 
 Инварианты:
   - fail-open: ошибки/пустой кэш/выключенный фильтр никогда не отсекают запрос;
-  - причины отсечения — только из bounded enum PREFILTER_REASONS;
+  - причины отсечения — только из bounded enum (те же строки, что bidder_prefilter_drops_total в Go);
   - легитимный RU-трафик с device id проходит все проверки.
 """
 import pytest
 
-import obs_metrics
 import prefilter
 
 
 @pytest.fixture(autouse=True)
 def _reset():
     prefilter._reset_dc_cache_for_tests()
-    obs_metrics.reset_for_tests()
     yield
     prefilter._reset_dc_cache_for_tests()
 
@@ -133,16 +131,3 @@ def test_cidr_to_prefix_valid(cidr, expected):
 ])
 def test_cidr_to_prefix_invalid(cidr):
     assert prefilter.cidr_to_prefix(cidr) is None
-
-
-# ----------------------------------------------------------------- metrics ---
-
-def test_prefilter_metric_bounded_labels():
-    obs_metrics.inc_prefilter("bot_ua")
-    obs_metrics.inc_prefilter("weird_unknown_reason")  # -> other
-    snap = obs_metrics.snapshot()
-    assert snap["prefilter"]["bot_ua"] == 1
-    assert snap["prefilter"]["other"] == 1
-    text = obs_metrics.render_prometheus()
-    assert 'rtb_prefilter_drops_total{reason="bot_ua"} 1' in text
-    assert "weird_unknown_reason" not in text

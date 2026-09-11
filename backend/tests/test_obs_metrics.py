@@ -2,7 +2,7 @@
 
 Проверяются:
 - инкременты счётчиков и no-bid причин (bounded labels);
-- гистограмма латентности bid (buckets, sum, count);
+- summary латентности симулятора (sum, count по engine);
 - рендер в Prometheus text exposition format 0.0.4;
 - отсутствие неограниченных лейблов (только фиксированный словарь причин);
 - эндпоинт GET /metrics.
@@ -23,12 +23,12 @@ def _reset_metrics():
 # ---------------------------------------------------------------- counters ---
 
 def test_inc_counter_default_and_amount():
-    obs_metrics.inc("rtb_bid_requests_total")
-    obs_metrics.inc("rtb_bid_requests_total")
-    obs_metrics.inc("rtb_bids_total", 3)
+    obs_metrics.inc("rtb_wins_total")
+    obs_metrics.inc("rtb_wins_total")
+    obs_metrics.inc("rtb_imps_total", 3)
     snap = obs_metrics.snapshot()
-    assert snap["counters"]["rtb_bid_requests_total"] == 2
-    assert snap["counters"]["rtb_bids_total"] == 3
+    assert snap["counters"]["rtb_wins_total"] == 2
+    assert snap["counters"]["rtb_imps_total"] == 3
 
 
 def test_inc_float_amount():
@@ -63,35 +63,42 @@ def test_no_bid_unknown_reason_mapped_to_other():
     assert "weird_unexpected_reason" not in snap["no_bid"]
 
 
-# --------------------------------------------------------------- histogram ---
+# ----------------------------------------------------- simulator latency ---
 
-def test_latency_histogram_buckets():
-    obs_metrics.observe_bid_latency(0.003)   # попадает в le=0.005
-    obs_metrics.observe_bid_latency(0.020)   # попадает в le=0.025
-    obs_metrics.observe_bid_latency(9.0)     # только +Inf
+def test_simulator_latency_summary():
+    obs_metrics.observe_simulator_latency("go", 0.003)
+    obs_metrics.observe_simulator_latency("go", 0.020)
+    obs_metrics.observe_simulator_latency("python_reference", 9.0)
     snap = obs_metrics.snapshot()
-    hist = snap["bid_latency"]
-    assert hist["count"] == 3
-    assert hist["sum"] == pytest.approx(9.023)
-    # кумулятивность: bucket le=0.025 включает le=0.005
-    buckets = dict(hist["buckets"])
-    assert buckets[0.005] == 1
-    assert buckets[0.025] == 2
+    go_count, go_sum = snap["simulator_latency"]["go"]
+    assert go_count == 2
+    assert go_sum == pytest.approx(0.023)
+    ref_count, ref_sum = snap["simulator_latency"]["python_reference"]
+    assert ref_count == 1
+    assert ref_sum == pytest.approx(9.0)
+
+
+def test_simulator_unknown_engine_rejected():
+    """Только зарегистрированные engine — bounded label engine."""
+    with pytest.raises(KeyError):
+        obs_metrics.inc_simulator_request("totally_unknown_engine")
 
 
 # ----------------------------------------------------------------- render ---
 
 def test_render_prometheus_format():
-    obs_metrics.inc("rtb_bid_requests_total")
+    obs_metrics.inc("rtb_wins_total")
     obs_metrics.inc_no_bid("no_candidates")
-    obs_metrics.observe_bid_latency(0.010)
+    obs_metrics.inc_simulator_request("go")
+    obs_metrics.observe_simulator_latency("go", 0.010)
     text = obs_metrics.render_prometheus()
-    assert "# TYPE rtb_bid_requests_total counter" in text
-    assert "rtb_bid_requests_total 1" in text
+    assert "# TYPE rtb_wins_total counter" in text
+    assert "rtb_wins_total 1" in text
     assert 'rtb_no_bid_total{reason="no_candidates"} 1' in text
-    assert "# TYPE rtb_bid_latency_seconds histogram" in text
-    assert 'rtb_bid_latency_seconds_bucket{le="+Inf"} 1' in text
-    assert "rtb_bid_latency_seconds_count 1" in text
+    assert 'simulator_requests_total{engine="go"} 1' in text
+    assert 'simulator_requests_total{engine="python_reference"} 0' in text
+    assert "# TYPE simulator_engine_latency_seconds summary" in text
+    assert 'simulator_engine_latency_seconds_count{engine="go"} 1' in text
 
 
 def test_render_no_unbounded_labels():
@@ -114,7 +121,7 @@ def test_concurrent_increments_thread_safe():
 
     def worker():
         for _ in range(1000):
-            obs_metrics.inc("rtb_bid_requests_total")
+            obs_metrics.inc("rtb_wins_total")
             obs_metrics.inc_no_bid("no_candidates")
 
     threads = [threading.Thread(target=worker) for _ in range(8)]
@@ -123,5 +130,5 @@ def test_concurrent_increments_thread_safe():
     for t in threads:
         t.join()
     snap = obs_metrics.snapshot()
-    assert snap["counters"]["rtb_bid_requests_total"] == 8000
+    assert snap["counters"]["rtb_wins_total"] == 8000
     assert snap["no_bid"]["no_candidates"] == 8000

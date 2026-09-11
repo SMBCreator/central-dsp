@@ -87,10 +87,10 @@ def collect_problems(env: Mapping[str, str] | None = None) -> list[str]:
         problems.append(p)
     # Audit S-04: эти флаги — dev-лазейки. В production они не «предупреждение»,
     # а прямой путь к двойным бидам / поддельным win-нотисам.
-    if _truthy(env.get("RTB_PYTHON_SERVING")):
+    if _truthy(env.get("SIMULATOR_ALLOW_PYTHON_REFERENCE")):
         problems.append(
-            "RTB_PYTHON_SERVING включён — Python-биддер торгует параллельно Go (двойные биды на один request); "
-            "в production торгует только bidder-go"
+            "SIMULATOR_ALLOW_PYTHON_REFERENCE включён — Python reference engine симулятора разрешён только "
+            "в development/test (C1d); в production симулятор ходит только в bidder-go"
         )
     if env.get("RTB_ALLOW_UNSIGNED_EVENTS", "").strip() == "1":
         problems.append(

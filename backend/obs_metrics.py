@@ -23,9 +23,10 @@ NO_BID_REASONS = (
 
 # Единственные допустимые имена счётчиков — защита от опечаток и роста метрик.
 _COUNTER_HELP = {
-    "rtb_bid_requests_total": "Incoming OpenRTB bid requests (Python path).",
-    "rtb_bid_responses_total": "Responses containing at least one bid.",
-    "rtb_bids_total": "Individual bids submitted.",
+    # C1d: bid-запросы обслуживает только Go (bidder_bid_requests_total и т.д.).
+    # Симулятор кабинета: Go по HTTP; python_reference — только вне production.
+    "simulator_go_unavailable_total": "Simulator runs refused because the Go bidder was unreachable (no Python fallback).",
+    "simulator_reference_requests_total": "Simulator runs executed against the Python reference engine (non-production only).",
     "rtb_bid_price_cpm_rub_sum": "Sum of submitted bid prices (RUB CPM).",
     "rtb_wins_total": "Win notifications accepted (CPM: billed; CPC: journal only).",
     "rtb_win_spend_rub_sum": "Billed spend (RUB): CPM win notices + CPC billed clicks.",
@@ -134,17 +135,10 @@ _CRON_RESULTS = ("ok", "error")
 # Классы HTTP-ответов бэкенда (доля 5xx для алерта Backend5xxShare).
 HTTP_CLASSES = ("1xx", "2xx", "3xx", "4xx", "5xx")
 
-_LATENCY_BUCKETS = (0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 1.0)
+SIMULATOR_ENGINES = ("go", "python_reference")
 
 # Таксономия причин throttling-предфильтра (Часть C). ОТДЕЛЬНО от no-bid:
 # prefilter-дропы не доходят до полного цикла — метрика измеряет экономию инфраструктуры.
-PREFILTER_REASONS = (
-    "bot_ua",
-    "geo_unserved",
-    "no_device_id",
-    "datacenter_ip",
-    "other",
-)
 
 # Причины несовместимости кандидата с OpenRTB-слотом (audit R-04): кандидат
 # пропущен явно, а не отдан заведомо невалидной ставкой. Строки — те же, что в
@@ -174,11 +168,9 @@ _started_at = time.time()
 
 _counters: dict[str, float] = {name: 0.0 for name in _COUNTER_HELP}
 _no_bid: dict[str, int] = {r: 0 for r in NO_BID_REASONS}
-_prefilter: dict[str, int] = {r: 0 for r in PREFILTER_REASONS}
 _openrtb_incompat: dict[str, int] = {r: 0 for r in OPENRTB_INCOMPAT_REASONS}
-_lat_counts = [0] * (len(_LATENCY_BUCKETS) + 1)
-_lat_sum = 0.0
-_lat_total = 0
+_simulator_requests: dict[str, int] = {e: 0 for e in SIMULATOR_ENGINES}
+_simulator_latency: dict[str, list[float]] = {e: [0, 0.0] for e in SIMULATOR_ENGINES}  # engine -> [count, sum]
 _gauges: dict[str, float | None] = {name: None for name in _GAUGE_HELP}
 _cron_runs: dict[tuple[str, str], int] = {(j, r): 0 for j in CRON_JOBS for r in _CRON_RESULTS}
 _cron_last_ok: dict[str, float | None] = {j: None for j in CRON_JOBS}
@@ -203,11 +195,21 @@ def inc_no_bid(reason: str) -> None:
         _no_bid[key] += 1
 
 
-def inc_prefilter(reason: str) -> None:
-    """Запрос отсечён throttling-слоем до полного цикла (Часть C)."""
-    key = reason if reason in _prefilter else "other"
+def inc_simulator_request(engine: str) -> None:
+    """Прогон симулятора по фактически использованному engine. Неизвестный — KeyError."""
+    if engine not in _simulator_requests:
+        raise KeyError(f"unknown simulator engine: {engine}")
     with _lock:
-        _prefilter[key] += 1
+        _simulator_requests[engine] += 1
+
+
+def observe_simulator_latency(engine: str, sec: float) -> None:
+    """Длительность одного bid-запроса симулятора (sum/count по engine)."""
+    if engine not in _simulator_latency:
+        raise KeyError(f"unknown simulator engine: {engine}")
+    with _lock:
+        _simulator_latency[engine][0] += 1
+        _simulator_latency[engine][1] += sec
 
 
 def inc_openrtb_incompat(reason: str) -> None:
@@ -272,33 +274,15 @@ def inc_http_status(status_code: int) -> None:
         _http[key] += 1
 
 
-def observe_bid_latency(sec: float) -> None:
-    global _lat_sum, _lat_total
-    idx = len(_LATENCY_BUCKETS)
-    for i, b in enumerate(_LATENCY_BUCKETS):
-        if sec <= b:
-            idx = i
-            break
-    with _lock:
-        _lat_counts[idx] += 1
-        _lat_sum += sec
-        _lat_total += 1
-
-
 def snapshot() -> dict:
     """Копия текущего состояния (для тестов и диагностики)."""
     with _lock:
-        cum = 0
-        buckets: list[tuple[float, int]] = []
-        for i, b in enumerate(_LATENCY_BUCKETS):
-            cum += _lat_counts[i]
-            buckets.append((b, cum))
         return {
             "counters": dict(_counters),
             "no_bid": dict(_no_bid),
-            "prefilter": dict(_prefilter),
+            "simulator_requests": dict(_simulator_requests),
+            "simulator_latency": {e: tuple(v) for e, v in _simulator_latency.items()},
             "openrtb_incompat": dict(_openrtb_incompat),
-            "bid_latency": {"count": _lat_total, "sum": _lat_sum, "buckets": buckets},
             "gauges": dict(_gauges),
             "cron_runs": dict(_cron_runs),
             "cron_last_ok": dict(_cron_last_ok),
@@ -321,10 +305,10 @@ def render_prometheus() -> str:
         for reason in NO_BID_REASONS:
             lines.append(f'rtb_no_bid_total{{reason="{reason}"}} {_no_bid[reason]}')
 
-        lines.append("# HELP rtb_prefilter_drops_total Requests dropped by throttling pre-filter (before full cycle).")
-        lines.append("# TYPE rtb_prefilter_drops_total counter")
-        for reason in PREFILTER_REASONS:
-            lines.append(f'rtb_prefilter_drops_total{{reason="{reason}"}} {_prefilter[reason]}')
+        lines.append("# HELP simulator_requests_total Simulator runs by the engine that actually answered (fallback never happens).")
+        lines.append("# TYPE simulator_requests_total counter")
+        for engine in SIMULATOR_ENGINES:
+            lines.append(f'simulator_requests_total{{engine="{engine}"}} {_simulator_requests[engine]}')
 
         lines.append("# HELP rtb_openrtb_incompat_total Candidates skipped as incompatible with the OpenRTB slot (R-04).")
         lines.append("# TYPE rtb_openrtb_incompat_total counter")
@@ -347,16 +331,12 @@ def render_prometheus() -> str:
         for (partner, outcome) in sorted(_burl_outcomes):
             lines.append(f'rtb_burl_outcomes_total{{partner="{partner}",outcome="{outcome}"}} {_burl_outcomes[(partner, outcome)]}')
 
-        lines.append("# HELP rtb_bid_latency_seconds Bid request handling latency.")
-        lines.append("# TYPE rtb_bid_latency_seconds histogram")
-        cum = 0
-        for i, b in enumerate(_LATENCY_BUCKETS):
-            cum += _lat_counts[i]
-            lines.append(f'rtb_bid_latency_seconds_bucket{{le="{b:g}"}} {cum}')
-        cum += _lat_counts[-1]
-        lines.append(f'rtb_bid_latency_seconds_bucket{{le="+Inf"}} {cum}')
-        lines.append(f"rtb_bid_latency_seconds_sum {_lat_sum:g}")
-        lines.append(f"rtb_bid_latency_seconds_count {_lat_total}")
+        lines.append("# HELP simulator_engine_latency_seconds Per-request latency of simulator bid calls by engine.")
+        lines.append("# TYPE simulator_engine_latency_seconds summary")
+        for engine in SIMULATOR_ENGINES:
+            cnt, total = _simulator_latency[engine]
+            lines.append(f'simulator_engine_latency_seconds_sum{{engine="{engine}"}} {total:g}')
+            lines.append(f'simulator_engine_latency_seconds_count{{engine="{engine}"}} {cnt}')
 
         lines.append("# HELP http_responses_total Backend HTTP responses by status class.")
         lines.append("# TYPE http_responses_total counter")
@@ -398,20 +378,17 @@ render = render_prometheus
 
 def reset_for_tests() -> None:
     """Только для тестов."""
-    global _lat_sum, _lat_total
     with _lock:
         for name in _counters:
             _counters[name] = 0.0
         for r in _no_bid:
             _no_bid[r] = 0
-        for r in _prefilter:
-            _prefilter[r] = 0
         for r in _openrtb_incompat:
             _openrtb_incompat[r] = 0
-        for i in range(len(_lat_counts)):
-            _lat_counts[i] = 0
-        _lat_sum = 0.0
-        _lat_total = 0
+        for e in _simulator_requests:
+            _simulator_requests[e] = 0
+        for e in _simulator_latency:
+            _simulator_latency[e] = [0, 0.0]
         for name in _gauges:
             _gauges[name] = None
         for key in _cron_runs:

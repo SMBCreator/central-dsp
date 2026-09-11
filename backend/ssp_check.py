@@ -18,9 +18,12 @@
 from __future__ import annotations
 
 import ipaddress
+import logging
 import os
 import time
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 # --- Адаптер к боевому Go-биддеру ---------------------------------------------
 #
@@ -68,7 +71,9 @@ def go_bidder_caller(client=None):
             try:
                 resp = await c.post(url, json=req, headers=headers)
             except httpx.HTTPError as e:
-                raise HTTPException(status_code=503, detail=f"Go-биддер недоступен ({BIDDER_URL}): {type(e).__name__}")
+                # Внутренний адрес биддера — только в server logs, не в API/UI (C1d).
+                log.warning("go bidder unreachable", extra={"bidder_url": BIDDER_URL, "error": type(e).__name__})
+                raise HTTPException(status_code=503, detail=f"Go-биддер недоступен: {type(e).__name__}")
         finally:
             if own:
                 await c.aclose()
