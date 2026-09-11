@@ -9,6 +9,8 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strings"
 )
@@ -95,7 +97,48 @@ func CollectProblems(env Env) []string {
 	if IsProduction(env) && strings.TrimSpace(env("REDIS_URL")) == "" {
 		problems = append(problems, "REDIS_URL не задан — биддер и backend обязаны использовать один Redis (audit M-03)")
 	}
+	// Audit O-01: EVENT_BASE_URL — база nurl/burl/lurl/click, которые уходят SSP.
+	// Внутренний адрес (localhost, имя сервиса compose) означает «SSP не сможет
+	// отчитаться о win/imp» => нет биллинга, а старт при этом не падал.
+	if IsProduction(env) {
+		base := strings.TrimSpace(env("EVENT_BASE_URL"))
+		if base == "" {
+			base = strings.TrimSpace(env("BACKEND_BASE_URL")) // fallback rtb.NewHandler
+		}
+		if p := EventBaseURLProblem(base); p != "" {
+			problems = append(problems, p)
+		}
+	}
 	return problems
+}
+
+// EventBaseURLProblem — "" если base пригоден как публичная база событий:
+// абсолютный http(s)-URL с публичным именем хоста (не loopback, не bare
+// имя сервиса docker, не приватный IP).
+func EventBaseURLProblem(base string) string {
+	const hint = " — SSP получат nurl/burl с недостижимым адресом; задайте PUBLIC_BASE_URL (https://<домен>)"
+	if base == "" {
+		return "EVENT_BASE_URL не задан" + hint
+	}
+	u, err := url.Parse(base)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return "EVENT_BASE_URL не абсолютный http(s) URL: " + base + hint
+	}
+	host := strings.ToLower(u.Hostname())
+	switch host {
+	case "localhost", "0.0.0.0", "::", "::1":
+		return "EVENT_BASE_URL указывает на loopback: " + base + hint
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() {
+			return "EVENT_BASE_URL указывает на непубличный IP: " + base + hint
+		}
+		return ""
+	}
+	if !strings.Contains(host, ".") || strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".internal") {
+		return "EVENT_BASE_URL указывает на внутреннее имя (" + host + ")" + hint
+	}
+	return ""
 }
 
 // Assert — вызывать на старте. В production при нарушениях возвращает ошибку

@@ -3,7 +3,7 @@
 * startup_checks.redis_durability_problems: allkeys-lru => problem, noeviction
   => none; missing AOF => warning only.
 * check_redis_durability against a fake client raises in production, warns in dev.
-* docker-compose pins noeviction + AOF + volume and a single REDIS_URL for
+* compose.yml pins noeviction + AOF + volume and a single REDIS_URL for
   backend and bidder-go.
 * Go mirrors the safe policy constant.
 """
@@ -70,7 +70,7 @@ def test_check_survives_config_forbidden():
 
 
 def test_compose_redis_is_durable_and_shared():
-    compose = (REPO / "docker-compose.yml").read_text(encoding="utf-8")
+    compose = (REPO / "compose.yml").read_text(encoding="utf-8")
     redis_block = compose.split("  redis:", 1)[1].split("\n  backend:", 1)[0]
     assert "--maxmemory-policy noeviction" in redis_block
     assert "--appendonly yes" in redis_block
@@ -78,7 +78,7 @@ def test_compose_redis_is_durable_and_shared():
     assert "allkeys-lru" not in compose
     go_block = compose.split("  bidder-go:", 1)[1].split("\n  frontend:", 1)[0]
     go_url = re.search(r"^\s+REDIS_URL:\s*(\S+)", go_block, re.M)
-    backend_block = compose.split("\n  backend:", 1)[1].split("\n  bidder:", 1)[0]
+    backend_block = compose.split("\n  backend:", 1)[1].split("\n  bidder-go:", 1)[0]
     be_url = re.search(r"^\s+REDIS_URL:\s*(\S+)", backend_block, re.M)
     assert go_url and be_url and go_url.group(1) == be_url.group(1), \
         "bidder-go must use the same REDIS_URL expression as backend"

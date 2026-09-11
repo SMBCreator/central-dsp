@@ -98,6 +98,45 @@ jobs:
   # Блок G аудита: известные уязвимости в зависимостях всех трёх слоёв.
   # Порог — high/critical (pnpm), любая известная (pip-audit, govulncheck —
   # он показывает только реально вызываемые из нашего кода функции).
+  # Audit O-01: compose-топология валидируется на каждом push — dev, production
+  # (Caddy/TLS) и managed-БД варианты, Caddyfile и Prometheus-конфиг.
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker compose config (dev)
+        run: docker compose -f compose.yml --env-file .env.example config -q
+      - name: docker compose config (dev + monitoring)
+        run: docker compose -f compose.yml --env-file .env.example --profile monitoring config --services | grep -qx prometheus
+      - name: docker compose config (production)
+        run: docker compose -f compose.yml -f compose.prod.yml --env-file .env.example config -q
+      - name: docker compose config (managed Postgres/Redis)
+        run: |
+          grep -v '^POSTGRES_PASSWORD' .env.example > /tmp/env.ext
+          cat .env.external.example >> /tmp/env.ext
+          docker compose --env-file /tmp/env.ext config -q
+          ! docker compose --env-file /tmp/env.ext config --services | grep -qx postgres
+      - name: production closes internal ports and dev bind-mount
+        run: |
+          docker compose -f compose.yml -f compose.prod.yml --env-file .env.example config --format json > /tmp/prod.json
+          python3 - <<'PY'
+          import json
+          s = json.load(open('/tmp/prod.json'))['services']
+          for n in ('backend', 'bidder-go', 'frontend'):
+              assert not s[n].get('ports'), f'{n} must not publish ports in production'
+          assert all(v.get('type') != 'bind' for v in s['backend'].get('volumes', [])), 'backend must not bind-mount source in production'
+          assert 'caddy' in s and 'celery' not in open('compose.yml').read()
+          PY
+      - name: caddy validate
+        run: |
+          docker run --rm -e DOMAIN=dsp.example.com -e ACME_EMAIL=ops@example.com \
+            -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2-alpine \
+            caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+      - name: promtool check config
+        run: |
+          docker run --rm -v "$PWD/ops/prometheus:/etc/prometheus:ro" --entrypoint promtool \
+            prom/prometheus:v2.55.1 check config /etc/prometheus/prometheus.yml
+
   security:
     runs-on: ubuntu-latest
     steps:

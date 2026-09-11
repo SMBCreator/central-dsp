@@ -42,7 +42,8 @@ cp .env.example .env
 # Edit .env — set your passwords and secrets
 
 # Start all services
-docker-compose up --build
+cp .env.example .env   # заполнить секреты
+docker compose up -d --build
 ```
 
 Open **http://ads.local** (add `127.0.0.1 ads.local` to `/etc/hosts` or Windows hosts file)
@@ -61,7 +62,7 @@ central-dsp/
 ├── bidder/              # RTB4FREE Java bidder (forked from RTB4FREE/bidder)
 ├── backend/             # FastAPI — tracker, SmartLink, AutoPilot, RTB Bridge
 ├── frontend/            # Vue 3 + Vite + Tailwind — main UI
-├── docker-compose.yml   # All services
+├── compose.yml          # dev-стек; compose.prod.yml — Caddy/TLS; compose.external.yml — managed PG/Redis
 ├── .env.example         # Environment variables template
 └── docs/                # Architecture docs, API specs
 ```

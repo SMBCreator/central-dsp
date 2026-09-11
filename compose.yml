@@ -1,22 +1,50 @@
-version: '3.9'
+# Central DSP — базовый Compose (локальная разработка / один VPS).
+#
+#   docker compose up -d --build                      # dev: порты на 127.0.0.1, hot reload backend
+#   COMPOSE_FILE=compose.yml:compose.prod.yml         # production: + Caddy/TLS, порты закрыты (см. compose.prod.yml)
+#   --profile monitoring                              # + Prometheus (никогда не стартует по умолчанию)
+#   compose.external.yml                              # managed Postgres/Redis вместо встроенных
+#
+# Требуется Docker Compose >= 2.24 (теги !override/!reset, env_file.required).
+# Планировщик задач /cron/* — сервис `scheduler` (audit O-01, C1b); до его
+# появления см. docs/DEPLOYMENT.md §9.1.
+# Единственный боевой биддер — bidder-go. Python-ветка bid-запросов и legacy
+# Java RTB4FREE-биддер в стек не входят (решение 2026-09-11, C1c/C1d).
+
+name: centraldsp
+
+x-env-file: &env-file
+  env_file:
+    - path: .env
+      required: false
+
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: "50m"
+      max-file: "5"
 
 services:
 
   # ─────────────────────────────────────────
-  # DATABASE
+  # POSTGRES — схема накатывается ТОЛЬКО backend/migrate.py при старте backend
+  # (никаких init.sql: файла нет, а Docker создал бы вместо него каталог).
   # ─────────────────────────────────────────
   postgres:
     image: postgres:15-alpine
     restart: unless-stopped
+    <<: *logging
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-centraldsp}
       POSTGRES_USER: ${POSTGRES_USER:-centraldsp}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # Пустой пароль контейнер postgres отвергает сам («superuser password is not
+      # specified»); :? здесь нельзя — compose.external.yml оставляет переменную пустой.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./backend/db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-centraldsp}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-centraldsp} -d ${POSTGRES_DB:-centraldsp}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -40,6 +68,7 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    <<: *logging
     command: >
       redis-server
       --maxmemory ${REDIS_MAXMEMORY:-1gb}
@@ -58,26 +87,38 @@ services:
       - centraldsp
 
   # ─────────────────────────────────────────
-  # BACKEND (FastAPI — Campaign API + RTB Bridge)
+  # BACKEND (FastAPI — Campaign API, events /rtb/win|imp|click|burl, ОРД, cron-ручки)
   # ─────────────────────────────────────────
   backend:
     build: ./backend
+    image: centraldsp/backend:local
     restart: unless-stopped
-    env_file: .env
+    <<: [*env-file, *logging]
     environment:
-      DATABASE_URL: ${DATABASE_URL}
+      # Встроенный Postgres по умолчанию; для managed PG задайте DATABASE_URL
+      # в .env (см. compose.external.yml / .env.external.example).
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-centraldsp}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-centraldsp}}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       # Audit R-06: бронь freq cap на win до imp-пикселя; то же значение у bidder-go.
       WIN_IMP_TTL: ${WIN_IMP_TTL:-120}
       # Audit R-07: ожидание burl у SSP с billing_event=burl (только backend).
       BURL_TTL: ${BURL_TTL:-600}
       RTB_API_TOKEN: ${RTB_API_TOKEN:?set RTB_API_TOKEN in .env (openssl rand -hex 32)}
+      EVENT_TOKEN_SECRET: ${EVENT_TOKEN_SECRET:?set EVENT_TOKEN_SECRET in .env (openssl rand -hex 32)}
+      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in .env (openssl rand -hex 32)}
+      # Bearer для /cron/* — его предъявляет планировщик; без него ручки закрыты.
+      CRON_SECRET: ${CRON_SECRET:?set CRON_SECRET in .env (openssl rand -hex 32)}
+      # Публичный домен: из него строятся адреса, уходящие наружу (пиксель,
+      # /uploads/..., nurl/burl биддера). Обязателен (audit E-05 / O-01).
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?set PUBLIC_BASE_URL in .env (https://your-domain)}
+      PUBLIC_BIDDER_BASE_URL: ${PUBLIC_BIDDER_BASE_URL:-${PUBLIC_BASE_URL}}
+      PUBLIC_ORIGINS: ${PUBLIC_ORIGINS:-${PUBLIC_BASE_URL}}
       # production => fail-fast на пустых/плейсхолдерных секретах при старте
       # (backend/startup_checks.py). Для локальной разработки: APP_ENV=dev в .env.
       APP_ENV: ${APP_ENV:-production}
       # Автопроверка SSP из кабинета бьёт в боевой Go-биддер по HTTP
       # (ssp_check.go_bidder_caller). Тот же RTB_API_TOKEN подписывает запрос.
-      BIDDER_URL: ${BIDDER_URL:-http://bidder-go:8090}
+      BIDDER_URL: http://bidder-go:8090
       # Consumer событий Go-биддера (rtb:events -> bid_events/stats_hourly);
       # RTB_EVENTS_CONSUMER=0 выключает (например, на реплике backend'а).
       RTB_EVENTS_CONSUMER: ${RTB_EVENTS_CONSUMER:-1}
@@ -92,10 +133,17 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - ./backend:/app                        # hot reload dev
+      - ./backend:/app                        # hot reload dev (compose.prod.yml убирает)
       - geoip_data:/data:ro                   # GeoLite2 DB (read-only)
       - uploads_data:/data/uploads            # креативы (persistent)
-    # Audit S-06: наружу публикует только реверс-прокси (Caddy, docs/DEPLOYMENT.md §5).
+    healthcheck:
+      # В образе python:slim нет curl/wget.
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    # Audit S-06: наружу публикует только реверс-прокси (Caddy, compose.prod.yml).
     # Прямой доступ к сервисам с публичного адреса закрыт — иначе TRUSTED_PROXIES
     # и IP-whitelist SSP обходятся запросом мимо прокси.
     ports:
@@ -104,49 +152,14 @@ services:
       - centraldsp
 
   # ─────────────────────────────────────────
-  # CENTRALBIDDER (legacy OpenRTB 2.5 Engine)
-  # DEPRECATED: заменён bidder-go. НЕ поднимается по умолчанию — только
-  # `docker compose --profile legacy up bidder` для сравнения/отката.
-  # Новые фичи сюда не добавляются; кандидат на удаление после релиза.
-  # ─────────────────────────────────────────
-  bidder:
-    build: ./bidder
-    profiles: ["legacy"]
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      CAMPAIGN_MANAGER_URL: http://backend:8000/api/rtb
-      BID_FLOOR: ${RTB_DEFAULT_BID_FLOOR:-0.01}
-      MAX_BID: ${RTB_MAX_BID_PRICE:-5.00}
-      RESPONSE_TIMEOUT: ${RTB_RESPONSE_TIMEOUT_MS:-100}
-    depends_on:
-      redis:
-        condition: service_healthy
-      backend:
-        condition: service_started
-    volumes:
-      - geoip_data:/data:ro                   # GeoLite2 DB
-    ports:
-      - "127.0.0.1:8080:8080"                 # OpenRTB endpoint (loopback only)
-      - "127.0.0.1:9090:9090"                 # Prometheus metrics (loopback only)
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-    networks:
-      - centraldsp
-
-  # ─────────────────────────────────────────
   # BIDDER-GO (Go OpenRTB 2.5 Engine) — единственный боевой биддер.
-  # Поднимается по умолчанию (`docker compose up -d`); backend ходит в него
-  # по BIDDER_URL для автопроверки SSP и рефреша фида.
+  # Backend ходит в него по BIDDER_URL для автопроверки SSP и рефреша фида.
   # ─────────────────────────────────────────
   bidder-go:
     build: ./bidder-go
+    image: centraldsp/bidder-go:local
     restart: unless-stopped
+    <<: *logging
     environment:
       BIDDER_ADDR: ":8090"
       BACKEND_INTERNAL_URL: http://backend:8000
@@ -156,7 +169,10 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       RTB_API_TOKEN: ${RTB_API_TOKEN:?set RTB_API_TOKEN in .env}
       EVENT_TOKEN_SECRET: ${EVENT_TOKEN_SECRET:?set EVENT_TOKEN_SECRET in .env (openssl rand -hex 32)}
-      EVENT_BASE_URL: ${PUBLIC_BASE_URL:-http://backend:8000}
+      # База nurl/burl/lurl/click, которые уходят SSP. Обязана быть публичной:
+      # с внутренним/localhost адресом биддер в production не стартует
+      # (bidder-go/internal/config).
+      EVENT_BASE_URL: ${PUBLIC_BASE_URL:?set PUBLIC_BASE_URL in .env}
       APP_ENV: ${APP_ENV:-production}
       INTERNAL_FEED_TOKEN: ${INTERNAL_FEED_TOKEN:-}
       # Audit S-06: X-Forwarded-For принимается только от этих сетей (реверс-
@@ -169,8 +185,7 @@ services:
       # Audit R-06: бронь freq cap на win до imp-пикселя; то же значение у backend.
       WIN_IMP_TTL: ${WIN_IMP_TTL:-120}
       # Audit R-03: предфильтр (боты / чужое гео / без device id / datacenter-IP)
-      # — те же переменные и тот же Redis SET prefilter:dc_subnets, что у backend,
-      # иначе Go-трафик фильтруется иначе, чем Python.
+      # — те же переменные и тот же Redis SET prefilter:dc_subnets, что у backend.
       THROTTLE_ENABLED: ${THROTTLE_ENABLED:-1}
       THROTTLE_COUNTRIES: ${THROTTLE_COUNTRIES:-ru,rus}
       THROTTLE_REQUIRE_DEVICE_ID: ${THROTTLE_REQUIRE_DEVICE_ID:-1}
@@ -179,72 +194,28 @@ services:
         condition: service_healthy
       backend:
         condition: service_started
-    # Только loopback: SSP ходят через Caddy (rtb.<domain> -> localhost:8090),
+    # Только loopback: SSP ходят через Caddy (/rtb/* -> bidder-go:8090),
     # поэтому RemoteAddr у биддера всегда прокси, а реальный IP — в XFF.
     ports:
       - "127.0.0.1:8090:8090"
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8090/healthz || exit 1"]
+      # Образ distroless: ни sh, ни wget. Бинарь сам ходит в /healthz.
+      test: ["CMD", "/bidder", "-healthcheck"]
       interval: 15s
       timeout: 5s
       retries: 3
-    networks:
-      - centraldsp
-
-  # ─────────────────────────────────────────
-  # CELERY WORKER
-  # ─────────────────────────────────────────
-  worker:
-    build: ./backend
-    restart: unless-stopped
-    command: celery -A celery_app worker --loglevel=info --concurrency=4 -Q default,rtb,sync
-    env_file: .env
-    environment:
-      RTB_API_TOKEN: ${RTB_API_TOKEN:?set RTB_API_TOKEN in .env (openssl rand -hex 32)}
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    networks:
-      - centraldsp
-
-  # ─────────────────────────────────────────
-  # CELERY BEAT (scheduler)
-  # ─────────────────────────────────────────
-  beat:
-    build: ./backend
-    restart: unless-stopped
-    command: celery -A celery_app beat --loglevel=info
-    env_file: .env
-    depends_on:
-      - worker
-    networks:
-      - centraldsp
-
-  # ─────────────────────────────────────────
-  # FLOWER (Celery monitoring)
-  # ─────────────────────────────────────────
-  flower:
-    build: ./backend
-    restart: unless-stopped
-    command: celery -A celery_app flower --port=5555 --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:?set FLOWER_PASSWORD in .env}
-    env_file: .env
-    ports:
-      - "127.0.0.1:5555:5555"   # loopback only; use an SSH tunnel or reverse proxy with auth
-    depends_on:
-      - worker
+      start_period: 30s
     networks:
       - centraldsp
 
   # ─────────────────────────────────────────
   # FRONTEND (Next.js admin UI)
-  # В проде /api/* проксируется на backend реверс-прокси (nginx/caddy),
-  # см. docs/DEPLOYMENT.md.
   # ─────────────────────────────────────────
   frontend:
     build: ./frontend
+    image: centraldsp/frontend:local
     restart: unless-stopped
+    <<: *logging
     ports:
       - "127.0.0.1:3000:3000"
     environment:
@@ -258,8 +229,45 @@ services:
       AI_GATEWAY_API_KEY: ${AI_GATEWAY_API_KEY:-}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
     depends_on:
-      - backend
-      - redis
+      backend:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - centraldsp
+
+  # ─────────────────────────────────────────
+  # PROMETHEUS — только `docker compose --profile monitoring up -d`.
+  # Порт на loopback; наружу — только через SSH-туннель/VPN или Caddy с
+  # basic_auth (никогда не открывать 9090/9091 в интернет).
+  # ─────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    <<: *logging
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-15d}
+      - --web.enable-lifecycle
+    volumes:
+      - ./ops/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./ops/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:9091:9090"
+    depends_on:
+      backend:
+        condition: service_started
+      bidder-go:
+        condition: service_started
     networks:
       - centraldsp
 
@@ -270,6 +278,7 @@ volumes:
   geoip_data:            # Mount your GeoLite2-City.mmdb here in production
                          # docker run --rm -v centraldsp_geoip_data:/data alpine
                          # wget -O /data/GeoLite2-City.mmdb <maxmind_url>
+  prometheus_data:
 
 networks:
   centraldsp:

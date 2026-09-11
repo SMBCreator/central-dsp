@@ -1,0 +1,80 @@
+# Central DSP — production override поверх compose.yml.
+#
+#   .env:  COMPOSE_FILE=compose.yml:compose.prod.yml   (или -f compose.yml -f compose.prod.yml)
+#   docker compose up -d --build
+#
+# Что меняет относительно dev-базы:
+#   * Caddy: единственная точка входа 80/443 (TLS Let's Encrypt автоматически),
+#     маршруты в ./Caddyfile — /api/* -> backend, /rtb/* -> bidder-go,
+#     /uploads/* -> backend, остальное -> frontend;
+#   * внутренние порты backend/bidder-go/frontend с хоста сняты (audit S-06:
+#     мимо прокси нельзя — иначе обходятся TRUSTED_PROXIES и IP-whitelist SSP);
+#   * bind-mount ./backend (hot reload) убран — код только из образа;
+#   * restart: always.
+# Prometheus (profile monitoring) остаётся на 127.0.0.1:9091 — наружу только
+# через SSH-туннель/VPN.
+# Требуется Docker Compose >= 2.24.4 (теги !override / !reset).
+
+services:
+
+  postgres:
+    restart: always
+
+  redis:
+    restart: always
+
+  backend:
+    restart: always
+    ports: !reset []
+    volumes: !override
+      - geoip_data:/data:ro
+      - uploads_data:/data/uploads
+
+  bidder-go:
+    restart: always
+    ports: !reset []
+
+  frontend:
+    restart: always
+    ports: !reset []
+
+  caddy:
+    image: caddy:2-alpine
+    restart: always
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"          # HTTP/3
+    environment:
+      # Публичный хост кабинета и RTB-эндпоинта (см. Caddyfile). Должен совпадать
+      # с хостом PUBLIC_BASE_URL.
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env (host of PUBLIC_BASE_URL, e.g. dsp.example.com)}
+      # Контакт для Let's Encrypt (уведомления об истечении сертификата).
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data          # сертификаты/ключи ACME — бэкапить необязательно, но терять неприятно (rate limit LE)
+      - caddy_config:/config
+    depends_on:
+      backend:
+        condition: service_healthy
+      bidder-go:
+        condition: service_started
+      frontend:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - centraldsp
+
+volumes:
+  caddy_data:
+  caddy_config:

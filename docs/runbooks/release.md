@@ -49,7 +49,7 @@ docker compose build backend bidder-go frontend
 docker compose up -d backend
 docker compose logs --tail=50 backend | grep -iE 'startup_checks|error|refus'   # без ERROR от startup_checks
 docker compose up -d bidder-go
-docker compose up -d frontend worker beat
+docker compose up -d frontend
 
 # 5) фид дошёл до биддера (иначе алерт BidderFeedStale через 3 мин)
 curl -s -X POST -H "X-CentralDSP-Internal-Check: $RTB_API_TOKEN" localhost:8080/internal/feed/reload

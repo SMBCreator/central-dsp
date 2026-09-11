@@ -1,7 +1,20 @@
 # Развёртывание CentralDSP на сервере
 
 Пошаговый гайд: от голого VPS до работающего стека (Postgres + Redis + Backend API +
-Go-биддер + Celery + Frontend) за реверс-прокси с HTTPS.
+Go-биддер + Frontend + планировщик) за Caddy с HTTPS — всё внутри Docker Compose.
+
+Файлы стека (audit O-01):
+
+| Файл | Назначение |
+|---|---|
+| `compose.yml` | база / локальная разработка: порты на `127.0.0.1`, hot reload backend |
+| `compose.prod.yml` | production override: Caddy (80/443, TLS Let's Encrypt), внутренние порты закрыты, `restart: always` |
+| `compose.external.yml` | managed Postgres/Redis вместо встроенных контейнеров |
+| `Caddyfile` | публичная маршрутизация: `/api/*`→backend, `/rtb/*`→bidder-go, `/uploads/*`→backend, остальное→frontend |
+| `ops/prometheus/` | Prometheus + правила алертов, только `--profile monitoring` |
+
+Единственный боевой биддер — **bidder-go**. Python-ветка bid-запросов и legacy Java
+RTB4FREE-биддер в стек не входят.
 
 ---
 
@@ -25,9 +38,10 @@ Go-биддер + Celery + Frontend) за реверс-прокси с HTTPS.
 sudo apt update && sudo apt upgrade -y
 sudo apt install -y git curl ufw
 
-# Docker + Compose plugin
+# Docker + Compose plugin (нужен Compose >= 2.24.4: теги !override/!reset в compose.prod.yml)
 curl -fsSL https://get.docker.com | sh
 sudo usermod -aG docker $USER && newgrp docker
+docker compose version
 
 # Firewall: только SSH, HTTP, HTTPS
 sudo ufw allow OpenSSH
@@ -41,95 +55,99 @@ sudo ufw enable
 ```bash
 git clone https://github.com/SMBCreator/central-dsp.git
 cd central-dsp
-cp .env.example .env 2>/dev/null || touch .env
+cp .env.example .env
 ```
 
-Заполните `.env` (все секреты генерируйте через `openssl rand -hex 32`):
+Заполните `.env` (все секреты генерируйте через `openssl rand -hex 32`; полный
+список с комментариями — в `.env.example`):
 
 ```env
-# --- База данных ---
-POSTGRES_DB=centraldsp
-POSTGRES_USER=centraldsp
-POSTGRES_PASSWORD=<openssl rand -hex 16>
-DATABASE_URL=postgresql://centraldsp:<тот же пароль>@postgres:5432/centraldsp
+# --- Compose: production = база + Caddy/TLS ---
+COMPOSE_FILE=compose.yml:compose.prod.yml
+APP_ENV=production
 
-# --- Redis ---
-REDIS_URL=redis://redis:6379/0
+# --- Публичные адреса ---
+DOMAIN=ваш-домен.ру                     # хост для Caddy (сертификат Let's Encrypt)
+ACME_EMAIL=ops@ваш-домен.ру
+PUBLIC_BASE_URL=https://ваш-домен.ру    # из него строятся пиксель, /uploads, nurl/burl биддера
+# PUBLIC_BIDDER_BASE_URL — не нужен: /rtb/* живёт на том же домене
+
+# --- База данных (встроенный контейнер; DATABASE_URL compose соберёт сам) ---
+POSTGRES_PASSWORD=<openssl rand -hex 16>
 
 # --- Секреты (ОБЯЗАТЕЛЬНО уникальные, не из примеров!) ---
 SESSION_SECRET=<openssl rand -hex 32>
 RTB_API_TOKEN=<openssl rand -hex 32>
 EVENT_TOKEN_SECRET=<openssl rand -hex 32>
-
-# --- Прод-флаги ---
-APP_ENV=production
-PUBLIC_BASE_URL=https://ваш-домен.ру
-
-# --- Celery monitoring ---
-FLOWER_PASSWORD=<пароль для Flower UI>
+CRON_SECRET=<openssl rand -hex 32>
 
 # --- ОРД Озон (можно позже задать через UI настроек) ---
 # ORD_OZON_API_KEY=<ключ из кабинета ОРД Озон>
 ```
 
+Managed Postgres/Redis вместо встроенных: `COMPOSE_FILE=compose.yml:compose.external.yml:compose.prod.yml`
+плюс `DATABASE_URL`/`REDIS_URL` — см. `.env.external.example` (требование к Redis:
+`maxmemory-policy=noeviction`, иначе production не стартует).
+
+В production backend и bidder-go **не поднимутся** с пустыми/плейсхолдерными
+секретами, без `PUBLIC_BASE_URL`, с `EVENT_BASE_URL` на внутренний адрес и с
+eviction-политикой Redis — это осознанные fail-fast проверки (audit S-04, M-03, O-01).
+
 ## 4. Запуск стека
 
 ```bash
-# Собрать и поднять всё. Go-биддер (bidder-go) входит в набор по умолчанию;
-# legacy-биддер `bidder` поднимается только явно: --profile legacy.
-docker compose up -d --build postgres redis backend bidder-go worker beat frontend
+# COMPOSE_FILE из .env уже включает compose.prod.yml -> поднимется и Caddy.
+docker compose up -d --build
 
-# Проверить статусы
+# Проверить статусы (все healthy; caddy ждёт healthy backend)
 docker compose ps
-docker compose logs backend --tail 20
+docker compose logs backend --tail 20      # "startup_checks" без ERROR, миграции применены
 docker compose logs bidder-go --tail 20
+docker compose logs caddy --tail 20        # получен сертификат для DOMAIN
 ```
 
 Миграции БД применяются автоматически при старте backend (`python migrate.py`).
 
-Проверка изнутри сервера:
+В production внутренние порты с хоста сняты — проверяйте через Caddy или изнутри сети:
 
 ```bash
-curl -s http://localhost:8000/health        # backend -> {"status":"ok"}
-curl -s http://localhost:8090/healthz       # go-биддер -> feed fresh, redis ok
-curl -s http://localhost:3000 -o /dev/null -w "%{http_code}\n"  # frontend -> 200
+curl -s https://ваш-домен.ру/api/health                                   # -> {"status":"ok"}
+docker compose exec bidder-go /bidder -healthcheck && echo bidder ok       # feed fresh, redis ok
+curl -s https://ваш-домен.ру -o /dev/null -w "%{http_code}\n"              # frontend -> 200/307
 ```
 
-## 5. Реверс-прокси с HTTPS (Caddy — проще всего)
+Локальная разработка — только `compose.yml` (без `COMPOSE_FILE` в `.env`): порты
+`127.0.0.1:8000/8090/3000`, каталог `backend/` смонтирован в контейнер (hot reload).
+
+## 5. Реверс-прокси с HTTPS (Caddy внутри Compose)
+
+Caddy — сервис `caddy` из `compose.prod.yml`, конфигурация — `Caddyfile` в корне
+репозитория (монтируется read-only). Ничего ставить на хост не нужно; порты 80/443
+публикует только он. Маршруты:
+
+| Путь | Куда | Примечание |
+|---|---|---|
+| `/api/*` | `backend:8000` | префикс `/api` срезается (`handle_path`) |
+| `/rtb/*` | `bidder-go:8090` | OpenRTB `POST /rtb/bid/{key}`, `lurl` `/rtb/loss`; без strip |
+| `/uploads/*` | `backend:8000` | файлы креативов с volume `uploads_data` |
+| остальное | `frontend:3000` | кабинет и `/ai-api/*` (route handlers Next) |
+
+Лимит тела 60 МБ (видеокреативы), HSTS/nosniff, JSON-лог в stdout
+(`docker compose logs caddy`). Сертификаты Let's Encrypt — в volume `caddy_data`,
+продлеваются автоматически; `ACME_EMAIL` обязателен.
+
+SSP-партнёру отдаёте URL вида `https://ваш-домен.ру/rtb/bid/<endpoint_key>` — это
+маршрут на **bidder-go**. Кабинет (`/supply`, «скопировать URL») берёт базу из
+`PUBLIC_BIDDER_BASE_URL` (по умолчанию = `PUBLIC_BASE_URL`), а не из origin браузера
+(audit R-01). Отдельный RTB-хост (`rtb.ваш-домен.ру`) архитектурно зарезервирован —
+закомментированный блок в конце `Caddyfile`; в первом релизе не включается.
+
+Изменили `Caddyfile` — проверка и перезагрузка без даунтайма:
 
 ```bash
-sudo apt install -y caddy
-sudo tee /etc/caddy/Caddyfile > /dev/null << 'EOF'
-ваш-домен.ру {
-    # API -> FastAPI backend
-    handle /api/* {
-        uri strip_prefix /api
-        reverse_proxy localhost:8000
-    }
-    # RTB endpoint для SSP -> Go-биддер
-    handle /rtb/* {
-        reverse_proxy localhost:8090
-    }
-    # Всё остальное -> Next.js UI
-    handle {
-        reverse_proxy localhost:3000
-    }
-}
-EOF
-sudo systemctl reload caddy
+docker compose exec caddy caddy validate --config /etc/caddy/Caddyfile
+docker compose exec caddy caddy reload   --config /etc/caddy/Caddyfile
 ```
-
-Caddy сам получит и будет продлевать TLS-сертификат Let's Encrypt.
-SSP-партнёру отдаёте URL вида: `https://ваш-домен.ру/rtb/bid/<endpoint_key>` — это маршрут на **bidder-go**.
-Пропишите его базу в `.env` как `PUBLIC_BIDDER_BASE_URL=https://ваш-домен.ру`: кабинет (`/supply`, кнопка
-«скопировать URL») берёт адрес из `GET /settings/public`, а не из origin браузера (audit R-01).
-
-Пиксель на сайтах клиентов работает через тот же `/api/*`: скрипт
-`https://ваш-домен.ру/api/pixel/script/<id>.js` шлёт beacon на
-`https://ваш-домен.ру/api/pixel/collect`. Адрес приёма зашивается в скрипт из
-`PUBLIC_BASE_URL` (+ `/api`) или явного `PUBLIC_API_BASE_URL`, а не из host запроса —
-за прокси он внутренний. Без одной из этих переменных скрипт не выдаётся (404), а
-кабинет `/pixels` вместо кода вставки показывает предупреждение (audit E-05).
 
 ### 5.1. Файлы креативов (баннеры/видео)
 
@@ -144,24 +162,10 @@ SSP-партнёру отдаёте URL вида: `https://ваш-домен.р�
 png/jpg/gif/webp/mp4/webm.
 
 **Лимит тела на реверс-прокси должен быть >= MAX_VIDEO_UPLOAD_BYTES**, иначе
-браузер получит 413 до того, как запрос дойдёт до backend:
-
-```caddyfile
-    handle /api/* {
-        uri strip_prefix /api
-        request_body {
-            max_size 60MB
-        }
-        reverse_proxy localhost:8000 {
-            transport http {
-                read_timeout 5m
-            }
-        }
-    }
-```
-
-Для nginx — `client_max_body_size 60m;` и `proxy_read_timeout 300s;` в
-`location /api/`.
+браузер получит 413 до того, как запрос дойдёт до backend. В репозиторном
+`Caddyfile` уже стоит `request_body { max_size 60MB }`; подняли
+`MAX_VIDEO_UPLOAD_BYTES` — поднимите и его. Для стороннего nginx —
+`client_max_body_size 60m;` и `proxy_read_timeout 300s;` в `location /api/`.
 
 Проверка: `docker compose exec backend ls -la /data/uploads`. Файлы, у которых
 создание креатива не состоялось, удаляются фронтендом сразу (`DELETE
@@ -244,14 +248,19 @@ docker compose exec -T postgres dropdb -U centraldsp centraldsp_restore_<ts>
 
 ## 9.1. Планировщик `/cron/*` на VPS
 
-На Vercel расписание берётся из `vercel.json` (`crons`). В docker-compose стеке
-планировщика **нет** — эндпоинты `/cron/*` нужно дёргать системным crontab на хосте.
-Все вызовы требуют `Authorization: Bearer $CRON_SECRET` (см. `.env`).
+> Целевая модель (audit O-01, этап C1b): расписание хранится в PostgreSQL
+> (`scheduled_jobs`) и исполняется сервисом `scheduler` из compose — без Celery и
+> без `vercel.json` (тот относится только к Vercel-preview). До появления
+> `scheduler` в стеке используйте системный crontab ниже.
+
+В Compose-стеке до C1b планировщика **нет** — эндпоинты `/cron/*` нужно дёргать
+системным crontab на хосте. Все вызовы требуют `Authorization: Bearer $CRON_SECRET`
+(см. `.env`); в production внутренние порты закрыты, поэтому `API=https://ваш-домен.ру/api`.
 
 ```bash
 # /etc/cron.d/centraldsp  (время — UTC; МСК = UTC+3)
 CRON_SECRET=<из .env>
-API=https://api.example.com
+API=https://ваш-домен.ру/api   # через Caddy; внутри compose-сети — http://backend:8000
 
 0 6 * * *   root curl -fsS -H "Authorization: Bearer $CRON_SECRET" $API/cron/rules        >/dev/null
 # reset-daily — только housekeeping (чистит счётчики ПРОШЛЫХ бизнес-дней); граница дня —
@@ -326,8 +335,11 @@ docker compose start backend
 | p99 время ответа биддера | лог биддера | > 80 мс |
 | Баланс рекламодателей | UI «Финансы» | близок к 0 — кампании встанут |
 
-Полноценный контур (Prometheus + Grafana + алерты) — следующий этап,
-см. `docs/PROD_RUNBOOK.md`.
+Prometheus с правилами `ops/prometheus/alerts.yml` уже в стеке, но поднимается
+только явно — `COMPOSE_PROFILES=monitoring` в `.env` (или `--profile monitoring`).
+Слушает `127.0.0.1:9091`; наружу — только SSH-туннель (`ssh -L 9091:127.0.0.1:9091`)
+или VPN, **никогда** не публиковать в интернет без auth. Grafana и Alertmanager —
+тем же профилем на следующем этапе (C4); runbook алертов — `docs/runbooks/rtb_alerts.md`.
 
 ## 11. Типичные проблемы
 

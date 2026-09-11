@@ -185,9 +185,42 @@
 
 ## Очередь C — эксплуатация и приёмка
 
-### C1. O-01 — production Compose
-- Удалить worker/beat/flower и `init.sql` mount; добавить `cron` (alpine + curl + crond с расписанием `/cron/*`); Caddy в Compose; порты на 127.0.0.1; `.env.example` только для Compose-топологии, отдельный `.env.external.example`; `EVENT_BASE_URL`/`PUBLIC_*` обязательны.
-- `docker compose config` в CI.
+### C1. O-01 — production Compose (решения 2026-09-11)
+Перепроверка перед стартом: Celery в проекте отсутствует (worker/beat/flower в compose — мёртвые сервисы); отдельного
+«Python bidder» нет — `bidder/` это legacy **Java** RTB4FREE-форк (deprecated 2026-08), а Python bid-ветка — `POST /rtb/bid/{key}`
+внутри `backend/routers/rtb.py` за флагом `RTB_PYTHON_SERVING` (в prod выключен, startup_checks валит старт при включении).
+`process_bid_request`/`_build_adm`/`rtb_compat.py` — исполняемый оракул паритета для 43 pytest-файлов и Go-тестов
+(`parity_matrix.md`). Событийные роуты `/win /imp /click /burl /view /vevent` — production-биллинг, не биддер.
+
+- **C1a — split Compose + Caddy + Prometheus.** `compose.yml` (dev: postgres, redis, backend, bidder-go, frontend,
+  scheduler; порты 127.0.0.1) + `compose.prod.yml` (override: Caddy 80/443 + TLS, внутренние порты закрыты,
+  `restart: always`, лимиты логов) + `Caddyfile` (`DOMAIN`: `/api/*`→backend со strip, `/rtb/*`→bidder-go,
+  `/uploads/*`→backend, остальное→frontend, `request_body max_size 60MB`; `RTB_DOMAIN` зарезервирован для внешних
+  SSP, по умолчанию = `DOMAIN`, в первом релизе не включается). Удалить worker/beat/flower, `celery flower` из
+  Dockerfile, `init.sql` mount, сервис legacy `bidder` (profile legacy) и его env. Prometheus **только** под
+  `--profile monitoring`, порт `127.0.0.1:9091`, scrape backend `/metrics` + bidder-go `:8090/metrics`, `ops/prometheus/alerts.yml`
+  подключён; Grafana — тем же профилем в C4. `PUBLIC_BASE_URL`/`PUBLIC_BIDDER_BASE_URL`/`CRON_SECRET` обязательны (`:?`),
+  Go fail-fast в production на пустом/`localhost` `EVENT_BASE_URL`. `.env.example` только для Compose-топологии
+  (PG/Redis внутри), `.env.external.example` для managed PG/Redis. CI job `compose`: `docker compose config` для
+  dev и dev+prod с `.env.example`, `caddy validate`. Docs: `DEPLOYMENT.md`, `README.md`.
+- **C1b — scheduler в PostgreSQL (без Celery, без vercel.json).** Миграция 053 `scheduled_jobs` (name PK, path,
+  schedule cron UTC, enabled, timeout_s, last_run_at/status/error/duration_ms, next_run_at) + `scheduled_job_runs`
+  (история, ретеншн 30 д), seed = текущие 13 задач `/cron/*`. Сервис `scheduler` из образа backend
+  (`python -m scheduler`): тик 15 с, `croniter`, `pg_try_advisory_lock` на job (несколько реплик без дублей),
+  пропущенные тики схлопываются в один запуск, вызов существующих `GET /api/cron/<path>` по `BACKEND_INTERNAL_URL`
+  с `Bearer CRON_SECRET` — сами задачи и метрики `cron_job_runs_total`/алерт `CronJobFailing` не меняются.
+  Admin API (superadmin): `GET /admin/scheduler/jobs`, `PATCH /admin/scheduler/jobs/{name}` (enabled, schedule),
+  `POST /admin/scheduler/jobs/{name}/run`. Метрика `scheduler_last_tick_timestamp_seconds`, алерт `SchedulerDown`,
+  runbook. `vercel.json` — только Vercel-preview, с production не синхронизируется (решение пользователя).
+- **C1c — `chore: remove deprecated Java RTB4FREE bidder`.** Удалить `bidder/` целиком (Dockerfile, pom, src, README),
+  `docs/rtb4free-setup.md`, все ссылки в Compose/CI/ENV/документации/схемах. Критерий: `grep -ri rtb4free` пуст вне
+  audit-документов.
+- **C1d — `refactor: remove Python RTB serving path and retain Go parity reference`.** Удалить `POST /rtb/bid/{key}`,
+  флаг `RTB_PYTHON_SERVING`, связанные startup checks/env/docs и код, нужный только для обслуживания bid-запросов
+  Python-бэкендом (входной prefilter/throttle). `process_bid_request` и оракул паритета остаются без HTTP-маршрута;
+  parity suite (43 файла) и Go contract-тесты переводятся на прямой вызов функции там, где ходили через роут.
+  Критерий готовности: ни один production route не принимает bid request через Python; Go bidder — единственный
+  auction endpoint; parity suite зелёный; `/win /imp /click /burl /view /vevent` работают без изменений.
 
 ### C2. O-02 — backup/restore
 - Единый артефакт `backup-<ts>.tar` (pg dump custom format файл, redis rdb, uploads tar, manifest.json с sha256); restore принимает только его, сравнивает checksum, использует `--jobs` с файлом; SQL verify по `transactions`; проверка `schema_migrations.filename`. Тест: shell-тест на локальном PG (backup → drop → restore → сверка балансов и count событий).
@@ -242,7 +275,7 @@
 - [x] B13 L-02/L-03 — B13a (2026-09-10) версии erid, заморозка юр. полей, реальный Ozon-клиент, построчный экспорт; B13b (2026-09-11) акты: preview/draft/submit, коррекция; B13c (2026-09-11) ОРС + сводная площадка; B13d (2026-09-11) цепочка ОРД на кампании + шаг мастера; B13e (2026-09-11) акты по ОРС-модели; B13f (2026-09-11) UI «Акты» + версии erid; B13g (2026-09-11) ошибки ЕРИР — **B13 закрыт**
 - [x] B14 F-02 — B14a, B14b, B14c done (2026-09-10)
 - [x] B15 R-07 (2026-09-10) — billing по burl: `bid.burl` (`${AUCTION_PRICE}`, Go + Python); `supply_partners.billing_event` ∈ {win, burl} (миграция 046: существующие — `win`, DEFAULT для новых — `burl`; API/UI /supply «Событие расхода» + чекбокс `freq_cap_on_win`); режим `burl`: nurl → событие `win` без денег, `wins`+1, шаг freq cap, резерв остаётся, бид в `pending:burl` (`cache.win_pending`, `BURL_TTL` 600 с, дедлайн в `pending:bids` +300 с grace); `/api/rtb/burl` → `bill_win` + событие `billable` (`clear_price`) + `stats_hourly.billable_imps` + `luaSettleWin` (won → convert / won без резерва → recharge / won_expired → recharge `late=true`); `/cron/sweep-burl` каждую минуту → `win_expired` (резерв возвращён, денег нет); режим `win` — как раньше, burl игнорируется (`rtb_burl_in_win_mode_total`); CPC — деньги на клике в обоих режимах. `stats_math`: `SPEND_FROM_EVENTS_SQL` = win|billable, `BILLABLE_FROM_EVENTS_SQL`, `billable_imps` в summary/breakdown/report, `ecpm = spend/billable_imps`; UI dashboard «N оплачено». Метрики `rtb_burl_*`, `rtb_win_without_burl_total`, `rtb_pending_burl_size/oldest_age_seconds`, `rtb_burl_outcomes_total{partner,outcome}`; алерты `WinWithoutBurlRateHigh`, `PendingBurlQueueStuck`; runbook `billing-burl` с чеклистом включения burl на реальной SSP. Тесты: Python `test_burl_billing.py` (fakeredis Lua), `test_burl_handlers.py`, `test_burl_billing_db.py`; Go `redisx/burl_test.go`; Lua байт-в-байт. `[V]` документация биржи о семантике burl — при онбординге, до переключения партнёра на `burl`
-- [ ] C1 O-01
+- [ ] C1 O-01 — **C1a done (2026-09-11)**: `compose.yml` + `compose.prod.yml` (Caddy 80/443, порты закрыты, `!reset`/`!override`) + `compose.external.yml` (managed PG/Redis) + `Caddyfile` + `ops/prometheus/prometheus.yml` (profile `monitoring`, 127.0.0.1:9091); worker/beat/flower/legacy `bidder`/`init.sql` удалены из compose, `celery flower` из Dockerfile; Go `EventBaseURLProblem` (fail-fast в production на пустом/loopback/внутреннем `EVENT_BASE_URL`) + `/bidder -healthcheck` для distroless; `.env.example` переписан, `.env.external.example`; CI job `compose` (config dev/prod/external, `caddy validate`, `promtool`). · C1b scheduler в БД · C1c remove Java bidder · C1d remove Python serving
 - [ ] C2 O-02
 - [ ] C3 O-03/O-04
 - [ ] C4 O-05

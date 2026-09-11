@@ -1,11 +1,12 @@
-# CentralDSP management API (FastAPI + Celery worker/beat share this image).
+# Central DSP management API (FastAPI). Тот же образ использует сервис
+# scheduler (compose.yml) — планировщик /cron/* без Celery.
 FROM python:3.12-slim
 
 WORKDIR /app
 
 # Deps first for layer caching.
 COPY pyproject.toml ./
-RUN pip install --no-cache-dir . uvicorn celery flower
+RUN pip install --no-cache-dir . uvicorn
 
 COPY . .
 

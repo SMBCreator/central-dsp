@@ -7,7 +7,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -53,6 +55,12 @@ func env(key, def string) string {
 const defaultTrustedProxies = "127.0.0.0/8,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7"
 
 func main() {
+	// `bidder -healthcheck` — Docker HEALTHCHECK для distroless-образа (нет
+	// sh/wget): GET /healthz на собственном порту, exit 0 только на 200.
+	if len(os.Args) > 1 && (os.Args[1] == "-healthcheck" || os.Args[1] == "--healthcheck") {
+		os.Exit(healthcheck(env("BIDDER_ADDR", ":8090")))
+	}
+
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
@@ -291,4 +299,26 @@ func recoverMiddleware(next http.Handler, reg *metrics.Registry) http.Handler {
 		}()
 		next.ServeHTTP(w, r)
 	})
+}
+
+// healthcheck возвращает код процесса для Docker HEALTHCHECK: 0 = /healthz
+// ответил 200 (feed fresh, redis ok), 1 = всё остальное.
+func healthcheck(addr string) int {
+	host := "127.0.0.1"
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		port = "8090"
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get("http://" + net.JoinHostPort(host, port) + "/healthz")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "healthcheck:", err)
+		return 1
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintln(os.Stderr, "healthcheck: status", resp.StatusCode)
+		return 1
+	}
+	return 0
 }
