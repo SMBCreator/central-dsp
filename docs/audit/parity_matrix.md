@@ -21,7 +21,7 @@
 | Bid shading (first-price-only, floor*1.01) | ✅ (GAP-005 fixed) | ❌ | ✅ гейт + 📋 фактор | Фактор обучается в Python cron |
 | Deal/PMP (`imp.pmp.deals`) | ✅ | ❌ | ✅ | R-04: deal floor/at/private_auction — см. строку OpenRTB-совместимости ниже |
 | Валюта RUB + Decimal/копейки | ✅ | ❌ (double USD) | 📋 (int64 копейки) | Java-double — одна из причин деприкации |
-| erid (ОРД-маркировка в `bid.ext`) | ✅ | ❌ | ✅ модель + 📋 | B13a: версии erid и привязка статистики к версии — только backend (`ord_spec.md §2`), биддер читает `creatives.erid` текущей версии, Go не менялся |
+| erid (ОРД-маркировка в `bid.ext`) | ✅ | ❌ | ✅ модель + 📋 | B13a: версии erid и привязка статистики к версии — только backend (`ord_spec.md §2`), биддер читает `creatives.erid` текущей версии, Go не менялся. B13b: акты (`ord_spec.md §6`) — только backend, биддер не участвует |
 | Win notice: идемпотентный биллинг | ✅ | 🟡 | 📋 | Redis SETNX + billing_core |
 | Billing notice `burl` (R-07) | ✅ (`/api/rtb/burl`, `cache.win_pending/expire_burl`, `/cron/sweep-burl`) | ❌ | ✅ `BURL` в bid + `luaSettleWin` (KEYS[13] `pending:burl`, состояния `won`/`won_expired`) байт в байт с Python | `supply_partners.billing_event` ∈ {win, burl} (миграция 046; старые — win, новые — burl); `stats_hourly.billable_imps`, `bid_events.late`; env `BURL_TTL` (600 с) + grace 300 с к дедлайну в `pending:bids`; `ecpm = spend / billable_imps`. Тесты: Go `redisx/burl_test.go` (4) ↔ Python `test_burl_billing.py` (Lua + state machine), `test_burl_handlers.py`, `test_burl_billing_db.py`; алерты `WinWithoutBurlRateHigh`/`PendingBurlQueueStuck`, runbook `billing-burl` |
 | Loss notice: release резерва | ✅ | ❌ | 📋 | |

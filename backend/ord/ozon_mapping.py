@@ -160,23 +160,82 @@ def statistic_body(period_start: str, period_end: str, row: dict[str, Any], plat
     externalStatisticId = '<creative_id>:v<version>:<YYYY-MM>' — повторная
     отправка за тот же период = upsert (коррекция), а не дубль.
     unitCost — цена за единицу (CPM: за 1000 показов; CPC: за клик).
+
+    Строка акта (B13b) передаёт дополнительно:
+      date_start/date_end        — месяц ∩ период акта (иначе границы месяца);
+      invoice_impressions        — viewsCountByInvoice (показы по акту; факт — impressions);
+      invoice_spend, unit_cost   — сумма и цена по акту.
     """
     imps = int(row.get("impressions") or 0)
-    spend = row.get("spend") or row.get("amount") or 0
-    unit_cost = (float(spend) / imps * 1000) if imps else 0.0
+    inv_imps = row.get("invoice_impressions")
+    inv_imps = imps if inv_imps is None else int(inv_imps)
+    spend = row.get("invoice_spend")
+    if spend is None:
+        spend = row.get("spend") or row.get("amount") or 0
+    unit_cost = row.get("unit_cost")
+    if unit_cost is None:
+        unit_cost = (float(spend) / imps * 1000) if imps else 0.0
+    start = row.get("date_start") or period_start
+    end = row.get("date_end") or period_end
     return {
         "externalStatisticId": row["external_statistic_id"],
         "externalCreativeId": row["external_creative_id"],
         "externalPlatformId": platform_id,
-        "dateStartPlan": period_start,
-        "dateEndPlan": period_end,
-        "dateStartFact": period_start,
-        "dateEndFact": period_end,
+        "dateStartPlan": start,
+        "dateEndPlan": end,
+        "dateStartFact": start,
+        "dateEndFact": end,
         "viewsCountByFact": str(imps),
-        "viewsCountByInvoice": str(imps),
+        "viewsCountByInvoice": str(inv_imps),
         "moneySpent": f"{float(spend):.2f}",
-        "unitCost": f"{unit_cost:.4f}",
+        "unitCost": f"{float(unit_cost):.4f}",
         "withNds": bool(row.get("with_vat", True)),
+    }
+
+
+# --- акт (разаллокация) -----------------------------------------------------
+def invoice_body(data: dict[str, Any]) -> dict[str, Any]:
+    """ord_invoices -> POST /api/external/v2/invoice (upsert по externalInvoiceId).
+
+    Один акт — один договор: contracts[] содержит только его. Роли сторон —
+    из counterparties.role заказчика/исполнителя договора (RD/RA/RR/ORS).
+    """
+    price = f"{float(data['amount']):.2f}"
+    with_nds = bool(data.get("is_vat", True))
+    return {
+        "externalInvoiceId": data["external_id"],
+        "externalContractId": data["contract_external_id"],
+        "invoiceNumber": data["number"],
+        "invoiceDate": str(data["invoice_date"]),
+        "startDate": str(data["period_start"]),
+        "endDate": str(data["period_end"]),
+        "price": price,
+        "withNds": with_nds,
+        "clientRole": ORGANISATION_ROLE.get(data.get("client_role") or "advertiser", "ORGANISATION_ROLE_RD"),
+        "contractorRole": ORGANISATION_ROLE.get(data.get("contractor_role") or "ors", "ORGANISATION_ROLE_ORS"),
+        "contracts": [{"externalContractId": data["contract_external_id"], "price": price, "withNds": with_nds}],
+    }
+
+
+def invoice_link_body(data: dict[str, Any]) -> dict[str, Any]:
+    """Креативы детализации акта -> POST /api/external/v3/invoice/creative/link."""
+    return {
+        "items": [{
+            "externalInvoiceId": data["external_invoice_id"],
+            "externalContractId": data["contract_external_id"],
+            "externalCreativeIds": list(data["external_creative_ids"]),
+        }]
+    }
+
+
+def invoice_unlink_all_body(data: dict[str, Any]) -> dict[str, Any]:
+    """Снять все креативы с акта (перед повторной привязкой) -> .../creative/unlink."""
+    return {
+        "items": [{
+            "externalInvoiceId": data["external_invoice_id"],
+            "externalContractId": data["contract_external_id"],
+            "deleteAllCreatives": True,
+        }]
     }
 
 

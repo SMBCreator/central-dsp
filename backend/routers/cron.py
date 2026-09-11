@@ -348,6 +348,25 @@ async def _ord_export_locked(conn, period, kind, force, _json, external_creative
         }
         for r in rows
     ]
+    # B13b: строка акта в ОРД — та же строка (тот же externalStatisticId). Если
+    # по строке уже принят акт, выгрузка не должна затирать подписанные значения:
+    # viewsCountByFact остаётся фактом, viewsCountByInvoice/moneySpent — из акта.
+    if stats:
+        inv_rows = await conn.fetch(
+            """SELECT it.external_statistic_id, it.impressions, it.spend, it.unit_cost, it.period_start, it.period_end
+                 FROM ord_invoice_items it
+                WHERE it.status = 'accepted' AND it.external_statistic_id = ANY($1::text[])""",
+            [s["external_statistic_id"] for s in stats],
+        )
+        by_sid = {r["external_statistic_id"]: r for r in inv_rows}
+        for s in stats:
+            it = by_sid.get(s["external_statistic_id"])
+            if it:
+                s["invoice_impressions"] = int(it["impressions"])
+                s["invoice_spend"] = str(it["spend"])
+                s["unit_cost"] = str(it["unit_cost"])
+                s["date_start"] = it["period_start"].isoformat()
+                s["date_end"] = it["period_end"].isoformat()
     # Показы были, а действовавшего erid нет — в ОРД такое отправить нельзя,
     # но и молча пропускать нельзя: это реклама без маркировки (ФЗ-347).
     skipped_rows = await conn.fetch(

@@ -214,6 +214,7 @@ _OWNED_TABLES: dict[str, str] = {
     "scoring_profiles": "{owner}",
     "counterparties": "{owner}",
     "ord_contracts": "{owner}",
+    "ord_invoices": "{owner}",
     "rules": "{owner}",
     "audience_segments": "{owner}",
     "supply_partners": "{owner}",

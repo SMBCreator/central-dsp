@@ -20,6 +20,9 @@ from .ozon_mapping import (
     contract_body,
     creative_body,
     creative_erid,
+    invoice_body,
+    invoice_link_body,
+    invoice_unlink_all_body,
     organisation_body,
     period_bounds,
     statistic_body,
@@ -106,6 +109,23 @@ class OzonOrdClient:
             "url": data.get("url") or "",
         })
         return {"external_id": data["external_id"]}
+
+    async def register_invoice(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Акт: POST /api/external/v2/invoice — upsert по externalInvoiceId,
+        повторная отправка = редактирование акта."""
+        await self._request("POST", "/api/external/v2/invoice", invoice_body(data))
+        return {"external_id": data["external_id"]}
+
+    async def link_invoice_creatives(self, data: dict[str, Any]) -> None:
+        """Детализация акта пересобирается целиком: unlink(deleteAllCreatives) →
+        link актуального набора. 4xx на unlink у нового акта (связей ещё нет)
+        не считается ошибкой."""
+        try:
+            await self._request("POST", "/api/external/v3/invoice/creative/unlink", invoice_unlink_all_body(data))
+        except OrdDataError:
+            pass
+        if data["external_creative_ids"]:
+            await self._request("POST", "/api/external/v3/invoice/creative/link", invoice_link_body(data))
 
     async def submit_stats(self, period: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
         """Статистика за месяц: батчи по _STATS_BATCH; батч, отклонённый 4xx,

@@ -88,6 +88,13 @@
 | GET | `/ord/creatives/{creative_id}/versions` | session | любая роль (scope внутри хендлера) |
 | GET | `/ord/exports` | session | любая роль (scope внутри хендлера) |
 | GET | `/ord/exports/{log_id}/rows` | session | любая роль (scope внутри хендлера) |
+| GET | `/ord/invoices` | session | любая роль (scope внутри хендлера) |
+| **POST** | `/ord/invoices` | roles | admin, manager, superadmin |
+| GET | `/ord/invoices/preview` | session | любая роль (scope внутри хендлера) |
+| **DELETE** | `/ord/invoices/{invoice_id}` | roles | admin, manager, superadmin |
+| GET | `/ord/invoices/{invoice_id}` | session | любая роль (scope внутри хендлера) |
+| **PUT** | `/ord/invoices/{invoice_id}` | roles | admin, manager, superadmin |
+| **POST** | `/ord/invoices/{invoice_id}/submit` | roles | admin, manager, superadmin |
 | **POST** | `/pixel/collect` | none | публично (пиксель), rate-limit |
 | GET | `/pixel/script/{pixel_id}.js` | none | публично (пиксель) |
 | GET | `/pixels` | session | любая роль (scope внутри хендлера) |

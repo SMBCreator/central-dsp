@@ -8,13 +8,14 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from auth import current_user
 from rbac import assert_in_scope, assert_owned_by, require_platform_write, scope_for
 from db import get_pool
 from ord import OrdError, OrdNotConfigured, get_ord_adapter
+from ord import invoices as ord_invoices
 from ord.service import register_creative as ord_register_creative
 
 router = APIRouter(prefix="/ord", tags=["ord"])
@@ -46,6 +47,31 @@ class ContractIn(BaseModel):
 class CreativeRegisterIn(BaseModel):
     # Пусто → договор подбирается по контрагенту креатива (ord.service.resolve_contract)
     contract_id: Optional[str] = None
+
+
+class InvoiceItemIn(BaseModel):
+    creative_id: str
+    version: int
+    period: str                      # YYYY-MM — строго один календарный месяц
+    impressions: int | None = None
+    clicks: int | None = None
+    spend: float | None = None    # цена клиента
+    unit_cost: float | None = None
+    payment_type: str | None = None  # cpm | cpc
+
+
+class InvoiceIn(BaseModel):
+    contract_id: str
+    number: str = Field(min_length=1, max_length=64)
+    invoice_date: str
+    period_start: str
+    period_end: str
+    amount: float | None = None   # пусто → Σ spend строк
+    is_vat: bool | None = None
+    client_role: str | None = None
+    contractor_role: str | None = None
+    campaign_ids: list[str] = Field(default_factory=list)
+    items: list[InvoiceItemIn]
 
 
 def _row(r) -> dict:
@@ -265,6 +291,131 @@ async def creative_versions(creative_id: str, user: dict = Depends(current_user)
         creative_id,
     )
     return [dict(r) for r in rows]
+
+
+# ----------------------------------------------------------------- invoices --
+# Акты (B13b): один договор + период + сумма; строки — (креатив, версия erid,
+# месяц). Логика в ord/invoices.py, здесь только scope и HTTP-коды.
+def _inv_http(e: ord_invoices.InvoiceError) -> HTTPException:
+    return HTTPException(e.status, e.detail)
+
+
+async def _contract_for_invoice(pool, user: dict, contract_id: str, campaign_ids: list[str]) -> dict:
+    """Договор в scope пользователя; кампании фильтра — того же владельца."""
+    c = await assert_in_scope(pool, "ord_contracts", contract_id, await scope_for(user), "Договор не найден")
+    for cid in campaign_ids:
+        await assert_owned_by(pool, "campaigns", cid, c["user_id"], "Кампания не найдена")
+    return dict(c)
+
+
+@router.get("/invoices/preview")
+async def preview_invoice(
+    contract_id: str,
+    period_start: str,
+    period_end: str,
+    campaign_ids: list[str] = Query(default_factory=list),
+    invoice_id: str | None = None,  # при редактировании: строки этого акта не считаются «занятыми»
+    user: dict = Depends(current_user),
+):
+    """Строки акта по факту за период: показы/клики/расход (цена клиента) по
+    (креатив, версия erid, месяц) + предупреждения (уже в другом акте, без erid)."""
+    pool = await get_pool()
+    contract = await _contract_for_invoice(pool, user, contract_id, campaign_ids)
+    if invoice_id:
+        await assert_owned_by(pool, "ord_invoices", invoice_id, contract["user_id"], "Акт не найден")
+    try:
+        return await ord_invoices.preview(
+            pool, contract,
+            ord_invoices.parse_date(period_start, "period_start"),
+            ord_invoices.parse_date(period_end, "period_end"),
+            campaign_ids, exclude_invoice_id=invoice_id,
+        )
+    except ord_invoices.InvoiceError as e:
+        raise _inv_http(e)
+
+
+@router.get("/invoices")
+async def list_invoices(user: dict = Depends(current_user)):
+    pool = await get_pool()
+    scope = await scope_for(user)
+    rows = await pool.fetch(
+        f"""SELECT i.*, c.number AS contract_number,
+                   (SELECT count(*) FROM ord_invoice_items it WHERE it.invoice_id = i.id) AS items_count,
+                   (SELECT count(*) FROM ord_invoice_items it WHERE it.invoice_id = i.id AND it.status = 'accepted') AS items_accepted,
+                   (SELECT count(*) FROM ord_invoice_items it WHERE it.invoice_id = i.id AND it.status = 'rejected') AS items_rejected
+              FROM ord_invoices i JOIN ord_contracts c ON c.id = i.contract_id
+             WHERE {scope.where("i.user_id", 1)}
+             ORDER BY i.created_at DESC""",
+        *scope.params,
+    )
+    return [dict(r) for r in rows]
+
+
+@router.get("/invoices/{invoice_id}")
+async def get_invoice(invoice_id: str, user: dict = Depends(current_user)):
+    pool = await get_pool()
+    await assert_in_scope(pool, "ord_invoices", invoice_id, await scope_for(user), "Акт не найден", columns="id")
+    return await ord_invoices.load(pool, invoice_id)
+
+
+@router.post("/invoices", status_code=201)
+async def create_invoice(body: InvoiceIn, user: dict = Depends(require_platform_write)):
+    pool = await get_pool()
+    contract = await _contract_for_invoice(pool, user, body.contract_id, body.campaign_ids)
+    try:
+        return await ord_invoices.save(
+            pool, invoice_id=None, contract=contract, data=body.model_dump(exclude={"items"}),
+            items=[it.model_dump() for it in body.items], actor_id=str(user["id"]),
+        )
+    except ord_invoices.InvoiceError as e:
+        raise _inv_http(e)
+
+
+@router.put("/invoices/{invoice_id}")
+async def update_invoice(invoice_id: str, body: InvoiceIn, user: dict = Depends(require_platform_write)):
+    """Редактирование (в т.ч. после отправки): статус снова draft, повторный
+    submit = коррекция акта в ОРД. Договор акта менять нельзя."""
+    pool = await get_pool()
+    inv = await assert_in_scope(pool, "ord_invoices", invoice_id, await scope_for(user), "Акт не найден")
+    if str(inv["contract_id"]) != body.contract_id:
+        raise HTTPException(409, "Договор акта изменить нельзя — создайте новый акт")
+    if inv["status"] == "submitting":
+        raise HTTPException(409, "Акт отправляется в ОРД, дождитесь результата")
+    contract = await _contract_for_invoice(pool, user, body.contract_id, body.campaign_ids)
+    try:
+        return await ord_invoices.save(
+            pool, invoice_id=invoice_id, contract=contract, data=body.model_dump(exclude={"items"}),
+            items=[it.model_dump() for it in body.items], actor_id=str(user["id"]),
+        )
+    except ord_invoices.InvoiceError as e:
+        raise _inv_http(e)
+
+
+@router.delete("/invoices/{invoice_id}", status_code=204)
+async def delete_invoice(invoice_id: str, user: dict = Depends(require_platform_write)):
+    """Удалить можно только неотправленный черновик: отправленный акт в ОРД
+    уже существует, его правят повторной отправкой."""
+    pool = await get_pool()
+    inv = await assert_in_scope(pool, "ord_invoices", invoice_id, await scope_for(user), "Акт не найден")
+    if inv["ord_external_id"] or inv["status"] not in ("draft", "failed"):
+        raise HTTPException(409, "Отправленный в ОРД акт удалить нельзя")
+    await pool.execute("DELETE FROM ord_invoices WHERE id = $1", invoice_id)
+
+
+@router.post("/invoices/{invoice_id}/submit")
+async def submit_invoice(invoice_id: str, user: dict = Depends(require_platform_write)):
+    """invoice → link creatives → statistic по месяцам; построчный статус.
+    503 — ОРД не настроен (production без ключа), 502 — акт целиком отклонён."""
+    pool = await get_pool()
+    inv = await assert_in_scope(pool, "ord_invoices", invoice_id, await scope_for(user), "Акт не найден")
+    await _adapter_or_503()
+    try:
+        result = await ord_invoices.submit(pool, dict(inv))
+    except ord_invoices.InvoiceError as e:
+        raise _inv_http(e)
+    if result["status"] == "failed":
+        raise HTTPException(502, f"ОРД: {result.get('error')}")
+    return result
 
 
 # ------------------------------------------------------------------ exports --

@@ -7,6 +7,8 @@
   register_platform(data)     -> {"external_id": ...}
   submit_stats(period, rows)  -> {"accepted": [ext_stat_id...], "rejected": [{"id", "error"}...]}
                                  (B13: построчный результат; 5xx/сеть — OrdError на всю выгрузку)
+  register_invoice(data)      -> {"external_id": ...}            (B13b: акт, upsert)
+  link_invoice_creatives(data)-> None   (пересобирает детализацию акта: unlink all + link)
 
 Все методы идемпотентны на нашей стороне: перед вызовом проверяется
 ord_status в БД, повторная регистрация не выполняется.
@@ -72,6 +74,8 @@ class OrdAdapter(Protocol):
     async def register_creative(self, data: dict[str, Any]) -> dict[str, Any]: ...
     async def register_platform(self, data: dict[str, Any]) -> dict[str, Any]: ...
     async def submit_stats(self, period: str, rows: list[dict[str, Any]]) -> dict[str, Any]: ...
+    async def register_invoice(self, data: dict[str, Any]) -> dict[str, Any]: ...
+    async def link_invoice_creatives(self, data: dict[str, Any]) -> None: ...
 
 
 async def get_ord_settings() -> dict:

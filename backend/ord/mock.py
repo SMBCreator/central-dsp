@@ -33,13 +33,24 @@ class MockOrdAdapter:
     async def register_platform(self, data: dict[str, Any]) -> dict[str, Any]:
         return {"external_id": data["external_id"]}
 
+    async def register_invoice(self, data: dict[str, Any]) -> dict[str, Any]:
+        return {"external_id": data["external_id"]}
+
+    async def link_invoice_creatives(self, data: dict[str, Any]) -> None:
+        return None
+
     async def submit_stats(self, period: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
-        """Принимает всё; строка с impressions <= 0 отклоняется — как реальный
-        ОРД (viewsCountByFact обязателен и положителен), чтобы partial-путь
-        экспорта был проверяем без сети."""
-        accepted = [r["external_statistic_id"] for r in rows if int(r.get("impressions") or 0) > 0]
+        """Принимает всё; строка с нулём показов (viewsCountByInvoice, а без
+        акта — viewsCountByFact) отклоняется — как реальный ОРД, чтобы
+        partial-путь экспорта и акта был проверяем без сети."""
+
+        def _views(r: dict[str, Any]) -> int:
+            inv = r.get("invoice_impressions")
+            return int(r.get("impressions") or 0) if inv is None else int(inv)
+
+        accepted = [r["external_statistic_id"] for r in rows if _views(r) > 0]
         rejected = [
-            {"id": r["external_statistic_id"], "error": "viewsCountByFact must be positive"}
-            for r in rows if int(r.get("impressions") or 0) <= 0
+            {"id": r["external_statistic_id"], "error": "viewsCount must be positive"}
+            for r in rows if _views(r) <= 0
         ]
         return {"accepted": accepted, "rejected": rejected}

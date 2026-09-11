@@ -18,10 +18,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ord import ozon as ozon_mod
 from ord.adapter import OrdDataError, OrdError
 from ord.ozon import OzonOrdClient
+from ord.invoices import month_slices, unit_cost
 from ord.ozon_mapping import (
     contract_body,
     creative_body,
     creative_erid,
+    invoice_body,
+    invoice_link_body,
+    invoice_unlink_all_body,
     organisation_body,
     period_bounds,
     statistic_body,
@@ -186,3 +190,96 @@ def test_ozon_submit_stats_5xx_fails_whole_export(monkeypatch):
     with pytest.raises(OrdError) as ei:
         asyncio.run(c.submit_stats("2026-07", rows))
     assert not isinstance(ei.value, OrdDataError)
+
+
+# --- акты (B13b) ---------------------------------------------------------------
+def test_statistic_body_invoice_fields_override_fact_only_where_intended():
+    """Строка акта: факт остаётся в viewsCountByFact, значения акта — в
+    viewsCountByInvoice/moneySpent/unitCost, даты — срез месяца ∩ период акта."""
+    row = {"external_statistic_id": "cr:v1:2026-09", "external_creative_id": "cr:v1",
+           "impressions": 2000, "clicks": 5, "spend": "30.00",
+           "invoice_impressions": 1900, "invoice_spend": "36.00", "unit_cost": "18.9474",
+           "date_start": "2026-09-15", "date_end": "2026-09-30"}
+    body = statistic_body("2026-09-01", "2026-09-30", row, "central-dsp")
+    assert body["viewsCountByFact"] == "2000" and body["viewsCountByInvoice"] == "1900"
+    assert body["moneySpent"] == "36.00" and body["unitCost"] == "18.9474"
+    assert body["dateStartFact"] == "2026-09-15" and body["dateEndFact"] == "2026-09-30"
+    assert body["dateStartPlan"] == "2026-09-15" and body["dateEndPlan"] == "2026-09-30"
+
+
+def test_invoice_body_roles_single_contract_and_price():
+    body = invoice_body({
+        "external_id": "inv-1", "contract_external_id": "ct-1", "number": "А-7",
+        "invoice_date": "2026-10-20", "period_start": "2026-09-15", "period_end": "2026-10-15",
+        "amount": "1234.5", "is_vat": True, "client_role": "agency", "contractor_role": "ors",
+    })
+    assert body["externalInvoiceId"] == "inv-1" and body["externalContractId"] == "ct-1"
+    assert body["invoiceNumber"] == "А-7" and body["invoiceDate"] == "2026-10-20"
+    assert body["startDate"] == "2026-09-15" and body["endDate"] == "2026-10-15"
+    assert body["price"] == "1234.50" and body["withNds"] is True
+    assert body["clientRole"] == "ORGANISATION_ROLE_RA" and body["contractorRole"] == "ORGANISATION_ROLE_ORS"
+    assert body["contracts"] == [{"externalContractId": "ct-1", "price": "1234.50", "withNds": True}]
+
+
+def test_invoice_link_and_unlink_bodies():
+    data = {"external_invoice_id": "inv-1", "contract_external_id": "ct-1", "external_creative_ids": ["a:v1", "b:v2"]}
+    assert invoice_link_body(data) == {"items": [
+        {"externalInvoiceId": "inv-1", "externalContractId": "ct-1", "externalCreativeIds": ["a:v1", "b:v2"]}
+    ]}
+    assert invoice_unlink_all_body(data) == {"items": [
+        {"externalInvoiceId": "inv-1", "externalContractId": "ct-1", "deleteAllCreatives": True}
+    ]}
+
+
+def test_month_slices_split_invoice_period_by_calendar_month():
+    from datetime import date
+
+    assert month_slices(date(2026, 9, 15), date(2026, 10, 15)) == [
+        ("2026-09", date(2026, 9, 15), date(2026, 9, 30)),
+        ("2026-10", date(2026, 10, 1), date(2026, 10, 15)),
+    ]
+    assert month_slices(date(2026, 2, 1), date(2026, 2, 28)) == [("2026-02", date(2026, 2, 1), date(2026, 2, 28))]
+    assert [p for p, _, _ in month_slices(date(2026, 11, 30), date(2027, 1, 2))] == ["2026-11", "2026-12", "2027-01"]
+
+
+def test_unit_cost_cpm_and_cpc():
+    assert str(unit_cost("cpm", 2000, 5, "30")) == "15.0000"
+    assert str(unit_cost("cpc", 2000, 5, "30")) == "6.0000"
+    assert str(unit_cost("cpm", 0, 0, "30")) == "0.0000"
+    assert str(unit_cost("cpc", 100, 0, "30")) == "0.0000"
+
+
+def test_ozon_invoice_flow_uses_v2_invoice_and_v3_link_paths():
+    calls: list[tuple[str, dict]] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        calls.append((req.url.path, json.loads(req.content)))
+        if req.url.path.endswith("/creative/unlink"):
+            return httpx.Response(400, json={"error": "no links"})  # у нового акта связей нет
+        return httpx.Response(200, json={"invoice": {"externalInvoiceId": "inv-1"}})
+
+    c = _client_with(handler)
+    out = asyncio.run(c.register_invoice({
+        "external_id": "inv-1", "contract_external_id": "ct-1", "number": "1", "invoice_date": "2026-10-01",
+        "period_start": "2026-09-01", "period_end": "2026-09-30", "amount": 10, "is_vat": True,
+    }))
+    assert out == {"external_id": "inv-1"}
+    asyncio.run(c.link_invoice_creatives(
+        {"external_invoice_id": "inv-1", "contract_external_id": "ct-1", "external_creative_ids": ["a:v1"]}
+    ))
+    paths = [p for p, _ in calls]
+    assert paths == ["/api/external/v2/invoice", "/api/external/v3/invoice/creative/unlink",
+                     "/api/external/v3/invoice/creative/link"]
+    assert calls[2][1]["items"][0]["externalCreativeIds"] == ["a:v1"]
+
+
+def test_ozon_invoice_4xx_is_data_error_5xx_retried_then_error():
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(422, json={"error": "invoiceNumber required"})
+
+    c = _client_with(handler)
+    with pytest.raises(OrdDataError):
+        asyncio.run(c.register_invoice({
+            "external_id": "inv-1", "contract_external_id": "ct-1", "number": "", "invoice_date": "2026-10-01",
+            "period_start": "2026-09-01", "period_end": "2026-09-30", "amount": 10,
+        }))
