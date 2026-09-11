@@ -17,8 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ord import ozon as ozon_mod
 from ord.adapter import OrdDataError, OrdError
-from ord.ozon import OzonOrdClient
 from ord.invoices import month_slices, unit_cost
+from ord.ozon import OzonOrdClient
 from ord.ozon_mapping import (
     contract_body,
     creative_body,
