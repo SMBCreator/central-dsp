@@ -224,14 +224,32 @@ def statistic_body(period_start: str, period_end: str, row: dict[str, Any], plat
 
 
 # --- акт (разаллокация) -----------------------------------------------------
+def _link_groups(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Группы креативов акта по изначальным договорам (ОРС-модель, B13e).
+    Без groups — один договор акта (акты B13b / режим self)."""
+    groups = data.get("groups")
+    if groups:
+        return [{"contract_external_id": g["contract_external_id"],
+                 "external_creative_ids": list(g["external_creative_ids"])} for g in groups]
+    return [{"contract_external_id": data["contract_external_id"],
+             "external_creative_ids": list(data.get("external_creative_ids") or [])}]
+
+
 def invoice_body(data: dict[str, Any]) -> dict[str, Any]:
     """ord_invoices -> POST /api/external/v2/invoice (upsert по externalInvoiceId).
 
-    Один акт — один договор: contracts[] содержит только его. Роли сторон —
-    из counterparties.role заказчика/исполнителя договора (RD/RA/RR/ORS).
+    ОРС-модель: externalContractId — исполнительский договор (заказчик —
+    агентство/рекламодатель, исполнитель — ОРС, contractorRole=ORS); contracts[]
+    — изначальные договоры кампаний с их долями суммы (ord_invoice_contracts).
+    Без contracts (акты B13b, режим self) — один договор акта. price — с НДС
+    при withNds, clientRole — из роли заказчика договора (RD/RA).
     """
-    price = f"{float(data['amount']):.2f}"
+    gross = data.get("amount_gross", data.get("amount"))
+    price = f"{float(gross):.2f}"
     with_nds = bool(data.get("is_vat", True))
+    contracts = data.get("contracts") or [
+        {"contract_external_id": data["contract_external_id"], "amount_gross": gross, "is_vat": with_nds}
+    ]
     return {
         "externalInvoiceId": data["external_id"],
         "externalContractId": data["contract_external_id"],
@@ -243,29 +261,36 @@ def invoice_body(data: dict[str, Any]) -> dict[str, Any]:
         "withNds": with_nds,
         "clientRole": ORGANISATION_ROLE.get(data.get("client_role") or "advertiser", "ORGANISATION_ROLE_RD"),
         "contractorRole": ORGANISATION_ROLE.get(data.get("contractor_role") or "ors", "ORGANISATION_ROLE_ORS"),
-        "contracts": [{"externalContractId": data["contract_external_id"], "price": price, "withNds": with_nds}],
+        "contracts": [{
+            "externalContractId": c["contract_external_id"],
+            "price": f"{float(c.get('amount_gross', c.get('amount', 0))):.2f}",
+            "withNds": bool(c.get("is_vat", with_nds)),
+        } for c in contracts],
     }
 
 
 def invoice_link_body(data: dict[str, Any]) -> dict[str, Any]:
-    """Креативы детализации акта -> POST /api/external/v3/invoice/creative/link."""
+    """Креативы детализации акта -> POST /api/external/v3/invoice/creative/link,
+    по одному items[] на изначальный договор."""
     return {
         "items": [{
             "externalInvoiceId": data["external_invoice_id"],
-            "externalContractId": data["contract_external_id"],
-            "externalCreativeIds": list(data["external_creative_ids"]),
-        }]
+            "externalContractId": g["contract_external_id"],
+            "externalCreativeIds": g["external_creative_ids"],
+        } for g in _link_groups(data) if g["external_creative_ids"]]
     }
 
 
 def invoice_unlink_all_body(data: dict[str, Any]) -> dict[str, Any]:
-    """Снять все креативы с акта (перед повторной привязкой) -> .../creative/unlink."""
+    """Снять все креативы с акта (перед повторной привязкой) -> .../creative/unlink,
+    по каждому договору группы и по договору акта (связи старых версий акта)."""
+    ext_ids = {data["contract_external_id"], *(g["contract_external_id"] for g in _link_groups(data))}
     return {
         "items": [{
             "externalInvoiceId": data["external_invoice_id"],
-            "externalContractId": data["contract_external_id"],
+            "externalContractId": ext,
             "deleteAllCreatives": True,
-        }]
+        } for ext in sorted(ext_ids)]
     }
 
 

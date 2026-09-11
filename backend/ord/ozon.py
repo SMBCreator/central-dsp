@@ -120,8 +120,9 @@ class OzonOrdClient:
             await self._request("POST", "/api/external/v3/invoice/creative/unlink", invoice_unlink_all_body(data))
         except OrdDataError:
             pass
-        if data["external_creative_ids"]:
-            await self._request("POST", "/api/external/v3/invoice/creative/link", invoice_link_body(data))
+        body = invoice_link_body(data)
+        if body["items"]:
+            await self._request("POST", "/api/external/v3/invoice/creative/link", body)
 
     async def submit_stats(self, period: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
         """Статистика за месяц: батчи по _STATS_BATCH; батч, отклонённый 4xx,

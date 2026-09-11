@@ -66,17 +66,25 @@ class InvoiceItemIn(BaseModel):
     payment_type: str | None = None  # cpm | cpc
 
 
+class InvoiceContractIn(BaseModel):
+    initial_contract_id: str
+    amount_gross: float
+
+
 class InvoiceIn(BaseModel):
-    contract_id: str
+    contract_id: str                 # исполнительский договор (ОРС-модель, B13e)
     number: str = Field(min_length=1, max_length=64)
     invoice_date: str
     period_start: str
     period_end: str
-    amount: float | None = None   # пусто → Σ spend строк
+    amount_gross: float | None = None   # с НДС; пусто → Σ spend строк
+    amount: float | None = None         # устаревшее имя amount_gross (B13b)
+    vat_rate: int | None = None         # пусто → 22 (0 при is_vat=false)
     is_vat: bool | None = None
     client_role: str | None = None
     contractor_role: str | None = None
     campaign_ids: list[str] = Field(default_factory=list)
+    contracts: list[InvoiceContractIn] = Field(default_factory=list)  # разбивка по изначальным договорам
     items: list[InvoiceItemIn]
 
 

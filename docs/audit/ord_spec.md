@@ -215,6 +215,30 @@ Preview: по **исполнительскому** договору + перио
 `clientRole` из роли контрагента (`ADVERTISER|AGENCY`), `contracts[]` = изначальные договоры, `v3/creative/link` по изначальному
 договору. `own_client`: `contracts[] = [initial]`. Разница акт ≠ факт > 1 % → предупреждение, не блок.
 
+*Сделано (2026-09-11).* Как реализовано:
+* **Принадлежность строки акту** (`_FACT_SQL`): `campaigns.executive_contract_id = договор акта` **или** версия erid
+  зарегистрирована на договор акта (режим `self`, акты до B13d). Договор строки `ord_invoice_items.contract_id` =
+  `COALESCE(campaigns.initial_contract_id, ord_creatives.contract_id)`. `save` → `409`, если договор акта не является
+  ни исполнительским договором кампании, ни договором регистрации версии.
+* **Суммы.** Ввод — `amount_gross` (с НДС; старое имя `amount` принимается), `vat_rate` (пусто → 22; `is_vat=false` → 0),
+  `amount_net = gross / (1 + rate/100)`. Разбивка `contracts[{initial_contract_id, amount_gross}]`: явная — должна
+  покрывать ровно договоры строк и сходиться с суммой акта (`422`), иначе пропорционально расходу строк
+  (`split_amount`, остаток округления на последний договор). В ответе: `contracts[]` (номер, стороны, `ord_status`,
+  суммы, `items_count`), `statistics_amount_gross/net` (Σ `fact_spend`), `amount_diff_pct`,
+  `warnings.amount_diff {invoice, statistics, pct}` при > 1 %. Preview дополнительно: `warnings.contracts_unregistered`
+  и `warnings.contract_not_executive` (исполнитель договора акта — не `is_self`/не роль `ors`).
+* **Отправка.** `submit` → `409`, если изначальный договор разбивки не зарегистрирован в ОРД. `v2/invoice`:
+  `externalContractId` = исполнительский, `price` = `amount_gross`, `contracts[]` = `ord_invoice_contracts`
+  (`externalContractId` изначального, `price`, `withNds`); `v3/creative/unlink(deleteAllCreatives)` по договору акта и по
+  каждому изначальному, затем `link` — один `items[]` на изначальный договор (`groups[]` в данных адаптера; без
+  `groups` — поведение B13b). Роли — как раньше из сторон договора (исполнитель ОРС → `ORGANISATION_ROLE_ORS`).
+* FK `ord_invoice_contracts.initial_contract_id` и `ord_invoice_items.contract_id` — `DEFERRABLE INITIALLY DEFERRED`:
+  при каскадном удалении владельца проверка идёт на commit, когда акт уже удалён (NO ACTION проверяется в конце
+  каскадного DELETE, RESTRICT — сразу; оба ломали каскад).
+* Тесты: `tests/test_ord_invoice_ors_unit.py` (net/split/diff, тела Ozon), `test_ord_invoices_db.py::
+  test_ors_invoice_by_executive_contract_splits_by_initial_contracts` (две кампании, два изначальных договора, явная и
+  пропорциональная разбивка, тела в mock, `409` на незарегистрированный договор).
+
 **B13f — UI `/ord` вкладка «Акты» (VK-style).** Выбор месяца → таблица по исполнительским договорам/клиентам:
 ОРД-статус, Отчёт (Не заполнен / Черновик / Отправлен / Ошибка), Сумма без НДС, Сумма с НДС, Статистика (факт), «Заполнить»/✎.
 Drawer «Добавление акта»: шапка договора (номер, тип, заказчик/исполнитель + ИНН), номер акта, период, сумма с НДС, ставка НДС,

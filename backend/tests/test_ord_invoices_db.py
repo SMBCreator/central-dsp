@@ -7,7 +7,11 @@
 * submit: invoice → link → statistic; статусы ok/partial/failed, построчно.
 * PUT после отправки → draft, повторный submit — коррекция (тот же externalInvoiceId).
 * Месячная выгрузка крона по принятой строке акта берёт значения акта.
-Требует DATABASE_URL, ОРД — mock. Спека: docs/audit/ord_spec.md §6.
+* B13e (ОРС-модель): акт по исполнительскому договору собирает показы кампаний
+  с этим договором; строки и сумма делятся по изначальным договорам
+  (contracts[] в v2/invoice, link по изначальному договору); НДС 22 %:
+  amount_gross/amount_net; расхождение с фактом > 1 % — предупреждение.
+Требует DATABASE_URL, ОРД — mock. Спека: docs/audit/ord_spec.md §6–7.
 """
 from __future__ import annotations
 
@@ -121,15 +125,18 @@ def test_preview_splits_by_month_and_prices_at_client_rate(env):
             assert items[0]["erid"] == e.ids["erid"] and items[0]["version"] == 1
             assert items[0]["unit_cost"] == "20.0000"  # 30 / 1500 * 1000
             assert items[0]["external_statistic_id"] == f"{e.ids['cr']}:v1:2025-09"
-            assert p["amount"] == "39.00" and p["spend_multiplier"] == 1.0  # admin: без наценки
-            assert p["warnings"] == {"already_invoiced": [], "without_erid": []}
+            assert p["amount_gross"] == "39.00" and p["spend_multiplier"] == 1.0  # admin: без наценки
+            assert p["vat_rate"] == 22 and p["amount_net"] == "31.97"  # 39 / 1.22
+            assert p["statistics_amount_gross"] == "39.00"
+            assert [(c["id"], c["amount_gross"], c["items_count"]) for c in p["contracts"]] == [(e.ids["ct"], "39.00", 2)]
+            assert p["warnings"] == {"already_invoiced": [], "without_erid": [], "contracts_unregistered": []}
 
             # период за пределами показов — пусто, но не ошибка
             async with _app(_admin(e)) as c:
                 r = await c.get("/ord/invoices/preview", params={
                     "contract_id": e.ids["ct"], "period_start": "2025-11-01", "period_end": "2025-11-30",
                 })
-            assert r.status_code == 200 and r.json()["items"] == [] and r.json()["amount"] == "0.00"
+            assert r.status_code == 200 and r.json()["items"] == [] and r.json()["amount_gross"] == "0.00"
             # неверный период
             async with _app(_admin(e)) as c:
                 r = await c.get("/ord/invoices/preview", params={
@@ -178,7 +185,12 @@ def test_create_submit_edit_resubmit_and_conflicts(env):
             assert r.status_code == 201, r.text
             inv = r.json()
             inv_id = inv["id"]
-            assert inv["status"] == "draft" and Decimal(str(inv["amount"])) == Decimal("38.40")  # 30.00 + 8.40
+            assert inv["status"] == "draft" and Decimal(str(inv["amount_gross"])) == Decimal("38.40")  # 30.00 + 8.40
+            assert inv["vat_rate"] == 22 and Decimal(str(inv["amount_net"])) == Decimal("31.48")
+            assert [(c["initial_contract_id"], Decimal(str(c["amount_gross"]))) for c in inv["contracts"]] == [
+                (e.ids["ct"], Decimal("38.40"))]
+            assert Decimal(str(inv["statistics_amount_gross"])) == Decimal("39.00")
+            assert inv["amount_diff_pct"] == 1.54 and inv["warnings"]["amount_diff"]["pct"] == 1.54
             got = {i["period"]: i for i in inv["items"]}
             assert got["2025-09"]["impressions"] == 1500 and got["2025-09"]["fact_impressions"] == 1500
             assert got["2025-10"]["impressions"] == 280 and got["2025-10"]["fact_impressions"] == 300
@@ -210,7 +222,7 @@ def test_create_submit_edit_resubmit_and_conflicts(env):
                 r = await c.get("/ord/invoices/preview", params={
                     "contract_id": e.ids["ct"], "period_start": "2025-09-15", "period_end": "2025-10-15"})
                 assert [i["in_invoice"]["number"] for i in r.json()["items"]] == ["А-1", "А-1"]
-                assert r.json()["amount"] == "0.00"
+                assert r.json()["amount_gross"] == "0.00" and r.json()["contracts"] == []
                 r = await c.get("/ord/invoices/preview", params={
                     "contract_id": e.ids["ct"], "period_start": "2025-09-15", "period_end": "2025-10-15",
                     "invoice_id": inv_id})
@@ -242,9 +254,11 @@ def test_create_submit_edit_resubmit_and_conflicts(env):
             # редактирование после отправки → draft; повторный submit — коррекция, тот же externalInvoiceId
             items2 = [{"creative_id": e.ids["cr"], "version": 1, "period": "2025-09", "impressions": 1400, "spend": "28.00"}]
             async with _app(_admin(e)) as c:
-                r = await c.put(f"/ord/invoices/{inv_id}", json=_invoice_body(e, items2, amount="28.00"))
+                r = await c.put(f"/ord/invoices/{inv_id}", json=_invoice_body(e, items2, amount_gross="28.00", is_vat=False))
             assert r.status_code == 200, r.text
             assert r.json()["status"] == "draft" and len(r.json()["items"]) == 1
+            assert r.json()["vat_rate"] == 0 and Decimal(str(r.json()["amount_net"])) == Decimal("28.00")
+            assert r.json()["warnings"]["amount_diff"]["pct"] == 6.67  # 28.00 против факта 30.00
             assert r.json()["ord_external_id"] == inv_id
             async with _app(_admin(e)) as c:
                 r = await c.post(f"/ord/invoices/{inv_id}/submit")
@@ -335,6 +349,130 @@ def test_invoice_scope_is_owner_bound(env):
         finally:
             await e.teardown(conn)
             await stranger.teardown(conn)
+            await conn.close()
+
+    asyncio.run(run())
+
+
+def test_ors_invoice_by_executive_contract_splits_by_initial_contracts(env, monkeypatch):
+    """ОРС-модель: акт по исполнительскому договору (агентство → ОРС) собирает
+    показы двух кампаний с разными изначальными договорами; в ОРД уходит
+    contracts[] по изначальным договорам и link по каждому из них."""
+    async def run():
+        from tests.test_ord_chain_db import _chain_env, _teardown
+
+        conn = await asyncpg.connect(DATABASE_URL)
+        e, ids = await _chain_env(conn)
+        try:
+            pool = await db.get_pool()
+            # кампания 1: initial И-1 + executive Р-1 (из _chain_env)
+            await conn.execute(
+                """UPDATE campaigns SET status='active', ord_mode='own_client', counterparty_id=$2,
+                          initial_contract_id=$3, executive_contract_id=$4, ord_confirmed_at=now() WHERE id=$1""",
+                e.ids["camp"], e.ids["cp"], ids["initial"], ids["executive"],
+            )
+            cr1 = await e.add_creative(conn, status="approved", contract_id=ids["initial"])
+            # кампания 2: другой изначальный договор И-2 с тем же исполнительским
+            initial2 = await conn.fetchval(
+                """INSERT INTO ord_contracts (user_id, client_id, contractor_id, number, signed_at, ord_status, ord_external_id)
+                   VALUES ($1,$2,$3,'И-2','2026-01-01','registered','CT-I2') RETURNING id""",
+                e.ids["user"], e.ids["cp"], ids["agency"],
+            )
+            camp2 = await conn.fetchval(
+                """INSERT INTO campaigns (advertiser_id, user_id, name, status, daily_budget, total_budget,
+                                          ord_mode, counterparty_id, initial_contract_id, executive_contract_id, ord_confirmed_at)
+                   VALUES ($1,$2,'camp2','active',100,0,'own_client',$3,$4,$5,now()) RETURNING id""",
+                e.ids["adv"], e.ids["user"], e.ids["cp"], initial2, ids["executive"],
+            )
+            cr2 = await conn.fetchval(
+                """INSERT INTO creatives (campaign_id, user_id, name, type, width, height, asset_url, click_url,
+                                          status, counterparty_id, contract_id, kktu_code)
+                   VALUES ($1,$2,'c2','banner',300,250,'http://a/2.png','http://x','approved',$3,$4,'30.10') RETURNING id""",
+                camp2, e.ids["user"], e.ids["cp"], initial2,
+            )
+            for cr in (cr1, cr2):
+                res = await register_creative(pool, dict(await conn.fetchrow("SELECT * FROM creatives WHERE id = $1", cr)))
+                assert res["outcome"] == "ok", res
+            await conn.execute("UPDATE ord_creatives SET registered_at='2025-01-01', created_at='2025-01-01' WHERE creative_id = ANY($1::uuid[])", [cr1, cr2])
+            await _add_stats(conn, e, datetime(2025, 9, 10, 10, tzinfo=UTC), 1000, spend="30.00", creative=cr1)
+            await conn.execute(
+                """INSERT INTO stats_hourly (ts_hour, campaign_id, line_item_id, creative_id, bids, wins, impressions, clicks, spend)
+                   VALUES ($1, $2, NULL, $3, 500, 500, 500, 2, 10.00)""",
+                datetime(2025, 9, 12, 10, tzinfo=UTC), camp2, cr2,
+            )
+
+            # предпросмотр по исполнительскому договору: две строки, два изначальных договора
+            async with _app(_admin(e)) as c:
+                r = await c.get("/ord/invoices/preview", params={
+                    "contract_id": ids["executive"], "period_start": "2025-09-01", "period_end": "2025-09-30"})
+            assert r.status_code == 200, r.text
+            p = r.json()
+            assert p["client_role"] == "agency" and p["contractor_role"] == "ors"
+            assert {(i["creative_id"], i["contract_id"]) for i in p["items"]} == {(str(cr1), ids["initial"]), (str(cr2), str(initial2))}
+            assert {(c["number"], c["amount_gross"]) for c in p["contracts"]} == {("И-1", "30.00"), ("И-2", "10.00")}
+            assert "contract_not_executive" not in p["warnings"]
+            # по изначальному договору акт заключать не следует — предупреждение
+            async with _app(_admin(e)) as c:
+                r = await c.get("/ord/invoices/preview", params={
+                    "contract_id": ids["initial"], "period_start": "2025-09-01", "period_end": "2025-09-30"})
+            assert r.status_code == 200 and r.json()["warnings"]["contract_not_executive"] is True
+
+            # явная разбивка должна сходиться с суммой акта
+            items = [{"creative_id": str(cr1), "version": 1, "period": "2025-09"},
+                     {"creative_id": str(cr2), "version": 1, "period": "2025-09"}]
+            body = {"contract_id": ids["executive"], "number": "ОРС-1", "invoice_date": "2025-10-05",
+                    "period_start": "2025-09-01", "period_end": "2025-09-30", "items": items}
+            async with _app(_admin(e)) as c:
+                r = await c.post("/ord/invoices", json={**body, "amount_gross": 50, "contracts": [
+                    {"initial_contract_id": ids["initial"], "amount_gross": 30}]})
+                assert r.status_code == 422, r.text
+                r = await c.post("/ord/invoices", json={**body, "amount_gross": 50, "contracts": [
+                    {"initial_contract_id": ids["initial"], "amount_gross": 35},
+                    {"initial_contract_id": str(initial2), "amount_gross": 15}]})
+                assert r.status_code == 201, r.text
+            inv = r.json()
+            assert {(c["number"], Decimal(str(c["amount_gross"])), Decimal(str(c["amount_net"]))) for c in inv["contracts"]} == {
+                ("И-1", Decimal("35.00"), Decimal("28.69")), ("И-2", Decimal("15.00"), Decimal("12.30"))}
+            assert Decimal(str(inv["amount_net"])) == Decimal("40.98")
+            assert inv["warnings"]["amount_diff"]["pct"] == 25.0  # 50 против факта 40
+
+            # без явной разбивки — пропорционально расходу строк, копейка в копейку
+            async with _app(_admin(e)) as c:
+                r = await c.put(f"/ord/invoices/{inv['id']}", json={**body, "amount_gross": "40.01"})
+            assert r.status_code == 200, r.text
+            split = {c["number"]: Decimal(str(c["amount_gross"])) for c in r.json()["contracts"]}
+            assert sum(split.values()) == Decimal("40.01") and split["И-1"] == Decimal("30.01")
+
+            # submit: в ОРД уходят contracts[] по изначальным договорам и link по каждому
+            import ord.mock as mock_mod
+            sent: dict = {}
+
+            async def spy_invoice(self, data):
+                sent["invoice"] = data
+                return {"external_id": data["external_id"]}
+
+            async def spy_link(self, data):
+                sent["link"] = data
+
+            monkeypatch.setattr(mock_mod.MockOrdAdapter, "register_invoice", spy_invoice)
+            monkeypatch.setattr(mock_mod.MockOrdAdapter, "link_invoice_creatives", spy_link)
+            async with _app(_admin(e)) as c:
+                r = await c.post(f"/ord/invoices/{inv['id']}/submit")
+            assert r.status_code == 200 and r.json()["status"] == "ok", r.text
+            assert sent["invoice"]["contract_external_id"] == "CT-E1"
+            assert sorted((c["contract_external_id"], str(c["amount_gross"])) for c in sent["invoice"]["contracts"]) == [
+                ("CT-I1", "30.01"), ("CT-I2", "10.00")]
+            assert sorted((g["contract_external_id"], g["external_creative_ids"]) for g in sent["link"]["groups"]) == [
+                ("CT-I1", [f"{cr1}:v1"]), ("CT-I2", [f"{cr2}:v1"])]
+
+            # изначальный договор без регистрации в ОРД → submit 409
+            await conn.execute("UPDATE ord_contracts SET ord_status='pending', ord_external_id=NULL WHERE id = $1", initial2)
+            async with _app(_admin(e)) as c:
+                r = await c.post(f"/ord/invoices/{inv['id']}/submit")
+            assert r.status_code == 409 and "И-2" in r.json()["detail"]
+        finally:
+            await conn.execute("DELETE FROM ord_invoices WHERE user_id = $1", e.ids["user"])
+            await _teardown(e, conn)
             await conn.close()
 
     asyncio.run(run())
