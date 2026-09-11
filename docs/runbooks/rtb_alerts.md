@@ -405,6 +405,35 @@ https://<host>/cron/<job>` и прочитать JSON ответа. `reset-daily
 
 ---
 
+## ord-notifications — OrdErirErrorsUnresolved / OrdErirErrorsStale / OrdNotificationsLag
+
+**Что значит.** ОРД (Ozon) принимает объект синхронно и выдаёт `external_id`/erid,
+а ЕРИР проверяет данные позже и присылает ошибку в ОРД. Мы забираем их раз в час
+(`GET /cron/ord-notifications` → `POST /api/external/notification/error_list`,
+курсор `platform_settings.ord_notification_cursor`) в таблицу `ord_notifications`
+и переводим объект в статус `erir_error` с текстом в `ord_error`/`error`
+(`counterparties`, `ord_contracts`, версия `ord_creatives`, `ord_invoices`).
+`ord_external_id` при этом сохраняется: объект в ОРД есть, но ЕРИР его не принял.
+
+**Что делать.**
+1. `GET /ord/notifications` (или блок «Ошибки ЕРИР» на `/ord`) — тип объекта,
+   наш id, текст ЕРИР, ссылка `url` в кабинет ОРД.
+2. Исправить данные объекта (ИНН/ОГРН, реквизиты договора, описание/ККТУ
+   креатива, суммы акта) и зарегистрировать/отправить его повторно из UI.
+   Успешный ответ ОРД закрывает открытые уведомления объекта (`resolved_at`,
+   `resolved_reason=reregistered`) и возвращает `registered`/`ok`.
+3. `OrdNotificationsLag`: `GET /cron/ord-notifications` вручную (с `CRON_SECRET`),
+   ответ содержит `cursor_from/cursor_to/fetched/new`; `502`/`OrdError` — ключ
+   ОРД или сеть. Сдвигать курсор назад можно правкой
+   `platform_settings.ord_notification_cursor.last_id` — уведомления идемпотентны
+   по `(provider, notification_id)`.
+4. Пока объект в `erir_error`, он продолжает участвовать в фиде/экспорте
+   статистики (у него есть erid); исправление обязательно, но остановка показов
+   не требуется.
+
+**Метрики.** `ord_notifications_unresolved`, `ord_notifications_unresolved_oldest_age_seconds`,
+`ord_notifications_last_success_timestamp_seconds`, `ord_notification_errors_total`.
+
 ## events-consumer — RtbEventsConsumerLagHigh / LagCritical / PendingStuck / Errors / Silent
 
 **Что это.** Go-биддер не пишет в Postgres: события `bid`/`loss` он складывает в

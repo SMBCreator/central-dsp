@@ -153,7 +153,7 @@ async def resolve_contract(pool, creative: dict) -> dict | None:
     if creative.get("contract_id"):
         row = await pool.fetchrow(
             """SELECT * FROM ord_contracts
-               WHERE id = $1 AND user_id = $2 AND ord_status = 'registered'""",
+               WHERE id = $1 AND user_id = $2 AND ord_status IN ('registered', 'erir_error')""",
             creative["contract_id"], creative["user_id"],
         )
         if row:
@@ -162,7 +162,7 @@ async def resolve_contract(pool, creative: dict) -> dict | None:
         return None
     rows = await pool.fetch(
         """SELECT * FROM ord_contracts
-           WHERE user_id = $1 AND client_id = $2 AND ord_status = 'registered'
+           WHERE user_id = $1 AND client_id = $2 AND ord_status IN ('registered', 'erir_error')
            ORDER BY signed_at DESC, created_at DESC LIMIT 2""",
         creative["user_id"], creative["counterparty_id"],
     )
@@ -202,7 +202,7 @@ async def supersede_current(pool, creative_id: str) -> bool:
     tag = await pool.execute(
         """UPDATE ord_creatives
               SET status = 'superseded', superseded_at = now(), updated_at = now()
-            WHERE creative_id = $1 AND superseded_at IS NULL AND status = 'registered'""",
+            WHERE creative_id = $1 AND superseded_at IS NULL AND status IN ('registered', 'erir_error')""",
         creative_id,
     )
     return tag.endswith(" 1")
@@ -373,4 +373,8 @@ async def register_creative(pool, creative: dict, *, contract_id: str | None = N
                 WHERE id = $1""",
             creative["id"], out["erid"], contract["id"], creative.get("counterparty_id"),
         )
+        # B13g: повторная регистрация версии закрывает её открытые ошибки ЕРИР
+        from .notifications import resolve_for
+
+        await resolve_for(conn, "creative", f"{creative['id']}:v{version}")
     return _result("ok", dict(row))

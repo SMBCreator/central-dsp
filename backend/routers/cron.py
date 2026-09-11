@@ -199,6 +199,20 @@ async def audience_sync(request: Request):
     return result
 
 
+@router.get("/ord-notifications")
+@_cron_job("ord_notifications")
+async def ord_notifications(request: Request):
+    """B13g: забрать ошибки ЕРИР из ОРД (после регистрации объект может быть
+    отклонён ЕРИР), пометить объекты erir_error, обновить gauges. Раз в час."""
+    _check_secret(request)
+    from ord.adapter import get_ord_adapter
+    from ord.notifications import sync_notifications
+
+    pool = await get_pool()
+    adapter = await get_ord_adapter()
+    return await sync_notifications(pool, adapter)
+
+
 @router.get("/optimize")
 @_cron_job("optimize")
 async def run_buy_optimizer(request: Request):
@@ -325,7 +339,7 @@ async def _ord_export_locked(conn, period, kind, force, _json, external_creative
                SELECT version, erid FROM ord_creatives o
                WHERE o.creative_id = s.creative_id
                  AND o.erid IS NOT NULL AND o.erid <> ''
-                 AND o.status IN ('registered', 'superseded')
+                 AND o.status IN ('registered', 'erir_error', 'superseded')
                  AND COALESCE(o.registered_at, o.created_at) < s.ts_hour + interval '1 hour'
                ORDER BY COALESCE(o.registered_at, o.created_at) DESC LIMIT 1
            ) oc ON true
@@ -377,7 +391,7 @@ async def _ord_export_locked(conn, period, kind, force, _json, external_creative
                SELECT 1 FROM ord_creatives o
                WHERE o.creative_id = s.creative_id
                  AND o.erid IS NOT NULL AND o.erid <> ''
-                 AND o.status IN ('registered', 'superseded')
+                 AND o.status IN ('registered', 'erir_error', 'superseded')
                  AND COALESCE(o.registered_at, o.created_at) < s.ts_hour + interval '1 hour'
              )
            GROUP BY s.creative_id, s.campaign_id

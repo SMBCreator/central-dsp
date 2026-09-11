@@ -65,6 +65,7 @@ _COUNTER_HELP = {
     "audience_reseeded_segments_total": "Audience segments whose audz: ZSET was re-seeded from Postgres by /cron/audience-sync (Redis had lost it).",
     "reserve_reconcile_drift_total": "avail:* keys whose value drifted from DB balance minus outstanding reserves.",
     "csrf_rejected_total": "State-changing requests rejected by the Origin guard (S-01).",
+    "ord_notification_errors_total": "ERIR error notifications pulled from the ORD provider by GET /cron/ord-notifications (B13g); each marks its object erir_error.",
 }
 
 # Gauges (D8): значения, которые нельзя вывести из счётчиков. None = ещё не
@@ -85,6 +86,10 @@ _GAUGE_HELP = {
         "Statistic rows the ORD provider rejected (or did not acknowledge) in the last export run; "
         "log status partial/failed, per-row errors in ord_export_rows. Refreshed by GET /cron/ord-export."
     ),
+    # B13g: ошибки ЕРИР (объект принят ОРД, но отклонён ЕРИР). Обновляется GET /cron/ord-notifications.
+    "ord_notifications_unresolved": "Open ERIR error notifications (ord_notifications.resolved_at IS NULL); each is an object in status erir_error.",
+    "ord_notifications_unresolved_oldest_age_seconds": "Age of the oldest open ERIR error notification (0 when none).",
+    "ord_notifications_last_success_timestamp_seconds": "Unix time of the last successful ERIR notification pull (GET /cron/ord-notifications).",
     # Consumer событий Go-биддера (E-03). Стрим ограничен MAXLEN ~200k на стороне
     # Go: lag, приближающийся к длине стрима, означает скорую потерю событий.
     "rtb_events_stream_length": "Entries currently in the rtb:events Redis stream (XLEN).",
@@ -115,6 +120,7 @@ CRON_JOBS = (
     "reconcile_reserves",
     "audience_sync",
     "sweep_burl",
+    "ord_notifications",
 )
 _CRON_RESULTS = ("ok", "error")
 

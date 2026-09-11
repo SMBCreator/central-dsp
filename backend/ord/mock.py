@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any
+from typing import Any, ClassVar
 
 
 def _stable_id(prefix: str, data: dict[str, Any]) -> str:
@@ -19,6 +19,14 @@ def _stable_id(prefix: str, data: dict[str, Any]) -> str:
 
 class MockOrdAdapter:
     provider = "mock"
+
+    # B13g: очередь ошибок ЕРИР для dev/тестов; заполняется тестом или
+    # scripts/ord_mock_notify.py, ключи как у нормализованного ответа Ozon.
+    notifications: ClassVar[list[dict[str, Any]]] = []
+
+    async def list_error_notifications(self, gt_id: int = 0, page_size: int = 100) -> list[dict[str, Any]]:
+        rows = sorted((n for n in self.notifications if int(n["id"]) > int(gt_id)), key=lambda n: int(n["id"]))
+        return rows[: int(page_size)]
 
     async def register_counterparty(self, data: dict[str, Any]) -> dict[str, Any]:
         return {"external_id": data.get("external_id") or _stable_id("MOCKCP", data)}

@@ -1,6 +1,6 @@
 # ОРД: версии erid, статистика, акты (B13, audit L-02/L-03)
 
-Статус: B13a–B13f реализованы (2026-09-10/11); B13g (ошибки ОРД) — см. план.
+Статус: B13a–B13g реализованы (2026-09-10/11).
 Пункты `[V]` требуют сверки с песочницей Ozon при получении API-ключа.
 
 ## 1. Версии erid (`ord_creatives`)
@@ -260,9 +260,27 @@ Drawer «Добавление акта»: шапка договора (номе�
 «Сохранить» / «Отправить в ОРД»; построчный статус и повтор; кнопка «Отправить все в ОРД» для черновиков месяца.
 В карточке креатива: история версий erid; на `409 ord_locked` — текст «данные ОРД зафиксированы после запуска кампании».
 
-**B13g — ошибки ОРД.** Крон `/cron/ord-notifications` (раз в час): `GET /api/external/notification/error` →
-по `objectType/externalId` проставить `ord_status='error'`, `ord_error=text` (организации, договоры, креативы, площадки, акты),
-`ord_notification_cursor` в `settings`. Бейдж «Ошибки ОРД: N» на `/ord`, метрика `ord_notification_errors_total`, алерт, runbook.
+**B13g — ошибки ЕРИР (сделано 2026-09-11, миграция 052, `ord/notifications.py`).** Ozon принимает объект синхронно
+(`external_id`/erid), ЕРИР проверяет позже и присылает отказ в ОРД; мы забираем их кроном `/cron/ord-notifications`
+(`45 * * * *`) через `POST /api/external/notification/error_list {pageSize, gtNotificationId}` постранично по курсору
+`platform_settings.ord_notification_cursor = {last_id}` (id монотонный). Таблица `ord_notifications`
+(UNIQUE `(provider, notification_id)` → upsert, `object_type` organisation|contract|creative|invoice|platform|unknown,
+`external_id` = наш id как в ОРД: `<uuid>` для организации/договора/акта, `<creative_id>:v<n>` для версии erid,
+`owner_id` = владелец объекта для scope, `resolved_at/resolved_reason`). Решения: новый статус **`erir_error`**
+(`counterparties.ord_status`, `ord_contracts.ord_status`, `ord_creatives.status`, `ord_invoices.status`; CHECK акта расширен),
+`ord_external_id`/erid сохраняются — объект в ОРД есть; текст в `ord_error`/`error`. Объекты в `erir_error` остаются в
+цепочках/экспорте/preview актов (все `IN ('registered', 'erir_error')`), исправление обязательно, показы не останавливаем.
+Закрытие **автоматическое**: успешный `register` контрагента/договора, `register_creative` версии или `submit` акта со
+статусом `ok` вызывают `resolve_for(object_type, external_id)` → `resolved_reason='reregistered'` и обычный
+`registered`/`ok`. Кнопки в UI для `erir_error` те же, что для `failed` («В ОРД», «Отправить повторно», «Отправить все»).
+API: `GET /ord/notifications` (открытые, `rbac.scope_for` по `owner_id`; платформенные — всем платформенным ролям),
+`POST /ord/notifications/sync` (admin, то же что крон). UI `/ord`: блок «Ошибки ЕРИР: N» над шагами
+(`components/ord-notifications.tsx`: тип, id, дата, текст, ссылка в кабинет ОРД, «Перейти» на вкладку, «Проверить сейчас»),
+статус «Ошибка ЕРИР» + текст в таблицах. Метрики `ord_notification_errors_total`, `ord_notifications_unresolved`,
+`ord_notifications_unresolved_oldest_age_seconds`, `ord_notifications_last_success_timestamp_seconds`; алерты
+`OrdErirErrorsUnresolved` (warning, >1 ч), `OrdErirErrorsStale` (critical, >24 ч), `OrdNotificationsLag` (critical, 6 ч без
+успешного крона); runbook `rtb_alerts.md#ord-notifications`. Mock: `MockOrdAdapter.notifications` (очередь, курсор).
+Тесты `tests/test_ord_notifications_db.py`, `tests/test_ord_notifications_unit.py`.
 
 Порядок: B13c → B13d → B13e → B13f → B13g → C1–C6. Каждый этап: миграция идемпотентна, тесты (`tests/test_ord_*`,
 `*_db.py`), `parity_matrix` не затрагивается (Go-биддер не участвует, кроме чтения `supply_partner_id` в `stats_hourly`).

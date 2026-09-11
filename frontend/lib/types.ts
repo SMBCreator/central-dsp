@@ -367,6 +367,7 @@ export const STATUS_LABELS: Record<string, string> = {
   // ОРД (ord_status у контрагентов/договоров)
   registered: "В ОРД",
   failed: "Ошибка ОРД",
+  erir_error: "Ошибка ЕРИР",
   sending: "Отправка",
   awaiting_contract: "Нет договора",
   awaiting_kktu: "Нет ККТУ",

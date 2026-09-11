@@ -56,6 +56,7 @@
 | GET | `/cron/ml-train` | none | Bearer CRON_SECRET |
 | GET | `/cron/optimize` | none | Bearer CRON_SECRET |
 | GET | `/cron/ord-export` | none | Bearer CRON_SECRET |
+| GET | `/cron/ord-notifications` | none | Bearer CRON_SECRET |
 | GET | `/cron/reconcile-reserves` | none | Bearer CRON_SECRET |
 | GET | `/cron/reset-daily` | none | Bearer CRON_SECRET |
 | GET | `/cron/retention` | none | Bearer CRON_SECRET |
@@ -98,6 +99,8 @@
 | GET | `/ord/invoices/{invoice_id}` | session | любая роль (scope внутри хендлера) |
 | **PUT** | `/ord/invoices/{invoice_id}` | roles | admin, manager, superadmin |
 | **POST** | `/ord/invoices/{invoice_id}/submit` | roles | admin, manager, superadmin |
+| GET | `/ord/notifications` | session | любая роль (scope внутри хендлера) |
+| **POST** | `/ord/notifications/sync` | roles | admin, manager, superadmin |
 | GET | `/ord/platform` | session | любая роль (scope внутри хендлера) |
 | **POST** | `/ord/platform/register` | roles | admin, manager, superadmin |
 | **POST** | `/pixel/collect` | none | публично (пиксель), rate-limit |

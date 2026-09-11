@@ -19,6 +19,7 @@ from ord import invoices as ord_invoices
 from ord.adapter import OrdDataError
 from ord.platform import ensure_platform, load_platform, org_payload, platform_status
 from ord.chain import assert_counterparty_ref
+from ord import notifications as ord_notifications
 from ord.service import register_creative as ord_register_creative
 
 router = APIRouter(prefix="/ord", tags=["ord"])
@@ -143,7 +144,7 @@ async def create_counterparty(body: CounterpartyIn, user: dict = Depends(require
                      address = COALESCE(EXCLUDED.address, counterparties.address),
                      is_self = counterparties.is_self OR EXCLUDED.is_self,
                      rs_url = COALESCE(EXCLUDED.rs_url, counterparties.rs_url),
-                     ord_status = CASE WHEN counterparties.ord_status = 'registered'
+                     ord_status = CASE WHEN counterparties.ord_status IN ('registered', 'erir_error')
                                         AND (counterparties.is_self <> (counterparties.is_self OR EXCLUDED.is_self)
                                              OR counterparties.rs_url IS DISTINCT FROM COALESCE(EXCLUDED.rs_url, counterparties.rs_url))
                                        THEN 'pending' ELSE counterparties.ord_status END,
@@ -184,12 +185,37 @@ async def register_counterparty(cp_id: str, user: dict = Depends(require_platfor
                ord_error=NULL, updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING *""",
             cp_id, owner, out["external_id"],
         )
+        # B13g: ОРД принял повторно — открытые ошибки ЕРИР по организации закрыты
+        await ord_notifications.resolve_for(pool, "organisation", str(cp_id))
         return _row(row)
     except OrdError as e:
         await pool.execute(
             "UPDATE counterparties SET ord_status='failed', ord_error=$3, updated_at=now() WHERE id=$1 AND user_id=$2",
             cp_id, owner, str(e),
         )
+        raise HTTPException(502, f"ОРД: {e}")
+
+
+# ------------------------------------------------------- ERIR notifications --
+@router.get("/notifications")
+async def list_notifications(user: dict = Depends(current_user)):
+    """B13g: открытые ошибки ЕРИР (объект принят ОРД, отклонён ЕРИР) в scope
+    пользователя. Закрываются автоматически успешной повторной регистрацией объекта."""
+    pool = await get_pool()
+    scope = await scope_for(user)
+    async with pool.acquire() as conn:
+        items = await ord_notifications.list_open(conn, scope)
+    return {"items": items, "total": len(items)}
+
+
+@router.post("/notifications/sync")
+async def sync_notifications_now(user: dict = Depends(require_platform_write)):
+    """Забрать ошибки ЕРИР из ОРД сейчас (то же, что cron /ord-notifications)."""
+    pool = await get_pool()
+    try:
+        adapter = await get_ord_adapter()
+        return await ord_notifications.sync_notifications(pool, adapter)
+    except OrdError as e:
         raise HTTPException(502, f"ОРД: {e}")
 
 
@@ -274,7 +300,7 @@ async def register_contract(contract_id: str, user: dict = Depends(require_platf
     parent_external_id = None
     if c["parent_contract_id"]:
         parent_external_id = await pool.fetchval(
-            "SELECT ord_external_id FROM ord_contracts WHERE id = $1 AND ord_status = 'registered'",
+            "SELECT ord_external_id FROM ord_contracts WHERE id = $1 AND ord_status IN ('registered', 'erir_error')",
             c["parent_contract_id"],
         )
         if not parent_external_id:
@@ -297,6 +323,7 @@ async def register_contract(contract_id: str, user: dict = Depends(require_platf
                ord_error=NULL, updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING *""",
             contract_id, owner, out["external_id"],
         )
+        await ord_notifications.resolve_for(pool, "contract", str(contract_id))
         return _row(row)
     except OrdError as e:
         await pool.execute(

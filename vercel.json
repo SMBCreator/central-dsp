@@ -31,6 +31,10 @@
     {
       "path": "/api/cron/audience-sync",
       "schedule": "15 * * * *"
+    },
+    {
+      "path": "/api/cron/ord-notifications",
+      "schedule": "45 * * * *"
     }
   ],
   "services": {

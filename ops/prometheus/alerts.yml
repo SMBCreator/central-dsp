@@ -312,6 +312,45 @@ groups:
             выгруженным: cron повторит отправку, externalStatisticId тот же
             (upsert). Runbook: rtb_alerts.md#ord-export
 
+      # B13g: объект принят ОРД, но отклонён ЕРИР (ошибка приходит позже, через
+      # notification/error_list). Каждое открытое уведомление = объект в статусе
+      # erir_error: организация, договор, версия erid или акт.
+      - alert: OrdErirErrorsUnresolved
+        expr: ord_notifications_unresolved > 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} открытых ошибок ЕРИР (объекты в статусе erir_error)"
+          description: >-
+            ОРД принял объект, а ЕРИР его отклонил. Список — GET /ord/notifications
+            и блок «Ошибки ЕРИР» на /ord; текст ошибки в ord_error/error объекта.
+            Исправить данные и зарегистрировать объект повторно — уведомление
+            закроется само. Runbook: rtb_alerts.md#ord-notifications
+
+      - alert: OrdErirErrorsStale
+        expr: ord_notifications_unresolved_oldest_age_seconds > 86400
+        labels:
+          severity: critical
+        annotations:
+          summary: "Ошибка ЕРИР не исправлена более суток"
+          description: >-
+            Самое старое открытое уведомление ЕРИР висит дольше 24 ч. Реклама по
+            такому объекту фактически не промаркирована в ЕРИР — риск штрафа по
+            38-ФЗ/347-ФЗ. Runbook: rtb_alerts.md#ord-notifications
+
+      - alert: OrdNotificationsLag
+        expr: (time() - ord_notifications_last_success_timestamp_seconds) > 6 * 3600
+        labels:
+          severity: critical
+        annotations:
+          summary: "Ошибки ЕРИР не забирались из ОРД более 6 ч"
+          description: >-
+            GET /cron/ord-notifications (раз в час) не завершался успешно 6 ч:
+            ключ ОРД, сеть или курсор platform_settings.ord_notification_cursor.
+            Пока крон не работает, отказы ЕРИР невидимы. Runbook:
+            rtb_alerts.md#ord-notifications
+
       # --- Consumer событий Go-биддера (audit E-03) ---------------------------
       # Стрим rtb:events ограничен MAXLEN ~200k на стороне Go. Если consumer не
       # успевает, старые события обрезаются — win-rate/eCPM в кабинете теряют

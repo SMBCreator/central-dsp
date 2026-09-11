@@ -9,6 +9,9 @@
                                  (B13: построчный результат; 5xx/сеть — OrdError на всю выгрузку)
   register_invoice(data)      -> {"external_id": ...}            (B13b: акт, upsert)
   link_invoice_creatives(data)-> None   (пересобирает детализацию акта: unlink all + link)
+  list_error_notifications(gt_id, page_size) -> [{"id", "object_id", "external_id",
+                                 "object_type", "text", "date", "updated_at", "url"}]
+                                 (B13g: ошибки ЕРИР после регистрации; id монотонный — курсор)
 
 Все методы идемпотентны на нашей стороне: перед вызовом проверяется
 ord_status в БД, повторная регистрация не выполняется.
@@ -76,6 +79,7 @@ class OrdAdapter(Protocol):
     async def submit_stats(self, period: str, rows: list[dict[str, Any]]) -> dict[str, Any]: ...
     async def register_invoice(self, data: dict[str, Any]) -> dict[str, Any]: ...
     async def link_invoice_creatives(self, data: dict[str, Any]) -> None: ...
+    async def list_error_notifications(self, gt_id: int = 0, page_size: int = 100) -> list[dict[str, Any]]: ...
 
 
 async def get_ord_settings() -> dict:

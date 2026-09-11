@@ -3,6 +3,7 @@
 import { useState } from "react"
 import useSWR, { mutate } from "swr"
 import { api, fetcher } from "@/lib/api"
+import { ORD_NOTIFICATIONS_KEY, OrdNotificationsPanel } from "@/components/ord-notifications"
 import { isAdminRole } from "@/lib/roles"
 import { useMe } from "@/lib/use-me"
 import { Button, Card, CardHeader, EmptyState, Field, inputCls, Modal, PillTabs, Spinner, StatusBadge, Table } from "@/components/ui"
@@ -180,7 +181,7 @@ export default function OrdPage() {
     setError(null)
     try {
       await api(`/ord/${kind}/${id}/register`, { method: "POST" })
-      await mutate(`/ord/${kind}`)
+      await Promise.all([mutate(`/ord/${kind}`), mutate(ORD_NOTIFICATIONS_KEY)])
     } catch (err) {
       setError(err instanceof Error ? err.message : "Ошибка регистрации в ОРД")
     } finally {
@@ -206,6 +207,8 @@ export default function OrdPage() {
           {error}
         </div>
       ) : null}
+
+      <OrdNotificationsPanel canWrite={isAdminRole(me?.role)} onGoTo={setTab} />
 
       <ol className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted" aria-label="Порядок регистрации в ОРД">
         <li className="flex items-center gap-1.5">
@@ -257,7 +260,7 @@ export default function OrdPage() {
                   </td>
                   <td className="px-4 py-3">
                     <StatusBadge status={cp.ord_status} />
-                    {cp.ord_status === "failed" && cp.ord_error ? (
+                    {["failed", "erir_error"].includes(cp.ord_status) && cp.ord_error ? (
                       <p className="mt-1 max-w-xs text-xs text-danger">{cp.ord_error}</p>
                     ) : null}
                   </td>
@@ -300,7 +303,7 @@ export default function OrdPage() {
                   <td className="px-4 py-3 text-muted">{ct.contractor_name}</td>
                   <td className="px-4 py-3">
                     <StatusBadge status={ct.ord_status} />
-                    {ct.ord_status === "failed" && ct.ord_error ? (
+                    {["failed", "erir_error"].includes(ct.ord_status) && ct.ord_error ? (
                       <p className="mt-1 max-w-xs text-xs text-danger">{ct.ord_error}</p>
                     ) : null}
                   </td>
@@ -361,7 +364,7 @@ export default function OrdPage() {
                   </td>
                   <td className="px-4 py-3">
                     <StatusBadge status={oc.status} />
-                    {oc.status === "failed" && oc.error ? (
+                    {["failed", "erir_error"].includes(oc.status) && oc.error ? (
                       <p className="mt-1 max-w-xs text-xs text-danger">{oc.error}</p>
                     ) : null}
                   </td>

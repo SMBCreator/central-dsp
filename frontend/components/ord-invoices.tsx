@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react"
 import useSWR, { mutate } from "swr"
+
+import { ORD_NOTIFICATIONS_KEY } from "@/components/ord-notifications"
 import { api, describeApiError, fetcher } from "@/lib/api"
 import { fmtMoney } from "@/lib/types"
 import { Button, Card, CardHeader, EmptyState, Field, inputCls, Modal, Spinner, StatusBadge, Table } from "@/components/ui"
@@ -174,7 +176,7 @@ export function OrdInvoicesTab({
   const byId = useMemo(() => new Map((contracts || []).map((c) => [c.id, c])), [contracts])
   const executiveIds = useMemo(() => new Set(executive.map((c) => c.id)), [executive])
   const monthDrafts = useMemo(
-    () => (invoices || []).filter((i) => executiveIds.has(i.contract_id) && overlaps(i, start, end) && ["draft", "failed", "partial"].includes(i.status)),
+    () => (invoices || []).filter((i) => executiveIds.has(i.contract_id) && overlaps(i, start, end) && ["draft", "failed", "partial", "erir_error"].includes(i.status)),
     [invoices, executiveIds, start, end],
   )
 
@@ -192,7 +194,7 @@ export function OrdInvoicesTab({
         failed.push(`${inv.number}: ${describeApiError(err)}`)
       }
     }
-    await mutate("/ord/invoices")
+    await Promise.all([mutate("/ord/invoices"), mutate(ORD_NOTIFICATIONS_KEY)])
     setBulk({ running: false, text: `Принято: ${ok}${failed.length ? `. Ошибки — ${failed.join("; ")}` : ""}` })
   }
 
@@ -519,7 +521,7 @@ function InvoiceEditor({
       method: invoiceId ? "PUT" : "POST",
       body: b,
     })
-    await mutate("/ord/invoices")
+    await Promise.all([mutate("/ord/invoices"), mutate(ORD_NOTIFICATIONS_KEY)])
     return saved.id
   }
 
@@ -549,14 +551,14 @@ function InvoiceEditor({
       const id = await save()
       if (!id) return
       const res = await api<{ status: string; error?: string | null }>(`/ord/invoices/${id}/submit`, { method: "POST" })
-      await mutate("/ord/invoices")
+      await Promise.all([mutate("/ord/invoices"), mutate(ORD_NOTIFICATIONS_KEY)])
       if (res.status === "ok") setNotice("Акт принят ОРД: все строки статистики зарегистрированы")
       else if (res.status === "partial") setError("Акт отправлен, но часть строк отклонена — см. статус по строкам, исправьте и отправьте повторно")
       else setError(res.error || "ОРД отклонил акт")
       if (invoiceId) await reloadInvoice()
       else onClose()
     } catch (err) {
-      await mutate("/ord/invoices")
+      await Promise.all([mutate("/ord/invoices"), mutate(ORD_NOTIFICATIONS_KEY)])
       if (invoiceId) await reloadInvoice()
       setError(describe(err))
     } finally {
@@ -570,7 +572,7 @@ function InvoiceEditor({
     setError(null)
     try {
       await api(`/ord/invoices/${invoiceId}`, { method: "DELETE" })
-      await mutate("/ord/invoices")
+      await Promise.all([mutate("/ord/invoices"), mutate(ORD_NOTIFICATIONS_KEY)])
       onClose()
     } catch (err) {
       setError(describe(err))

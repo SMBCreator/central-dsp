@@ -106,6 +106,29 @@ class OzonOrdClient:
         await self._request("POST", "/api/external/platform", platform_body(data))
         return {"external_id": data["external_id"]}
 
+    async def list_error_notifications(self, gt_id: int = 0, page_size: int = 100) -> list[dict[str, Any]]:
+        """Ошибки ЕРИР: POST /api/external/notification/error_list
+        {pageSize, gtNotificationId} → {notification: [...]}; id монотонный,
+        поэтому клиент хранит последний id как курсор (B13g)."""
+        out = await self._request(
+            "POST", "/api/external/notification/error_list",
+            {"pageSize": int(page_size), "gtNotificationId": int(gt_id)},
+        )
+        return [
+            {
+                "id": int(n["id"]),
+                "object_id": n.get("objectId"),
+                "external_id": n.get("externalId"),
+                "object_type": n.get("objectType"),
+                "text": n.get("text") or "",
+                "date": n.get("date"),
+                "updated_at": n.get("updatedAt"),
+                "url": n.get("url"),
+            }
+            for n in (out.get("notification") or [])
+            if n.get("id") is not None
+        ]
+
     async def register_invoice(self, data: dict[str, Any]) -> dict[str, Any]:
         """Акт: POST /api/external/v2/invoice — upsert по externalInvoiceId,
         повторная отправка = редактирование акта."""

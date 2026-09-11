@@ -988,6 +988,8 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
   const invoices = resolveInvoiceMock(method, path, search, body)
   if (invoices !== undefined) return invoices
   if (path === "/ord/exports") return []
+  if (path === "/ord/notifications" && method === "GET") return { items: mockOrdNotifications, total: mockOrdNotifications.length }
+  if (path === "/ord/notifications/sync" && method === "POST") return { provider: "mock", fetched: 0, new: 0, unresolved: mockOrdNotifications.length }
   if (path === "/settings/ord")
     return { configured: true, environment: "sandbox", api_key_masked: "demo····key", last_check: iso(36e5), last_check_ok: true }
 
@@ -1552,6 +1554,20 @@ function mockSplit(items: MockInvoiceItem[], amount: number, rate: number, manua
     }
   })
 }
+
+/** B13g: демо-ошибки ЕРИР — объект принят ОРД, но отклонён ЕРИР (статус erir_error). */
+const mockOrdNotifications = [
+  {
+    id: "ntf-1", object_type: "contract", external_id: "ct-2", object_external_id: "ORD-CT-2",
+    text: "ЕРИР: у договора не указана дата заключения", url: "https://ord.ozon.ru/demo/contract/2",
+    ord_date: iso(2 * 36e5), created_at: iso(36e5),
+  },
+  {
+    id: "ntf-2", object_type: "creative", external_id: "cr-1:v1", object_external_id: "ORD-CR-1",
+    text: "ЕРИР: описание креатива не соответствует выбранному коду ККТУ", url: null,
+    ord_date: iso(26 * 36e5), created_at: iso(25 * 36e5),
+  },
+]
 
 function resolveInvoiceMock(method: string, path: string, search: URLSearchParams, body?: unknown): unknown {
   if (path === "/ord/invoices/preview") {

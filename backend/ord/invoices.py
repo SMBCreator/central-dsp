@@ -190,7 +190,7 @@ _FACT_SQL = """
           SELECT version, erid, contract_id FROM ord_creatives o
           WHERE o.creative_id = s.creative_id
             AND o.erid IS NOT NULL AND o.erid <> ''
-            AND o.status IN ('registered', 'superseded')
+            AND o.status IN ('registered', 'erir_error', 'superseded')
             AND COALESCE(o.registered_at, o.created_at) < s.ts_hour + interval '1 hour'
           ORDER BY COALESCE(o.registered_at, o.created_at) DESC LIMIT 1
       ) oc ON true
@@ -312,7 +312,7 @@ async def preview(pool, contract: dict, start: date, end: date, campaign_ids: li
               AND NOT EXISTS (
                   SELECT 1 FROM ord_creatives o
                    WHERE o.creative_id = s.creative_id AND o.erid IS NOT NULL AND o.erid <> ''
-                     AND o.status IN ('registered', 'superseded')
+                     AND o.status IN ('registered', 'erir_error', 'superseded')
                      AND COALESCE(o.registered_at, o.created_at) < s.ts_hour + interval '1 hour')
             GROUP BY s.creative_id, c.name HAVING sum(s.impressions) > 0""",
         contract["user_id"], contract["id"], start, end, camp_ids,
@@ -703,6 +703,11 @@ async def submit(pool, invoice: dict) -> dict:
                 WHERE id=$1""",
             inv_id, status, err, adapter.provider, inv_id,
         )
+        if status == "ok":
+            # B13g: акт принят ОРД повторно — открытые ошибки ЕРИР по нему закрыты
+            from .notifications import resolve_for
+
+            await resolve_for(conn, "invoice", str(inv_id))
     result = await load(pool, inv_id)
     result["ord_response"] = json.loads(json.dumps(responses, ensure_ascii=False, default=str))
     return result
