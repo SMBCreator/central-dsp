@@ -750,8 +750,11 @@ Prometheus (alerts.yml) → Alertmanager (ops/alertmanager/alertmanager.yml, pro
       → notification_outbox → scheduler notify_dispatch → SMTP (SMTP_*)
 ```
 
-Адреса для писем — UI суперадмина, Настройки → Алерты (`GET/PUT /settings/alerting`,
-`platform_settings.alerting`); пусто = email всех активных суперадминов. Порог
+Адреса для писем — UI суперадмина, **Администрирование → Алерты и письма**
+(`/admin/alerts`; API `GET/PUT /settings/alerting`, хранится в
+`platform_settings.alerting`); пусто = email всех активных суперадминов. Там же —
+состояние pipeline (Watchdog/SMTP), активные алерты, лента firing/resolved и
+последние 50 писем outbox со статусом и `last_error` (`GET /alerts/outbox`). Порог
 `email_min_severity` (по умолчанию warning) касается только писем, in-app идёт
 всегда. Кнопка «Тестовое письмо» (`POST /settings/alerting/test`) гонит письмо
 через тот же outbox — это проверка всей цепочки, а не только SMTP.
@@ -809,6 +812,43 @@ interval '1 day'`. Переотправить после исправления:
 attempts=0, next_attempt_at=now() WHERE id IN (...)`.
 
 Retention: `sent`/`failed` старше 30 дней удаляет `/cron/retention`; `queued` не трогает.
+
+### Бизнес-уведомления рекламодателям (N-03): «письмо не пришло»
+
+Тем же outbox уходят письма по кампаниям — их шлёт задача scheduler
+`notify_business_checks` (каждые 15 мин, `POST /cron/notify-business-checks`) плюс
+автоправила в момент срабатывания. Виды (`notification_outbox.kind`):
+`autorule_fired`, `budget_exhausted` (daily/total), `campaign_stopped_by_system`
+(модерация/блок/баланс), `campaign_ending_soon` (за 24 ч) / `campaign_ended`,
+`campaign_no_impressions` (активна, бюджет есть, 0 показов ≥ `NOTIFY_NO_IMPS_HOURS`),
+`low_balance` (баланс < `NOTIFY_LOW_BALANCE_DAYS` × средний дневной расход за 7 дней).
+Одно событие — одно письмо: `dedup_key` вида `<kind>:<id>:<день|час|метка>`,
+повтор в тот же день не отправляется (in-app уведомление владельцу при этом создаётся
+всегда, `notifications.type = kind`).
+
+Адресаты — первый непустой уровень: `campaigns.notify_emails` → `advertisers.notify_emails`
+→ email владельца кампании. `campaigns.notify_inherit = false` при пустом списке
+кампании **отключает письма по ней совсем** (это осознанная настройка пользователя,
+не сбой). Задаются в UI: карточка рекламодателя и «Настройки» кампании, поле «Email
+для уведомлений».
+
+Разбор жалобы «не пришло письмо»:
+1. Есть ли строка в outbox: `SELECT id, recipient, kind, status, attempts, last_error, created_at
+   FROM notification_outbox WHERE entity_type='campaign' AND entity_id='<id>' ORDER BY id DESC;`
+   Строки нет → либо событие не наступило (см. условия выше), либо адресатов нет
+   (`notify_inherit=false` и пустой список), либо уже было письмо с тем же `dedup_key`
+   сегодня. Проверить, кому бы ушло:
+   ```bash
+   docker compose exec backend python - <<'EOF'
+   import asyncio, db, notify_business as n
+   async def main():
+       print(await n.resolve_recipients(await db.get_pool(), campaign_id="<id>"))
+   asyncio.run(main())
+   EOF
+   ```
+2. Строка `queued`/`failed` → это доставка, см. NotifyOutboxStuck / NotifyEmailsFailing выше.
+3. Строка `sent` → письмо ушло на SMTP; дальше спам-фильтр получателя (SPF/DKIM для
+   домена `SMTP_FROM`).
 
 ## Куда смотреть в первую очередь при любом алерте
 

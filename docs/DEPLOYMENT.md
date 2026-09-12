@@ -83,6 +83,14 @@ CRON_SECRET=<openssl rand -hex 32>
 
 # --- ОРД Озон (можно позже задать через UI настроек) ---
 # ORD_OZON_API_KEY=<ключ из кабинета ОРД Озон>
+
+# --- Уведомления (письма рекламодателям и технические алерты суперадмину) ---
+SMTP_HOST=smtp.example.com               # без него письма копятся в очереди и не уходят
+SMTP_PORT=587
+SMTP_USER=alerts@ваш-домен.ру
+SMTP_PASSWORD=<пароль приложения у провайдера>
+SMTP_FROM=CentralDSP <alerts@ваш-домен.ру>
+ALERT_WEBHOOK_SECRET=<openssl rand -hex 32>  # нужен для --profile monitoring (Alertmanager -> backend)
 ```
 
 Managed Postgres/Redis вместо встроенных: `COMPOSE_FILE=compose.yml:compose.external.yml:compose.prod.yml`
@@ -189,6 +197,13 @@ docker compose exec backend find /data/uploads -type f -mtime +1 -print
    SSP URL эндпоинта.
 5. Создайте рекламодателя -> кампанию -> креатив (загрузкой файла) ->
    line item. Креатив уйдёт на регистрацию в ОРД, erid появится в карточке.
+6. **Администрирование -> Алерты и письма**: укажите адреса для технических
+   алертов (пусто = email всех суперадминов) и нажмите «Тестовое письмо» — оно
+   идёт через ту же очередь и SMTP, что и настоящие; статус видно в таблице
+   «Исходящие письма» на той же странице. Если карточка SMTP говорит
+   «Не настроен» — вернитесь к `.env` (п. 3), письма никуда не уйдут.
+   Адреса бизнес-уведомлений (бюджет, остановка, автоправила) — в карточке
+   рекламодателя и в настройках кампании, поле «Email для уведомлений».
 
 ## 7. Как работает биллинг (для супер-админа)
 
@@ -400,9 +415,18 @@ Prometheus с правилами `ops/prometheus/alerts.yml` и `node-exporter` 
 (или `--profile monitoring`). Prometheus слушает `127.0.0.1:9091`; наружу — только
 SSH-туннель (`ssh -L 9091:127.0.0.1:9091`) или VPN, **никогда** не публиковать в
 интернет без auth. Правила покрыты unit-тестами `ops/prometheus/alerts_test.yml`
-(`promtool test rules`, CI) — при правке PromQL добавить кейс туда. Grafana и
-Alertmanager — тем же профилем на следующем этапе; runbook алертов —
-`docs/runbooks/rtb_alerts.md` (liveness/readiness — во вводной части).
+(`promtool test rules`, CI) — при правке PromQL добавить кейс туда. Runbook
+алертов — `docs/runbooks/rtb_alerts.md` (liveness/readiness — во вводной части).
+
+Доставка алертов людям — тем же профилем `monitoring`: Alertmanager
+(`ops/alertmanager/alertmanager.yml`, `127.0.0.1:9093`) шлёт каждый firing/resolved
+в backend `POST /alerts/webhook` (Bearer `ALERT_WEBHOOK_SECRET`; контейнер
+Alertmanager не стартует с пустым секретом). Backend создаёт in-app уведомление
+каждому суперадмину и письмо через `notification_outbox` → SMTP (`SMTP_*`).
+Адреса, порог важности для писем и тестовое письмо — UI **Администрирование →
+Алерты и письма**; там же видно, приходит ли `Watchdog` (Alertmanager раз в 10 мин)
+и очередь писем. Тишина в этом контуре — тоже алерт (`AlertPipelineDead`,
+`NotifyOutboxStuck`), см. runbook `#notifications`. Grafana — следующий этап.
 
 ### 10.1. Smoke-чеклист после каждого деплоя
 
