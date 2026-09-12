@@ -540,17 +540,38 @@ async def _ord_export_locked(conn, period, kind, force, _json, external_creative
     }
 
 
+# Текст SQL вынесен в константы: tests/test_partition_repair_db.py выполняет их на
+# живом PG. `$1::int` обязателен — у PG несколько операторов `date + <тип>`, и
+# нетипизированный параметр asyncpg даёт "operator is not unique: date + unknown".
+RETENTION_ENSURE_PARTITIONS_SQL = "SELECT bid_events_ensure_partitions(current_date, current_date + $1::int)"
+RETENTION_PARTITION_HORIZON_SQL = "SELECT bid_events_partition_horizon_days()"
+RETENTION_DEFAULT_ROWS_SQL = "SELECT count(*) FROM bid_events_default"
+
+
 @router.get("/retention")
 @_cron_job("retention")
 async def bid_events_retention(request: Request):
     """Ретенция сырого лога bid_events (миграция 033, партиции по дням).
 
-    1. Создаёт дневные партиции на 7 дней вперёд (чтобы события никогда не
-       падали в DEFAULT-партицию).
-    2. DROP партиций старше BID_EVENTS_RETENTION_DAYS (по умолчанию 90).
+    Порядок шагов важен (аудит O-06): сначала измеряем DEFAULT-партицию и
+    публикуем gauge, потом создаём партиции вперёд, потом DROP старых. Если
+    создание партиций упадёт, диагностика уже снята — раньше падение
+    `ensure_partitions` из-за строк в DEFAULT оставляло gauge пустым.
+
+    1. Считает строки в bid_events_default -> gauge bid_events_default_partition_rows.
+    2. Создаёт дневные партиции на BID_EVENTS_PARTITIONS_AHEAD_DAYS вперёд
+       (по умолчанию 60). С миграции 057 ensure_partitions сама переносит из
+       DEFAULT строки за создаваемый день, поэтому запас вперёд лечит и
+       «опоздавшие» будущие даты. Строки за прошлые дни в DEFAULT cron не
+       трогает — это ручное действие (scripts/partition_repair.py repair-default),
+       см. runbook partition_upgrade.md.
+    3. DROP партиций старше BID_EVENTS_RETENTION_DAYS (по умолчанию 90).
        Агрегаты stats_hourly/domain_stats не затрагиваются — отчёты за
        длинные периоды строятся по ним, сырой лог нужен для ML/скоринга/аудита
        в пределах окна.
+    4. Горизонт партиций (дней вперёд до последней существующей) -> gauge
+       bid_events_partition_horizon_days; алерт BidEventsPartitionHorizonShort
+       смотрит на состояние таблицы, а не на факт запуска cron.
 
     Если таблица ещё не партиционирована (миграция 033 не накатана) — no-op
     с пометкой, а не ошибка: cron не должен «краснеть» из-за порядка деплоя.
@@ -559,6 +580,9 @@ async def bid_events_retention(request: Request):
     keep_days = int(os.environ.get("BID_EVENTS_RETENTION_DAYS", "90"))
     if keep_days < 7:
         raise HTTPException(status_code=400, detail="BID_EVENTS_RETENTION_DAYS must be >= 7")
+    ahead_days = int(os.environ.get("BID_EVENTS_PARTITIONS_AHEAD_DAYS", "60"))
+    if ahead_days < 7:
+        raise HTTPException(status_code=400, detail="BID_EVENTS_PARTITIONS_AHEAD_DAYS must be >= 7")
 
     pool = await get_pool()
     # Дедуп-заявки трекинг-событий (E-02): event-токен живёт 6 часов, 3 суток —
@@ -591,17 +615,27 @@ async def bid_events_retention(request: Request):
             "outbox_deleted": outbox_deleted,
         }
 
-    created = await pool.fetchval(
-        "SELECT bid_events_ensure_partitions(current_date, current_date + 7)"
-    )
+    # Строки в DEFAULT-партиции — признак, что партиции создавались с опозданием.
+    # Измеряем ДО ensure: если создание упадёт, gauge уже опубликован.
+    in_default_before = int(await pool.fetchval(RETENTION_DEFAULT_ROWS_SQL) or 0)
+    obs_metrics.set_gauge("bid_events_default_partition_rows", in_default_before)
+
+    created = await pool.fetchval(RETENTION_ENSURE_PARTITIONS_SQL, ahead_days)
     dropped = await pool.fetchval("SELECT bid_events_drop_old_partitions($1)", keep_days)
-    # Строки в DEFAULT-партиции — признак, что cron создания партиций отставал.
-    in_default = await pool.fetchval("SELECT count(*) FROM bid_events_default")
-    obs_metrics.set_gauge("bid_events_default_partition_rows", int(in_default or 0))
+
+    # После ensure часть строк DEFAULT (за создаваемые дни) уже переехала — gauge
+    # отражает то, что осталось и требует ручного repair.
+    in_default = int(await pool.fetchval(RETENTION_DEFAULT_ROWS_SQL) or 0)
+    obs_metrics.set_gauge("bid_events_default_partition_rows", in_default)
+    horizon = await pool.fetchval(RETENTION_PARTITION_HORIZON_SQL)
+    obs_metrics.set_gauge("bid_events_partition_horizon_days", int(horizon if horizon is not None else -1))
     return {
         "keep_days": keep_days,
+        "ahead_days": ahead_days,
         "partitions_created": created,
         "partitions_dropped": list(dropped or []),
+        "partition_horizon_days": horizon,
+        "rows_in_default_partition_before": in_default_before,
         "rows_in_default_partition": in_default,
         "once_deleted": once_deleted,
         "inbox_deleted": inbox_deleted,

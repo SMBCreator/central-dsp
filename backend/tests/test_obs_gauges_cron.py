@@ -113,3 +113,49 @@ def test_metrics_endpoint_counts_http_classes_but_not_itself():
     # Сам скрейп /metrics не учитывается — иначе каждая проверка двигает знаменатель.
     body2_snapshot = obs_metrics.snapshot()["http"]
     assert body2_snapshot["2xx"] == 1
+
+
+@pytest.mark.asyncio
+async def test_retention_publishes_default_gauge_before_ensure_partitions(monkeypatch):
+    """O-06: gauge DEFAULT-партиции публикуется ДО создания партиций — если
+    ensure_partitions упадёт, диагностика уже снята (раньше было наоборот)."""
+    import notify_outbox
+    import routers.cron as cron
+
+    calls: list[str] = []
+
+    class _Pool:
+        async def execute(self, sql, *args):
+            return "DELETE 0"
+
+        async def fetchval(self, sql, *args):
+            calls.append(sql)
+            if "pg_class" in sql:
+                return True
+            if "count(*) FROM bid_events_default" in sql:
+                return 7
+            if "ensure_partitions" in sql:
+                raise RuntimeError("updated partition constraint for default partition would be violated")
+            raise AssertionError(sql)
+
+    async def _pool():
+        return _Pool()
+
+    async def _purge(pool, **kw):
+        return 0
+
+    monkeypatch.setattr(cron, "get_pool", _pool)
+    monkeypatch.setattr(notify_outbox, "purge_old", _purge)
+    monkeypatch.delenv("CRON_SECRET", raising=False)
+    monkeypatch.setenv("APP_ENV", "test")
+
+    class _Req:
+        headers: dict = {}
+        query_params: dict = {}
+
+    with pytest.raises(RuntimeError):
+        await cron.bid_events_retention(_Req())  # type: ignore[arg-type]
+    assert "\nbid_events_default_partition_rows 7\n" in obs_metrics.render_prometheus()
+    ensure_idx = next(i for i, s in enumerate(calls) if "ensure_partitions" in s)
+    count_idx = next(i for i, s in enumerate(calls) if "count(*) FROM bid_events_default" in s)
+    assert count_idx < ensure_idx

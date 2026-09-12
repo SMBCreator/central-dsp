@@ -389,21 +389,42 @@ Freq cap занимает слот на win временно (env `WIN_IMP_TTL`,
 ## default-partition — BidEventsDefaultPartitionNonEmpty
 
 **Что значит:** в `bid_events_default` есть строки — на момент вставки не было
-дневной партиции для `ts`. Запросы по таким строкам медленнее, retention их не
-удалит.
+дневной партиции для `created_at`. Данные не потеряны, но запросы по ним медленнее,
+и retention их не удалит.
+
+**Действия:** не переливать руками через `INSERT ... SELECT` (identity-колонка `id`
+требует `OVERRIDING SYSTEM VALUE`, а строки за сегодня гонятся с живой записью) —
+использовать скрипт:
+1. `docker compose exec backend python scripts/partition_repair.py status` — дни,
+   объём, есть ли строки старше retention.
+2. `... partition_repair.py repair-default --dry-run`, затем `repair-default`
+   (батчами, возобновляемо; просроченные — `--purge-expired`).
+3. Понять, почему партиций не было: см. [cron](#cron) и
+   [partition_upgrade.md#horizon](partition_upgrade.md#horizon).
+
+Подробно: [partition_upgrade.md#default](partition_upgrade.md#default).
+
+## partition-horizon — BidEventsPartitionHorizonShort
+
+**Что значит:** дневных партиций `bid_events` вперёд меньше чем на 7 дней (`-1` —
+нет ни одной). Норма — `BID_EVENTS_PARTITIONS_AHEAD_DAYS` (60). Метрика снимается с
+состояния таблицы при каждом запуске `/cron/retention`, поэтому горит и при
+«успешном» cron, который партиции не создал.
 
 **Действия:**
-1. `SELECT min(ts), max(ts), count(*) FROM bid_events_default;`
-2. `SELECT bid_events_ensure_partitions(<min_date>, current_date + 7);`
-3. Перенос: `WITH moved AS (DELETE FROM bid_events_default RETURNING *)
-   INSERT INTO bid_events SELECT * FROM moved;` (партиционированная таблица
-   сама разложит строки).
-4. Проверить, почему не отработал `/cron/retention` (см. cron).
+1. `GET /scheduler/jobs` → `retention`: `last_status` / `last_error` (см. [cron](#cron)).
+2. Создать партиции сразу: `docker compose exec backend python
+   scripts/partition_repair.py ensure` (или запустить `/cron/retention` руками).
+3. `... partition_repair.py status` → `horizon_days` ≥ 7; gauge обновится
+   следующим запуском cron.
+
+Подробно: [partition_upgrade.md#horizon](partition_upgrade.md#horizon).
 
 ## cron — CronRetentionStale / CronJobFailing
 
 **Что значит:** cron-ручка не запускалась успешно (stale) или упала с
-исключением/5xx (failing). Запускает их сервис `scheduler` (compose,
+исключением/5xx (failing). Для `retention` запас партиций отдельно виден в
+`BidEventsPartitionHorizonShort` ([partition_upgrade.md#horizon](partition_upgrade.md#horizon)). Запускает их сервис `scheduler` (compose,
 расписание в `scheduled_jobs`, см. [scheduler](#scheduler)); ручки защищены
 `CRON_SECRET`.
 

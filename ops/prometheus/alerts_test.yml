@@ -44,6 +44,29 @@ tests:
         eval_time: 10m
         exp_samples: []
 
+  # ---- BidEventsPartitionHorizonShort (C5 / O-06): состояние таблицы, не cron ---
+  - interval: 1m
+    input_series:
+      # Запас 3 дня 40 минут подряд -> firing (for: 30m). -1 (партиций нет) — тоже.
+      - series: 'bid_events_partition_horizon_days{job="backend",instance="backend:8000"}'
+        values: '3x40'
+    promql_expr_test:
+      - expr: ALERTS{alertname="BidEventsPartitionHorizonShort",alertstate="firing"}
+        eval_time: 40m
+        exp_samples:
+          - labels: '{__name__="ALERTS", alertname="BidEventsPartitionHorizonShort", alertstate="firing", severity="warning", job="backend", instance="backend:8000"}'
+            value: 1
+
+  - interval: 1m
+    input_series:
+      # Нормальный запас (60 дней) — тишина.
+      - series: 'bid_events_partition_horizon_days{job="backend",instance="backend:8000"}'
+        values: '60x40'
+    promql_expr_test:
+      - expr: ALERTS{alertname="BidEventsPartitionHorizonShort",alertstate="firing"}
+        eval_time: 40m
+        exp_samples: []
+
   # ---- Notifications (C4b / N-01): сторожевой пёс системы оповещения ----------
   - interval: 1m
     input_series:

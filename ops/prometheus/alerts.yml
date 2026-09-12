@@ -244,6 +244,21 @@ groups:
             перенести, партиции создать вперёд. Значение обновляется при
             каждом запуске /cron/retention. Runbook: rtb_alerts.md#default-partition
 
+      - alert: BidEventsPartitionHorizonShort
+        expr: bid_events_partition_horizon_days < 7
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Партиций bid_events вперёд меньше чем на 7 дней"
+          description: >-
+            Последняя дневная партиция заканчивается через
+            {{ $value }} дн. (-1 = партиций нет). Норма — запас
+            BID_EVENTS_PARTITIONS_AHEAD_DAYS (60). Если /cron/retention падает
+            или не запускается, события скоро пойдут в DEFAULT. Измеряется
+            состояние таблицы при каждом запуске /cron/retention.
+            Runbook: rtb_alerts.md#partition-horizon
+
       - alert: CronRetentionStale
         expr: |
           time() - cron_job_last_success_timestamp_seconds{cron_job="retention"} > 2 * 86400
@@ -253,10 +268,11 @@ groups:
         annotations:
           summary: "Cron /cron/retention не выполнялся успешно более 2 суток"
           description: >-
-            Партиции bid_events создаются на 7 дней вперёд — запас есть, но
-            через неделю события начнут падать в DEFAULT. Метрика живёт в
-            процессе backend: после рестарта серия absent до первого запуска.
-            Runbook: rtb_alerts.md#cron
+            Партиции bid_events создаются на BID_EVENTS_PARTITIONS_AHEAD_DAYS
+            (60) вперёд — запас есть, но retention старых партиций и очистка
+            inbox/outbox стоят. Сам запас виден в BidEventsPartitionHorizonShort.
+            Метрика живёт в процессе backend: после рестарта серия absent до
+            первого запуска. Runbook: rtb_alerts.md#cron
 
       - alert: CronJobFailing
         expr: increase(cron_job_runs_total{result="error"}[1h]) > 0

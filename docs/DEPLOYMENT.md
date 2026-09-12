@@ -362,40 +362,30 @@ POST  /api/scheduler/jobs/{name}/run     # запустить на ближай�
 docker compose exec backend python -c "import urllib.request as u,os;print(u.urlopen(u.Request('http://127.0.0.1:8000/cron/ord-export?period=2026-08',headers={'Authorization':'Bearer '+os.environ['CRON_SECRET']})).read().decode())"
 ```
 
-## 9.2. Партиционирование `bid_events` (миграция 033)
+## 9.2. Партиционирование `bid_events` (миграции 033 и 057)
 
 `bid_events` — сырой RTB-лог, при 35k QPS растёт на сотни миллионов строк в месяц.
 Миграция 033 переводит его на RANGE-партиции по дням; ретенция = `DROP TABLE` партиции
 (мгновенно, без bloat). Агрегаты `stats_hourly` / `domain_stats` не затрагиваются.
+Миграция 057 делает создание партиций устойчивым к строкам в DEFAULT-партиции и
+добавляет метрику горизонта партиций.
 
 **Таблица маленькая (< ~50M строк, свежая установка):** просто `python migrate.py` —
 перенос выполняется внутри миграции одной транзакцией.
 
 **Таблица большая (прод с историей):** миграция в одну транзакцию заблокирует запись
-на время копирования. Делайте вручную в окне низкого трафика:
+на время копирования. **Не редактируйте файл миграции** — `migrate.py` сверяет sha256
+применённых файлов, и изменённый 033 заблокирует все последующие деплои. Процедура
+с подменой таблицы пустой копией и последующей доливкой истории при живом backend —
+в [runbooks/partition_upgrade.md#big-table](runbooks/partition_upgrade.md#big-table)
+(отрепетирована на копии данных, там же тайминги).
 
-```bash
-# 1. Остановить приём событий (биддер продолжит торговать, события уйдут в Redis-очередь / потеряются
-#    только записи лога, не деньги). Проще всего — на время remap'а поставить бэкенд в maintenance.
-docker compose stop backend
-
-# 2. Выполнить SQL из migrations/033_bid_events_partitioned.sql через psql —
-#    он идемпотентен, но перенос данных (шаг 4 в DO-блоке) лучше сделать батчами:
-#    закомментируйте INSERT ... SELECT и после swap'а перелейте bid_events_legacy -> bid_events
-#    порциями по дню:  INSERT INTO bid_events (...) OVERRIDING SYSTEM VALUE SELECT ... FROM bid_events_legacy
-#    WHERE created_at >= '2026-08-01' AND created_at < '2026-08-02';
-psql "$DATABASE_URL" -f backend/migrations/033_bid_events_partitioned.sql
-
-# 3. Пометить миграцию применённой без повторного выполнения
-cd backend && python migrate.py --stamp 033_bid_events_partitioned.sql
-
-docker compose start backend
-```
-
-После проверки отчётов удалить старую таблицу: `DROP TABLE bid_events_legacy;`.
-Контроль: `/cron/retention` возвращает `rows_in_default_partition` — если > 0, партиции
-создавались с опозданием (cron не отработал); строки в DEFAULT не теряются, но не удаляются
-ретенцией — перелейте их в дневные партиции тем же `INSERT ... SELECT`.
+Настройки: `BID_EVENTS_RETENTION_DAYS` (90) — глубина сырого лога;
+`BID_EVENTS_PARTITIONS_AHEAD_DAYS` (60) — на сколько дней вперёд `/cron/retention`
+создаёт партиции. Контроль: ответ `/cron/retention` (`partition_horizon_days`,
+`rows_in_default_partition`) и алерты `BidEventsPartitionHorizonShort`,
+`BidEventsDefaultPartitionNonEmpty`; ручные операции —
+`scripts/partition_repair.py` (см. runbook).
 
 ## 10. Что мониторить (минимум)
 

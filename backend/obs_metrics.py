@@ -96,6 +96,10 @@ _GAUGE_HELP = {
         "Rows sitting in bid_events DEFAULT partition (should be 0; >0 = partition cron lagged). "
         "Refreshed by GET /cron/retention."
     ),
+    "bid_events_partition_horizon_days": (
+        "Days from today to the last existing daily bid_events partition (-1 = none). "
+        "Refreshed by GET /cron/retention; alert BidEventsPartitionHorizonShort below 7."
+    ),
     "ord_export_last_success_timestamp_seconds": (
         "Unix time of the last successful monthly ORD export (seeded from ord_export_log at startup)."
     ),
