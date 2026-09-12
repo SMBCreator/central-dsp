@@ -1049,7 +1049,6 @@ func (h *Handler) Imp(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// Healthz — GET /healthz: liveness + возраст фида.
 // FeedReload — POST /internal/feed/reload: немедленный рефреш фида.
 // Требует internalCheckHeader = RTB_API_TOKEN; иначе 403 (или 404, если токен
 // не настроен — эндпоинта «как бы нет»).
@@ -1083,37 +1082,96 @@ func (h *Handler) FeedReload(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(body)
 }
 
-// Healthz — GET /healthz. 200 только когда биддер реально способен торговать:
-// фид загружен и не старше FEED_MAX_AGE. Иначе 503 — оркестратор/балансировщик
-// выводит инстанс из ротации вместо того, чтобы SSP получали no-bid (R-02).
-// Redis отражается в теле, но не валит liveness: без него биддер деградирует
-// (нет резервов/freq cap), а не ломается.
+// Причины неготовности биддера (audit O-05). Порядок — приоритет для поля
+// status в /healthz: без фида Redis уже не важен.
+const (
+	NotReadyFeedNotLoaded = "feed_not_loaded"
+	NotReadyFeedStale     = "feed_stale"
+	NotReadyRedisDown     = "redis_down"
+)
+
+// readinessRedisTimeout — предел ожидания PING при проверке готовности. Redis
+// на hot path отвечает за доли миллисекунды; полсекунды — уже «лежит».
+const readinessRedisTimeout = 500 * time.Millisecond
+
+// Readiness — снимок готовности биддера торговать. Общий источник для
+// GET /healthz и gauge bidder_ready, чтобы HTTP-статус и метрика не расходились.
+type Readiness struct {
+	Ready           bool
+	Reasons         []string // подмножество NotReady*, в порядке приоритета
+	Feed            feed.Status
+	RedisConfigured bool
+	RedisOK         bool
+}
+
+// Status — первая причина или "ok".
+func (rd Readiness) Status() string {
+	if len(rd.Reasons) == 0 {
+		return "ok"
+	}
+	return rd.Reasons[0]
+}
+
+// Readiness проверяет зависимости, без которых биддер не должен получать
+// трафик: фид загружен и не старше FEED_MAX_AGE (R-02), сконфигурированный
+// Redis отвечает на PING. Без Redis резервы бюджета, freq cap, pending:burl и
+// bidmeta невозможны — бид уходил бы без учёта денег, поэтому это неготовность,
+// а не деградация. Redis == nil (dev без REDIS_URL) готовность не трогает:
+// в production конфиг требует REDIS_URL на старте.
+func (h *Handler) Readiness(ctx context.Context) Readiness {
+	rd := Readiness{Feed: h.store.Status(), RedisConfigured: h.redis != nil}
+	if !rd.Feed.Loaded {
+		rd.Reasons = append(rd.Reasons, NotReadyFeedNotLoaded)
+	} else if rd.Feed.Stale {
+		rd.Reasons = append(rd.Reasons, NotReadyFeedStale)
+	}
+	if h.redis != nil {
+		pingCtx, cancel := context.WithTimeout(ctx, readinessRedisTimeout)
+		rd.RedisOK = h.redis.Ping(pingCtx) == nil
+		cancel()
+		if !rd.RedisOK {
+			rd.Reasons = append(rd.Reasons, NotReadyRedisDown)
+		}
+	}
+	rd.Ready = len(rd.Reasons) == 0
+	return rd
+}
+
+// Livez — GET /livez: liveness. 200, пока процесс и HTTP-сервер отвечают; не
+// зависит ни от фида, ни от Redis. Только его использует Docker HEALTHCHECK:
+// отказ зависимости не должен переводить живой процесс в unhealthy и
+// запускать restart-семантику оркестратора.
+func (h *Handler) Livez(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"status":"alive"}` + "\n"))
+}
+
+// Healthz — GET /healthz: readiness. 200 только когда биддер реально способен
+// торговать (см. Readiness), иначе 503 — балансировщик/деплой/preprod_check
+// выводят инстанс из ротации вместо того, чтобы SSP получали no-bid. В теле
+// только безопасные причины и счётчики: без адресов, ошибок соединения и
+// текста исключений (они в логах и в /internal/feed/reload за токеном).
 func (h *Handler) Healthz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	redisOK := false
-	if h.redis != nil && h.redis.Ping(r.Context()) == nil {
-		redisOK = true
-	}
-	st := h.store.Status()
-	status := "ok"
-	if st.Stale {
-		status = "feed_stale"
-		if !st.Loaded {
-			status = "feed_not_loaded"
-		}
+	rd := h.Readiness(r.Context())
+	if !rd.Ready {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
-	body := map[string]any{
-		"status":           status,
-		"campaigns":        st.Candidates,
-		"partners":         st.Partners,
-		"feed_age_sec":     int(st.Age.Seconds()),
-		"feed_max_age_sec": int(st.MaxAge.Seconds()),
-		"feed_loaded":      st.Loaded,
-		"redis":            redisOK,
+	reasons := rd.Reasons
+	if reasons == nil {
+		reasons = []string{}
 	}
-	if st.LastError != "" {
-		body["feed_error"] = st.LastError
+	body := map[string]any{
+		"status":           rd.Status(),
+		"ready":            rd.Ready,
+		"reasons":          reasons,
+		"campaigns":        rd.Feed.Candidates,
+		"partners":         rd.Feed.Partners,
+		"feed_age_sec":     int(rd.Feed.Age.Seconds()),
+		"feed_max_age_sec": int(rd.Feed.MaxAge.Seconds()),
+		"feed_loaded":      rd.Feed.Loaded,
+		"redis":            rd.RedisOK,
+		"redis_configured": rd.RedisConfigured,
 	}
 	_ = json.NewEncoder(w).Encode(body)
 }

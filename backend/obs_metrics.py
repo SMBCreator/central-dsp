@@ -75,6 +75,11 @@ _COUNTER_HELP = {
 # Gauges (D8): значения, которые нельзя вывести из счётчиков. None = ещё не
 # измерялось в этом процессе -> серия не рендерится (в PromQL видно как absent()).
 _GAUGE_HELP = {
+    # Readiness backend (audit O-05): пишет readiness.evaluate() раз в 15 с и на каждый GET /ready.
+    "backend_ready": "1 when GET /ready would return 200 (postgres + redis + events consumer ok).",
+    "backend_postgres_up": "1 when the readiness PostgreSQL ping succeeded.",
+    "backend_redis_up": "1 when the readiness Redis ping succeeded.",
+    "rtb_events_consumer_up": "1 when the rtb:events consumer task is alive, fresh and within lag budget (or disabled by env).",
     "bid_events_default_partition_rows": (
         "Rows sitting in bid_events DEFAULT partition (should be 0; >0 = partition cron lagged). "
         "Refreshed by GET /cron/retention."
@@ -114,7 +119,10 @@ _GAUGE_HELP = {
 # десятки); outcome — фиксированный список.
 BURL_OUTCOMES = ("won", "billed", "late", "expired")
 
-# Фиксированный список cron-задач (routers/cron.py) — bounded label `job`.
+# Фиксированный список cron-задач (routers/cron.py) — bounded label `cron_job`.
+# Не `job`: Prometheus вешает job="backend" на каждую серию скрейпа, и
+# одноимённый label экспозиции превратился бы в exported_job — правила алертов
+# по {job="retention"} молча не совпадали бы (audit O-05).
 CRON_JOBS = (
     "rules",
     "reset_daily",
@@ -255,6 +263,17 @@ def set_gauge(name: str, value: float) -> None:
         _gauges[name] = float(value)
 
 
+def seed_cron_last_success(job: str, ts: float) -> None:
+    """Стартовое значение last_success из БД (scheduled_jobs): не перетирает
+    более свежий успех, уже записанный в этом процессе."""
+    if job not in CRON_JOBS:
+        raise KeyError(f"unknown cron job: {job}")
+    with _lock:
+        cur = _cron_last_ok[job]
+        if cur is None or ts > cur:
+            _cron_last_ok[job] = float(ts)
+
+
 def record_cron_run(job: str, ok: bool, now: float | None = None) -> None:
     """Исход запуска cron-задачи; job вне CRON_JOBS — KeyError."""
     if job not in CRON_JOBS:
@@ -343,18 +362,18 @@ def render_prometheus() -> str:
         for cls in HTTP_CLASSES:
             lines.append(f'http_responses_total{{class="{cls}"}} {_http[cls]}')
 
-        lines.append("# HELP cron_job_runs_total Cron endpoint runs by job and result.")
+        lines.append("# HELP cron_job_runs_total Cron endpoint runs by cron_job and result.")
         lines.append("# TYPE cron_job_runs_total counter")
         for job in CRON_JOBS:
             for res in _CRON_RESULTS:
-                lines.append(f'cron_job_runs_total{{job="{job}",result="{res}"}} {_cron_runs[(job, res)]}')
+                lines.append(f'cron_job_runs_total{{cron_job="{job}",result="{res}"}} {_cron_runs[(job, res)]}')
 
-        lines.append("# HELP cron_job_last_success_timestamp_seconds Unix time of the last successful run per job (this process).")
+        lines.append("# HELP cron_job_last_success_timestamp_seconds Unix time of the last successful run per cron_job (seeded from scheduled_jobs at startup).")
         lines.append("# TYPE cron_job_last_success_timestamp_seconds gauge")
         for job in CRON_JOBS:
             ts = _cron_last_ok[job]
             if ts is not None:
-                lines.append(f'cron_job_last_success_timestamp_seconds{{job="{job}"}} {ts:.3f}')
+                lines.append(f'cron_job_last_success_timestamp_seconds{{cron_job="{job}"}} {ts:.3f}')
 
         for name in sorted(_GAUGE_HELP):
             value = _gauges[name]

@@ -24,6 +24,12 @@ scrape_configs:
     static_configs:
       - targets: ["bidder-go:8090"]
 
+  # Ресурсы хоста (audit O-05): node-exporter поднимается тем же profile
+  # monitoring, порт наружу не публикуется, только внутренняя сеть compose.
+  - job_name: node
+    static_configs:
+      - targets: ["node-exporter:9100"]
+
   - job_name: prometheus
     static_configs:
       - targets: ["localhost:9090"]

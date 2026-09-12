@@ -56,7 +56,10 @@ const defaultTrustedProxies = "127.0.0.0/8,::1,10.0.0.0/8,172.16.0.0/12,192.168.
 
 func main() {
 	// `bidder -healthcheck` — Docker HEALTHCHECK для distroless-образа (нет
-	// sh/wget): GET /healthz на собственном порту, exit 0 только на 200.
+	// sh/wget): GET /livez на собственном порту, exit 0 только на 200. Liveness,
+	// не readiness (audit O-05): фид/Redis проверяет /healthz для деплоя и
+	// балансировщика, а Docker не должен считать живой процесс unhealthy из-за
+	// отказа зависимости.
 	if len(os.Args) > 1 && (os.Args[1] == "-healthcheck" || os.Args[1] == "--healthcheck") {
 		os.Exit(healthcheck(env("BIDDER_ADDR", ":8090")))
 	}
@@ -184,17 +187,18 @@ func main() {
 		return 1
 	})
 	reg.RegisterGauge("bidder_feed_refresh_errors_total", func() float64 { return float64(store.RefreshErrors()) })
-	reg.RegisterGauge("bidder_redis_up", func() float64 {
-		if rc == nil {
+	// Один снимок Readiness на скрейп: bidder_redis_up и bidder_ready не могут
+	// разойтись между собой и с ответом /healthz (audit O-05).
+	readinessGauge := func(pick func(rtb.Readiness) bool) func() float64 {
+		return func() float64 {
+			if pick(h.Readiness(context.Background())) {
+				return 1
+			}
 			return 0
 		}
-		pingCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-		defer cancel()
-		if rc.Ping(pingCtx) == nil {
-			return 1
-		}
-		return 0
-	})
+	}
+	reg.RegisterGauge("bidder_redis_up", readinessGauge(func(rd rtb.Readiness) bool { return rd.RedisOK }))
+	reg.RegisterGauge("bidder_ready", readinessGauge(func(rd rtb.Readiness) bool { return rd.Ready }))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /rtb/bid/{endpointKey}", h.Bid)
@@ -203,6 +207,7 @@ func main() {
 	mux.HandleFunc("GET /rtb/loss", h.Loss)
 	mux.HandleFunc("POST /rtb/loss", h.Loss)
 	mux.HandleFunc("POST /rtb/imp", h.Imp)
+	mux.HandleFunc("GET /livez", h.Livez)
 	mux.HandleFunc("GET /healthz", h.Healthz)
 	mux.Handle("GET /metrics", reg.Handler())
 	// Принудительный рефреш фида: backend дёргает перед автопроверкой SSP
@@ -301,8 +306,11 @@ func recoverMiddleware(next http.Handler, reg *metrics.Registry) http.Handler {
 	})
 }
 
-// healthcheck возвращает код процесса для Docker HEALTHCHECK: 0 = /healthz
-// ответил 200 (feed fresh, redis ok), 1 = всё остальное.
+// healthcheck возвращает код процесса для Docker HEALTHCHECK: 0 = /livez
+// ответил 200 (процесс и HTTP-сервер живы), 1 = всё остальное.
+// livezPath — единственный путь, который опрашивает Docker HEALTHCHECK.
+const livezPath = "/livez"
+
 func healthcheck(addr string) int {
 	host := "127.0.0.1"
 	_, port, err := net.SplitHostPort(addr)
@@ -310,7 +318,7 @@ func healthcheck(addr string) int {
 		port = "8090"
 	}
 	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get("http://" + net.JoinHostPort(host, port) + "/healthz")
+	resp, err := client.Get("http://" + net.JoinHostPort(host, port) + livezPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "healthcheck:", err)
 		return 1

@@ -35,16 +35,16 @@ def test_cron_runs_and_last_success_bounded_labels():
     obs_metrics.record_cron_run("retention", ok=False)
     obs_metrics.record_cron_run("ord_export", ok=False)
     out = obs_metrics.render_prometheus()
-    assert 'cron_job_runs_total{job="retention",result="ok"} 1' in out
-    assert 'cron_job_runs_total{job="retention",result="error"} 1' in out
-    assert 'cron_job_runs_total{job="ord_export",result="error"} 1' in out
-    assert 'cron_job_last_success_timestamp_seconds{job="retention"} 1700000000.000' in out
+    assert 'cron_job_runs_total{cron_job="retention",result="ok"} 1' in out
+    assert 'cron_job_runs_total{cron_job="retention",result="error"} 1' in out
+    assert 'cron_job_runs_total{cron_job="ord_export",result="error"} 1' in out
+    assert 'cron_job_last_success_timestamp_seconds{cron_job="retention"} 1700000000.000' in out
     # Ошибка не двигает last_success; задача без успешных запусков — absent.
-    assert 'cron_job_last_success_timestamp_seconds{job="ord_export"}' not in out
+    assert 'cron_job_last_success_timestamp_seconds{cron_job="ord_export"}' not in out
     # Все job/result присутствуют как нули — фиксированная кардинальность.
     for job in obs_metrics.CRON_JOBS:
         for res in ("ok", "error"):
-            assert f'cron_job_runs_total{{job="{job}",result="{res}"}}' in out
+            assert f'cron_job_runs_total{{cron_job="{job}",result="{res}"}}' in out
 
 
 def test_http_status_classes():

@@ -386,22 +386,31 @@ docker compose start backend
 
 | Проверка | Как | Порог тревоги |
 |---|---|---|
-| Backend health | `GET /health` раз в минуту | нет ответа 2 мин |
-| Биддер health | `GET /healthz` | `feed_age > 120s` или redis down |
-| Диск | `df -h` | > 80% |
+| Backend liveness | `GET /health` (его же смотрит Docker HEALTHCHECK) | нет ответа 2 мин — `TargetDown` |
+| Backend readiness | `GET /ready` — PostgreSQL, Redis, consumer `rtb:events` | 503 3 мин — `BackendNotReady`; деплой не катить |
+| Биддер liveness | `/bidder -healthcheck` → `GET /livez` (Docker) | контейнер unhealthy |
+| Биддер readiness | `GET /healthz` — фид свежий, Redis | 503: `feed_age > FEED_MAX_AGE` или redis down |
+| Диск / inode / память | `node-exporter` (profile monitoring), группа `centraldsp-node` | свободно < 15 % / < 5 % critical; inode < 10 %; MemAvailable < 10 % |
 | p99 время ответа биддера | лог биддера | > 80 мс |
 | Баланс рекламодателей | UI «Финансы» | близок к 0 — кампании встанут |
 
-Prometheus с правилами `ops/prometheus/alerts.yml` уже в стеке, но поднимается
-только явно — `COMPOSE_PROFILES=monitoring` в `.env` (или `--profile monitoring`).
-Слушает `127.0.0.1:9091`; наружу — только SSH-туннель (`ssh -L 9091:127.0.0.1:9091`)
-или VPN, **никогда** не публиковать в интернет без auth. Grafana и Alertmanager —
-тем же профилем на следующем этапе (C4); runbook алертов — `docs/runbooks/rtb_alerts.md`.
+Prometheus с правилами `ops/prometheus/alerts.yml` и `node-exporter` (метрики
+хоста; host mounts `/`, `/proc`, `/sys` — только read-only, порт не публикуется)
+уже в стеке, но поднимаются только явно — `COMPOSE_PROFILES=monitoring` в `.env`
+(или `--profile monitoring`). Prometheus слушает `127.0.0.1:9091`; наружу — только
+SSH-туннель (`ssh -L 9091:127.0.0.1:9091`) или VPN, **никогда** не публиковать в
+интернет без auth. Правила покрыты unit-тестами `ops/prometheus/alerts_test.yml`
+(`promtool test rules`, CI) — при правке PromQL добавить кейс туда. Grafana и
+Alertmanager — тем же профилем на следующем этапе; runbook алертов —
+`docs/runbooks/rtb_alerts.md` (liveness/readiness — во вводной части).
 
 ### 10.1. Smoke-чеклист после каждого деплоя
 
 1. `GET https://<domain>/api/health` → 200; `docker compose ps` — все сервисы `healthy`
-   (bidder-go — `/bidder -healthcheck`, scheduler — `python scheduler.py --healthcheck`).
+   (bidder-go — `/bidder -healthcheck` → `/livez`, scheduler — `python scheduler.py --healthcheck`).
+   Readiness отдельно: `ops/preprod_check.sh` проверяет `backend /ready`
+   (postgres/redis/events_consumer = `ok`) и `bidder /healthz` (200); в
+   Prometheus нет `BackendNotReady`/`TargetDown`.
 2. `GET /scheduler/jobs` (admin): все задачи `enabled`, `next_run_at` в будущем,
    `last_status` не `failed`; в Prometheus нет `SchedulerDown`.
 3. Создать SSP-партнёра в UI «Supply» → получить `endpoint_key` и токен

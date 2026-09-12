@@ -50,3 +50,31 @@ func TestRecoverMiddleware_ErrAbortHandlerIsRethrown(t *testing.T) {
 	}()
 	recoverMiddleware(abort, reg).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
 }
+
+// Audit O-05: Docker HEALTHCHECK опрашивает только /livez. Даже если readiness
+// (/healthz) отдаёт 503 из-за фида или Redis, контейнер остаётся healthy.
+func TestHealthcheckUsesLivezNotHealthz(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) })
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	addr := strings.TrimPrefix(srv.URL, "http://")
+	if rc := healthcheck(addr); rc != 0 {
+		t.Fatalf("healthcheck must pass on /livez 200 while /healthz is 503, got exit %d", rc)
+	}
+}
+
+func TestHealthcheckFailsWhenProcessDoesNotAnswer(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) })
+	srv := httptest.NewServer(mux)
+	addr := strings.TrimPrefix(srv.URL, "http://")
+	if rc := healthcheck(addr); rc != 1 {
+		t.Fatalf("livez 503: want exit 1, got %d", rc)
+	}
+	srv.Close()
+	if rc := healthcheck(addr); rc != 1 {
+		t.Fatalf("server gone: want exit 1, got %d", rc)
+	}
+}

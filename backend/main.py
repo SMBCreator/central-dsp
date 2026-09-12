@@ -52,6 +52,7 @@ async def _lifespan(_app: FastAPI):
     import logging
 
     import events_consumer
+    import readiness
     import startup_checks
     from routers.cron import seed_gauges_from_db
 
@@ -85,9 +86,11 @@ async def _lifespan(_app: FastAPI):
     except Exception as e:  # noqa: BLE001 — БД может быть недоступна; метрика просто absent
         logging.getLogger("startup").warning("seed_gauges_from_db skipped: %s", e)
     events_consumer.start_background()
+    readiness.start_background()
     try:
         yield
     finally:
+        await readiness.stop_background()
         await events_consumer.stop_background()
 
 
@@ -160,7 +163,7 @@ async def viewer_readonly_guard(request: Request, call_next):
 # --- Глобальный rate limiting (GAP: все ручки, не только логин) ---------------
 # Redis fixed-window. Ключ: user_id (по сессионной cookie) либо client IP.
 # RTB hot path и health исключены: у бидера свой QPS-контроль per-SSP.
-_RL_EXEMPT_PREFIXES = ("/rtb", "/rtb-feed", "/health", "/metrics", "/uploads", "/pixel")
+_RL_EXEMPT_PREFIXES = ("/rtb", "/rtb-feed", "/health", "/ready", "/metrics", "/uploads", "/pixel")
 _RL_LIMIT = int(os.getenv("API_RATE_LIMIT", "300"))          # запросов
 _RL_WINDOW = int(os.getenv("API_RATE_WINDOW", "60"))         # за окно, сек
 
@@ -207,7 +210,21 @@ async def http_status_class_metrics(request: Request, call_next):
 
 @app.get("/health")
 async def health():
+    """Liveness (audit O-05): процесс и HTTP-сервер отвечают. Не зависит от
+    PostgreSQL/Redis/consumer — только его опрашивает Docker HEALTHCHECK."""
     return {"status": "ok", "service": "centraldsp"}
+
+
+@app.get("/ready")
+async def ready():
+    """Readiness: PostgreSQL ping, Redis ping, consumer rtb:events жив и не
+    отстаёт. 503 + коды состояний по каждой проверке — для deploy gate
+    (preprod_check), readiness-мониторинга и балансировщика. Без адресов,
+    DSN и текста исключений в теле (они в логах, см. readiness.py)."""
+    import readiness
+
+    report = await readiness.evaluate()
+    return JSONResponse(status_code=200 if report.ready else 503, content=report.body())
 
 
 @app.get("/metrics", include_in_schema=False)

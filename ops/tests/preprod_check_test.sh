@@ -102,6 +102,7 @@ ENV
   echo '{"pass":true,"hours_with_diff":0,"bid_events":{"bids":100,"wins":10,"spend":1.5}}' >"$FX/convergence.json"; echo 0 >"$FX/convergence.rc"
   http() { jq -cn --argjson s "$2" --arg b "$3" --argjson h "${4:-{\}}" '{status:$s,headers:$h,body:$b,body_bytes:($b|length),error:null}' >"$FX/http/$1.json"; }
   http GET_backend_8000_cron_retention 401 '{"detail":"unauthorized"}'
+  http GET_backend_8000_ready 200 '{"status":"ok","checks":{"postgres":"ok","redis":"ok","events_consumer":"ok"}}'
   http GET_backend_8000_rtb-feed_campaigns_auth 200 '{"version":"v7","candidates":[{"id":1},{"id":2}]}'
   http GET_backend_8000_rtb-feed_campaigns 401 '{"detail":"bad feed token"}'
   http GET_bidder-go_8090_healthz 200 '{"status":"ok","campaigns":2,"partners":1,"feed_age_sec":4,"redis":true}'
@@ -135,6 +136,10 @@ expect "--apply больше нет -> exit 2" 2 "$rc" 'флага --apply бо�
 
 baseline; rc=$(run_check --bogus)
 expect "неизвестный флаг -> exit 2" 2 "$rc"
+
+baseline; jq -c '.status=503 | .body="{\"status\":\"not_ready\",\"checks\":{\"postgres\":\"ok\",\"redis\":\"error\",\"events_consumer\":\"not_running\"}}"' "$FX/http/GET_backend_8000_ready.json" >"$T/h" && mv "$T/h" "$FX/http/GET_backend_8000_ready.json"
+rc=$(run_check)
+expect "backend /ready 503 -> FAIL с разбивкой причин (audit O-05)" 1 "$rc" 'FAIL +backend /ready' 'redis=error' 'events_consumer=not_running'
 
 baseline; jq -c '.status=503 | .body="{\"status\":\"feed_stale\",\"campaigns\":0}"' "$FX/http/GET_bidder-go_8090_healthz.json" >"$T/h" && mv "$T/h" "$FX/http/GET_bidder-go_8090_healthz.json"
 rc=$(run_check)

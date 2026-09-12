@@ -4,8 +4,14 @@
 #   - Go-биддер:      GET :8090/metrics (bidder_* серии)
 #   - Python backend: GET /metrics       (rtb_* серии)
 #
+#   - node_exporter:   GET node-exporter:9100/metrics (node_* серии, profile monitoring)
+#
 # Пороги стартовые — калибровать после первой недели наблюдений.
 # Каждый алерт ссылается на runbook: docs/runbooks/rtb_alerts.md
+#
+# Правила связывают серии разных скрейпов (bidder-go vs backend) только через
+# sum()/on() — иначе job/instance не совпадают и правило молча не срабатывает
+# (audit O-05). Unit-тесты: alerts_test.yml (promtool test rules).
 
 groups:
   - name: centraldsp-bidder-go
@@ -90,7 +96,8 @@ groups:
       # --- No-bid всплеск -----------------------------------------------------
       - alert: BidderNoBidSpike
         expr: |
-          (sum(rate(bidder_no_bid_total[10m])) / clamp_min(rate(bidder_bid_requests_total[10m]), 0.001)) > 0.98
+          (sum without (reason) (rate(bidder_no_bid_total[10m]))
+            / clamp_min(rate(bidder_bid_requests_total[10m]), 0.001)) > 0.98
           and rate(bidder_bid_requests_total[10m]) > 1
         for: 15m
         labels:
@@ -105,8 +112,8 @@ groups:
       # --- Экономика: bid/win gap ---------------------------------------------
       - alert: BidderWinGapAnomaly
         expr: |
-          (rate(rtb_wins_total[30m]) / clamp_min(rate(bidder_bids_total[30m]), 0.001)) < 0.001
-          and rate(bidder_bids_total[30m]) > 1
+          (sum(rate(rtb_wins_total[30m])) / clamp_min(sum(rate(bidder_bids_total[30m])), 0.001)) < 0.001
+          and sum(rate(bidder_bids_total[30m])) > 1
         for: 30m
         labels:
           severity: warning
@@ -162,9 +169,8 @@ groups:
 
       - alert: FreqWinWithoutImpHigh
         expr: |
-          rate(rtb_freq_win_without_imp_total[15m])
-            > 0.15 * (rate(rtb_wins_total[15m]) + 0.01)
-          and rate(rtb_wins_total[15m]) > 0.05
+          sum(rate(rtb_freq_win_without_imp_total[15m])) > 0.15 * (sum(rate(rtb_wins_total[15m])) + 0.01)
+          and sum(rate(rtb_wins_total[15m])) > 0.05
         for: 30m
         labels:
           severity: warning
@@ -239,7 +245,9 @@ groups:
             каждом запуске /cron/retention. Runbook: rtb_alerts.md#default-partition
 
       - alert: CronRetentionStale
-        expr: time() - cron_job_last_success_timestamp_seconds{job="retention"} > 2 * 86400
+        expr: |
+          time() - cron_job_last_success_timestamp_seconds{cron_job="retention"} > 2 * 86400
+          or absent(cron_job_last_success_timestamp_seconds{cron_job="retention"})
         labels:
           severity: warning
         annotations:
@@ -255,10 +263,10 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Cron-задача {{ $labels.job }} завершилась ошибкой"
+          summary: "Cron-задача {{ $labels.cron_job }} завершилась ошибкой"
           description: >-
             Исключение или 5xx внутри cron-ручки (401/503 по секрету не
-            считаются). Смотреть логи backend по пути /cron/{{ $labels.job }}.
+            считаются). Смотреть логи backend по пути /cron/{{ $labels.cron_job }}.
             Runbook: rtb_alerts.md#cron
 
       - alert: SchedulerDown
@@ -454,9 +462,9 @@ groups:
             недоступен или битые события. Runbook: rtb_alerts.md#events-consumer
 
       - alert: RtbEventsConsumerSilent
-        expr: >-
-          rate(rtb_events_consumed_total[10m]) == 0
-          and rate(bidder_bid_requests_total[10m]) > 1
+        expr: |
+          sum(rate(rtb_events_consumed_total[10m])) == 0
+          and on () sum(rate(bidder_bid_requests_total[10m])) > 1
         for: 10m
         labels:
           severity: critical
@@ -514,6 +522,170 @@ groups:
           description: >-
             /cron/sweep-burl не запускается или падает (BURL_TTL по умолчанию
             600 с): резервы выигрышей без burl не освобождаются, бюджет кампаний
-            занят. Проверить cron_job_runs_total{job="sweep_burl"} и Redis.
+            занят. Проверить cron_job_runs_total{cron_job="sweep_burl"} и Redis.
             Runbook: rtb_alerts.md#billing-burl
 
+  # Доступность целей и readiness (audit O-05). `up` пишет сам Prometheus:
+  # 0 = скрейп не удался (процесс мёртв, порт не слушает, сеть). Отдельно от
+  # readiness: backend_ready/bidder_ready = процесс жив, но зависимость сломана.
+  - name: centraldsp-availability
+    rules:
+      - alert: TargetDown
+        expr: up{job=~"backend|scheduler|bidder-go"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Сервис {{ $labels.job }} ({{ $labels.instance }}) не отдаёт /metrics"
+          description: >-
+            Prometheus не может снять метрики с {{ $labels.job }} 2 минуты:
+            процесс упал, контейнер перезапускается или не слушает порт.
+            Все алерты по метрикам этого сервиса в это время молчат — это
+            единственный сигнал. Runbook: rtb_alerts.md#target-down
+
+      - alert: NodeExporterDown
+        expr: up{job="node"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "node-exporter не отвечает — алерты по диску/памяти хоста слепы"
+          description: >-
+            Profile monitoring поднят, но node-exporter не скрейпится 5 минут.
+            Disk/inode/memory алерты ниже не сработают.
+            Runbook: rtb_alerts.md#target-down
+
+      - alert: BackendNotReady
+        expr: backend_ready == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Backend жив, но не готов (GET /ready = 503)"
+          description: >-
+            Одна из проверок readiness не проходит 3 минуты: PostgreSQL,
+            Redis или consumer rtb:events. Разбивка — в GET /ready и в
+            backend_postgres_up / backend_redis_up / rtb_events_consumer_up.
+            Docker считает контейнер healthy (liveness) — это нормально.
+            Runbook: rtb_alerts.md#backend-ready
+
+      - alert: BackendPostgresDown
+        expr: backend_postgres_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Backend не может выполнить SELECT 1 в PostgreSQL"
+          description: >-
+            Readiness-пинг БД падает или превышает таймаут. Кабинет и
+            /rtb-feed отдают 5xx, win/imp/click не биллятся, фид биддера
+            стареет (BidderFeedStale через FEED_MAX_AGE).
+            Runbook: rtb_alerts.md#postgres-down
+
+      - alert: BackendRedisDown
+        expr: backend_redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Backend потерял Redis"
+          description: >-
+            Readiness-пинг Redis падает. Биллинг win (bill_win), кэш фида,
+            rate limit и consumer rtb:events не работают. Обычно вместе с
+            BidderRedisDown. Runbook: rtb_alerts.md#redis-down
+
+      - alert: RtbEventsConsumerDown
+        expr: rtb_events_consumer_up == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Consumer rtb:events не работает (задача мертва, зависла или отстаёт)"
+          description: >-
+            Фоновая задача consumer'а в backend не запущена, не завершала
+            успешную итерацию дольше READY_CONSUMER_STALE_S или lag выше
+            READY_MAX_EVENTS_LAG. bid/loss события Go-биддера не доезжают до
+            bid_events: win-rate и eCPM в кабинете врут, стрим упирается в
+            MAXLEN и теряет события. Runbook: rtb_alerts.md#events-consumer
+
+  # Ресурсы хоста (node_exporter, profile monitoring). Файловые системы:
+  # только реальные диски хоста; overlay/tmpfs docker-слоёв исключены в
+  # аргументах node-exporter (compose.yml) и здесь для надёжности.
+  - name: centraldsp-node
+    rules:
+      - alert: NodeDiskSpaceLow
+        expr: |
+          (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs"}
+            / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs"}) < 0.15
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Свободно < 15% на {{ $labels.mountpoint }}"
+          description: >-
+            PostgreSQL (WAL, bid_events), Redis AOF, uploads и docker-образы
+            живут на одном диске VPS. При 0% — Postgres останавливается
+            (PANIC), Redis перестаёт писать AOF. Runbook: rtb_alerts.md#node-resources
+
+      - alert: NodeDiskSpaceCritical
+        expr: |
+          (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs"}
+            / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs"}) < 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Свободно < 5% на {{ $labels.mountpoint }} — остановка БД близко"
+          description: >-
+            Освободить место немедленно: docker system prune, старые бэкапы
+            (ops/backup.sh retention), логи. Runbook: rtb_alerts.md#node-resources
+
+      - alert: NodeInodesLow
+        expr: |
+          (node_filesystem_files_free{fstype!~"tmpfs|overlay|squashfs|ramfs"}
+            / node_filesystem_files{fstype!~"tmpfs|overlay|squashfs|ramfs"}) < 0.10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Свободных inode < 10% на {{ $labels.mountpoint }}"
+          description: >-
+            Место есть, а файлы создать нельзя — типично от docker-слоёв и
+            логов. Симптомы как у полного диска. Runbook: rtb_alerts.md#node-resources
+
+      - alert: NodeFilesystemReadOnly
+        expr: node_filesystem_readonly{fstype!~"tmpfs|overlay|squashfs|ramfs"} == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.mountpoint }} перемонтирован read-only"
+          description: >-
+            Ядро перевело ФС в read-only из-за ошибок ввода-вывода: диск
+            деградирует. Postgres и Redis не смогут писать. Снять бэкап
+            (ops/backup.sh) на другой носитель, планировать миграцию.
+            Runbook: rtb_alerts.md#node-resources
+
+      - alert: NodeMemoryPressure
+        expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Доступной памяти < 10% на хосте"
+          description: >-
+            Следующий шаг — OOM-killer: первым обычно гибнет postgres или
+            redis (rss). Проверить docker stats, maxmemory Redis,
+            shared_buffers/work_mem Postgres. Runbook: rtb_alerts.md#node-resources
+
+      - alert: NodeHighLoad
+        expr: node_load5 / count without (cpu, mode) (node_cpu_seconds_total{mode="idle"}) > 2
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "load5 > 2x числа CPU 15 минут"
+          description: >-
+            CPU-голодание: растёт bidder_bid_latency (SSP tmax 100-300 мс —
+            timeouts = потерянные аукционы), тормозит consumer и cron.
+            Runbook: rtb_alerts.md#node-resources

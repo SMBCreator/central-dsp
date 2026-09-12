@@ -12,7 +12,10 @@ from starlette.requests import Request
 from db import get_pool
 
 MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
-SKIP_PREFIXES = ("/rtb/", "/px/", "/health", "/auth/login", "/auth/register", "/cron/")
+# Публичные высокочастотные POST (win/imp/click биддера, пиксель) и служебные
+# пути не пишутся в audit_log — иначе одна строка на каждое событие трафика.
+# Управляющие ручки пикселя (/pixels...) под префикс не попадают и аудируются.
+SKIP_PREFIXES = ("/rtb/", "/pixel/collect", "/health", "/ready", "/auth/login", "/auth/register", "/cron/")
 
 
 class AuditMiddleware(BaseHTTPMiddleware):

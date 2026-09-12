@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -329,25 +330,59 @@ async def claim_stale(redis, pool) -> int:
 
 async def refresh_gauges(redis, obs_metrics) -> None:
     """Длина стрима, размер PEL группы и lag (сколько событий ещё не доставлено)."""
+    global _last_lag, _last_pending
     try:
         length = await redis.xlen(STREAM)
         obs_metrics.set_gauge("rtb_events_stream_length", length)
         for g in await redis.xinfo_groups(STREAM):
             if g.get("name") == GROUP:
-                obs_metrics.set_gauge("rtb_events_pending", int(g.get("pending", 0)))
+                _last_pending = int(g.get("pending", 0))
+                obs_metrics.set_gauge("rtb_events_pending", _last_pending)
                 lag = g.get("lag")
                 if lag is not None:
-                    obs_metrics.set_gauge("rtb_events_lag", int(lag))
+                    _last_lag = int(lag)
+                    obs_metrics.set_gauge("rtb_events_lag", _last_lag)
                 break
     except Exception:
         logger.debug("events consumer gauges refresh failed", exc_info=True)
 
 
+# Снимок для readiness (/ready): когда consumer последний раз успешно прошёл
+# итерацию (monotonic), последние lag/pending группы.
+_last_ok_at: float | None = None
+_last_lag: int | None = None
+_last_pending: int | None = None
+
+
+def is_enabled() -> bool:
+    """Consumer должен работать в этом процессе: не выключен env и есть Redis."""
+    if os.getenv("RTB_EVENTS_CONSUMER", "1") == "0":
+        return False
+    return bool(os.environ.get("REDIS_URL") or os.environ.get("KV_URL"))
+
+
+def status() -> dict[str, Any]:
+    running = _task is not None and not _task.done()
+    age = None if _last_ok_at is None else max(0.0, time.monotonic() - _last_ok_at)
+    return {
+        "enabled": is_enabled(),
+        "running": running,
+        "last_ok_age_s": age,
+        "lag": _last_lag,
+        "pending": _last_pending,
+    }
+
+
+def _mark_ok() -> None:
+    global _last_ok_at
+    _last_ok_at = time.monotonic()
+
+
 async def run_forever(stop: asyncio.Event) -> None:
     """Главный цикл. Импорты внутри, чтобы модуль импортировался в тестах без Redis/PG."""
+    import obs_metrics
     from cache import get_redis
     from db import get_pool
-    from obs_metrics import metrics as obs_metrics
 
     redis = get_redis()
     pool = await get_pool()
@@ -389,6 +424,7 @@ async def run_forever(stop: asyncio.Event) -> None:
 
             n, _last_id = await process_once(redis, pool, from_id=from_id)
             backoff = 1.0
+            _mark_ok()
             if from_id == "0" and n == 0:
                 from_id = ">"          # pending дочитан — переходим на новые
                 continue
@@ -416,7 +452,7 @@ _stop = asyncio.Event()
 def start_background() -> None:
     """Вызывается из main.py на startup. Отключается RTB_EVENTS_CONSUMER=0
     (например, на инстансе без роли writer или в тестах)."""
-    global _task
+    global _task, _last_ok_at
     if os.getenv("RTB_EVENTS_CONSUMER", "1") == "0":
         logger.info("events consumer disabled by env")
         return
@@ -424,7 +460,24 @@ def start_background() -> None:
         logger.warning("events consumer not started: REDIS_URL missing")
         return
     _stop.clear()
+    _last_ok_at = None
     _task = asyncio.get_event_loop().create_task(run_forever(_stop), name="rtb-events-consumer")
+    _task.add_done_callback(_on_task_done)
+
+
+def _on_task_done(task: "asyncio.Task") -> None:
+    """Смерть фоновой задачи не должна быть тихой: до O-05 ImportError на
+    первой строке run_forever гасил consumer молча, и бид-события Go-биддера
+    неделю не доезжали до bid_events. Теперь — ERROR в лог, счётчик ошибок,
+    /ready -> events_consumer=not_running, алерт RtbEventsConsumerDown."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        import obs_metrics
+
+        obs_metrics.inc("rtb_events_consumer_errors_total")
+        logger.error("events consumer task died: %r", exc, exc_info=exc)
 
 
 async def stop_background() -> None:

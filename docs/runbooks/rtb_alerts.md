@@ -1,7 +1,20 @@
 # Runbook: RTB-алерты CentralDSP
 
 Часть D (GAP-011). Метрики: Go-биддер `:8090/metrics` (серии `bidder_*`),
-Python backend `/metrics` (серии `rtb_*`). Правила: `ops/prometheus/alerts.yml`.
+Python backend `/metrics` (серии `rtb_*`), хост `node-exporter:9100` (серии
+`node_*`, profile monitoring). Правила: `ops/prometheus/alerts.yml`; их
+unit-тесты — `ops/prometheus/alerts_test.yml` (`promtool test rules`, CI).
+
+**Liveness vs readiness (audit O-05).** Docker HEALTHCHECK смотрит только
+liveness: backend `GET /health`, bidder `/bidder -healthcheck` → `GET /livez`,
+scheduler `--healthcheck`. Он отвечает на вопрос «процесс жив?», и отказ
+Postgres/Redis его не роняет — иначе `restart: unless-stopped` бесконечно
+перезапускал бы здоровый процесс. Readiness («можно ли на него слать трафик /
+выкатывать?») — отдельные ручки: backend `GET /ready` (PostgreSQL, Redis,
+consumer `rtb:events`; 503 + `checks` с кодом по каждой), bidder `GET /healthz`
+(фид свежий + Redis; 503 + `reasons`). Их читают `ops/preprod_check.sh`
+(gate релиза) и Prometheus (`backend_ready`, `backend_postgres_up`,
+`backend_redis_up`, `rtb_events_consumer_up`, `bidder_ready`, `bidder_redis_up`).
 
 Общий принцип: сначала остановить финансовый ущерб (пауза кампаний/кампании),
 потом разбираться. Пауза кампании безопасна и обратима; недоставка догоняется
@@ -74,6 +87,60 @@ HTTP 502), если backend не отдал фид — backend (ssp_check) по 
   до конца самого длинного окна возможен перепоказ в размере уже показанного.
   Из БД не восстанавливается (нет per-device журнала показов за окно); принять
   как известное ограничение инцидента.
+
+## target-down — TargetDown / NodeExporterDown
+
+**Что значит:** Prometheus не смог снять `/metrics` с цели (`up == 0`) —
+процесс мёртв, контейнер в цикле рестартов, порт не слушает или нет сети.
+Это **единственный** алерт, который сработает при полной смерти сервиса: все
+остальные правила по его метрикам в это время молчат (серий нет; `absent()`
+стоит только у cron/scheduler). Поэтому `TargetDown` critical с `for: 2m`.
+
+**Диагностика:**
+1. `docker compose ps` — `State`/`Health` сервиса из `{{ $labels.job }}`;
+   `docker compose logs --tail=200 <svc>` — паника / OOM (`exit 137`) / ошибка
+   конфигурации на старте (Go: `EventBaseURLProblem` в production).
+2. Цель жива, но `up == 0` → Prometheus не в той сети или имя сервиса в
+   `ops/prometheus/prometheus.yml` не совпадает с compose (`test_monitoring_stack.py`
+   ловит это в CI). `docker compose exec prometheus wget -qO- http://backend:8000/metrics`.
+3. `NodeExporterDown` (warning): profile monitoring поднят, а node-exporter
+   не скрейпится — алерты по диску/памяти хоста слепы. Обычно упал из-за
+   недоступного host mount (`/`, `/proc`, `/sys` — все `ro`) или SELinux.
+
+**Что делать:** поднять сервис (`docker compose up -d <svc>`); если падает на
+старте — читать лог до первого `ERROR`, не гонять рестарты. Пока backend
+down — биддер торгует на последнем снимке фида (см. `#postgres-down`),
+события копятся в `rtb:events`; пока bidder down — SSP получают timeout от
+Caddy, спенда нет.
+
+---
+
+## backend-ready — BackendNotReady / BackendPostgresDown / BackendRedisDown / RtbEventsConsumerDown
+
+**Что значит:** процесс backend жив (`/health` 200, Docker healthy), но
+`GET /ready` отдаёт 503 — одна из зависимостей не проходит проверку.
+`backend_ready == 0` — свёртка; причина видна в `checks` ответа и в
+отдельных gauge:
+
+| check | gauge | коды в `/ready` | что сломано |
+|---|---|---|---|
+| `postgres` | `backend_postgres_up` | `error`, `timeout` (`READY_PG_TIMEOUT_S`, 2 с) | `SELECT 1` не проходит → `#postgres-down` |
+| `redis` | `backend_redis_up` | `error`, `timeout` (`READY_REDIS_TIMEOUT_S`, 1 с), `not_configured` | PING не проходит → `#redis-down`; биллинг win, кэш фида, rate limit |
+| `events_consumer` | `rtb_events_consumer_up` | `not_running`, `starting`, `stale` (нет успешной итерации > `READY_CONSUMER_STALE_S`, 60 с), `lagging` (lag > `READY_MAX_EVENTS_LAG`, 150k), `disabled` (= ok: `RTB_EVENTS_CONSUMER=0`) | `#events-consumer` |
+
+Ответ кэшируется `READY_REFRESH_EVERY_S` (15 с) — `/ready` под нагрузкой
+не долбит PG/Redis. Gauges обновляются тем же снимком при каждом скрейпе,
+поэтому `backend_ready` и `checks` не могут разойтись.
+
+**Диагностика:** `curl -s backend:8000/ready | jq .checks` (из контейнера
+или `ops/preprod_check.sh` — там это отдельная проверка `backend /ready`).
+Дальше — по runbook соответствующей зависимости.
+
+**Deploy gate:** `preprod_check.sh` даёт FAIL на `/ready != 200`; релиз при
+`BackendNotReady` не катить (`docs/runbooks/release.md`). Docker при этом
+показывает `healthy` — это ожидаемо, не «глюк healthcheck».
+
+---
 
 ## no-traffic — BidderNoTraffic
 
@@ -529,7 +596,17 @@ consumer-ов (старый HOSTNAME) забирается XAUTOCLAIM через
 запущен с `REDIS_URL`; `RTB_EVENTS_CONSUMER` не `0`; в логах нет
 `events consumer group bootstrap failed` (ретраится, но если Redis недоступен —
 будет молчать); `XINFO GROUPS rtb:events` показывает группу `backend` с живыми
-consumers.
+consumers. Правило сравнивает `rtb_events_consumed_total` (backend) с
+`bidder_bid_requests_total` (bidder) через `sum()` — серии с разных
+скрейпов, без агрегации оно молча не срабатывало (audit O-05).
+
+**RtbEventsConsumerDown** (`rtb_events_consumer_up == 0`, из `/ready`) —
+задача consumer'а в процессе backend не запущена (`not_running`), не
+завершала успешную итерацию дольше `READY_CONSUMER_STALE_S` (`stale`) или lag
+выше `READY_MAX_EVENTS_LAG` (`lagging`). В отличие от Silent не зависит от
+трафика биддера — ловит мёртвый consumer и в тихие часы. `disabled`
+(`RTB_EVENTS_CONSUMER=0`) считается ok: consumer сознательно живёт в другом
+процессе; убедиться, что он там есть.
 
 **Redis пересоздан / flush.** Группа стартует с курсора в `rtb_events_cursor`
 (пишется атомарно с каждым батчем); если курсора нет — с `0` (всё, что есть в
@@ -624,8 +701,48 @@ sweeper); `won_expired --burl--> win` (clearing досписан, код 3, со
   `stats_math.BILLABLE_FROM_EVENTS_SQL`; `wins` и `impressions` для сверки
   денег не годятся.
 
+## node-resources — NodeDiskSpaceLow / NodeDiskSpaceCritical / NodeInodesLow / NodeFilesystemReadOnly / NodeMemoryPressure / NodeHighLoad
+
+**Что значит:** ресурсы хоста (VPS) на исходе — данные `node-exporter`
+(profile monitoring, host mounts read-only). Всё живёт на одном диске:
+PostgreSQL (WAL, партиции `bid_events`), Redis AOF, `uploads`, docker-образы
+и логи. Docker-слои (`overlay`) и `tmpfs` из filesystem-алертов исключены.
+
+**Диск (`Low` < 15 %, `Critical` < 5 %, `Inodes` < 10 %):**
+1. `df -h /` и `df -i /`; `docker system df` — образы/кэш сборки часто первые.
+2. Безопасно освободить: `docker image prune -a` (не трогает volumes),
+   `docker builder prune`; старые бэкапы в `BACKUP_DIR` (ретенция
+   `ops/backup.sh`, локальные копии есть offsite); `journalctl --vacuum-size=200M`.
+3. Растёт Postgres → `SELECT pg_size_pretty(pg_database_size('centraldsp'))`,
+   топ таблиц по `pg_total_relation_size`; проверить, что `/cron/retention`
+   отрабатывает (`CronRetentionStale`) и партиции `bid_events` дропаются.
+4. При 0 % Postgres останавливается (PANIC на WAL), Redis перестаёт писать
+   AOF — сначала место, потом разбор. Не удалять файлы из
+   `pg_wal` руками.
+
+**`NodeFilesystemReadOnly` (critical):** ядро перемонтировало ФС read-only
+после ошибок ввода-вывода — диск деградирует. `dmesg | tail`, `smartctl`.
+Немедленно `ops/backup.sh` на другой носитель (offsite), планировать перенос
+VPS; Postgres/Redis на такой ФС не пишут, кабинет и биллинг встанут.
+
+**`NodeMemoryPressure` (< 10 % MemAvailable):** следующий — OOM-killer,
+первым обычно погибает postgres или redis (самый большой RSS), Docker
+рестартует, но AOF/WAL-recovery занимает минуты. `docker stats --no-stream`;
+`maxmemory` Redis, `shared_buffers`/`work_mem` Postgres, `RTB_EVENTS_BATCH`.
+
+**`NodeHighLoad` (load5 > 2× CPU, 15 мин):** CPU-голодание —
+`bidder_bid_latency` p99 растёт, SSP режут по tmax (потерянные аукционы),
+consumer и cron тормозят. `top` — кто ест: миграция/ретенция в неурочное
+время, `stats_rollup`, ML-обучение (`ml_train` должен быть выключен в
+`scheduled_jobs` по умолчанию).
+
+---
+
 ## Куда смотреть в первую очередь при любом алерте
 
+0. `docker compose ps` и `up` в Prometheus: если цель `TargetDown` — метрик
+   нет и остальные алерты по ней молчат. `backend /ready`, `bidder /healthz` —
+   какая зависимость сломана.
 1. `bidder :8090/metrics` и `backend /metrics` — снапшот всех счётчиков.
 2. Логи биддера (stdout, JSON slog) и backend.
 3. Таблица `bid_events` — источник истины по фактам доставки.

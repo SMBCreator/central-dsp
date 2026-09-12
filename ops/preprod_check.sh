@@ -227,6 +227,20 @@ if [ $BACKEND_UP -eq 1 ]; then
   esac
 else nt "/cron/* без секрета" "backend не running"; fi
 
+# Readiness backend (audit O-05): /health — только liveness (его смотрит Docker),
+# /ready — PostgreSQL, Redis, consumer rtb:events; 503 с кодами по каждой проверке.
+if [ $BACKEND_UP -eq 1 ]; then
+  R=$(http GET "$BACKEND_IN/ready")
+  st=$(jget "$R" .status)
+  CH=$(jget "$R" '.body|fromjson|.checks|to_entries|map("\(.key)=\(.value)")|join(", ")')
+  [ -n "$CH" ] || CH=$(jget "$R" '.body[0:160]')
+  case "$st" in
+    200) pass "backend /ready" "HTTP 200: $CH" ;;
+    0) nt "backend /ready" "$(why "$R")" ;;
+    *) fail "backend /ready" "HTTP $st: $CH" ;;
+  esac
+else nt "backend /ready" "backend не running"; fi
+
 # ================================================================ 5. фид и RTB-вход
 section "5. Фид backend -> bidder и RTB-вход"
 FEED_N=""

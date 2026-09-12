@@ -140,7 +140,10 @@ services:
       - geoip_data:/data:ro                   # GeoLite2 DB (read-only)
       - uploads_data:/data/uploads            # креативы (persistent)
     healthcheck:
-      # В образе python:slim нет curl/wget.
+      # В образе python:slim нет curl/wget. Только /health (liveness): отказ
+      # Postgres/Redis не должен делать живой процесс unhealthy. Readiness
+      # (PG, Redis, consumer) — GET /ready, его читают deploy gate
+      # (ops/preprod_check.sh) и Prometheus (backend_ready). Audit O-05.
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)"]
       interval: 15s
       timeout: 5s
@@ -211,7 +214,8 @@ services:
       # перечислите его адреса. Пусто = XFF игнорируется всегда.
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.0/8,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7}
       # Audit R-02: предел торговли по устаревшему снапшоту фида; дальше
-      # no-bid (feed_stale) и /healthz 503 -> контейнер unhealthy.
+      # no-bid (feed_stale) и /healthz 503 (readiness; контейнер при этом
+      # остаётся healthy — HEALTHCHECK ходит в /livez, audit O-05).
       FEED_MAX_AGE: ${FEED_MAX_AGE:-120s}
       # Audit R-06: бронь freq cap на win до imp-пикселя; то же значение у backend.
       WIN_IMP_TTL: ${WIN_IMP_TTL:-120}
@@ -230,7 +234,9 @@ services:
     ports:
       - "127.0.0.1:8090:8090"
     healthcheck:
-      # Образ distroless: ни sh, ни wget. Бинарь сам ходит в /healthz.
+      # Образ distroless: ни sh, ни wget. Бинарь сам ходит в /livez (liveness).
+      # Readiness (фид свежий, Redis отвечает) — GET /healthz: 503 + reasons,
+      # его читают preprod_check и Prometheus (bidder_ready/bidder_redis_up).
       test: ["CMD", "/bidder", "-healthcheck"]
       interval: 15s
       timeout: 5s
@@ -299,6 +305,45 @@ services:
         condition: service_started
       bidder-go:
         condition: service_started
+    networks:
+      - centraldsp
+
+  # Метрики хоста для алертов по диску/inode/памяти/load (audit O-05,
+  # ops/prometheus/alerts.yml группа centraldsp-node). Только profile
+  # monitoring; порт 9100 не публикуется — Prometheus ходит по внутренней сети.
+  #
+  # Host mounts (все read-only) и зачем каждый:
+  #   /proc -> /host/proc  meminfo, loadavg, stat (CPU), 1/mounts — таблица
+  #                        монтирований хоста для filesystem-коллектора; без
+  #                        него виден только procfs контейнера.
+  #   /sys  -> /host/sys   block-устройства (diskstats), сетевые интерфейсы.
+  #   /     -> /rootfs     statfs реальных ФС хоста по mountpoint'ам из
+  #                        /host/proc/1/mounts (rslave — подмонтированные
+  #                        разделы вроде /boot или /var видны).
+  # pid: host не нужен: host-таблица монтирований читается из смонтированного
+  # /host/proc/1/mounts, а не через собственный PID namespace; включать только
+  # для коллекторов processes/systemd, которых здесь нет.
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    <<: *logging
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/rootfs
+      # Docker-слои, tmpfs и служебные mount'ы — не диски хоста.
+      - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run|var/lib/docker/.+|var/lib/containers/.+)($$|/)
+      - --collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tmpfs|tracefs)$$
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro,rslave
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     networks:
       - centraldsp
 

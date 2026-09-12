@@ -389,3 +389,75 @@ def test_e03_refresh_gauges_sets_length_pending_lag():
         assert seen["rtb_events_lag"] == 2
 
     asyncio.run(run())
+
+
+def test_run_forever_starts_and_marks_ok(monkeypatch):
+    """Регрессия O-05: run_forever должен пройти импорты, создать группу и
+    отметить успешную итерацию (_last_ok_at) — раньше падал ImportError на
+    первой строке, и consumer никогда не работал."""
+    import cache
+    import db
+
+    r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    pool = FakePool()
+    monkeypatch.setattr(cache, "get_redis", lambda: r)
+
+    async def _pool():
+        return pool
+
+    monkeypatch.setattr(db, "get_pool", _pool)
+    monkeypatch.setattr(ec, "BLOCK_MS", 10)
+    monkeypatch.setattr(ec, "_last_ok_at", None)
+
+    # fakeredis не блокируется на XREADGROUP BLOCK и не уступает event loop —
+    # без явного sleep(0) цикл consumer'а не даст тесту проверить состояние.
+    real_process_once = ec.process_once
+
+    async def yielding_process_once(*a, **k):
+        await asyncio.sleep(0)
+        return await real_process_once(*a, **k)
+
+    monkeypatch.setattr(ec, "process_once", yielding_process_once)
+
+    async def run():
+        await r.xadd(ec.STREAM, _bid_fields(bid_id="z"))
+        stop = asyncio.Event()
+        task = asyncio.create_task(ec.run_forever(stop))
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            if ec._last_ok_at is not None and pool.inserted_rows():
+                break
+        stop.set()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        assert ec._last_ok_at is not None, "consumer never completed an iteration"
+        assert len(pool.inserted_rows()) == 1
+        assert task.exception() is None if not task.cancelled() else True
+
+    asyncio.run(run())
+
+
+def test_task_death_is_logged_and_counted(caplog):
+    import obs_metrics
+
+    obs_metrics.reset_for_tests()
+
+    async def boom():
+        raise RuntimeError("consumer exploded")
+
+    async def run():
+        t = asyncio.create_task(boom())
+        try:
+            await t
+        except RuntimeError:
+            pass
+        ec._on_task_done(t)
+
+    with caplog.at_level("ERROR", logger="events_consumer"):
+        asyncio.run(run())
+    assert any("events consumer task died" in rec.message for rec in caplog.records)
+    assert 'rtb_events_consumer_errors_total 1' in obs_metrics.render_prometheus()
+    obs_metrics.reset_for_tests()

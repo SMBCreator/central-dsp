@@ -53,12 +53,14 @@ def _go_metric_names() -> set[str]:
 
 def test_alert_rules_reference_existing_metrics():
     known = _backend_metric_names() | _go_metric_names()
+    # node_* экспортирует prom/node-exporter (compose profile monitoring), `up` — сам Prometheus.
+    known |= {"up"}
     # Гистограммы рендерятся как _bucket/_sum/_count; базовое имя тоже допустимо.
     known |= {n.rsplit("_", 1)[0] for n in known if n.endswith(("_bucket", "_sum", "_count"))}
     missing = {}
     for r in _rules():
         for m in _METRIC_RE.findall(r["expr"]):
-            if m in _PROMQL_FUNCS:
+            if m in _PROMQL_FUNCS or m.startswith("node_"):
                 continue
             if m not in known:
                 missing.setdefault(r["alert"], set()).add(m)

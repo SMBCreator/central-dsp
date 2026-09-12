@@ -1,0 +1,288 @@
+# Unit-тесты правил алертов (audit O-05): promtool test rules alerts_test.yml
+#
+# Зачем: до O-05 пять правил никогда не могли сработать — бинарные операторы
+# сравнивали серии разных скрейпов (job="bidder-go" vs job="backend") или
+# sum() без by с серией с label'ами; селектор {job="retention"} ловил label,
+# который Prometheus переименовывает в exported_job. promtool check rules такое
+# не видит — только тест на реальных сериях с реальными job/instance.
+#
+# Серии ниже воспроизводят label'ы скрейпа из prometheus.yml: job/instance от
+# Prometheus + label'ы экспозиции. Значения `A+BxN` = старт A, шаг B, N шагов.
+# Проверяем серию ALERTS{alertstate="firing"} через promql_expr_test, а не
+# alert_rule_test: последний сравнивает и annotations дословно, и любая правка
+# текста summary ломала бы тест. Пустой exp_samples = алерт не firing.
+# Запуск в CI: .github/workflows/ci.yml (ops) через образ prom/prometheus.
+
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  # ---- CronRetentionStale: label экспозиции cron_job, не job -----------------
+  - interval: 1m
+    input_series:
+      # last_success три дня назад относительно eval_time=10m.
+      - series: 'cron_job_last_success_timestamp_seconds{job="backend",instance="backend:8000",cron_job="retention"}'
+        values: '-259200x20'
+      - series: 'cron_job_last_success_timestamp_seconds{job="backend",instance="backend:8000",cron_job="sweep_burl"}'
+        values: '0x20'
+    promql_expr_test:
+      - expr: ALERTS{alertname="CronRetentionStale",alertstate="firing"}
+        eval_time: 10m
+        exp_samples:
+          - labels: '{__name__="ALERTS", alertname="CronRetentionStale", alertstate="firing", severity="warning", job="backend", instance="backend:8000", cron_job="retention"}'
+            value: 1
+
+  - interval: 1m
+    input_series:
+      # Свежий успех — не алертить.
+      - series: 'cron_job_last_success_timestamp_seconds{job="backend",instance="backend:8000",cron_job="retention"}'
+        values: '540x20'
+    promql_expr_test:
+      - expr: ALERTS{alertname="CronRetentionStale",alertstate="firing"}
+        eval_time: 10m
+        exp_samples: []
+
+  - interval: 1m
+    input_series:
+      # Серии нет вовсе (backend после рестарта, scheduled_jobs без успеха) — absent() алертит.
+      - series: 'up{job="backend",instance="backend:8000"}'
+        values: '1x20'
+    promql_expr_test:
+      - expr: ALERTS{alertname="CronRetentionStale",alertstate="firing"}
+        eval_time: 10m
+        exp_samples:
+          - labels: '{__name__="ALERTS", alertname="CronRetentionStale", alertstate="firing", severity="warning", cron_job="retention"}'
+            value: 1
+
+  # ---- BidderNoBidSpike: sum without(reason) против серии без reason ----------
+  - interval: 1m
+    input_series:
+      - series: 'bidder_bid_requests_total{job="bidder-go",instance="bidder-go:8090"}'
+        values: '0+600x40'
+      - series: 'bidder_no_bid_total{job="bidder-go",instance="bidder-go:8090",reason="no_campaigns"}'
+        values: '0+300x40'
+      - series: 'bidder_no_bid_total{job="bidder-go",instance="bidder-go:8090",reason="freq_cap"}'
+        values: '0+295x40'
+    promql_expr_test:
+      - expr: ALERTS{alertname="BidderNoBidSpike",alertstate="firing"}
+        eval_time: 30m
+        exp_samples:
+          - labels: '{__name__="ALERTS", alertname="BidderNoBidSpike", alertstate="firing", severity="warning", job="bidder-go", instance="bidder-go:8090"}'
+            value: 1
+
+  - interval: 1m
+    input_series:
+      # Половина запросов — bid: не алертить.
+      - series: 'bidder_bid_requests_total{job="bidder-go",instance="bidder-go:8090"}'
+        values: '0+600x40'
+      - series: 'bidder_no_bid_total{job="bidder-go",instance="bidder-go:8090",reason="no_campaigns"}'
+        values: '0+300x40'
+    promql_expr_test:
+      - expr: ALERTS{alertname="BidderNoBidSpike",alertstate="firing"}
+        eval_time: 30m
+        exp_samples: []
+
+  # ---- BidderWinGapAnomaly: rtb_wins_total (backend) vs bidder_bids_total (bidder) ----
+  - interval: 1m
+    input_series:
+      - series: 'bidder_bids_total{job="bidder-go",instance="bidder-go:8090"}'
+        values: '0+600x60'
+      - series: 'rtb_wins_total{job="backend",instance="backend:8000"}'
+        values: '0x60'
+    promql_expr_test:
+      - expr: ALERTS{alertname="BidderWinGapAnomaly",alertstate="firing"}
+        eval_time: 45m
+        exp_samples:
+          - labels: '{__name__="ALERTS", alertname="BidderWinGapAnomaly", alertstate="firing", severity="warning"}'
+            value: 1
+
+  - interval: 1m
+    input_series:
+      - series: 'bidder_bids_total{job="bidder-go",instance="bidder-go:8090"}'
+        values: '0+600x60'
+      - series: 'rtb_wins_total{job="backend",instance="backend:8000"}'
+        values: '0+60x60'
+    promql_expr_test:
+      - expr: ALERTS{alertname="BidderWinGapAnomaly",alertstate="firing"}
+        eval_time: 45m
+        exp_samples: []
+
+  # ---- FreqWinWithoutImpHigh: sum() обеих сторон -------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'rtb_wins_total{job="backend",instance="backend:8000"}'
+        values: '0+60x60'
+      - series: 'rtb_freq_win_without_imp_total{job="backend",instance="backend:8000"}'
+        values: '0+30x60'
+    promql_expr_test:
+      - expr: ALERTS{alertname="FreqWinWithoutImpHigh",alertstate="firing"}
+        eval_time: 45m
+        exp_samples:
+          - labels: '{__name__="ALERTS", alertname="FreqWinWithoutImpHigh", alertstate="firing", severity="warning"}'
+            value: 1
+
+  # ---- RtbEventsConsumerSilent: consumed (backend) == 0 при трафике (bidder) ----
+  - interval: 1m
+    input_series:
+      - series: 'rtb_events_consumed_total{job="backend",instance="backend:8000"}'
+        values: '1000x30'
+      - series: 'bidder_bid_requests_total{job="bidder-go",instance="bidder-go:8090"}'
+        values: '0+600x30'
+    promql_expr_test:
+      - expr: ALERTS{alertname="RtbEventsConsumerSilent",alertstate="firing"}
+        eval_time: 20m
+        exp_samples:
+          - labels: '{__name__="ALERTS", alertname="RtbEventsConsumerSilent", alertstate="firing", severity="critical"}'
+            value: 1
+
+  - interval: 1m
+    input_series:
+      - series: 'rtb_events_consumed_total{job="backend",instance="backend:8000"}'
+        values: '0+100x30'
+      - series: 'bidder_bid_requests_total{job="bidder-go",instance="bidder-go:8090"}'
+        values: '0+600x30'
+    promql_expr_test:
+      - expr: ALERTS{alertname="RtbEventsConsumerSilent",alertstate="firing"}
+        eval_time: 20m
+        exp_samples: []
+
+  # ---- Доступность / readiness -------------------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'up{job="backend",instance="backend:8000"}'
+        values: '1x5 0x10'
+      - series: 'up{job="bidder-go",instance="bidder-go:8090"}'
+        values: '1x15'
+      # prometheus сам себя — не в списке TargetDown.
+      - series: 'up{job="prometheus",instance="localhost:9090"}'
+        values: '0x15'
+    promql_expr_test:
+      - expr: ALERTS{alertname="TargetDown",alertstate="firing"}
+        eval_time: 10m
+        exp_samples:
+          - labels: '{__name__="ALERTS", alertname="TargetDown", alertstate="firing", severity="critical", job="backend", instance="backend:8000"}'
+            value: 1
+
+  - interval: 1m
+    input_series:
+      - series: 'up{job="node",instance="node-exporter:9100"}'
+        values: '0x15'
+    promql_expr_test:
+      - expr: ALERTS{alertname="NodeExporterDown",alertstate="firing"}
+        eval_time: 10m
+        exp_samples:
+          - labels: '{__name__="ALERTS", alertname="NodeExporterDown", alertstate="firing", severity="warning", job="node", instance="node-exporter:9100"}'
+            value: 1
+
+  - interval: 1m
+    input_series:
+      - series: 'backend_ready{job="backend",instance="backend:8000"}'
+        values: '1x3 0x10'
+      - series: 'backend_postgres_up{job="backend",instance="backend:8000"}'
+        values: '1x13'
+      - series: 'backend_redis_up{job="backend",instance="backend:8000"}'
+        values: '1x3 0x10'
+      - series: 'rtb_events_consumer_up{job="backend",instance="backend:8000"}'
+        values: '1x3 0x10'
+    promql_expr_test:
+      - expr: ALERTS{alertname="BackendNotReady",alertstate="firing"}
+        eval_time: 8m
+        exp_samples:
+          - labels: '{__name__="ALERTS", alertname="BackendNotReady", alertstate="firing", severity="critical", job="backend", instance="backend:8000"}'
+            value: 1
+      - expr: ALERTS{alertname="BackendRedisDown",alertstate="firing"}
+        eval_time: 8m
+        exp_samples:
+          - labels: '{__name__="ALERTS", alertname="BackendRedisDown", alertstate="firing", severity="critical", job="backend", instance="backend:8000"}'
+            value: 1
+      - expr: ALERTS{alertname="BackendPostgresDown",alertstate="firing"}
+        eval_time: 8m
+        exp_samples: []
+      - expr: ALERTS{alertname="RtbEventsConsumerDown",alertstate="firing"}
+        eval_time: 8m
+        exp_samples:
+          - labels: '{__name__="ALERTS", alertname="RtbEventsConsumerDown", alertstate="firing", severity="critical", job="backend", instance="backend:8000"}'
+            value: 1
+
+  - interval: 1m
+    input_series:
+      - series: 'bidder_redis_up{job="bidder-go",instance="bidder-go:8090"}'
+        values: '1x3 0x10'
+    promql_expr_test:
+      - expr: ALERTS{alertname="BidderRedisDown",alertstate="firing"}
+        eval_time: 8m
+        exp_samples:
+          - labels: '{__name__="ALERTS", alertname="BidderRedisDown", alertstate="firing", severity="critical", job="bidder-go", instance="bidder-go:8090"}'
+            value: 1
+
+  # ---- Ресурсы хоста -----------------------------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'node_filesystem_size_bytes{job="node",instance="node-exporter:9100",device="/dev/vda1",fstype="ext4",mountpoint="/"}'
+        values: '100000000000x30'
+      - series: 'node_filesystem_avail_bytes{job="node",instance="node-exporter:9100",device="/dev/vda1",fstype="ext4",mountpoint="/"}'
+        values: '3000000000x30'
+      # overlay docker-слоя с 0 свободных — исключён fstype-фильтром.
+      - series: 'node_filesystem_size_bytes{job="node",instance="node-exporter:9100",device="overlay",fstype="overlay",mountpoint="/var/lib/docker/overlay2/x/merged"}'
+        values: '100000000000x30'
+      - series: 'node_filesystem_avail_bytes{job="node",instance="node-exporter:9100",device="overlay",fstype="overlay",mountpoint="/var/lib/docker/overlay2/x/merged"}'
+        values: '0x30'
+    promql_expr_test:
+      - expr: ALERTS{alertname="NodeDiskSpaceCritical",alertstate="firing"}
+        eval_time: 20m
+        exp_samples:
+          - labels: '{__name__="ALERTS", alertname="NodeDiskSpaceCritical", alertstate="firing", severity="critical", job="node", instance="node-exporter:9100", device="/dev/vda1", fstype="ext4", mountpoint="/"}'
+            value: 1
+      - expr: ALERTS{alertname="NodeDiskSpaceLow",alertstate="firing"}
+        eval_time: 20m
+        exp_samples:
+          - labels: '{__name__="ALERTS", alertname="NodeDiskSpaceLow", alertstate="firing", severity="warning", job="node", instance="node-exporter:9100", device="/dev/vda1", fstype="ext4", mountpoint="/"}'
+            value: 1
+
+  - interval: 1m
+    input_series:
+      - series: 'node_filesystem_files{job="node",instance="node-exporter:9100",device="/dev/vda1",fstype="ext4",mountpoint="/"}'
+        values: '1000000x30'
+      - series: 'node_filesystem_files_free{job="node",instance="node-exporter:9100",device="/dev/vda1",fstype="ext4",mountpoint="/"}'
+        values: '50000x30'
+      - series: 'node_filesystem_readonly{job="node",instance="node-exporter:9100",device="/dev/vda1",fstype="ext4",mountpoint="/"}'
+        values: '0x10 1x20'
+    promql_expr_test:
+      - expr: ALERTS{alertname="NodeInodesLow",alertstate="firing"}
+        eval_time: 20m
+        exp_samples:
+          - labels: '{__name__="ALERTS", alertname="NodeInodesLow", alertstate="firing", severity="warning", job="node", instance="node-exporter:9100", device="/dev/vda1", fstype="ext4", mountpoint="/"}'
+            value: 1
+      - expr: ALERTS{alertname="NodeFilesystemReadOnly",alertstate="firing"}
+        eval_time: 20m
+        exp_samples:
+          - labels: '{__name__="ALERTS", alertname="NodeFilesystemReadOnly", alertstate="firing", severity="critical", job="node", instance="node-exporter:9100", device="/dev/vda1", fstype="ext4", mountpoint="/"}'
+            value: 1
+
+  - interval: 1m
+    input_series:
+      - series: 'node_memory_MemTotal_bytes{job="node",instance="node-exporter:9100"}'
+        values: '8000000000x30'
+      - series: 'node_memory_MemAvailable_bytes{job="node",instance="node-exporter:9100"}'
+        values: '400000000x30'
+      - series: 'node_load5{job="node",instance="node-exporter:9100"}'
+        values: '9x30'
+      - series: 'node_cpu_seconds_total{job="node",instance="node-exporter:9100",cpu="0",mode="idle"}'
+        values: '0+30x30'
+      - series: 'node_cpu_seconds_total{job="node",instance="node-exporter:9100",cpu="1",mode="idle"}'
+        values: '0+30x30'
+      - series: 'node_cpu_seconds_total{job="node",instance="node-exporter:9100",cpu="1",mode="user"}'
+        values: '0+30x30'
+    promql_expr_test:
+      - expr: ALERTS{alertname="NodeMemoryPressure",alertstate="firing"}
+        eval_time: 20m
+        exp_samples:
+          - labels: '{__name__="ALERTS", alertname="NodeMemoryPressure", alertstate="firing", severity="warning", job="node", instance="node-exporter:9100"}'
+            value: 1
+      - expr: ALERTS{alertname="NodeHighLoad",alertstate="firing"}
+        eval_time: 20m
+        exp_samples:
+          - labels: '{__name__="ALERTS", alertname="NodeHighLoad", alertstate="firing", severity="warning", job="node", instance="node-exporter:9100"}'
+            value: 1

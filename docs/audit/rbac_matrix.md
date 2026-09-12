@@ -68,7 +68,7 @@
 | **POST** | `/groups` | roles | admin, advertiser, agency, manager, superadmin |
 | **DELETE** | `/groups/{group_id}` | roles | admin, advertiser, agency, manager, superadmin |
 | **PATCH** | `/groups/{group_id}` | roles | admin, advertiser, agency, manager, superadmin |
-| GET | `/health` | none | публично |
+| GET | `/health` | none | публично (liveness, Docker HEALTHCHECK) |
 | GET | `/line-items` | session | любая роль (scope внутри хендлера) |
 | **POST** | `/line-items` | roles+flag | admin, advertiser, agency, manager, superadmin + client[can_edit_campaigns] |
 | **DELETE** | `/line-items/{line_item_id}` | roles+flag | admin, advertiser, agency, manager, superadmin + client[can_edit_campaigns] |
@@ -112,6 +112,7 @@
 | **POST** | `/pixels/{pixel_id}/goals` | roles | admin, advertiser, agency, manager, superadmin |
 | **DELETE** | `/pixels/{pixel_id}/goals/{goal_id}` | roles | admin, advertiser, agency, manager, superadmin |
 | GET | `/pixels/{pixel_id}/stats` | session | любая роль (scope внутри хендлера) |
+| GET | `/ready` | none | публично (readiness: deploy gate, Prometheus); статусы без секретов |
 | GET | `/rtb-feed/campaigns` | none | Bearer RTB_API_TOKEN |
 | GET | `/rtb-feed/partners` | none | Bearer RTB_API_TOKEN |
 | GET | `/rtb/burl` | none | endpoint_key / event-токен (HMAC) |

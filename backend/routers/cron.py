@@ -64,14 +64,24 @@ def _cron_job(name: str):
 
 async def seed_gauges_from_db() -> None:
     """Однократно при старте: gauge последнего успешного ОРД-экспорта из
-    ord_export_log, чтобы после рестарта процесса OrdExportLag не молчал
-    (absent) до ближайшего запуска cron. Любая ошибка БД — пропуск."""
+    ord_export_log и last_success cron-задач из scheduled_jobs, чтобы после
+    рестарта процесса OrdExportLag / CronRetentionStale не молчали (absent) до
+    ближайшего запуска. Любая ошибка БД — пропуск."""
     pool = await get_pool()
     ts = await pool.fetchval(
         "SELECT extract(epoch FROM max(finished_at)) FROM ord_export_log WHERE status = 'ok'"
     )
     if ts is not None:
         obs_metrics.set_gauge("ord_export_last_success_timestamp_seconds", float(ts))
+    # scheduled_jobs хранит только последний запуск: успех известен, лишь если
+    # последний статус ok; после ошибки серия остаётся absent до нового успеха.
+    rows = await pool.fetch(
+        "SELECT name, extract(epoch FROM last_run_at) AS ts FROM scheduled_jobs "
+        "WHERE last_status = 'ok' AND last_run_at IS NOT NULL"
+    )
+    for r in rows:
+        if r["name"] in obs_metrics.CRON_JOBS:
+            obs_metrics.seed_cron_last_success(r["name"], float(r["ts"]))
 
 
 @router.get("/rules")
