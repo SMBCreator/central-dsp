@@ -346,9 +346,36 @@ func NewStore(cfg Config) *Store {
 // снапшот перед автопроверкой SSP (audit R-02).
 func (s *Store) Refresh(ctx context.Context) error { return s.refresh(ctx) }
 
-// Run — цикл рефреша; завершение по ctx.
+// startupBackoffMin/Max — пока фид ни разу не загружен, повторяем попытку с
+// экспоненциальным backoff, а не ждём полный Refresh-тикер. При deploy
+// bidder стартует раньше, чем backend закончит миграции (depends_on:
+// service_started), и первый refresh получает connection refused; без
+// backoff это 30 с /healthz 503 и no-bid на КАЖДОМ рестарте.
+const (
+	startupBackoffMin = 500 * time.Millisecond
+	startupBackoffMax = 5 * time.Second
+)
+
+// Run — цикл рефреша; завершение по ctx. До первой успешной загрузки —
+// быстрые повторы с backoff (startupBackoffMin..Max, потолок Refresh); после —
+// штатный тикер Refresh. Ошибки уже после первой загрузки к backoff не
+// возвращают: там работает MaxAge/Fresh (audit R-02), лишняя нагрузка на
+// упавший backend не нужна.
 func (s *Store) Run(ctx context.Context) {
-	_ = s.refresh(ctx)
+	delay := startupBackoffMin
+	for s.refresh(ctx) != nil {
+		if delay > s.cfg.Refresh {
+			delay = s.cfg.Refresh
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(delay):
+		}
+		if delay < startupBackoffMax {
+			delay *= 2
+		}
+	}
 	t := time.NewTicker(s.cfg.Refresh)
 	defer t.Stop()
 	for {

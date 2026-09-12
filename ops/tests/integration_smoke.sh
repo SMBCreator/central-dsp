@@ -80,8 +80,15 @@ fi
 # ---------------------------------------------------------------- bidder-go
 code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$BD/livez")"
 [ "$code" = 200 ] && ok "bidder /livez 200" || bad "bidder /livez -> $code"
-code="$(curl -s -o "$LOG/healthz.txt" -w '%{http_code}' --max-time 10 "$BD/healthz")"
-[ "$code" = 200 ] && ok "bidder /healthz 200 (redis + feed)" || bad "bidder /healthz -> $code" "$(cat "$LOG/healthz.txt")"
+# Readiness (/healthz) — не мгновенная: фид грузится из backend после его старта.
+# Ждём до 30 с (startup backoff в feed.Store.Run — секунды; 30 с = явный регресс).
+code=""
+for _ in $(seq 1 30); do
+  code="$(curl -s -o "$LOG/healthz.txt" -w '%{http_code}' --max-time 10 "$BD/healthz")"
+  [ "$code" = 200 ] && break
+  sleep 1
+done
+[ "$code" = 200 ] && ok "bidder /healthz 200 (redis + feed)" || bad "bidder /healthz -> $code after 30s" "$(cat "$LOG/healthz.txt")"
 code="$(curl -s -o "$LOG/bid.txt" -w '%{http_code}' --max-time 5 -H 'Content-Type: application/json' -H 'x-openrtb-version: 2.5' \
   -d '{"id":"ci-1","imp":[{"id":"1","banner":{"w":300,"h":250}}],"site":{"domain":"example.com"},"device":{"ua":"ci","ip":"203.0.113.1"}}' \
   "$BD/rtb/bid/ci-unknown-endpoint")"
