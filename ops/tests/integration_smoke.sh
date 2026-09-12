@@ -7,14 +7,15 @@
 # сделан root-owned), чтение и удаление загруженного файла, bidder /livez,
 # /healthz и базовый RTB-запрос (не 5xx), graceful stop без SIGKILL.
 # Guard: COMPOSE_PROJECT_NAME должен начинаться с centraldsp-ci-, иначе exit 3
-# до любых действий. Production .env не читается (COMPOSE_ENV_FILES=drill.env).
+# до любых действий. Production .env не читается (COMPOSE_ENV_FILES=integration.env,
+# APP_ENV=production с фиктивными секретами полной длины — те же startup-проверки, что на VPS).
 # Exit: 0 PASS, 1 FAIL, 2 usage, 3 guard.
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"; cd "$ROOT" || exit 2
 : "${COMPOSE_PROJECT_NAME:?set COMPOSE_PROJECT_NAME=centraldsp-ci-<id>}"
 case "$COMPOSE_PROJECT_NAME" in centraldsp-ci-*) ;; *) echo "guard: COMPOSE_PROJECT_NAME must start with centraldsp-ci-" >&2; exit 3 ;; esac
 export COMPOSE_FILE="compose.yml:ops/tests/compose.ci-integration.yml"
-export COMPOSE_ENV_FILES="ops/tests/drill.env"
+export COMPOSE_ENV_FILES="ops/tests/integration.env"
 BE="http://127.0.0.1:${IT_BACKEND_PORT:-18000}"; BD="http://127.0.0.1:${IT_BIDDER_PORT:-18090}"
 LOG="/tmp/cdsp-it-$COMPOSE_PROJECT_NAME"; mkdir -p "$LOG"
 

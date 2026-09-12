@@ -12,14 +12,20 @@ import asyncpg
 
 _pool: asyncpg.Pool | None = None
 _pool_lock: asyncio.Lock | None = None
+_pool_lock_loop: asyncio.AbstractEventLoop | None = None
 
 
 def _lock() -> asyncio.Lock:
     # Lock создаётся лениво внутри работающего loop: модуль импортируется
     # до старта uvicorn, а asyncio.Lock() на import-time привязался бы не к тому loop.
-    global _pool_lock
-    if _pool_lock is None:
+    # Lock привязывается к loop при первом ожидании; под pytest-asyncio у каждого
+    # теста свой loop — переиспользование даёт "bound to a different event loop".
+    # В production loop один, ветка пересоздания не срабатывает.
+    global _pool_lock, _pool_lock_loop
+    loop = asyncio.get_running_loop()
+    if _pool_lock is None or _pool_lock_loop is not loop:
         _pool_lock = asyncio.Lock()
+        _pool_lock_loop = loop
     return _pool_lock
 
 

@@ -274,33 +274,49 @@ jobs:
       - run: docker load < /tmp/centraldsp-images.tar.gz
       - name: "backend: uploads volume ownership + privilege drop (real Docker)"
         run: ops/tests/uploads_owner_docker.sh
+      # Каждый шаг: старт -> ожидание -> ЛОГИ И СОСТОЯНИЕ КОНТЕЙНЕРА -> проверки.
+      # Логи печатаются до assert'ов, чтобы падение было диагностируемо.
       - name: "backend: image starts, /health answers, PID 1 is uid 10001"
         run: |
           cid=$(docker run -d -e DATABASE_URL=postgresql://x:x@127.0.0.1:1/x -e REDIS_URL=redis://127.0.0.1:1/0 -e SESSION_SECRET=ci-smoke-secret-not-production-0000000000 \
             centraldsp/backend:local sh -c 'exec uvicorn main:app --host 0.0.0.0 --port 8000')
+          ok=0
           for i in $(seq 1 30); do
-            if docker exec "$cid" setpriv --reuid=10001 --regid=10001 --clear-groups -- python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)"; then ok=1; break; fi
+            if docker exec "$cid" setpriv --reuid=10001 --regid=10001 --clear-groups -- python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)" 2>/dev/null; then ok=1; break; fi
             sleep 1
           done
+          echo "--- state: $(docker inspect -f '{{.State.Status}} exit={{.State.ExitCode}} user={{.Config.User}}' "$cid")"; docker logs "$cid" 2>&1 | tail -30
           docker exec "$cid" sh -c 'grep -E "^(Uid|NoNewPrivs):" /proc/1/status'
           docker exec "$cid" sh -c 'test "$(awk "/^Uid:/{print \$2}" /proc/1/status)" = 10001'
-          docker logs "$cid" | tail -20; docker rm -f "$cid" >/dev/null
-          test "${ok:-0}" = 1
+          docker rm -f "$cid" >/dev/null
+          test "$ok" = 1
       - name: "frontend: production build served by non-root node"
         run: |
           cid=$(docker run -d -p 127.0.0.1:13000:3000 centraldsp/frontend:local)
-          for i in $(seq 1 40); do curl -fsS -o /dev/null http://127.0.0.1:13000/ && ok=1 && break; sleep 1; done
+          ok=0
+          for i in $(seq 1 40); do curl -fsS -o /dev/null http://127.0.0.1:13000/ 2>/dev/null && ok=1 && break; sleep 1; done
+          echo "--- state: $(docker inspect -f '{{.State.Status}} exit={{.State.ExitCode}} user={{.Config.User}}' "$cid")"; docker logs "$cid" 2>&1 | tail -20
           docker exec "$cid" id -u | grep -qx 1000
           docker inspect -f '{{.Config.User}}' "$cid" | grep -qx node
-          docker logs "$cid" | tail -10; docker rm -f "$cid" >/dev/null
-          test "${ok:-0}" = 1
+          docker rm -f "$cid" >/dev/null
+          test "$ok" = 1
+      # Тот же набор переменных, что в compose (BACKEND_INTERNAL_URL, EVENT_*),
+      # APP_ENV=dev явно: standalone-бинарь без Redis/backend должен слушать
+      # /livez (liveness != readiness, audit O-05). Production-режим проверяет integration.
       - name: "bidder-go: binary starts as nonroot, /livez answers"
         run: |
-          cid=$(docker run -d -p 127.0.0.1:18090:8090 -e REDIS_URL=redis://127.0.0.1:1/0 -e BACKEND_URL=http://127.0.0.1:1 -e RTB_API_TOKEN=ci-smoke centraldsp/bidder-go:local)
-          for i in $(seq 1 30); do curl -fsS -o /dev/null http://127.0.0.1:18090/livez && ok=1 && break; sleep 1; done
-          docker inspect -f '{{.Config.User}}' "$cid" | grep -qx nonroot
-          docker logs "$cid" | tail -10; docker rm -f "$cid" >/dev/null
-          test "${ok:-0}" = 1
+          cid=$(docker run -d -p 127.0.0.1:18090:8090 -e APP_ENV=dev -e BIDDER_ADDR=:8090 \
+            -e REDIS_URL=redis://127.0.0.1:1/0 -e BACKEND_INTERNAL_URL=http://127.0.0.1:1 \
+            -e RTB_API_TOKEN=ci-smoke-rtb-token-not-a-secret-0123456789abcdef \
+            -e EVENT_TOKEN_SECRET=ci-smoke-event-secret-not-a-secret-0123456789abcdef \
+            -e EVENT_BASE_URL=https://ci-smoke.centraldsp.example centraldsp/bidder-go:local)
+          ok=0
+          for i in $(seq 1 30); do curl -fsS -o /dev/null http://127.0.0.1:18090/livez 2>/dev/null && ok=1 && break; sleep 1; done
+          echo "--- state: $(docker inspect -f '{{.State.Status}} exit={{.State.ExitCode}} user={{.Config.User}}' "$cid")"; docker logs "$cid" 2>&1 | tail -30
+          # distroless :nonroot — uid 65532; Config.User в образе может быть именем или числом
+          docker inspect -f '{{.Config.User}}' "$cid" | grep -qxE 'nonroot(:nonroot)?|65532(:65532)?'
+          docker rm -f "$cid" >/dev/null
+          test "$ok" = 1
 
   # Полный стек из собранных образов: миграции, /ready, upload креатива в
   # заранее root-owned volume, чтение/удаление, bidder /healthz + RTB, graceful stop.
@@ -329,7 +345,7 @@ jobs:
           retention-days: 7
       - name: Remove test stack
         if: always()
-        run: docker compose -f compose.yml -f ops/tests/compose.ci-integration.yml --env-file ops/tests/drill.env down -v --remove-orphans || true
+        run: docker compose -f compose.yml -f ops/tests/compose.ci-integration.yml --env-file ops/tests/integration.env down -v --remove-orphans || true
 
   # Disaster-recovery drill (C2 / audit O-02): изолированный compose-проект,
   # migrations -> seed -> backup.sh --with-redis (VERIFY=always) -> проверка
