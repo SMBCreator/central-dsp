@@ -259,7 +259,9 @@ def test_alertmanager_config_points_at_backend_webhook_with_bearer_file():
     assert "ALERT_WEBHOOK_SECRET" in am["environment"]
     cmd = " ".join(am["command"])
     assert token_file in cmd, "compose должен записывать токен в файл, который читает Alertmanager"
-    assert '[ -n "$ALERT_WEBHOOK_SECRET" ]' in cmd and "exit 1" in cmd, "пустой секрет должен валить контейнер на старте"
+    # В сыром compose.yml `$$` — экранирование интерполяции: в контейнер уходит `$ALERT_WEBHOOK_SECRET`.
+    assert '[ -n "$$ALERT_WEBHOOK_SECRET" ]' in cmd and "exit 1" in cmd, "пустой секрет должен валить контейнер на старте"
+    assert "$ALERT_WEBHOOK_SECRET" not in cmd.replace("$$ALERT_WEBHOOK_SECRET", ""), "одиночный $ compose подставит на хосте"
     assert ":?" not in str(am["environment"]), "fail-fast через ${VAR:?} ломает compose config для других профилей/drill"
     assert any(v.startswith("./ops/alertmanager/alertmanager.yml:") for v in am["volumes"])
     assert "alertmanager_data" in compose["volumes"]
