@@ -40,7 +40,7 @@ jobs:
         working-directory: backend
         run: python -c "import main"
       - name: Byte-compile all backend sources
-        run: python -m compileall -q backend
+        run: python -m compileall -q backend ops/lib/http_probe.py
       - name: Run backend tests
         working-directory: backend
         run: python -m pytest tests/ -q
@@ -153,7 +153,11 @@ jobs:
       - name: shellcheck ops scripts
         run: |
           sudo apt-get install -y -q shellcheck >/dev/null
-          shellcheck -x -S warning ops/backup.sh ops/restore.sh ops/lib/backup_common.sh ops/tests/backup_restore_drill.sh ops/preprod_check.sh
+          shellcheck -x -S warning ops/backup.sh ops/restore.sh ops/lib/backup_common.sh ops/tests/backup_restore_drill.sh ops/preprod_check.sh ops/tests/preprod_check_test.sh
+      # preprod_check.sh против подставных docker/curl: вердикты, exit codes 0/1/2/3,
+      # цепочка NOT TESTED, отсутствие мутирующих команд (аудит O-04).
+      - name: preprod_check.sh contract tests
+        run: ops/tests/preprod_check_test.sh
 
   # Disaster-recovery drill (C2 / audit O-02): изолированный compose-проект,
   # migrations -> seed -> backup.sh --with-redis (VERIFY=always) -> проверка

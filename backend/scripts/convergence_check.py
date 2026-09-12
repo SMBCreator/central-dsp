@@ -10,7 +10,10 @@
               sum(clear_price по win)/1000   (stats_math.spend_expr — та же формула,
               что /stats/report и карточка SSP; деньги списываются на win — E-01)
   stats_hourly sum(bids) / sum(wins) / sum(impressions) / sum(clicks) / sum(spend)
-  --api-url    GET /stats/summary?from=&to= для того же окна (расход/показы/клики).
+  --api-url    GET /stats/summary?hours=N платформенной сессией (superadmin/admin/
+              analyst/finance) против stats_hourly с тем же предикатом
+              ts_hour >= now() - N часов. Окно API привязано к now(), поэтому
+              --api-url несовместим с --since/--until.
 
 Тестовые события (is_test) исключены с обеих сторон — stats_hourly их не
 агрегирует. Критерий: расхождение по счётчикам 0 строк (--tolerance-rows),
@@ -92,14 +95,42 @@ def totals(rows: dict) -> dict[str, float]:
     return out
 
 
-async def fetch_api_summary(api_url: str, cookie: str, since: datetime, until: datetime) -> dict | None:
+PLATFORM_SCOPE_ROLES = ("superadmin", "admin", "analyst", "finance")
+
+# Тот же предикат, что в routers/stats.py summary(hours=...): без верхней границы,
+# от now() в момент запроса — чтобы сравнивать одинаковые часовые корзины.
+_HOURLY_API_WINDOW_SQL = """
+SELECT sum(bids) AS bids, sum(wins) AS wins, sum(impressions) AS impressions,
+       sum(clicks) AS clicks, sum(spend) AS spend
+FROM stats_hourly
+WHERE ts_hour >= now() - ($1::int * interval '1 hour')
+"""
+
+
+async def fetch_api_summary(api_url: str, cookie: str, hours: int) -> tuple[dict | None, str | None]:
+    """(summary, None) или (None, причина). Проверяет, что сессия платформенная:
+    у остальных ролей scope ограничен владельцем и суммы несопоставимы."""
     import httpx
 
-    params = {"from": since.date().isoformat(), "to": (until - timedelta(seconds=1)).date().isoformat()}
-    async with httpx.AsyncClient(timeout=30) as c:
-        r = await c.get(f"{api_url.rstrip('/')}/stats/summary", params=params, headers={"Cookie": cookie})
-        r.raise_for_status()
-        return r.json()
+    base = api_url.rstrip("/")
+    headers = {"Cookie": cookie}
+    try:
+        async with httpx.AsyncClient(timeout=30) as c:
+            me = await c.get(f"{base}/auth/me", headers=headers)
+            if me.status_code != 200:
+                return None, f"/auth/me -> HTTP {me.status_code}: cookie невалидна или истекла"
+            role = me.json().get("role")
+            if role not in PLATFORM_SCOPE_ROLES:
+                return None, f"роль сессии {role!r} не платформенная ({', '.join(PLATFORM_SCOPE_ROLES)}) — суммы несопоставимы"
+            r = await c.get(f"{base}/stats/summary", params={"hours": hours}, headers=headers)
+            if r.status_code != 200:
+                return None, f"/stats/summary -> HTTP {r.status_code}: {r.text[:200]}"
+            data = r.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        return None, f"API недоступен: {type(exc).__name__}: {exc}"
+    if not isinstance(data, dict) or "spend" not in data:
+        return None, f"/stats/summary вернул не summary: {str(data)[:200]}"
+    return data, None
 
 
 async def main() -> int:
@@ -121,6 +152,9 @@ async def main() -> int:
     if not dsn:
         print("DATABASE_URL не задан", file=sys.stderr)
         return 2
+    if args.api_url and (args.since or args.until):
+        print("--api-url несовместим с --since/--until: окно /stats/summary всегда от now()", file=sys.stderr)
+        return 2
     try:
         conn = await asyncpg.connect(dsn)
     except Exception as exc:  # noqa: BLE001
@@ -129,6 +163,10 @@ async def main() -> int:
     try:
         events = _row_map(await conn.fetch(_EVENTS_SQL, since, until))
         hourly = _row_map(await conn.fetch(_HOURLY_SQL, since, until))
+        hourly_api_window = None
+        if args.api_url:
+            row = await conn.fetchrow(_HOURLY_API_WINDOW_SQL, args.hours)
+            hourly_api_window = {m: float(row[m] or 0) for m in METRICS}
     finally:
         await conn.close()
 
@@ -146,18 +184,17 @@ async def main() -> int:
         if not args.cookie:
             print("--api-url требует --cookie", file=sys.stderr)
             return 2
-        summary = await fetch_api_summary(args.api_url, args.cookie, since, until)
-        api = {
-            "impressions": float(summary.get("impressions", 0)),
-            "clicks": float(summary.get("clicks", 0)),
-            "spend": float(summary.get("spend", 0)),
-        }
+        summary, why = await fetch_api_summary(args.api_url, args.cookie, args.hours)
+        if summary is None:
+            print(f"сверка с API не выполнена: {why}", file=sys.stderr)
+            return 2
+        api = {m: float(summary.get(m, 0) or 0) for m in METRICS}
         api_bad = {
-            m: {"stats_hourly": report["stats_hourly"][m], "api": api[m]}
-            for m in api
-            if abs(api[m] - report["stats_hourly"][m]) > (args.tolerance_spend if m == "spend" else args.tolerance_rows)
+            m: {"stats_hourly": hourly_api_window[m], "api": api[m]}
+            for m in METRICS
+            if abs(api[m] - hourly_api_window[m]) > (args.tolerance_spend if m == "spend" else args.tolerance_rows)
         }
-        report["api_summary"] = api
+        report["api_window"] = {"hours": args.hours, "stats_hourly": hourly_api_window, "api": api}
         report["api_diff"] = api_bad
         report["pass"] = report["pass"] and not api_bad
 
@@ -169,8 +206,10 @@ async def main() -> int:
         print(f"{'':14}{'bid_events':>14}{'stats_hourly':>14}")
         for m in METRICS:
             print(f"{m:14}{report['bid_events'][m]:>14,.2f}{report['stats_hourly'][m]:>14,.2f}")
-        if "api_summary" in report:
-            print("api /stats/summary:", report["api_summary"], "diff:", report["api_diff"] or "нет")
+        if "api_window" in report:
+            aw = report["api_window"]
+            print(f"api /stats/summary?hours={aw['hours']}:", aw["api"], "stats_hourly:", aw["stats_hourly"],
+                  "diff:", report["api_diff"] or "нет")
         if diffs:
             print(f"\nРАСХОЖДЕНИЯ в {len(diffs)} час(ах):")
             for d in diffs[:20]:

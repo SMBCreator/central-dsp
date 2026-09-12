@@ -67,11 +67,19 @@ async def main() -> int:
         if not got_lock:
             print("ERROR: another migration run is in progress", file=sys.stderr)
             return 3
-        await conn.execute(BOOTSTRAP_SQL)
+        if dry_run:
+            # --dry-run ничего не пишет, даже bootstrap-таблицу: на пустой базе
+            # все миграции просто отображаются как pending (ops/preprod_check.sh).
+            has_table = await conn.fetchval("SELECT to_regclass('public.schema_migrations') IS NOT NULL")
+            if not has_table:
+                print("schema_migrations table does not exist yet (fresh database)")
+        else:
+            has_table = True
+            await conn.execute(BOOTSTRAP_SQL)
 
         applied = {
             r["filename"]: r["sha256"]
-            for r in await conn.fetch("SELECT filename, sha256 FROM schema_migrations")
+            for r in (await conn.fetch("SELECT filename, sha256 FROM schema_migrations") if has_table else [])
         }
 
         pending = []
