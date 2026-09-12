@@ -816,15 +816,17 @@ Retention: `sent`/`failed` старше 30 дней удаляет `/cron/retent
 ### Бизнес-уведомления рекламодателям (N-03): «письмо не пришло»
 
 Тем же outbox уходят письма по кампаниям — их шлёт задача scheduler
-`notify_business_checks` (каждые 15 мин, `POST /cron/notify-business-checks`) плюс
+`notify_business_checks` (каждые 15 мин, `GET /cron/notify-business-checks`) плюс
 автоправила в момент срабатывания. Виды (`notification_outbox.kind`):
 `autorule_fired`, `budget_exhausted` (daily/total), `campaign_stopped_by_system`
-(модерация/блок/баланс), `campaign_ending_soon` (за 24 ч) / `campaign_ended`,
+(модерация/блок/баланс), `campaign_ending_soon` (end_date сегодня или завтра) / `campaign_ended` (end_date прошла),
 `campaign_no_impressions` (активна, бюджет есть, 0 показов ≥ `NOTIFY_NO_IMPS_HOURS`),
 `low_balance` (баланс < `NOTIFY_LOW_BALANCE_DAYS` × средний дневной расход за 7 дней).
-Одно событие — одно письмо: `dedup_key` вида `<kind>:<id>:<день|час|метка>`,
-повтор в тот же день не отправляется (in-app уведомление владельцу при этом создаётся
-всегда, `notifications.type = kind`).
+Одно событие — одно уведомление: `dedup_key` вида `<kind>:<id>:<день|час|метка>`
+(`budget_exhausted:total:<id>` — без даты, один раз на кампанию). Повтор с тем же
+ключом не создаёт **ни письма, ни in-app** — дедуп срезает событие целиком
+(`notify_business_deduplicated_total`). При новом событии in-app владельцу
+(`notifications.type = kind`) создаётся всегда, письмо — только если нашлись адресаты.
 
 Адресаты — первый непустой уровень: `campaigns.notify_emails` → `advertisers.notify_emails`
 → email владельца кампании. `campaigns.notify_inherit = false` при пустом списке
@@ -835,9 +837,10 @@ Retention: `sent`/`failed` старше 30 дней удаляет `/cron/retent
 Разбор жалобы «не пришло письмо»:
 1. Есть ли строка в outbox: `SELECT id, recipient, kind, status, attempts, last_error, created_at
    FROM notification_outbox WHERE entity_type='campaign' AND entity_id='<id>' ORDER BY id DESC;`
+   (для `low_balance` — `entity_type='advertiser'`).
    Строки нет → либо событие не наступило (см. условия выше), либо адресатов нет
-   (`notify_inherit=false` и пустой список), либо уже было письмо с тем же `dedup_key`
-   сегодня. Проверить, кому бы ушло:
+   (`notify_inherit=false` и пустой список), либо уже было событие с тем же `dedup_key`
+   (тогда и in-app нет — см. выше). Проверить, кому бы ушло:
    ```bash
    docker compose exec backend python - <<'EOF'
    import asyncio, db, notify_business as n
