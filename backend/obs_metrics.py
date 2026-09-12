@@ -72,6 +72,9 @@ _COUNTER_HELP = {
     # C4b / N-01: исходы отправки писем из notification_outbox (/cron/notify-dispatch).
     # C4b / N-02: алерты из Alertmanager по исходу (stored|duplicate|invalid|watchdog).
     "alert_webhook_stored_total": "Alert transitions from /alerts/webhook stored in alert_events (new firing/resolved).",
+    "notify_business_events_total": "Business notifications emitted (in-app + email fan-out), C4b/N-03.",
+    "notify_business_deduplicated_total": "Business notification events suppressed by business_alert_log dedup.",
+    "notify_business_check_errors_total": "Failed periodic business checks in cron notify_business_checks.",
     "alert_webhook_duplicate_total": "Alert transitions already present in alert_events (Alertmanager repeat_interval).",
     "alert_webhook_invalid_total": "Alerts on /alerts/webhook rejected as malformed (no alertname/fingerprint/startsAt).",
     "alert_webhook_watchdog_total": "Watchdog heartbeats received from Alertmanager (not stored, updates the gauge).",
@@ -153,6 +156,7 @@ CRON_JOBS = (
     "sweep_burl",
     "ord_notifications",
     "notify_dispatch",
+    "notify_business_checks",
 )
 _CRON_RESULTS = ("ok", "error")
 

@@ -56,6 +56,7 @@
 | GET | `/cron/domain-quality` | none | Bearer CRON_SECRET |
 | GET | `/cron/fx-refresh` | none | Bearer CRON_SECRET |
 | GET | `/cron/ml-train` | none | Bearer CRON_SECRET |
+| GET | `/cron/notify-business-checks` | none | Bearer CRON_SECRET |
 | GET | `/cron/notify-dispatch` | none | Bearer CRON_SECRET |
 | GET | `/cron/optimize` | none | Bearer CRON_SECRET |
 | GET | `/cron/ord-export` | none | Bearer CRON_SECRET |

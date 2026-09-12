@@ -175,6 +175,11 @@ async def update_campaign(campaign_id: str, body: CampaignPatch, user: dict = De
     if updates.get("ord_mode") == "self":
         # В режиме «свои товары» изначального договора нет (exclude_none не даёт обнулить его явно).
         updates["initial_contract_id"] = None
+    if "status" in updates:
+        # Ручная смена статуса снимает системную отметку остановки (C4b/N-03),
+        # иначе cron продолжит считать кампанию «остановленной системой».
+        updates["stop_reason"] = None
+        updates["stopped_at"] = None
     pool = await get_pool()
     camp = await _campaign_in_scope(pool, campaign_id, user)
     owner = str(camp["user_id"])

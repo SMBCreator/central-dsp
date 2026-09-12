@@ -2,6 +2,7 @@
 import logging
 
 import conversion_attribution as attribution
+import notify_business
 from db import get_pool
 from stats_math import CONVERSION_KPI_METRICS
 
@@ -66,7 +67,8 @@ async def _apply_action(pool, rule: dict, campaign_id: str) -> str:
     value = float(rule["action_value"] or 0)
     if action == "pause_campaign":
         await pool.execute(
-            "UPDATE campaigns SET status = 'paused', updated_at = now() WHERE id = $1", campaign_id
+            "UPDATE campaigns SET status = 'paused', stop_reason = 'autorule', stopped_at = now(), updated_at = now() "
+            "WHERE id = $1", campaign_id
         )
         return f"Кампания {campaign_id} приостановлена"
     if action == "pause_line_item":
@@ -171,6 +173,11 @@ async def evaluate_rules_for_user(user_id: str) -> list[dict]:
                 await pool.execute(
                     "UPDATE rules SET last_triggered_at = now() WHERE id = $1", rule["id"]
                 )
+                try:
+                    # C4b/N-03: письмо адресатам кампании + in-app; дедуп правило+кампания+час.
+                    await notify_business.autorule_fired(pool, rule=dict(rule), campaign_id=cid, value=value, message=message)
+                except Exception:  # noqa: BLE001 — уведомление не должно ломать применение правила
+                    log.exception("autorule_fired notification failed for rule %s", rule["id"])
                 triggered.append({
                     "rule_id": str(rule["id"]),
                     "rule_name": rule["name"],

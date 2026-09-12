@@ -209,6 +209,18 @@ async def notify_dispatch(request: Request):
     return await notify_outbox.dispatch(await get_pool())
 
 
+@router.get("/notify-business-checks")
+@_cron_job("notify_business_checks")
+async def notify_business_checks(request: Request):
+    """C4b / N-03: периодические бизнес-проверки (бюджет исчерпан, остановлена
+    системой, даты, нет показов, низкий баланс) -> in-app + письма адресатам
+    сущности. Дедуп в business_alert_log, повторный проход не шумит."""
+    _check_secret(request)
+    import notify_business
+
+    return await notify_business.run_checks(await get_pool())
+
+
 @router.get("/audience-sync")
 @_cron_job("audience_sync")
 async def audience_sync(request: Request):

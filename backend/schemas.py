@@ -93,6 +93,13 @@ class ChangePasswordIn(BaseModel):
 
 
 # --- Advertisers ------------------------------------------------------------
+def _emails_validator(v):
+    if v is None:
+        return None
+    import notify_business
+    return notify_business.normalise_emails(v)
+
+
 class AdvertiserIn(BaseModel):
     # M-01: balance is NOT part of advertiser CRUD. Money enters only through
     # /billing/deposit and /billing/adjust (finance roles, ledger, idempotency).
@@ -113,6 +120,13 @@ class AdvertiserPatch(BaseModel):
     domain: str | None = None
     category: str | None = None
     status: str | None = Field(default=None, pattern="^(active|paused|archived)$")
+    # C4b/N-03: адреса бизнес-уведомлений (пусто -> email владельца).
+    notify_emails: list[str] | None = Field(default=None, max_length=20)
+
+    @field_validator("notify_emails")
+    @classmethod
+    def _notify_emails(cls, v):
+        return _emails_validator(v)
 
 
 # --- Campaigns ---------------------------------------------------------------
@@ -187,6 +201,15 @@ class CampaignPatch(BaseModel):
     counterparty_id: str | None = None
     initial_contract_id: str | None = None
     executive_contract_id: str | None = None
+    # C4b/N-03: адреса бизнес-уведомлений кампании; notify_inherit=false — не
+    # подниматься к рекламодателю/владельцу при пустом списке.
+    notify_emails: list[str] | None = Field(default=None, max_length=20)
+    notify_inherit: bool | None = None
+
+    @field_validator("notify_emails")
+    @classmethod
+    def _notify_emails(cls, v):
+        return _emails_validator(v)
 
 
 # --- Line items ---------------------------------------------------------------

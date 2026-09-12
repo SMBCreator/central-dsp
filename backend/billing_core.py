@@ -117,13 +117,15 @@ async def bill_win(
         paused = False
         if money(balance_after) <= ZERO:
             await conn.execute(
-                "UPDATE campaigns SET status = 'paused', updated_at = now() WHERE advertiser_id = $1 AND status = 'active'",
+                "UPDATE campaigns SET status = 'paused', stop_reason = 'balance', stopped_at = now(), updated_at = now() "
+                "WHERE advertiser_id = $1 AND status = 'active'",
                 owner["advertiser_id"],
             )
             paused = True
         elif camp and money(camp["total_budget"]) > ZERO and money(camp["spent_total"]) >= money(camp["total_budget"]):
             await conn.execute(
-                "UPDATE campaigns SET status = 'paused', updated_at = now() WHERE id = $1 AND status = 'active'",
+                "UPDATE campaigns SET status = 'paused', stop_reason = 'total_budget', stopped_at = now(), updated_at = now() "
+                "WHERE id = $1 AND status = 'active'",
                 campaign_id,
             )
             paused = True

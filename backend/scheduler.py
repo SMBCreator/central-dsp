@@ -72,6 +72,8 @@ DEFAULT_JOBS: tuple[dict, ...] = (
      "description": "R-07: выигрыши без burl за BURL_TTL -> win_expired, резерв возвращён."},
     {"name": "notify_dispatch", "path": "/cron/notify-dispatch", "schedule": "* * * * *", "timeout_seconds": 50,
      "description": "C4b: отправка писем из notification_outbox (алерты суперадмину, бизнес-уведомления)."},
+    {"name": "notify_business_checks", "path": "/cron/notify-business-checks", "schedule": "*/15 * * * *", "timeout_seconds": 300,
+     "description": "C4b/N-03: бюджет исчерпан, остановлена системой, даты, нет показов, низкий баланс -> адресаты сущности."},
     {"name": "reconcile_reserves", "path": "/cron/reconcile-reserves", "schedule": "*/5 * * * *", "timeout_seconds": 240,
      "description": "Сверка Redis avail:adv/avail:camp с БД; чинит дрейф после сбоев Redis."},
     {"name": "audience_sync", "path": "/cron/audience-sync", "schedule": "15 * * * *", "timeout_seconds": 600,
