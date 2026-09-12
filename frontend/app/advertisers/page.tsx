@@ -6,31 +6,39 @@ import useSWR, { mutate } from "swr"
 import { api, fetcher } from "@/lib/api"
 import { fmtMoney, type Advertiser } from "@/lib/types"
 import { Button, Card, CardHeader, EmptyState, Field, inputCls, Modal, Spinner, StatusBadge, Table } from "@/components/ui"
+import { NotifyEmailsField } from "@/components/notify-emails-field"
+import { emailsError, formatEmails, parseEmails } from "@/lib/notify-emails"
 
 export default function AdvertisersPage() {
   const { data: advertisers } = useSWR<Advertiser[]>("/advertisers", fetcher)
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<Advertiser | null>(null)
-  const [form, setForm] = useState({ name: "", domain: "", category: "" })
+  const [form, setForm] = useState({ name: "", domain: "", category: "", notify_emails: "" })
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
   const openCreate = () => {
     setEditing(null)
-    setForm({ name: "", domain: "", category: "" })
+    setForm({ name: "", domain: "", category: "", notify_emails: "" })
     setError(null)
     setOpen(true)
   }
 
   const openEdit = (a: Advertiser) => {
     setEditing(a)
-    setForm({ name: a.name, domain: a.domain || "", category: a.category || "" })
+    setForm({ name: a.name, domain: a.domain || "", category: a.category || "", notify_emails: formatEmails(a.notify_emails) })
     setError(null)
     setOpen(true)
   }
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault()
+    const parsedEmails = parseEmails(form.notify_emails)
+    const emailsProblem = emailsError(parsedEmails)
+    if (emailsProblem) {
+      setError(emailsProblem)
+      return
+    }
     setSaving(true)
     setError(null)
     try {
@@ -38,6 +46,7 @@ export default function AdvertisersPage() {
         name: form.name,
         domain: form.domain || null,
         category: form.category || null,
+        notify_emails: parsedEmails.emails,
       }
       if (editing) {
         await api(`/advertisers/${editing.id}`, { method: "PATCH", body })
@@ -122,6 +131,11 @@ export default function AdvertisersPage() {
           <Field label="Категория">
             <input value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} className={inputCls} placeholder="E-commerce" />
           </Field>
+          <NotifyEmailsField
+            value={form.notify_emails}
+            onChange={(v) => setForm({ ...form, notify_emails: v })}
+            fallbackHint="Если список пуст — письма получает владелец аккаунта."
+          />
           <p className="text-xs text-muted">
             Баланс нового рекламодателя равен 0. Пополнения и корректировки выполняются в разделе{" "}
             <Link href="/billing" className="underline">

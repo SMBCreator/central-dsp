@@ -14,6 +14,8 @@ export interface Advertiser {
   status: string
   balance: number
   currency: string
+  /** C4b/N-03: адреса бизнес-уведомлений; пусто -> email владельца. */
+  notify_emails?: string[]
   created_at: string
 }
 
@@ -38,6 +40,11 @@ export interface Campaign {
   pacing: string
   frequency_cap_impressions: number | null
   frequency_cap_period_hours: number | null
+  /** C4b/N-03: адреса уведомлений кампании; notify_inherit=false — при пустом списке писем нет. */
+  notify_emails?: string[]
+  notify_inherit?: boolean
+  stop_reason?: string | null
+  stopped_at?: string | null
   created_at: string
 }
 

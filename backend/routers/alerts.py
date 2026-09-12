@@ -4,6 +4,8 @@ POST /alerts/webhook — приёмник Alertmanager (Bearer ALERT_WEBHOOK_SEC
 cookie: CSRF и аудит-мидлвари его пропускают как /cron/*).
 GET  /alerts/events  — лента переходов для страницы «Алерты» суперадмина плюс
 состояние pipeline (когда последний раз приходил Watchdog).
+GET  /alerts/outbox  — последние письма из notification_outbox со статусом
+доставки (N-04: видно, что ушло, что в retry, что failed и почему).
 """
 from __future__ import annotations
 
@@ -87,3 +89,24 @@ async def list_alert_events(
             "healthy": age is not None and age < alerting.WATCHDOG_STALE_SECONDS,
         },
     }
+
+
+@router.get("/outbox")
+async def list_outbox(
+    limit: int = Query(50, ge=1, le=200),
+    status: str | None = Query(None, pattern="^(queued|sending|sent|failed)$"),
+    user: dict = Depends(_require_superadmin),
+):
+    """Последние письма outbox: адрес, вид, тема, статус, попытки, последняя ошибка.
+    Тело письма не отдаём — в нём могут быть данные кампаний других пользователей."""
+    pool = await get_pool()
+    where = "WHERE status = $2" if status else ""
+    args = [limit, status] if status else [limit]
+    rows = await pool.fetch(
+        f"""SELECT id, channel, recipient, kind, subject, status, attempts, next_attempt_at, last_error,
+                   source, entity_type, entity_id, created_at, sent_at
+            FROM notification_outbox {where} ORDER BY id DESC LIMIT $1""",
+        *args,
+    )
+    counts = await pool.fetch("SELECT status, count(*)::int AS n FROM notification_outbox GROUP BY status")
+    return {"items": [dict(r) for r in rows], "counts": {r["status"]: r["n"] for r in counts}}

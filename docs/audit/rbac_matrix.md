@@ -15,6 +15,7 @@
 | GET | `/advertisers/{advertiser_id}` | session | любая роль (scope внутри хендлера) |
 | **PATCH** | `/advertisers/{advertiser_id}` | roles | admin, advertiser, agency, manager, superadmin |
 | GET | `/alerts/events` | roles | superadmin |
+| GET | `/alerts/outbox` | roles | superadmin |
 | **POST** | `/alerts/webhook` | none | Bearer ALERT_WEBHOOK_SECRET (Alertmanager) |
 | GET | `/audiences` | session | любая роль (scope внутри хендлера) |
 | **POST** | `/audiences` | roles | admin, advertiser, agency, manager, superadmin |

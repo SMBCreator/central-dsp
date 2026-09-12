@@ -5,6 +5,8 @@ import Link from "next/link"
 import { useRouter } from "next/navigation"
 import useSWR, { mutate } from "swr"
 import { api, ApiError, fetcher } from "@/lib/api"
+import { NotifyEmailsField } from "@/components/notify-emails-field"
+import { emailsError, formatEmails, parseEmails } from "@/lib/notify-emails"
 import { CopyId } from "@/components/copy-id"
 import { toastSuccess } from "@/components/toaster"
 import {
@@ -66,6 +68,8 @@ function SettingsCard({ campaign }: { campaign: CampaignExt }) {
   const [pacing, setPacing] = useState(campaign.pacing || "even")
   const [bidShading, setBidShading] = useState(campaign.bid_shading !== false)
   const [cleanTraffic, setCleanTraffic] = useState(!!campaign.clean_traffic_only)
+  const [notifyEmails, setNotifyEmails] = useState(formatEmails(campaign.notify_emails))
+  const [notifyInherit, setNotifyInherit] = useState(campaign.notify_inherit !== false)
   const [freqCaps, setFreqCaps] = useState<{ imps: string; hours: string }[]>(
     (campaign.frequency_caps || []).map((w) => ({ imps: String(w.impressions), hours: String(w.period_hours) })),
   )
@@ -81,6 +85,12 @@ function SettingsCard({ campaign }: { campaign: CampaignExt }) {
   }, [campaign.name, campaign.objective, campaign.group_id])
 
   const save = async () => {
+    const parsedEmails = parseEmails(notifyEmails)
+    const emailsProblem = emailsError(parsedEmails)
+    if (emailsProblem) {
+      setError(emailsProblem)
+      return
+    }
     setSaving(true)
     setSaved(false)
     setError(null)
@@ -103,6 +113,8 @@ function SettingsCard({ campaign }: { campaign: CampaignExt }) {
           clean_traffic_only: cleanTraffic,
           scoring_profile_id: scoringProfileId || null,
           frequency_caps: caps,
+          notify_emails: parsedEmails.emails,
+          notify_inherit: notifyInherit,
         },
       })
       await mutate(`/campaigns/${campaign.id}`)
@@ -255,6 +267,28 @@ function SettingsCard({ campaign }: { campaign: CampaignExt }) {
             ))}
           </select>
         </Field>
+
+        <NotifyEmailsField
+          value={notifyEmails}
+          onChange={setNotifyEmails}
+          fallbackHint={
+            notifyInherit
+              ? "Если список пуст — письма получают адреса рекламодателя, а если и их нет — владелец аккаунта."
+              : "Список пуст и наследование выключено — письма по этой кампании не отправляются (уведомления в кабинете остаются)."
+          }
+        />
+        <label className="flex cursor-pointer items-start gap-2.5">
+          <input
+            type="checkbox"
+            checked={notifyInherit}
+            onChange={(e) => setNotifyInherit(e.target.checked)}
+            className="mt-0.5 h-4 w-4 rounded border-border accent-current"
+          />
+          <span className="flex items-center gap-1.5 text-sm text-foreground">
+            Наследовать адреса рекламодателя
+            <HelpTip text="При пустом списке кампании письма уходят на адреса рекламодателя или владельца. Снимите галочку, чтобы по этой кампании писем не было совсем." />
+          </span>
+        </label>
 
         {error ? <p className="text-xs text-danger">{error}</p> : null}
         <div className="flex items-center gap-3">

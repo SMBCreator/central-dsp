@@ -56,6 +56,7 @@ export const NAV_SECTIONS: NavSection[] = [
       },
       { href: "/access", label: "Доступ клиентов", icon: "M16 8a4 4 0 11-8 0 4 4 0 018 0zM4 21a8 8 0 0116 0M19 8v4m2-2h-4" },
       { href: "/audit", label: "Журнал действий", icon: "M9 5h10M9 12h10M9 19h10M5 5h.01M5 12h.01M5 19h.01" },
+      { href: "/admin/alerts", label: "Алерты и письма", icon: "M15 17h5l-1.4-1.4A2 2 0 0118 14.2V11a6 6 0 10-12 0v3.2c0 .5-.2 1-.6 1.4L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" },
       {
         href: "/settings",
         label: "Настройки",
@@ -79,6 +80,9 @@ export const ROUTE_LABELS: Record<string, string> = {
       .map((i) => [i.href.slice(1), i.label]),
   ),
   profile: PROFILE_ITEM.label,
+  // Сегменты вложенного маршрута /admin/alerts — для хлебных крошек.
+  admin: "Администрирование",
+  alerts: "Алерты и письма",
   report: "Отчёт",
   new: "Новая кампания",
 }

@@ -111,6 +111,13 @@ class AdvertiserIn(BaseModel):
     domain: str | None = None
     category: str | None = None
     currency: str = Field(default="RUB", pattern="^(USD|EUR|RUB|KZT|UZS)$")
+    # C4b/N-03: адреса бизнес-уведомлений (пусто -> email владельца).
+    notify_emails: list[str] = Field(default_factory=list, max_length=20)
+
+    @field_validator("notify_emails")
+    @classmethod
+    def _notify_emails(cls, v):
+        return _emails_validator(v) or []
 
 
 class AdvertiserPatch(BaseModel):

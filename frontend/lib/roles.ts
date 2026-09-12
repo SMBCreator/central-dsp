@@ -72,6 +72,7 @@ export const ROUTE_ACCESS: Array<{ prefix: string; roles: Role[] }> = [
   { prefix: "/access", roles: ["superadmin", "admin", "manager", "advertiser", "agency", "client"] },
   { prefix: "/settings", roles: ADMINS },
   { prefix: "/audit", roles: ADMINS },
+  { prefix: "/admin", roles: ["superadmin"] },
   { prefix: "/", roles: ALL.filter((r) => r !== "viewer") },
 ]
 

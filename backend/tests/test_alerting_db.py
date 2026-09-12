@@ -92,3 +92,46 @@ def test_webhook_flow_end_to_end():
             await pool.close()
 
     asyncio.run(scenario())
+
+
+def test_outbox_route_lists_recent_mail_with_status_filter_and_counts(monkeypatch):
+    """GET /alerts/outbox (N-04): свежие письма первыми, фильтр по статусу, счётчики по
+    статусам и никакого тела письма в ответе (там данные чужих кампаний)."""
+    import notify_outbox
+    from routers import alerts as alerts_router
+
+    async def scenario():
+        pool = await _pool()
+        tag = uuid.uuid4().hex[:10]
+        rcpt = f"ob-{tag}@example.com"
+
+        async def fake_get_pool():
+            return pool
+
+        monkeypatch.setattr(alerts_router, "get_pool", fake_get_pool)
+        try:
+            for i in range(3):
+                await notify_outbox.enqueue_email(
+                    pool, recipients=[rcpt], kind="tech_alert_test", source="test",
+                    subject=f"subj-{tag}-{i}", body_text="secret body", body_html="<p>secret body</p>",
+                )
+            failed_id = await pool.fetchval(
+                "UPDATE notification_outbox SET status='failed', attempts=8, last_error='boom' "
+                "WHERE recipient=$1 AND subject=$2 RETURNING id", rcpt, f"subj-{tag}-0",
+            )
+
+            res = await alerts_router.list_outbox(limit=200, status=None, user={"role": "superadmin"})
+            mine = [r for r in res["items"] if r["recipient"] == rcpt]
+            assert [r["subject"] for r in mine] == [f"subj-{tag}-2", f"subj-{tag}-1", f"subj-{tag}-0"]
+            assert all("body_text" not in r and "body_html" not in r for r in res["items"])
+            assert res["counts"].get("failed", 0) >= 1 and res["counts"].get("queued", 0) >= 2
+
+            only_failed = await alerts_router.list_outbox(limit=200, status="failed", user={"role": "superadmin"})
+            assert all(r["status"] == "failed" for r in only_failed["items"])
+            row = next(r for r in only_failed["items"] if r["id"] == failed_id)
+            assert row["attempts"] == 8 and row["last_error"] == "boom"
+        finally:
+            await pool.execute("DELETE FROM notification_outbox WHERE recipient = $1", rcpt)
+            await pool.close()
+
+    asyncio.run(scenario())
