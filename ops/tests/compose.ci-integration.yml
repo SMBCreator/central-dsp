@@ -5,12 +5,23 @@
 # checkout; сеть с именем проекта. Использовать ТОЛЬКО с
 # COMPOSE_PROJECT_NAME=centraldsp-ci-* (guard в скрипте).
 services:
+  # На VPS переменные вроде ORD_REQUIRED / REGISTRATION_MODE попадают в контейнер
+  # через env_file: .env (anchor x-env-file). В CI .env нет, а --env-file задаёт
+  # только интерполяцию compose, НЕ окружение контейнера. Поэтому тот же
+  # механизм, тот же файл: env_file -> integration.env.
   backend:
+    env_file: !override
+      - path: ops/tests/integration.env
+        required: true
     ports: !override
       - "127.0.0.1:${IT_BACKEND_PORT:-18000}:8000"
     volumes: !override
       - geoip_data:/data:ro
       - uploads_data:/data/uploads
+  scheduler:
+    env_file: !override
+      - path: ops/tests/integration.env
+        required: true
   bidder-go:
     ports: !override
       - "127.0.0.1:${IT_BIDDER_PORT:-18090}:8090"
