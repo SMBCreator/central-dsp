@@ -1,0 +1,773 @@
+# CentralDSP — Prometheus alert rules (Часть D, GAP-011).
+#
+# Источники метрик:
+#   - Go-биддер:      GET :8090/metrics (bidder_* серии)
+#   - Python backend: GET /metrics       (rtb_* серии)
+#
+#   - node_exporter:   GET node-exporter:9100/metrics (node_* серии, profile monitoring)
+#
+# Пороги стартовые — калибровать после первой недели наблюдений.
+# Каждый алерт ссылается на runbook: docs/runbooks/rtb_alerts.md
+#
+# Правила связывают серии разных скрейпов (bidder-go vs backend) только через
+# sum()/on() — иначе job/instance не совпадают и правило молча не срабатывает
+# (audit O-05). Unit-тесты: alerts_test.yml (promtool test rules).
+
+groups:
+  - name: centraldsp-bidder-go
+    rules:
+      # --- Доступность и свежесть конфигурации -------------------------------
+      - alert: BidderFeedAging
+        expr: bidder_feed_age_seconds > 60 and bidder_feed_stale == 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Фид биддера не обновлялся {{ $value | printf \"%.0f\" }}s"
+          description: >-
+            Backend не отдаёт /rtb-feed (или отдаёт ошибку) — биддер пока
+            торгует по последнему снапшоту, но через FEED_MAX_AGE
+            (bidder_feed_max_age_seconds, по умолчанию 120 с) перейдёт в
+            no-bid. См. bidder_feed_refresh_errors_total и логи backend.
+            Runbook: rtb_alerts.md#feed-stale
+
+      - alert: BidderFeedStale
+        expr: bidder_feed_stale == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Фид биддера устарел — биддер в no-bid"
+          description: >-
+            Audit R-02: снапшот старше FEED_MAX_AGE, биддер отвечает 503
+            feed_stale на все bid-запросы и /healthz -> 503 (инстанс выведен из
+            ротации). Доставка остановлена, спенда по устаревшим бюджетам нет.
+            Причина — backend /rtb-feed недоступен: чинить backend/БД.
+            Runbook: rtb_alerts.md#feed-stale
+
+      - alert: BidderBookkeepingErrors
+        expr: increase(bidder_bookkeeping_errors_total[5m]) > 10
+        labels:
+          severity: warning
+        annotations:
+          summary: "Биддер отменил {{ $value | printf \"%.0f\" }} бидов: Redis не принял bidmeta"
+          description: >-
+            Audit R-02: бид не отдаётся, если bidmeta/событие bid не записались
+            в Redis — иначе показ прошёл бы без списания и учёта. Резерв
+            возвращён, денег не потеряно, но упущены показы. Проверить Redis
+            (latency, maxmemory, сеть). Runbook: rtb_alerts.md#redis-down
+
+      - alert: BidderRedisDown
+        expr: bidder_redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Биддер потерял Redis"
+          description: >-
+            Budget/frequency-гейт недоступен: биддер отвечает no-bid
+            (консервативное поведение). Доставка остановлена.
+            Runbook: rtb_alerts.md#redis-down
+
+      - alert: BidderNoTraffic
+        expr: rate(bidder_bid_requests_total[10m]) == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Нет входящих bid-запросов 10+ минут"
+          description: >-
+            Ни одного запроса от SSP. Проверить эндпоинты партнёров, сеть,
+            QPS-лимиты. Runbook: rtb_alerts.md#no-traffic
+
+      # --- Латентность --------------------------------------------------------
+      - alert: BidderLatencyP99High
+        expr: |
+          histogram_quantile(0.99, rate(bidder_bid_latency_seconds_bucket[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p99 латентность биддера > 50ms"
+          description: >-
+            SSP таймаутят медленные ответы — фактический win-rate падает раньше,
+            чем это видно по метрикам. Runbook: rtb_alerts.md#latency
+
+      # --- No-bid всплеск -----------------------------------------------------
+      - alert: BidderNoBidSpike
+        expr: |
+          (sum without (reason) (rate(bidder_no_bid_total[10m]))
+            / clamp_min(rate(bidder_bid_requests_total[10m]), 0.001)) > 0.98
+          and rate(bidder_bid_requests_total[10m]) > 1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No-bid rate > 98% при живом трафике"
+          description: >-
+            Смотреть разбивку bidder_no_bid_total по reason: feed_not_loaded /
+            currency / no_candidates / gate_reject указывают на разные причины.
+            Runbook: rtb_alerts.md#no-bid-spike
+
+      # --- Экономика: bid/win gap ---------------------------------------------
+      - alert: BidderWinGapAnomaly
+        expr: |
+          (sum(rate(rtb_wins_total[30m])) / clamp_min(sum(rate(bidder_bids_total[30m])), 0.001)) < 0.001
+          and sum(rate(bidder_bids_total[30m])) > 1
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Win rate < 0.1% при активном биддинге"
+          description: >-
+            Биддер ставит, но win-notice не приходят: либо цена ниже клиринга,
+            либо сломан nurl/каналы уведомлений, либо SSP не засчитывает победы.
+            Runbook: rtb_alerts.md#win-gap
+
+  - name: centraldsp-backend-python
+    rules:
+      # --- Аномалия спенда ------------------------------------------------------
+      - alert: SpendRateAnomaly
+        expr: |
+          rate(rtb_win_spend_rub_sum[15m]) > 4 * (rate(rtb_win_spend_rub_sum[3h]) + 0.01)
+          and rate(rtb_win_spend_rub_sum[15m]) > 0.1
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Скорость списания в 4+ раза выше 3-часового базлайна"
+          description: >-
+            Возможен runaway spend: сломанный пейсинг, дубли win-notice или
+            фрод. Проверить кампании с наибольшим спендом и приостановить
+            при необходимости. Runbook: rtb_alerts.md#spend-anomaly
+
+      - alert: EventTokenRejectsSpike
+        expr: rate(rtb_event_token_rejects_total[10m]) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Всплеск отклонённых event-токенов"
+          description: >-
+            Кто-то шлёт win/imp/click с невалидными токенами: replay-атака,
+            рассинхрон секретов или сломанные макросы у SSP.
+            Runbook: rtb_alerts.md#token-rejects
+
+      - alert: ImpWithoutWinAnomaly
+        expr: |
+          rate(rtb_imps_total[30m]) > 3 * (rate(rtb_wins_total[30m]) + 0.01)
+          and rate(rtb_imps_total[30m]) > 0.1
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Импрессий в 3+ раза больше, чем win-ов"
+          description: >-
+            События показа приходят без соответствующих побед — дубли пикселя,
+            replay или потеря win-notice. Сверить с bid_events.
+            Runbook: rtb_alerts.md#imp-win-mismatch
+
+      - alert: FreqWinWithoutImpHigh
+        expr: |
+          sum(rate(rtb_freq_win_without_imp_total[15m])) > 0.15 * (sum(rate(rtb_wins_total[15m])) + 0.01)
+          and sum(rate(rtb_wins_total[15m])) > 0.05
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Более 15% выигранных бидов без imp-пикселя (freq cap бронь истекла)"
+          description: >-
+            Win — не показ (audit R-06): кап бронируется на win и подтверждается
+            на /rtb/imp. Высокая доля истёкших броней — пиксель не доходит от
+            какой-то SSP: кап недоучитывает показы, impressions занижены к wins.
+            Runbook: rtb_alerts.md#freq-win-without-imp
+
+      - alert: PrefilterDropRateHigh
+        expr: |
+          sum(rate(bidder_prefilter_drops_total[15m]))
+            / (sum(rate(bidder_bid_requests_total[15m])) + 0.001) > 0.5
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Предфильтр отсекает более 50% входящего трафика"
+          description: >-
+            Либо SSP шлёт мусор (боты, чужое гео, datacenter-IP) — обсудить
+            с партнёром, либо предфильтр переусердствовал (проверить
+            THROTTLE_COUNTRIES и список подсетей после недавних изменений).
+            Разбивка по причинам: bidder_prefilter_drops_total{reason=...}.
+            Runbook: rtb_alerts.md#prefilter-drops
+
+  # Чеклист D8 (2026-09-05): доля gate-ошибок, 5xx бэкенда, DEFAULT-партиция,
+  # cron и ОРД-выгрузка. Источник: backend /metrics (obs_metrics.py) и Go.
+  - name: centraldsp-ops
+    rules:
+      - alert: BidderGateErrorRate
+        expr: |
+          rate(bidder_gate_errors_total[5m])
+            / clamp_min(rate(bidder_bid_requests_total[5m]), 1) > 0.01
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Более 1% бидов отброшено из-за ошибки бюджетного гейта"
+          description: >-
+            GateAndReserve (Redis Lua) возвращает ошибку: кандидат пропускается
+            (fail-closed для денег), доставка проседает. Обычно предвестник
+            BidderRedisDown или деградация Redis (latency, OOM, maxclients).
+            Runbook: rtb_alerts.md#gate-errors
+
+      - alert: Backend5xxShare
+        expr: |
+          sum(rate(http_responses_total{class="5xx"}[5m]))
+            / clamp_min(sum(rate(http_responses_total[5m])), 0.1) > 0.02
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Бэкенд отдаёт более 2% ответов 5xx"
+          description: >-
+            Кабинет/пиксель/win-notice деградировали. Первое подозрение —
+            Postgres (см. runbook postgres-down) или Redis. Считается на
+            /metrics бэкенда, сам скрейп не учитывается.
+            Runbook: rtb_alerts.md#backend-5xx
+
+      - alert: BidEventsDefaultPartitionNonEmpty
+        expr: bid_events_default_partition_rows > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "В DEFAULT-партиции bid_events есть строки"
+          description: >-
+            Дневная партиция на дату события не существовала — cron
+            /cron/retention отставал или VPS перезагружался. Строки надо
+            перенести, партиции создать вперёд. Значение обновляется при
+            каждом запуске /cron/retention. Runbook: rtb_alerts.md#default-partition
+
+      - alert: BidEventsPartitionHorizonShort
+        expr: bid_events_partition_horizon_days < 7
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Партиций bid_events вперёд меньше чем на 7 дней"
+          description: >-
+            Последняя дневная партиция заканчивается через
+            {{ $value }} дн. (-1 = партиций нет). Норма — запас
+            BID_EVENTS_PARTITIONS_AHEAD_DAYS (60). Если /cron/retention падает
+            или не запускается, события скоро пойдут в DEFAULT. Измеряется
+            состояние таблицы при каждом запуске /cron/retention.
+            Runbook: rtb_alerts.md#partition-horizon
+
+      - alert: CronRetentionStale
+        expr: |
+          time() - cron_job_last_success_timestamp_seconds{cron_job="retention"} > 2 * 86400
+          or absent(cron_job_last_success_timestamp_seconds{cron_job="retention"})
+        labels:
+          severity: warning
+        annotations:
+          summary: "Cron /cron/retention не выполнялся успешно более 2 суток"
+          description: >-
+            Партиции bid_events создаются на BID_EVENTS_PARTITIONS_AHEAD_DAYS
+            (60) вперёд — запас есть, но retention старых партиций и очистка
+            inbox/outbox стоят. Сам запас виден в BidEventsPartitionHorizonShort.
+            Метрика живёт в процессе backend: после рестарта серия absent до
+            первого запуска. Runbook: rtb_alerts.md#cron
+
+      - alert: CronJobFailing
+        expr: increase(cron_job_runs_total{result="error"}[1h]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Cron-задача {{ $labels.cron_job }} завершилась ошибкой"
+          description: >-
+            Исключение или 5xx внутри cron-ручки (401/503 по секрету не
+            считаются). Смотреть логи backend по пути /cron/{{ $labels.cron_job }}.
+            Runbook: rtb_alerts.md#cron
+
+      - alert: SchedulerDown
+        expr: absent(scheduler_last_tick_timestamp_seconds) or time() - scheduler_last_tick_timestamp_seconds > 180
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Планировщик фоновых задач не тикает"
+          description: >-
+            Сервис scheduler (compose) не завершал цикл захвата задач более
+            3 минут или не отдаёт /metrics. Ни одна /cron/* задача не
+            запускается: sweep-burl, reconcile-reserves, ретенция, ОРД.
+            Runbook: rtb_alerts.md#scheduler
+
+      - alert: SchedulerJobsOverdue
+        expr: scheduler_jobs_overdue > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Есть просроченные задачи планировщика ({{ $value }})"
+          description: >-
+            Включённые scheduled_jobs с next_run_at старше 5 минут, которые
+            никто не захватил: планировщик перегружен (concurrency) или не
+            видит БД. Список — GET /scheduler/jobs.
+            Runbook: rtb_alerts.md#scheduler
+
+      - alert: SchedulerDispatchFailing
+        expr: increase(scheduler_job_failures_total[1h]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Планировщик не смог выполнить задачу"
+          description: >-
+            Вызов /cron/* из scheduler завершился не 2xx: timeout,
+            backend недоступен, 401 (CRON_SECRET расходится) или 5xx.
+            Подробности — last_status/last_error в GET /scheduler/jobs
+            и логи scheduler. Runbook: rtb_alerts.md#scheduler
+
+      - alert: SchedulerLeaseLost
+        expr: increase(scheduler_lease_lost_total[1h]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Задача планировщика выполнилась параллельно дважды"
+          description: >-
+            Другая реплика scheduler перехватила lease выполняющейся задачи:
+            heartbeat не доходил до PostgreSQL дольше 90 с (пауза процесса,
+            недоступность БД). Задача могла выполниться дважды — проверить
+            идемпотентность прогона (ord_export, reconcile) по last_error/логам.
+            Runbook: rtb_alerts.md#scheduler
+
+      - alert: OrdExportFailed
+        expr: increase(ord_export_failures_total[1d]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Месячная выгрузка статистики в ОРД завершилась ошибкой"
+          description: >-
+            /cron/ord-export получил OrdError от провайдера; запись со
+            status=failed и текстом ошибки — в ord_export_log. Дедлайн подачи
+            в ОРД — до конца месяца, следующего за отчётным.
+            Runbook: rtb_alerts.md#ord-export
+
+      - alert: OrdExportLag
+        expr: time() - ord_export_last_success_timestamp_seconds > 40 * 86400
+        for: 1h
+        labels:
+          severity: critical
+        annotations:
+          summary: "Успешной выгрузки в ОРД не было более 40 дней"
+          description: >-
+            Выгрузка помесячная (за предыдущий месяц) — при живом cron
+            интервал между успехами не превышает ~31 день. Gauge сеется из
+            ord_export_log при старте backend, обновляется на каждом успешном
+            /cron/ord-export. Runbook: rtb_alerts.md#ord-export
+
+      - alert: OrdExportSkippedWithoutErid
+        expr: ord_export_skipped_without_erid > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Показы без erid: {{ $value }} креатив(ов) не попали в выгрузку ОРД"
+          description: >-
+            За экспортированный период были показы креативов без
+            зарегистрированного erid — реклама без маркировки (ФЗ-347).
+            Список — в ответе /cron/ord-export (skipped_without_erid) и в
+            ord_export_log.request. Runbook: rtb_alerts.md#ord-export
+
+      - alert: OrdExportRowsRejected
+        expr: ord_export_rows_rejected > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "ОРД отклонил {{ $value }} строк(и) статистики в последней выгрузке"
+          description: >-
+            /cron/ord-export завершился со статусом partial/failed: часть строк
+            (креатив × версия erid × период) провайдер не принял. Причины
+            построчно — в ord_export_rows (status=rejected, error) и в
+            GET /ord/exports/{log_id}/rows. Такой период не считается
+            выгруженным: cron повторит отправку, externalStatisticId тот же
+            (upsert). Runbook: rtb_alerts.md#ord-export
+
+      # B13g: объект принят ОРД, но отклонён ЕРИР (ошибка приходит позже, через
+      # notification/error_list). Каждое открытое уведомление = объект в статусе
+      # erir_error: организация, договор, версия erid или акт.
+      - alert: OrdErirErrorsUnresolved
+        expr: ord_notifications_unresolved > 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} открытых ошибок ЕРИР (объекты в статусе erir_error)"
+          description: >-
+            ОРД принял объект, а ЕРИР его отклонил. Список — GET /ord/notifications
+            и блок «Ошибки ЕРИР» на /ord; текст ошибки в ord_error/error объекта.
+            Исправить данные и зарегистрировать объект повторно — уведомление
+            закроется само. Runbook: rtb_alerts.md#ord-notifications
+
+      - alert: OrdErirErrorsStale
+        expr: ord_notifications_unresolved_oldest_age_seconds > 86400
+        labels:
+          severity: critical
+        annotations:
+          summary: "Ошибка ЕРИР не исправлена более суток"
+          description: >-
+            Самое старое открытое уведомление ЕРИР висит дольше 24 ч. Реклама по
+            такому объекту фактически не промаркирована в ЕРИР — риск штрафа по
+            38-ФЗ/347-ФЗ. Runbook: rtb_alerts.md#ord-notifications
+
+      - alert: OrdNotificationsLag
+        expr: (time() - ord_notifications_last_success_timestamp_seconds) > 6 * 3600
+        labels:
+          severity: critical
+        annotations:
+          summary: "Ошибки ЕРИР не забирались из ОРД более 6 ч"
+          description: >-
+            GET /cron/ord-notifications (раз в час) не завершался успешно 6 ч:
+            ключ ОРД, сеть или курсор platform_settings.ord_notification_cursor.
+            Пока крон не работает, отказы ЕРИР невидимы. Runbook:
+            rtb_alerts.md#ord-notifications
+
+      # --- Consumer событий Go-биддера (audit E-03) ---------------------------
+      # Стрим rtb:events ограничен MAXLEN ~200k на стороне Go. Если consumer не
+      # успевает, старые события обрезаются — win-rate/eCPM в кабинете теряют
+      # знаменатель. Lag близкий к длине стрима = потеря неизбежна.
+      - alert: RtbEventsConsumerLagHigh
+        expr: rtb_events_lag > 50000
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Consumer rtb:events отстаёт на {{ $value }} событий"
+          description: >-
+            Backend не успевает переносить bid/loss из Redis Stream в
+            bid_events/stats_hourly. Проверить PG (latency, locks) и
+            rtb_events_consumer_errors_total. При lag > 150k события начнут
+            теряться по MAXLEN. Runbook: rtb_alerts.md#events-consumer
+
+      - alert: RtbEventsConsumerLagCritical
+        expr: rtb_events_lag > 150000
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Consumer rtb:events на грани потери событий (lag {{ $value }})"
+          description: >-
+            До обрезки стрима по MAXLEN осталось < 50k событий. Немедленно:
+            масштабировать backend / проверить PG. Runbook: rtb_alerts.md#events-consumer
+
+      - alert: RtbEventsPendingStuck
+        expr: rtb_events_pending > 1000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} событий rtb:events доставлены, но не подтверждены > 5 мин"
+          description: >-
+            PEL consumer-группы не сокращается: батчи читаются, но запись в PG
+            падает (см. rtb_events_consumer_errors_total) или poison-события
+            крутятся до MAX_DELIVERIES. Проверить rtb:events:dead.
+            Runbook: rtb_alerts.md#events-consumer
+
+      - alert: RtbEventsConsumerErrors
+        expr: increase(rtb_events_consumer_errors_total[10m]) > 20
+        labels:
+          severity: warning
+        annotations:
+          summary: "Consumer rtb:events: {{ $value }} ошибок за 10 мин"
+          description: >-
+            Итерации consumer-а падают и повторяются с backoff. Обычно — PG
+            недоступен или битые события. Runbook: rtb_alerts.md#events-consumer
+
+      - alert: RtbEventsConsumerSilent
+        expr: |
+          sum(rate(rtb_events_consumed_total[10m])) == 0
+          and on () sum(rate(bidder_bid_requests_total[10m])) > 1
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Go-биддер торгует, а consumer rtb:events ничего не пишет"
+          description: >-
+            Есть bid-трафик, но bid_events/stats_hourly.bids не пополняются —
+            consumer не запущен (RTB_EVENTS_CONSUMER=0? REDIS_URL?) или завис на
+            bootstrap группы. Runbook: rtb_alerts.md#events-consumer
+
+      # F-02/B14c: доля конверсий пикселя, привязанных к биду (attributed, last click).
+      # Ниже 0.8 отчёты по CPA/CVR врут, а backend сам перестаёт делать авто-стоп/blacklist
+      # по conversion-KPI (stats_math.conversion_kpi_trustworthy). Gauge обновляет /cron/optimize.
+      - alert: ConversionAttributionCoverageLow
+        expr: conversion_attribution_coverage{dimension="campaign"} < 0.8
+        for: 6h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Менее 80 % конверсий пикселя привязываются к биду (7 дней)"
+          description: >-
+            Конверсии приходят без cdsp_clid, с чужим clid или позже окна
+            PIXEL_ATTRIBUTION_WINDOW_DAYS — макрос ${CLICK_URL} не прокинут на
+            лендинг, clid теряется на редиректе, либо окно слишком короткое.
+            Пока покрытие низкое, правила и оптимизатор не действуют по
+            CPA/CVR/conversions. Runbook: rtb_alerts.md#conversion-attribution
+
+      # R-07: биллинг по burl. У партнёров с billing_event=burl деньги списываются на
+      # burl, nurl лишь ставит бид в pending:burl. Доля expired (burl не пришёл за
+      # BURL_TTL) к won по партнёру — либо биржа не шлёт burl (переключить на win),
+      # либо ${AUCTION_PRICE}/URL сломаны. Label partner = supply_partners.id.
+      - alert: WinWithoutBurlRateHigh
+        expr: |
+          sum by (partner) (increase(rtb_burl_outcomes_total{outcome="expired"}[1h]))
+            > 0.2 * sum by (partner) (increase(rtb_burl_outcomes_total{outcome="won"}[1h]))
+          and sum by (partner) (increase(rtb_burl_outcomes_total{outcome="won"}[1h])) > 20
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SSP {{ $labels.partner }}: более 20 % выигрышей без burl за час (расход не подтверждён)"
+          description: >-
+            Партнёр в режиме billing_event=burl, но billing notice не приходит:
+            резервы возвращаются без списания, отчёты SSP покажут больше, чем
+            мы. Проверить, шлёт ли биржа burl вообще; если нет — вернуть
+            партнёра на billing_event=win. Runbook: rtb_alerts.md#billing-burl
+
+      - alert: PendingBurlQueueStuck
+        expr: rtb_pending_burl_oldest_age_seconds > 1800
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "pending:burl не чистится — самый старый win ждёт burl дольше 30 мин"
+          description: >-
+            /cron/sweep-burl не запускается или падает (BURL_TTL по умолчанию
+            600 с): резервы выигрышей без burl не освобождаются, бюджет кампаний
+            занят. Проверить cron_job_runs_total{cron_job="sweep_burl"} и Redis.
+            Runbook: rtb_alerts.md#billing-burl
+
+  # Доступность целей и readiness (audit O-05). `up` пишет сам Prometheus:
+  # 0 = скрейп не удался (процесс мёртв, порт не слушает, сеть). Отдельно от
+  # readiness: backend_ready/bidder_ready = процесс жив, но зависимость сломана.
+  # ---- Доставка уведомлений (audit C4b / N-01) --------------------------------
+  # Если outbox не разгребается, молчат и алерты суперадмину, и бизнес-письма:
+  # эти правила — «сторожевой пёс» самой системы оповещения.
+  - name: centraldsp-notifications
+    rules:
+      - alert: NotifySmtpNotConfigured
+        expr: notify_smtp_configured == 0 and notify_outbox_queued > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "В notification_outbox есть письма, но SMTP не настроен"
+          description: >-
+            SMTP_HOST/SMTP_FROM пустые: dispatcher не отправляет, очередь растёт
+            ({{ $value }} строк). Заполнить SMTP_* в .env и перезапустить backend.
+            Runbook: rtb_alerts.md#notifications
+
+      - alert: NotifyOutboxStuck
+        expr: notify_smtp_configured == 1 and notify_outbox_oldest_age_seconds > 1800
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Уведомления не доставляются — самое старое письмо ждёт дольше 30 мин"
+          description: >-
+            SMTP настроен, но notification_outbox не пустеет: /cron/notify-dispatch
+            не запускается (scheduler) или SMTP отвечает ошибкой (см.
+            notify_email_retry_total и last_error в таблице).
+            Runbook: rtb_alerts.md#notifications
+
+      - alert: Watchdog
+        expr: vector(1)
+        labels:
+          severity: none
+        annotations:
+          summary: "Heartbeat pipeline алертов (всегда горит — это нормально)"
+          description: >-
+            Всегда активный алерт: Alertmanager доставляет его в backend каждые
+            10 минут, backend обновляет alert_watchdog_last_received_ts. Не
+            требует действий; если он ПЕРЕСТАЛ приходить — сработает
+            AlertPipelineDead. Runbook: rtb_alerts.md#notifications
+
+      - alert: AlertPipelineDead
+        expr: time() - alert_watchdog_last_received_ts > 3600
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Backend не получал Watchdog от Alertmanager больше часа"
+          description: >-
+            Цепочка Prometheus -> Alertmanager -> /alerts/webhook порвана: другие
+            алерты тоже не доходят до суперадмина. Проверить контейнер alertmanager,
+            ALERT_WEBHOOK_SECRET (401/503 в логах backend), сеть compose.
+            Виден в UI «Алерты» (pipeline.healthy=false). Runbook: rtb_alerts.md#notifications
+
+      - alert: NotifyEmailsFailing
+        expr: increase(notify_email_failed_total[1h]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Письма переведены в failed после NOTIFY_MAX_ATTEMPTS попыток"
+          description: >-
+            {{ $value }} писем за час исчерпали попытки: адрес отвергнут SMTP или
+            сервер стабильно недоступен. Смотреть last_error в notification_outbox.
+            Runbook: rtb_alerts.md#notifications
+
+  - name: centraldsp-availability
+    rules:
+      - alert: TargetDown
+        expr: up{job=~"backend|scheduler|bidder-go"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Сервис {{ $labels.job }} ({{ $labels.instance }}) не отдаёт /metrics"
+          description: >-
+            Prometheus не может снять метрики с {{ $labels.job }} 2 минуты:
+            процесс упал, контейнер перезапускается или не слушает порт.
+            Все алерты по метрикам этого сервиса в это время молчат — это
+            единственный сигнал. Runbook: rtb_alerts.md#target-down
+
+      - alert: NodeExporterDown
+        expr: up{job="node"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "node-exporter не отвечает — алерты по диску/памяти хоста слепы"
+          description: >-
+            Profile monitoring поднят, но node-exporter не скрейпится 5 минут.
+            Disk/inode/memory алерты ниже не сработают.
+            Runbook: rtb_alerts.md#target-down
+
+      - alert: BackendNotReady
+        expr: backend_ready == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Backend жив, но не готов (GET /ready = 503)"
+          description: >-
+            Одна из проверок readiness не проходит 3 минуты: PostgreSQL,
+            Redis или consumer rtb:events. Разбивка — в GET /ready и в
+            backend_postgres_up / backend_redis_up / rtb_events_consumer_up.
+            Docker считает контейнер healthy (liveness) — это нормально.
+            Runbook: rtb_alerts.md#backend-ready
+
+      - alert: BackendPostgresDown
+        expr: backend_postgres_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Backend не может выполнить SELECT 1 в PostgreSQL"
+          description: >-
+            Readiness-пинг БД падает или превышает таймаут. Кабинет и
+            /rtb-feed отдают 5xx, win/imp/click не биллятся, фид биддера
+            стареет (BidderFeedStale через FEED_MAX_AGE).
+            Runbook: rtb_alerts.md#postgres-down
+
+      - alert: BackendRedisDown
+        expr: backend_redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Backend потерял Redis"
+          description: >-
+            Readiness-пинг Redis падает. Биллинг win (bill_win), кэш фида,
+            rate limit и consumer rtb:events не работают. Обычно вместе с
+            BidderRedisDown. Runbook: rtb_alerts.md#redis-down
+
+      - alert: RtbEventsConsumerDown
+        expr: rtb_events_consumer_up == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Consumer rtb:events не работает (задача мертва, зависла или отстаёт)"
+          description: >-
+            Фоновая задача consumer'а в backend не запущена, не завершала
+            успешную итерацию дольше READY_CONSUMER_STALE_S или lag выше
+            READY_MAX_EVENTS_LAG. bid/loss события Go-биддера не доезжают до
+            bid_events: win-rate и eCPM в кабинете врут, стрим упирается в
+            MAXLEN и теряет события. Runbook: rtb_alerts.md#events-consumer
+
+  # Ресурсы хоста (node_exporter, profile monitoring). Файловые системы:
+  # только реальные диски хоста; overlay/tmpfs docker-слоёв исключены в
+  # аргументах node-exporter (compose.yml) и здесь для надёжности.
+  - name: centraldsp-node
+    rules:
+      - alert: NodeDiskSpaceLow
+        expr: |
+          (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs"}
+            / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs"}) < 0.15
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Свободно < 15% на {{ $labels.mountpoint }}"
+          description: >-
+            PostgreSQL (WAL, bid_events), Redis AOF, uploads и docker-образы
+            живут на одном диске VPS. При 0% — Postgres останавливается
+            (PANIC), Redis перестаёт писать AOF. Runbook: rtb_alerts.md#node-resources
+
+      - alert: NodeDiskSpaceCritical
+        expr: |
+          (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs"}
+            / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs"}) < 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Свободно < 5% на {{ $labels.mountpoint }} — остановка БД близко"
+          description: >-
+            Освободить место немедленно: docker system prune, старые бэкапы
+            (ops/backup.sh retention), логи. Runbook: rtb_alerts.md#node-resources
+
+      - alert: NodeInodesLow
+        expr: |
+          (node_filesystem_files_free{fstype!~"tmpfs|overlay|squashfs|ramfs"}
+            / node_filesystem_files{fstype!~"tmpfs|overlay|squashfs|ramfs"}) < 0.10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Свободных inode < 10% на {{ $labels.mountpoint }}"
+          description: >-
+            Место есть, а файлы создать нельзя — типично от docker-слоёв и
+            логов. Симптомы как у полного диска. Runbook: rtb_alerts.md#node-resources
+
+      - alert: NodeFilesystemReadOnly
+        expr: node_filesystem_readonly{fstype!~"tmpfs|overlay|squashfs|ramfs"} == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.mountpoint }} перемонтирован read-only"
+          description: >-
+            Ядро перевело ФС в read-only из-за ошибок ввода-вывода: диск
+            деградирует. Postgres и Redis не смогут писать. Снять бэкап
+            (ops/backup.sh) на другой носитель, планировать миграцию.
+            Runbook: rtb_alerts.md#node-resources
+
+      - alert: NodeMemoryPressure
+        expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Доступной памяти < 10% на хосте"
+          description: >-
+            Следующий шаг — OOM-killer: первым обычно гибнет postgres или
+            redis (rss). Проверить docker stats, maxmemory Redis,
+            shared_buffers/work_mem Postgres. Runbook: rtb_alerts.md#node-resources
+
+      - alert: NodeHighLoad
+        expr: node_load5 / count without (cpu, mode) (node_cpu_seconds_total{mode="idle"}) > 2
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "load5 > 2x числа CPU 15 минут"
+          description: >-
+            CPU-голодание: растёт bidder_bid_latency (SSP tmax 100-300 мс —
+            timeouts = потерянные аукционы), тормозит consumer и cron.
+            Runbook: rtb_alerts.md#node-resources

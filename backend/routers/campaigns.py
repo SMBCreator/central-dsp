@@ -1,65 +1,599 @@
-import random, string
+from datetime import date
+
+import json
+import logging
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
-from pydantic import BaseModel
-from typing import Optional
-from backend.database import get_db
-from backend import models, auth
+
+from auth import current_user
+from business_day import normalize_spent_today
+from cache import reset_available
+from rbac import assert_in_scope, assert_refs_owned, require_campaign_editor, require_campaign_write, scope_for
+from db import get_pool
+from ord import chain as ord_chain
+from ord.adapter import mock_allowed
+from ord.service import campaign_targets_ru, unmarked_creative_sql
+from schemas import CampaignIn, CampaignPatch, OrdChainPreview
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 
-def _gen_code(length=8):
-    return "".join(random.choices(string.ascii_lowercase + string.digits, k=length))
+_NUMERIC = {"daily_budget", "total_budget", "spent_today", "spent_total"}
+_DATES = {"start_date", "end_date"}
 
-class CampaignIn(BaseModel):
-    name: str
-    status: str = "active"
-    is_ab: bool = False
-    ab_limit: Optional[int] = None
-    offer_value: float = 0
-    attribution_model: str = "last_click"
-    daily_budget: Optional[float] = None
-    total_budget: Optional[float] = None
+
+def _serialize(row) -> dict:
+    d = dict(row)
+    normalize_spent_today(d)
+    if isinstance(d.get("frequency_caps"), str):
+        try:
+            d["frequency_caps"] = json.loads(d["frequency_caps"])
+        except Exception:
+            d["frequency_caps"] = None
+    for k in ("id", "advertiser_id", "user_id"):
+        d[k] = str(d[k])
+    for k in ("group_id", "pixel_id", "goal_id", "scoring_profile_id",
+              "counterparty_id", "initial_contract_id", "executive_contract_id"):
+        if d.get(k) is not None:
+            d[k] = str(d[k])
+    if d.get("ord_confirmed_at") is not None:
+        d["ord_confirmed_at"] = d["ord_confirmed_at"].isoformat()
+    for k in _NUMERIC:
+        if k in d and d[k] is not None:
+            d[k] = float(d[k])
+    for k in _DATES:
+        if d.get(k):
+            d[k] = d[k].isoformat()
+    return d
+
+
+def _parse_date(val: str | None) -> date | None:
+    return date.fromisoformat(val) if val else None
+
+
+# Ссылочные поля кампании: таблица и текст 404. Владелец — владелец кампании
+# (не текущий пользователь: admin/agency создают кампании клиентам).
+_REF_TABLES = {
+    "group_id": ("campaign_groups", "Группа не найдена"),
+    "pixel_id": ("pixels", "Пиксель не найден"),
+    "goal_id": ("goals", "Цель не найдена"),
+    "scoring_profile_id": ("scoring_profiles", "Профиль скоринга не найден"),
+    "initial_contract_id": ("ord_contracts", "Договор не найден"),
+    "executive_contract_id": ("ord_contracts", "Договор не найден"),
+}
+_CHAIN_FIELDS = ord_chain.CHAIN_FIELDS
+
+
+async def _assert_campaign_refs(pool, owner_id, updates: dict, current: dict | None = None) -> None:
+    """Ownership ссылочных полей + совместимость цепочки: цель должна
+    относиться к пикселю кампании (после применения этого же PATCH)."""
+    refs = {k: updates.get(k) for k in _REF_TABLES}
+    rows = await assert_refs_owned(pool, owner_id, refs, _REF_TABLES)
+    # Рекламодатель цепочки ОРД: свой контрагент либо наша организация (ОРС).
+    if updates.get("counterparty_id"):
+        await ord_chain.assert_counterparty_ref(pool, updates["counterparty_id"], owner_id, "Рекламодатель (контрагент) не найден")
+    goal = rows.get("goal_id")
+    if goal is not None:
+        pixel_id = updates.get("pixel_id") or (current or {}).get("pixel_id")
+        if pixel_id and str(goal["pixel_id"]) != str(pixel_id):
+            raise HTTPException(status_code=422, detail="Цель не относится к пикселю кампании")
+
+
+async def _campaign_in_scope(pool, campaign_id: str, user: dict):
+    return await assert_in_scope(pool, "campaigns", campaign_id, await scope_for(user), "Кампания не найдена")
+
 
 @router.get("")
-def list_campaigns(db: Session = Depends(get_db), current_user=Depends(auth.get_current_user)):
-    q = db.query(models.Campaign)
-    if current_user.role != "admin":
-        q = q.filter(models.Campaign.user_id == current_user.id)
-    return [{"id": c.id, "name": c.name, "status": c.status, "camp_code": c.camp_code, "created_at": c.created_at} for c in q.order_by(models.Campaign.created_at.desc()).all()]
+async def list_campaigns(user: dict = Depends(current_user)):
+    pool = await get_pool()
+    scope = await scope_for(user)
+    rows = await pool.fetch(
+        f"""
+        SELECT c.*, a.name AS advertiser_name
+        FROM campaigns c JOIN advertisers a ON a.id = c.advertiser_id
+        WHERE {scope.where("c.user_id", 1)} ORDER BY c.created_at DESC
+        """,
+        *scope.params,
+    )
+    return [_serialize(r) for r in rows]
+
 
 @router.post("", status_code=201)
-def create_campaign(body: CampaignIn, db: Session = Depends(get_db), current_user=Depends(auth.ensure_manager_or_admin)):
-    code = _gen_code()
-    while db.query(models.Campaign).filter(models.Campaign.camp_code == code).first():
-        code = _gen_code()
-    c = models.Campaign(user_id=current_user.id, camp_code=code, **body.model_dump())
-    db.add(c)
-    db.commit()
-    db.refresh(c)
-    return {"id": c.id, "camp_code": c.camp_code}
+async def create_campaign(body: CampaignIn, user: dict = Depends(require_campaign_editor)):
+    pool = await get_pool()
+    adv = await assert_in_scope(
+        pool, "advertisers", body.advertiser_id, await scope_for(user), "Рекламодатель не найден"
+    )
+    # Кампания принадлежит владельцу рекламодателя (admin/agency создают клиенту).
+    owner = str(adv["user_id"])
+    chain = {k: getattr(body, k) for k in _CHAIN_FIELDS}
+    await _assert_campaign_refs(pool, owner, {"group_id": body.group_id, **chain})
+    row = await pool.fetchrow(
+        """
+        INSERT INTO campaigns (advertiser_id, user_id, name, objective, daily_budget, total_budget,
+                               start_date, end_date, pacing, frequency_cap_impressions, frequency_cap_period_hours,
+                               group_id, kktu_code, kktu_label, bid_shading, frequency_caps,
+                               ord_mode, counterparty_id, initial_contract_id, executive_contract_id)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING *
+        """,
+        body.advertiser_id, owner, body.name, body.objective, body.daily_budget,
+        body.total_budget, _parse_date(body.start_date), _parse_date(body.end_date),
+        body.pacing, body.frequency_cap_impressions, body.frequency_cap_period_hours, body.group_id,
+        body.kktu_code, body.kktu_label, body.bid_shading,
+        json.dumps([w.model_dump() for w in body.frequency_caps]) if body.frequency_caps else None,
+        body.ord_mode, body.counterparty_id, body.initial_contract_id, body.executive_contract_id,
+    )
+    return _serialize(row)
+
+
+@router.post("/ord-chain/preview")
+async def preview_ord_chain(body: OrdChainPreview, user: dict = Depends(require_campaign_editor)):
+    """Сводка/валидация цепочки ОРД до создания кампании — тот же валидатор,
+    что и у GET /{id}/ord-chain, ссылки проверяются на владельца рекламодателя."""
+    pool = await get_pool()
+    adv = await assert_in_scope(pool, "advertisers", body.advertiser_id, await scope_for(user), "Рекламодатель не найден")
+    owner = str(adv["user_id"])
+    chain = {k: getattr(body, k) for k in _CHAIN_FIELDS}
+    await _assert_campaign_refs(pool, owner, chain)
+    fake = {"id": None, "user_id": owner, "ord_confirmed_at": None, **chain}
+    out = ord_chain.public_chain(await ord_chain.load_chain(pool, fake))
+    out["campaign_id"] = None
+    return out
+
+
+@router.get("/{campaign_id}/ord-chain")
+async def get_ord_chain(campaign_id: str, user: dict = Depends(current_user)):
+    """Сводка цепочки ОРД для окна «Данные в ОРД» (рекламодатель → договоры → ОРС)."""
+    pool = await get_pool()
+    camp = await _campaign_in_scope(pool, campaign_id, user)
+    return ord_chain.public_chain(await ord_chain.load_chain(pool, dict(camp)))
+
+
+@router.post("/{campaign_id}/ord-chain/confirm")
+async def confirm_ord_chain(campaign_id: str, user: dict = Depends(require_campaign_editor)):
+    """«Всё верно»: фиксирует цепочку (ord_confirmed_at). 422 ord_chain_required,
+    если цепочка неполная/невалидная; после подтверждения поля заморожены."""
+    pool = await get_pool()
+    camp = await _campaign_in_scope(pool, campaign_id, user)
+    return ord_chain.public_chain(await ord_chain.confirm_chain(pool, dict(camp)))
+
 
 @router.get("/{campaign_id}")
-def get_campaign(campaign_id: int, db: Session = Depends(get_db), current_user=Depends(auth.get_current_user)):
-    c = db.query(models.Campaign).filter(models.Campaign.id == campaign_id).first()
-    if not c:
-        raise HTTPException(404, "Campaign not found")
-    return c
+async def get_campaign(campaign_id: str, user: dict = Depends(current_user)):
+    pool = await get_pool()
+    return _serialize(await _campaign_in_scope(pool, campaign_id, user))
+
 
 @router.patch("/{campaign_id}")
-def update_campaign(campaign_id: int, body: CampaignIn, db: Session = Depends(get_db), current_user=Depends(auth.ensure_manager_or_admin)):
-    c = db.query(models.Campaign).filter(models.Campaign.id == campaign_id).first()
-    if not c:
-        raise HTTPException(404, "Campaign not found")
-    for k, v in body.model_dump(exclude_unset=True).items():
-        setattr(c, k, v)
-    db.commit()
-    return {"ok": True}
+async def update_campaign(campaign_id: str, body: CampaignPatch, user: dict = Depends(require_campaign_editor)):
+    updates = body.model_dump(exclude_none=True)
+    if not updates:
+        raise HTTPException(status_code=400, detail="Нет полей для обновления")
+    for k in _DATES:
+        if k in updates:
+            updates[k] = _parse_date(updates[k])
+    if "frequency_caps" in updates:
+        updates["frequency_caps"] = json.dumps(updates["frequency_caps"])
+    if updates.get("ord_mode") == "self":
+        # В режиме «свои товары» изначального договора нет (exclude_none не даёт обнулить его явно).
+        updates["initial_contract_id"] = None
+    if "status" in updates:
+        # Ручная смена статуса снимает системную отметку остановки (C4b/N-03),
+        # иначе cron продолжит считать кампанию «остановленной системой».
+        updates["stop_reason"] = None
+        updates["stopped_at"] = None
+    pool = await get_pool()
+    camp = await _campaign_in_scope(pool, campaign_id, user)
+    owner = str(camp["user_id"])
+    ord_chain.assert_not_locked(dict(camp), updates)
+    await _assert_campaign_refs(pool, owner, updates, dict(camp))
+    sets, values = [], []
+    for i, (k, v) in enumerate(updates.items(), start=3):
+        sets.append(f"{k} = ${i}")
+        values.append(v)
+    # Launch gate: перевод в active проходит только если нет блокеров готовности
+    # (те же проверки, что и в /diagnostics и в фиде биддера): активный
+    # рекламодатель с балансом, период, бюджет, ≥1 активная группа со ставкой,
+    # ≥1 одобренный креатив, маркировка ОРД (erid, ФЗ-347) для РФ-трафика.
+    # LAUNCH_GATE=off (или устаревший ORD_LAUNCH_GUARD=off) — только dev;
+    # в production флаг игнорируется (audit L-01/S-04).
+    import os as _os
+    gate_on = not mock_allowed() or _os.getenv("LAUNCH_GATE", _os.getenv("ORD_LAUNCH_GUARD", "on")) != "off"
+    if updates.get("status") == "active" and gate_on:
+        # Учитываем поля, которые меняются этим же PATCH (например, даты/бюджет).
+        merged = dict(camp)
+        for k, v in updates.items():
+            if k != "status" and k in merged:
+                merged[k] = v
+        diag = await compute_diagnostics(pool, merged, assume_active=True)
+        if diag["launch_blockers"]:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "Нельзя запустить кампанию: устраните блокирующие проблемы.",
+                    "blockers": diag["launch_blockers"],
+                },
+            )
+    row = await pool.fetchrow(
+        f"UPDATE campaigns SET {', '.join(sets)}, updated_at = now() WHERE id = $1 AND user_id = $2 RETURNING *",
+        campaign_id, owner, *values,
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Кампания не найдена")
+    if "total_budget" in updates:
+        # Audit M-05: остаток total живёт в Redis (avail:camp) и сеется из фида;
+        # после смены бюджета ключ сбрасываем, чтобы следующий бид пересеял его
+        # актуальным значением (иначе старый остаток держится до reconcile).
+        try:
+            await reset_available(campaign_id=campaign_id)
+        except Exception:  # noqa: BLE001 — Redis недоступен: reconcile догонит
+            logging.getLogger(__name__).exception("reset_available failed for %s", campaign_id)
+    return _serialize(row)
+
 
 @router.delete("/{campaign_id}", status_code=204)
-def delete_campaign(campaign_id: int, db: Session = Depends(get_db), current_user=Depends(auth.ensure_admin)):
-    c = db.query(models.Campaign).filter(models.Campaign.id == campaign_id).first()
-    if not c:
-        raise HTTPException(404, "Campaign not found")
-    db.delete(c)
-    db.commit()
+async def delete_campaign(campaign_id: str, user: dict = Depends(require_campaign_editor)):
+    pool = await get_pool()
+    scope = await scope_for(user)
+    result = await pool.execute(
+        f"DELETE FROM campaigns WHERE id = $1 AND {scope.where('user_id', 2)}", campaign_id, *scope.params
+    )
+    if result == "DELETE 0":
+        raise HTTPException(status_code=404, detail="Кампания не найдена")
+
+
+async def _copy_columns(conn, table: str, exclude: set[str]) -> list[str]:
+    """Столбцы таблицы для копирования (по information_schema, устойчиво к миграциям)."""
+    rows = await conn.fetch(
+        """SELECT column_name FROM information_schema.columns
+           WHERE table_name = $1 AND table_schema = 'public'
+           ORDER BY ordinal_position""",
+        table,
+    )
+    return [r["column_name"] for r in rows if r["column_name"] not in exclude]
+
+
+@router.post("/{campaign_id}/duplicate", status_code=201)
+async def duplicate_campaign(campaign_id: str, user: dict = Depends(require_campaign_editor)):
+    """H1: «Создать похожую» — копия кампании со всеми line items и креативами.
+
+    Копия создаётся в статусе draft, траты обнуляются, креативы — draft без erid
+    (пойдут через модерацию и ОРД заново).
+    """
+    pool = await get_pool()
+    await _campaign_in_scope(pool, campaign_id, user)
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # --- кампания ---
+            camp_cols = await _copy_columns(
+                conn, "campaigns",
+                exclude={"id", "display_id", "created_at", "updated_at", "name", "status",
+                         "spent_today", "spent_total"},
+            )
+            col_list = ", ".join(f'"{c}"' for c in camp_cols)
+            new_camp = await conn.fetchrow(
+                f"""INSERT INTO campaigns ("name", "status", {col_list})
+                    SELECT "name" || ' (копия)', 'draft', {col_list}
+                    FROM campaigns WHERE id = $1 RETURNING *""",
+                campaign_id,
+            )
+            new_id = new_camp["id"]
+
+            # --- line items ---
+            li_cols = await _copy_columns(
+                conn, "line_items",
+                exclude={"id", "display_id", "created_at", "updated_at", "campaign_id",
+                         "spent_today", "spent_total"},
+            )
+            li_list = ", ".join(f'"{c}"' for c in li_cols)
+            await conn.execute(
+                f"""INSERT INTO line_items ("campaign_id", {li_list})
+                    SELECT $2, {li_list} FROM line_items WHERE campaign_id = $1""",
+                campaign_id, new_id,
+            )
+
+            # --- креативы: draft, без erid и привязки к line item ---
+            cr_cols = await _copy_columns(
+                conn, "creatives",
+                exclude={"id", "display_id", "created_at", "updated_at", "campaign_id",
+                         "status", "erid", "line_item_id", "moderation_comment"},
+            )
+            cr_list = ", ".join(f'"{c}"' for c in cr_cols)
+            await conn.execute(
+                f"""INSERT INTO creatives ("campaign_id", "status", {cr_list})
+                    SELECT $2, 'draft', {cr_list} FROM creatives WHERE campaign_id = $1""",
+                campaign_id, new_id,
+            )
+
+    return _serialize(new_camp)
+
+
+async def compute_diagnostics(pool, camp, *, assume_active: bool = False) -> dict:
+    """Пошаговая проверка условий участия кампании в торгах.
+
+    Зеркалит JOIN-условия фида для биддера (routers/bidder_feed.campaigns_feed),
+    поэтому диагностика совпадает с реальной логикой отбора кандидатов. Каждый
+    пункт — {code, ok, severity, title, detail}. severity: 'blocker' полностью
+    останавливает показы, 'warning' — сужает охват.
+
+    assume_active=True — режим «готовность к запуску»: проверка статуса кампании
+    считается пройденной (используется как гейт при переводе в active), остальные
+    блокеры возвращаются в ``launch_blockers`` — их и показывает кабинет до запуска.
+    """
+    campaign_id = str(camp["id"])
+    checks: list[dict] = []
+
+    def add(code, ok, severity, title, detail):
+        checks.append(
+            {"code": code, "ok": bool(ok), "severity": severity, "title": title, "detail": detail}
+        )
+
+    # 1. Статус кампании
+    status_ok = assume_active or camp["status"] == "active"
+    add(
+        "campaign_status",
+        status_ok,
+        "blocker",
+        "Статус кампании",
+        "Кампания активна" if camp["status"] == "active"
+        else (
+            "Статус проверяется на момент запуска" if assume_active
+            else f"Кампания в статусе «{camp['status']}». Запустите её, чтобы участвовать в торгах."
+        ),
+    )
+
+    # 2. Даты открутки
+    today = date.today()
+    start_ok = camp["start_date"] is None or camp["start_date"] <= today
+    end_ok = camp["end_date"] is None or camp["end_date"] >= today
+    add(
+        "schedule",
+        start_ok and end_ok,
+        "blocker",
+        "Период открутки",
+        "Сегодня входит в период кампании" if start_ok and end_ok
+        else ("Дата старта ещё не наступила" if not start_ok else "Дата окончания уже прошла"),
+    )
+
+    # 3. Общий бюджет
+    total_budget = float(camp["total_budget"] or 0)
+    spent_total = float(camp["spent_total"] or 0)
+    budget_ok = total_budget <= 0 or spent_total < total_budget
+    add(
+        "total_budget",
+        budget_ok,
+        "blocker",
+        "Общий бюджет",
+        "Общий бюджет не исчерпан" if budget_ok
+        else f"Израсходован весь общий бюджет ({spent_total:.2f} ₽ из {total_budget:.2f} ₽). Увеличьте бюджет.",
+    )
+
+    # 4. Дневной бюджет
+    daily_budget = float(camp["daily_budget"] or 0)
+    spent_today = float(normalize_spent_today(dict(camp))["spent_today"] or 0)
+    daily_ok = daily_budget <= 0 or spent_today < daily_budget
+    add(
+        "daily_budget",
+        daily_ok,
+        "warning",
+        "Дневной бюджет",
+        "Дневной бюджет не исчерпан" if daily_ok
+        else f"Дневной бюджет на сегодня израсходован ({spent_today:.2f} ₽). Показы возобновятся после сброса в 00:00 МСК.",
+    )
+
+    # 5. Рекламодатель и баланс
+    adv = await pool.fetchrow(
+        "SELECT name, status, balance FROM advertisers WHERE id = $1", camp["advertiser_id"]
+    )
+    adv_active = adv is not None and adv["status"] == "active"
+    balance = float(adv["balance"]) if adv and adv["balance"] is not None else 0.0
+    add(
+        "advertiser_status",
+        adv_active,
+        "blocker",
+        "Рекламодатель",
+        "Рекламодатель активен" if adv_active
+        else "Рекламодатель не активен — активируйте его в разделе «Рекламодатели».",
+    )
+    add(
+        "balance",
+        balance > 0,
+        "blocker",
+        "Баланс",
+        f"Баланс рекламодателя: {balance:.2f} ₽" if balance > 0
+        else "Баланс рекламодателя 0 ₽ — торги остановлены. Пополните баланс в разделе «Финансы».",
+    )
+
+    # 6. Line items (группы объявлений)
+    li_total = await pool.fetchval(
+        "SELECT count(*) FROM line_items WHERE campaign_id = $1", campaign_id
+    )
+    li_active = await pool.fetchval(
+        "SELECT count(*) FROM line_items WHERE campaign_id = $1 AND status = 'active' AND bid_price > 0",
+        campaign_id,
+    )
+    add(
+        "line_items",
+        li_active > 0,
+        "blocker",
+        "Группы объявлений",
+        f"Активных групп со ставкой > 0: {li_active}" if li_active > 0
+        else (
+            "Нет ни одной группы объявлений — создайте группу с таргетингом и ставкой."
+            if li_total == 0
+            else "Все группы на паузе или со ставкой 0 ₽. Активируйте группу и задайте ставку."
+        ),
+    )
+
+    # 7. Одобренные креативы
+    cr_total = await pool.fetchval(
+        "SELECT count(*) FROM creatives WHERE campaign_id = $1", campaign_id
+    )
+    cr_approved = await pool.fetchval(
+        "SELECT count(*) FROM creatives WHERE campaign_id = $1 AND status = 'approved'", campaign_id
+    )
+    cr_pending = await pool.fetchval(
+        "SELECT count(*) FROM creatives WHERE campaign_id = $1 AND status = 'pending'", campaign_id
+    )
+    add(
+        "creatives",
+        cr_approved > 0,
+        "blocker",
+        "Одобренные креативы",
+        f"Одобренных креативов: {cr_approved}" if cr_approved > 0
+        else (
+            "Нет ни одного креатива — загрузите креативы в кампанию."
+            if cr_total == 0
+            else f"Ни один креатив не одобрен ({cr_pending} на модерации). Дождитесь модерации."
+        ),
+    )
+
+    # 8. Цепочка ОРД подтверждена (ord_spec §7 D2) — блокер только для РФ-трафика:
+    # без подтверждённой цепочки креативы не регистрируются, erid не выдаётся.
+    ru_relevant = await campaign_targets_ru(pool, campaign_id)
+    chain_confirmed = camp.get("ord_confirmed_at") is not None
+    add(
+        "ord_chain",
+        not ru_relevant or chain_confirmed,
+        "blocker",
+        "Данные ОРД (цепочка договоров)",
+        "Маркировка не требуется для выбранного гео" if not ru_relevant
+        else ("Цепочка подтверждена" if chain_confirmed
+              else "Подтвердите данные ОРД кампании: кого рекламируете, рекламодатель, договоры (38-ФЗ)."),
+    )
+
+    # 8a. Маркировка ОРД (erid) — блокер только для РФ-трафика. Критерий общий
+    # с фидом биддера и авторегистрацией при approve (ord.service).
+    unmarked = 0
+    if ru_relevant and cr_approved:
+        unmarked = await pool.fetchval(
+            f"SELECT count(*) FROM creatives WHERE campaign_id = $1 AND status = 'approved' AND {unmarked_creative_sql()}",
+            campaign_id,
+        )
+    add(
+        "ord_marking",
+        not (ru_relevant and unmarked),
+        "blocker",
+        "Маркировка ОРД (erid)",
+        "Маркировка не требуется для выбранного гео" if not ru_relevant
+        else ("Все одобренные креативы промаркированы" if not unmarked
+              else f"{unmarked} одобренных креатив(ов) без erid. Зарегистрируйте их в ОРД (38-ФЗ)."),
+    )
+
+    # 9. Заблокированные оптимизатором источники (только предупреждение)
+    blocked = await pool.fetchval(
+        "SELECT count(*) FROM optimizer_blocks WHERE campaign_id = $1", campaign_id
+    )
+    add(
+        "optimizer_blocks",
+        True,
+        "warning",
+        "Заблокированные источники",
+        "Оптимизатор не блокировал источники" if not blocked
+        else f"Оптимизатор заблокировал {blocked} источник(ов) из-за низкого качества трафика. Это сужает охват.",
+    )
+
+    blockers = [c for c in checks if not c["ok"] and c["severity"] == "blocker"]
+    warnings = [c for c in checks if not c["ok"] and c["severity"] == "warning"]
+    # Блокеры запуска — всё, кроме статуса самой кампании: показываем их до
+    # активации и ими же гейтим PATCH status=active.
+    launch_blockers = [c for c in blockers if c["code"] != "campaign_status"]
+    if blockers:
+        summary = (
+            "Кампания не готова к запуску: устраните блокирующие проблемы ниже."
+            if camp["status"] != "active"
+            else "Кампания не откручивается: устраните блокирующие проблемы ниже."
+        )
+        eligible = False
+    elif warnings:
+        summary = "Кампания участвует в торгах, но охват ограничен — см. предупреждения."
+        eligible = True
+    else:
+        summary = "Все проверки пройдены — кампания готова к откруткам."
+        eligible = True
+
+    return {
+        "eligible": eligible,
+        "ready_to_launch": len(launch_blockers) == 0,
+        "summary": summary,
+        "blocker_count": len(blockers),
+        "launch_blocker_count": len(launch_blockers),
+        "warning_count": len(warnings),
+        "checks": checks,
+        "launch_blockers": launch_blockers,
+    }
+
+
+@router.get("/{campaign_id}/diagnostics")
+async def campaign_diagnostics(campaign_id: str, user: dict = Depends(current_user)):
+    """Почему кампания не откручивается / готова ли к запуску — см. compute_diagnostics."""
+    pool = await get_pool()
+    camp = await _campaign_in_scope(pool, campaign_id, user)
+    return await compute_diagnostics(pool, camp)
+
+
+@router.get("/{campaign_id}/blocks")
+async def list_optimizer_blocks(campaign_id: str, user: dict = Depends(current_user)):
+    """Traffic sources blocked by the buying optimizer for this campaign."""
+    pool = await get_pool()
+    await _campaign_in_scope(pool, campaign_id, user)
+    rows = await pool.fetch(
+        """SELECT b.*, sp.name AS partner_name
+           FROM optimizer_blocks b
+           LEFT JOIN supply_partners sp ON sp.id::text = b.block_value AND b.block_type = 'supply_partner'
+           WHERE b.campaign_id = $1 ORDER BY b.created_at DESC""",
+        campaign_id,
+    )
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["id"], d["campaign_id"] = str(d["id"]), str(d["campaign_id"])
+        d["created_at"] = d["created_at"].isoformat()
+        out.append(d)
+    return out
+
+
+@router.delete("/{campaign_id}/blocks/{block_id}", status_code=204)
+async def remove_optimizer_block(campaign_id: str, block_id: str, user: dict = Depends(require_campaign_editor)):
+    """Manually unblock a source (the optimizer will not re-add it unless metrics degrade again)."""
+    pool = await get_pool()
+    scope = await scope_for(user)
+    deleted = await pool.fetchval(
+        f"""DELETE FROM optimizer_blocks b USING campaigns c
+           WHERE b.id = $1 AND b.campaign_id = $2 AND c.id = b.campaign_id AND {scope.where("c.user_id", 3)}
+           RETURNING b.id""",
+        block_id, campaign_id, *scope.params,
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Блок не найден")
+
+
+@router.get("/{campaign_id}/shading")
+async def get_shading_factors(campaign_id: str, user: dict = Depends(current_user)):
+    """Текущие факторы bid-шейдинга по SSP + оценка экономии за 7 дней."""
+    pool = await get_pool()
+    await _campaign_in_scope(pool, campaign_id, user)
+    factors = await pool.fetch(
+        """
+        SELECT f.supply_partner_id, sp.name AS partner_name, f.factor,
+               f.bids, f.wins, f.avg_ratio, f.updated_at
+        FROM bid_shading_factors f
+        JOIN supply_partners sp ON sp.id = f.supply_partner_id
+        WHERE f.campaign_id = $1
+        ORDER BY sp.name
+        """,
+        campaign_id,
+    )
+    savings = await pool.fetchval(
+        """
+        SELECT COALESCE(sum(price - clear_price), 0)
+        FROM bid_events
+        WHERE event_type = 'win' AND campaign_id = $1
+          AND clear_price IS NOT NULL AND price > clear_price
+          AND created_at > now() - interval '7 days'
+        """,
+        campaign_id,
+    )
+    return {
+        "factors": [dict(f) for f in factors],
+        "savings_7d": float(savings or 0),
+    }

@@ -1,0 +1,1895 @@
+"""RTB event tracking callbacks (win / burl / impression / view / click).
+
+C1d: this backend no longer serves bid requests — the Go bidder (bidder-go/)
+is the only auction runtime. The functions here handle the tracking callbacks
+that every bid, whoever served it, calls back into:
+  GET  /rtb/win                 <- win notice (nurl), records win + spend
+  GET  /rtb/burl                <- billing notice (burl) for billing_event=burl
+  GET  /rtb/imp                 <- impression tracker
+  GET  /rtb/view                <- viewability (MRC 50%/1s) tracker
+  GET  /rtb/vevent              <- VAST video events
+  GET  /rtb/click               <- click tracker
+process_bid_request below has no HTTP route: it is the parity oracle for the
+Go bidder and the engine=python_reference simulator mode (non-production only).
+"""
+import json
+import logging
+import os
+import time
+import uuid
+from contextlib import asynccontextmanager
+from decimal import Decimal
+from typing import Any
+from urllib.parse import urlsplit, urlunsplit
+
+from fastapi import APIRouter, HTTPException, Request, Response
+
+logger = logging.getLogger("rtb")
+
+import obs_metrics
+import ssp_check
+import ssp_tokens
+from billing_core import bill_win
+from business_day import business_date_str, even_pacing_budget
+from audiences import check_audiences, store_clid_bridge
+from shading import get_factor as shading_get_factor, should_shade
+from cache import (
+    PENDING_BURL_KEY,
+    active_caps,
+    check_qps,
+    confirm_imp,
+    expire_burl,
+    gate_and_reserve,
+    get_redis,
+    mark_once,
+    pending_burl_due,
+    pending_burl_stats,
+    reservation_from_bidmeta,
+    reserve_budget,
+    settle_win,
+    win_pending,
+)
+import fx
+import rtb_compat
+from db import get_pool
+from money import clamp_clearing_price, cpm_to_cost
+from ord.service import feed_gate_sql
+from stats_math import INVENTORY_DIMENSIONS
+from tokens import sign_event_token, verify_event_token
+
+router = APIRouter(prefix="/rtb", tags=["rtb"])
+
+# C1d: этот backend НЕ принимает bid-запросы. Единственный auction endpoint —
+# Go-биддер (bidder-go/, POST /rtb/bid/{key}). process_bid_request ниже — эталон
+# для Go/Python parity-тестов и явного режима симулятора engine=python_reference
+# вне production; HTTP-маршрута у него нет. Здесь остаются только event
+# callbacks (/win /burl /imp /click /view /vevent), общие для всех бидов.
+
+DEVICE_TYPES = {1: "mobile", 2: "desktop", 3: "ctv", 4: "phone", 5: "tablet", 6: "connected", 7: "settopbox"}
+
+_BROWSER_MARKERS = [
+    ("yabrowser", "yandex"), ("edg", "edge"), ("opr", "opera"), ("opera", "opera"),
+    ("samsungbrowser", "samsung"), ("firefox", "firefox"), ("chrome", "chrome"), ("safari", "safari"),
+]
+
+
+def _device_os(device: dict) -> str:
+    """OS from the bid request: explicit device.os, else UA sniff."""
+    os_val = (device.get("os") or "").strip().lower()
+    if os_val:
+        return os_val
+    ua = (device.get("ua") or "").lower()
+    for marker, name in (("android", "android"), ("iphone", "ios"), ("ipad", "ios"),
+                         ("windows", "windows"), ("mac os", "macos"), ("linux", "linux")):
+        if marker in ua:
+            return name
+    return "unknown"
+
+
+def _device_browser(device: dict) -> str:
+    """Browser family from the UA string."""
+    ua = (device.get("ua") or "").lower()
+    for marker, name in _BROWSER_MARKERS:
+        if marker in ua:
+            return name
+    return "unknown"
+
+
+def _base_url() -> str:
+    for var in ("BETTER_AUTH_URL", "VERCEL_PROJECT_PRODUCTION_URL", "VERCEL_URL", "V0_RUNTIME_URL"):
+        val = os.environ.get(var)
+        if val:
+            return val if val.startswith("http") else f"https://{val}"
+    return "http://localhost:3000"
+
+
+def _imp_ad_type(imp: dict) -> str | None:
+    # Push traffic (arbitrage/push SSPs) is signalled via ext; it rides on the
+    # native object in OpenRTB, so detect it before the generic native branch.
+    ext = imp.get("ext") or {}
+    if ext.get("push") or ext.get("ad_format") == "push":
+        return "push"
+    if imp.get("banner"):
+        return "banner"
+    if imp.get("native"):
+        return "native"
+    if imp.get("video"):
+        return "video"
+    return None
+
+
+CONNECTION_TYPES = {0: "unknown", 1: "ethernet", 2: "wifi", 3: "cellular", 4: "cellular", 5: "cellular", 6: "cellular"}
+
+
+def _match_targeting(targeting: dict, req: dict) -> bool:
+    """Match line item targeting JSON against an OpenRTB 2.5 BidRequest.
+
+    Supported keys (all optional; empty = no restriction):
+      geo_countries, geo_regions, geo_cities        - ISO country / region / city lists
+      device_types                                  - mobile / desktop / ctv / tablet
+      os, browsers, languages                       - device.os, device.ua match, device.language
+      connection_types                              - wifi / cellular / ethernet
+      iab_categories                                - site.cat / app.cat IAB-1..26 allow list
+      iab_block                                     - IAB category block list
+      domain_allowlist, domain_blocklist            - site.domain / app.bundle
+      age_min, age_max, genders                     - user.yob, user.gender (M/F/O)
+      hours (0-23 UTC list), days (0=Mon..6=Sun)    - dayparting
+      ssp_allowlist                                 - list of supply partner IDs (checked by caller)
+    """
+    from datetime import datetime, timezone
+
+    device = req.get("device") or {}
+    geo = device.get("geo") or {}
+    site = req.get("site") or req.get("app") or {}
+    user = req.get("user") or {}
+
+    # --- Geo ---
+    countries = targeting.get("geo_countries") or []
+    if countries and (geo.get("country") or "").upper() not in [c.upper() for c in countries]:
+        return False
+    regions = targeting.get("geo_regions") or []
+    if regions and (geo.get("region") or "").lower() not in [r.lower() for r in regions]:
+        return False
+    cities = targeting.get("geo_cities") or []
+    if cities and (geo.get("city") or "").lower() not in [c.lower() for c in cities]:
+        return False
+
+    # --- Device ---
+    device_types = targeting.get("device_types") or []
+    if device_types:
+        dt = DEVICE_TYPES.get(device.get("devicetype", 0), "unknown")
+        normalized = {"phone": "mobile"}.get(dt, dt)
+        if normalized not in device_types and dt not in device_types:
+            return False
+
+    os_list = targeting.get("os") or []
+    if os_list and (device.get("os") or "").lower() not in [o.lower() for o in os_list]:
+        return False
+
+    browsers = targeting.get("browsers") or []
+    if browsers:
+        ua = (device.get("ua") or "").lower()
+        if not any(b.lower() in ua for b in browsers):
+            return False
+
+    languages = targeting.get("languages") or []
+    if languages and (device.get("language") or "").lower() not in [l.lower() for l in languages]:
+        return False
+
+    conn_types = targeting.get("connection_types") or []
+    if conn_types:
+        ct = CONNECTION_TYPES.get(device.get("connectiontype", 0), "unknown")
+        if ct not in conn_types:
+            return False
+
+    # --- Inventory ---
+    site_cats = [c.upper() for c in (site.get("cat") or [])]
+    iab_allow = targeting.get("iab_categories") or []
+    if iab_allow and not any(c.upper() in site_cats for c in iab_allow):
+        return False
+    iab_block = targeting.get("iab_block") or []
+    if iab_block and any(c.upper() in site_cats for c in iab_block):
+        return False
+
+    domain = (site.get("domain") or site.get("bundle") or "").lower()
+    domain_blocklist = targeting.get("domain_blocklist") or []
+    if domain and domain in [d.lower() for d in domain_blocklist]:
+        return False
+    domain_allowlist = targeting.get("domain_allowlist") or []
+    if domain_allowlist and domain not in [d.lower() for d in domain_allowlist]:
+        return False
+
+    # --- Audience ---
+    genders = targeting.get("genders") or []
+    if genders and (user.get("gender") or "").upper() not in [g.upper() for g in genders]:
+        return False
+    yob = user.get("yob")
+    age_min, age_max = targeting.get("age_min"), targeting.get("age_max")
+    if (age_min or age_max) and yob:
+        age = datetime.now(timezone.utc).year - int(yob)
+        if age_min and age < int(age_min):
+            return False
+        if age_max and age > int(age_max):
+            return False
+
+    # --- Dayparting (UTC) ---
+    now = datetime.now(timezone.utc)
+    hours = targeting.get("hours") or []
+    if hours and now.hour not in [int(h) for h in hours]:
+        return False
+    days = targeting.get("days") or []
+    if days and now.weekday() not in [int(d) for d in days]:
+        return False
+
+    # --- Inventory environment: site (web) vs app ---
+    traffic_types = targeting.get("traffic_types") or []
+    if traffic_types:
+        env = "app" if req.get("app") else "site"
+        if env not in traffic_types:
+            return False
+
+    # --- Carrier / ISP ---
+    carriers = targeting.get("carriers") or []
+    if carriers:
+        carrier = (device.get("carrier") or "").lower()
+        if not any(c.lower() in carrier or carrier in c.lower() for c in carriers if carrier):
+            return False
+        if not carrier:
+            return False
+
+    # --- Minimum OS version (major.minor numeric compare) ---
+    osv_min = targeting.get("os_version_min")
+    if osv_min:
+        osv = device.get("osv") or ""
+        try:
+            def _ver(v: str) -> tuple:
+                return tuple(int(p) for p in str(v).split(".")[:2])
+            if not osv or _ver(osv) < _ver(osv_min):
+                return False
+        except (ValueError, TypeError):
+            return False
+
+    # --- App bundle allow/block (separate from web domains) ---
+    app = req.get("app") or {}
+    bundle = (app.get("bundle") or "").lower()
+    bundles_block = [b.lower() for b in (targeting.get("app_bundles_block") or [])]
+    if bundle and bundle in bundles_block:
+        return False
+    bundles_allow = [b.lower() for b in (targeting.get("app_bundles_allow") or [])]
+    if bundles_allow and bundle not in bundles_allow:
+        return False
+
+    # --- Publisher allow/block (site.publisher.id / app.publisher.id) ---
+    pub_id = str(((req.get("site") or req.get("app") or {}).get("publisher") or {}).get("id") or "")
+    pubs_block = [str(p) for p in (targeting.get("publisher_block") or [])]
+    if pub_id and pub_id in pubs_block:
+        return False
+    pubs_allow = [str(p) for p in (targeting.get("publisher_allow") or [])]
+    if pubs_allow and pub_id not in pubs_allow:
+        return False
+
+    # --- Contextual keywords (site/app/content keywords + page URL) ---
+    kw_haystack = " ".join([
+        (site.get("keywords") or ""),
+        ((site.get("content") or {}).get("keywords") or ""),
+        (site.get("page") or ""),
+        ((site.get("content") or {}).get("title") or ""),
+    ]).lower()
+    kw_block = targeting.get("keywords_block") or []
+    if kw_block and any(k.lower() in kw_haystack for k in kw_block):
+        return False
+    kw_allow = targeting.get("keywords_allow") or []
+    if kw_allow and not any(k.lower() in kw_haystack for k in kw_allow):
+        return False
+
+    # --- IP prefix ranges (e.g. "192.168." or "2a00:") ---
+    ip_ranges = targeting.get("ip_ranges") or []
+    if ip_ranges:
+        ip = device.get("ip") or device.get("ipv6") or ""
+        if not any(ip.startswith(p) for p in ip_ranges):
+            return False
+
+    # --- Regulatory: skip COPPA / GDPR traffic when the campaign opts out ---
+    regs = req.get("regs") or {}
+    if targeting.get("block_coppa") and regs.get("coppa") == 1:
+        return False
+    if targeting.get("block_gdpr") and ((regs.get("ext") or {}).get("gdpr") == 1 or regs.get("gdpr") == 1):
+        return False
+    # Respect Do-Not-Track / LMT when the line item requires personal targeting
+    if targeting.get("skip_dnt") and (device.get("dnt") == 1 or device.get("lmt") == 1):
+        return False
+
+    return True
+
+
+def _match_imp_targeting(targeting: dict, imp: dict) -> bool:
+    """Impression-slot level targeting: position, interstitial, rewarded,
+    secure inventory, video parameters, PMP deal restrictions."""
+    # Banner fold position: 1 = above the fold, 3 = below the fold
+    positions = targeting.get("banner_positions") or []
+    if positions:
+        pos = (imp.get("banner") or imp.get("video") or {}).get("pos")
+        if pos is None or int(pos) not in [int(p) for p in positions]:
+            return False
+
+    # Interstitial (imp.instl = 1)
+    instl = int(imp.get("instl") or 0)
+    if targeting.get("interstitial_only") and instl != 1:
+        return False
+    if targeting.get("exclude_interstitial") and instl == 1:
+        return False
+
+    # Rewarded inventory (OpenRTB 2.6 imp.rwdd, or ext.rewarded fallback)
+    if targeting.get("rewarded_only"):
+        rwdd = imp.get("rwdd") or (imp.get("ext") or {}).get("rewarded") or 0
+        if int(rwdd) != 1:
+            return False
+
+    # HTTPS-only inventory
+    if targeting.get("secure_only") and int(imp.get("secure") or 0) != 1:
+        return False
+
+    # Video slot constraints
+    video = imp.get("video") or {}
+    if video:
+        v_min = targeting.get("video_min_duration")
+        if v_min and video.get("maxduration") and int(video["maxduration"]) < int(v_min):
+            return False
+        if targeting.get("video_skippable_only") and int(video.get("skip") or 0) != 1:
+            return False
+
+    # PMP: when deal IDs are configured, bid only on matching private deals
+    deal_ids = [str(d) for d in (targeting.get("deal_ids") or [])]
+    if deal_ids:
+        deals = ((imp.get("pmp") or {}).get("deals") or [])
+        if not any(str(d.get("id")) in deal_ids for d in deals):
+            return False
+
+    return True
+
+
+def _creative_fits_imp(creative: dict, imp: dict, ad_type: str) -> bool:
+    # push creatives can also fill plain native inventory (push IS native in RTB terms);
+    # a dedicated push imp (ext.push) accepts only push creatives.
+    if ad_type == "native":
+        if creative["type"] not in ("native", "push"):
+            return False
+    elif creative["type"] != ad_type:
+        return False
+    if ad_type == "banner":
+        banner = imp.get("banner") or {}
+        bw, bh = banner.get("w"), banner.get("h")
+        if bw and bh and creative["width"] and creative["height"]:
+            if int(creative["width"]) != int(bw) or int(creative["height"]) != int(bh):
+                formats = banner.get("format") or []
+                if not any(f.get("w") == creative["width"] and f.get("h") == creative["height"] for f in formats):
+                    return False
+    if ad_type == "video":
+        # MIME / VAST protocol / min-max duration (audit R-04, rtb_compat).
+        reason = rtb_compat.video_incompat(imp.get("video"), creative)
+        if reason:
+            obs_metrics.inc_openrtb_incompat(reason)
+            return False
+    # Audit R-05: URL креатива не собрать в безопасную разметку / VAST не
+    # разбирается — кандидат не торгуется, а не уходит в SSP с дырой.
+    reason = rtb_compat.adm_incompat(creative)
+    if reason:
+        obs_metrics.inc_openrtb_incompat(reason)
+        return False
+    return True
+
+
+def _html_escape(s: str) -> str:
+    out = str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return out.replace('"', "&quot;").replace("'", "&#39;")
+
+
+def _xml_escape(s) -> str:
+    """Спецсимволы XML для текстовых узлов VAST (&apos; вместо &#39;)."""
+    out = str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return out.replace('"', "&quot;").replace("'", "&apos;")
+
+
+def _build_ad_info_badge(creative: dict) -> str:
+    # Рекламное меню (38-ФЗ): значок "Реклама (i)", по клику раскрываются erid и данные рекламодателя.
+    erid = creative.get("erid") or ""
+    adv_name = creative.get("adv_name") or ""
+    if not erid and not adv_name:
+        return ""
+    uid = str(creative.get("creative_id") or "")[:8]
+    rows = ""
+    if erid:
+        rows += "<div>erid: " + _html_escape(erid) + "</div>"
+    if adv_name:
+        rows += "<div>" + _html_escape(adv_name) + "</div>"
+    if creative.get("adv_inn"):
+        rows += "<div>ИНН: " + _html_escape(creative["adv_inn"]) + "</div>"
+    if creative.get("adv_ogrn"):
+        rows += "<div>ОГРН: " + _html_escape(creative["adv_ogrn"]) + "</div>"
+    if creative.get("adv_address"):
+        rows += "<div>" + _html_escape(creative["adv_address"]) + "</div>"
+    toggle = (
+        "var p=document.getElementById('cdsp-ap-" + uid + "');"
+        "p.style.display=p.style.display==='none'?'block':'none';"
+        "event.preventDefault();event.stopPropagation();"
+    )
+    return (
+        '<span id="cdsp-ai-' + uid + '" style="position:absolute;top:2px;left:2px;z-index:9;font:10px/1.4 sans-serif">'
+        '<span onclick="' + toggle + '" style="cursor:pointer;background:rgba(0,0,0,.55);color:#fff;padding:1px 5px;'
+        'border-radius:2px;user-select:none">Реклама &#9432;</span>'
+        '<span id="cdsp-ap-' + uid + '" style="display:none;position:absolute;top:16px;left:0;background:rgba(0,0,0,.85);'
+        'color:#fff;padding:6px 8px;border-radius:3px;min-width:180px;max-width:260px;white-space:normal;word-break:break-word">'
+        + rows + "</span></span>"
+    )
+
+
+def _build_vast_extensions(creative: dict, erid: str) -> str:
+    # VAST Extensions: erid + сведения о рекламодателе (38-ФЗ).
+    if not erid and not creative.get("adv_name"):
+        return ""
+    def esc(s):
+        return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                .replace('"', "&quot;").replace("'", "&apos;"))
+    parts = ""
+    if erid:
+        parts += f'<Extension type="erid"><Erid>{esc(erid)}</Erid></Extension>'
+    if creative.get("adv_name"):
+        parts += ('<Extension type="AdvertiserInfo">'
+                  f'<Name>{esc(creative.get("adv_name") or "")}</Name>'
+                  f'<INN>{esc(creative.get("adv_inn") or "")}</INN>'
+                  f'<OGRN>{esc(creative.get("adv_ogrn") or "")}</OGRN>'
+                  f'<Address>{esc(creative.get("adv_address") or "")}</Address>'
+                  "</Extension>")
+    return f"<Extensions>{parts}</Extensions>"
+
+
+def _adm_id_token(tok: str) -> str:
+    """Первые 24 символа токена, пригодные для id/JS-строки (v1.<uuid>.<exp>.<hex>)."""
+    return "".join(ch for ch in tok if ch.isalnum() or ch in "._-")[:24]
+
+
+def _view_script(wrap_id: str, view_url: str, click_beacon: str = "") -> str:
+    # MRC viewability: >=50% площади в зоне видимости непрерывно >=1 сек.
+    # IntersectionObserver с фолбэком «страница видима» для старых webview.
+    # click_beacon — HTML5 без макроса клика: фиксируем клик по содержимому
+    # обёртки в capture-фазе (stopPropagation внутри сниппета не помешает).
+    click = ""
+    if click_beacon:
+        click = (f'var c=document.getElementById("{wrap_id}_c");'
+                 f'if(c){{c.addEventListener("click",function(){{(new Image()).src="{click_beacon}";}},true);}}')
+    return (
+        f'<script>(function(){{var f=0,t=null,el=document.getElementById("{wrap_id}");'
+        f'function fire(){{if(f)return;f=1;(new Image()).src="{view_url}";}}'
+        f'if(el&&"IntersectionObserver"in window){{'
+        f'var o=new IntersectionObserver(function(es){{es.forEach(function(e){{'
+        f'if(e.intersectionRatio>=0.5){{if(!t)t=setTimeout(function(){{fire();o.disconnect();}},1000);}}'
+        f'else if(t){{clearTimeout(t);t=null;}}}});}},{{threshold:[0,0.5]}});o.observe(el);}}'
+        f'else{{setTimeout(fire,1000);}}{click}}})();</script>'
+    )
+
+
+def _build_adm(creative: dict, base: str, bid_id: str) -> str:
+    """Разметка креатива (banner HTML / native JSON / VAST XML) — эталон для
+    bidder-go/internal/rtb/adm.go.
+
+    Audit R-05: URL креатива заранее проверены rtb_compat.adm_incompat
+    (только http(s), без кавычек/угловых скобок/пробелов) и экранируются по
+    контексту вставки — HTML-атрибут, JS-строка в атрибуте, CDATA. Клик-редирект
+    /api/rtb/click не несёт цель в query: цель — click_url креатива из bidmeta/БД,
+    публичный токен бида нельзя превратить в open redirect. Пользовательский VAST
+    получает наши Impression/TrackingEvents/ClickTracking/erid; невалидный —
+    ValueError (до сюда не доходит: adm_incompat отсекает кандидата).
+    """
+    # Сторонние трекеры (аудит): пиксель на показ добавляется в разметку,
+    # клик-трекер дёргается из клиентского onclick / clicktrackers / VAST.
+    third_imp = creative.get("imp_tracker_url") or ""
+    third_imp_px = (
+        f'<img src="{_html_escape(third_imp)}" width="1" height="1" style="display:none" alt=""/>'
+        if third_imp else ""
+    )
+    third_click = creative.get("click_tracker_url") or ""
+    erid = creative.get("erid") or ""
+    erid_label = _build_ad_info_badge(creative)
+    # Токен — [0-9a-zA-Z._-], base — наш конфиг: эти URL не нуждаются в
+    # экранировании ни в атрибуте, ни в JS-строке, ни в CDATA.
+    click_url = f"{base}/api/rtb/click?bid={bid_id}"
+    click_beacon = f"{click_url}&beacon=1"
+    imp_pixel = f"{base}/api/rtb/imp?bid={bid_id}"
+    view_url = f"{base}/api/rtb/view?bid={bid_id}"
+    if creative["type"] == "banner":
+        click_js = (
+            f' onclick="(new Image()).src=\'{rtb_compat.js_string_escape(third_click)}\'"' if third_click else ""
+        )
+        wrap_id = f"cdsp_{_adm_id_token(bid_id)}"
+        if creative.get("html_snippet"):
+            snippet, had_macro = rtb_compat.substitute_click_macros(creative["html_snippet"], click_url)
+            return (f'<div id="{wrap_id}"><div id="{wrap_id}_c">' + snippet + "</div>" + erid_label + "</div>"
+                    + f'<img src="{imp_pixel}" width="1" height="1" style="display:none"/>' + third_imp_px
+                    + _view_script(wrap_id, view_url, "" if had_macro else click_beacon))
+        return (
+            f'<div id="{wrap_id}"><a href="{click_url}" target="_blank"{click_js}>'
+            f'<img src="{_html_escape(creative.get("asset_url") or "")}" width="{creative.get("width")}" height="{creative.get("height")}" alt=""/></a>'
+            f'{erid_label}</div><img src="{imp_pixel}" width="1" height="1" style="display:none"/>' + third_imp_px
+            + _view_script(wrap_id, view_url)
+        )
+    if creative["type"] in ("native", "push"):
+        # push over RTB is native markup: title + body + icon + main image.
+        native = {
+            "native": {
+                "link": {"url": click_url,
+                         **({"clicktrackers": [third_click]} if third_click else {})},
+                "imptrackers": [imp_pixel] + ([third_imp] if third_imp else []),
+                # OpenRTB Native 1.2: event=2 (viewable MRC 50%), method=1 (img-пиксель).
+                # Площадка дёргает URL, когда карточка проходит порог видимости.
+                "eventtrackers": [{"event": 2, "methods": [1], "url": view_url}],
+                # assets — по imp.native.request (rtb_compat.build_native_assets,
+                # audit R-04); без request — legacy фиксированный набор 1–5.
+                "assets": creative.get("_native_assets") or [
+                    {"id": 1, "title": {"text": creative.get("native_title") or ""}},
+                    {"id": 2, "data": {"type": 2, "value": creative.get("native_description") or ""}},
+                    {"id": 3, "img": {"type": 3, "url": creative.get("asset_url") or ""}},
+                    {"id": 4, "img": {"type": 1, "url": creative.get("native_icon_url") or ""}},
+                    {"id": 5, "data": {"type": 12, "value": creative.get("native_cta") or "Подробнее"}},
+                ],
+            }
+        }
+        if erid:
+            native["native"].setdefault("ext", {})["erid"] = erid
+        adv_info = {v: creative.get(k) for k, v in
+                    [("adv_name", "name"), ("adv_inn", "inn"), ("adv_ogrn", "ogrn"), ("adv_address", "address")]
+                    if creative.get(k)}
+        if adv_info:
+            native["native"].setdefault("ext", {})["advertiser_info"] = adv_info
+        if creative["type"] == "push":
+            native["native"].setdefault("ext", {})["ad_format"] = "push"
+        return json.dumps(native, ensure_ascii=False)
+    # video: VAST with quartile tracking
+    vevent = f"{base}/api/rtb/vevent?bid={bid_id}"
+    extensions = _build_vast_extensions(creative, erid)
+    if creative.get("vast_xml"):
+        return rtb_compat.inject_vast_trackers(
+            creative["vast_xml"],
+            impressions=[imp_pixel, third_imp],
+            vevent=vevent,
+            click_trackings=[click_beacon, third_click],
+            extensions_xml=extensions,
+        )
+    # MIME — по расширению video_url (то же значение проверяет
+    # rtb_compat.video_incompat против imp.video.mimes), Duration — HH:MM:SS.
+    duration = rtb_compat.vast_duration(creative.get("video_duration") or 15)
+    media_mime = rtb_compat.creative_video_mime(creative)
+    creative_id = creative.get("creative_id") or creative.get("id") or ""
+    # ClickThrough — наш редирект (клик учитывается и лендинг получает
+    # cdsp_clid), ClickTracking — маячок для плееров, которые открывают ссылку
+    # сами; дедуп по биду — _once_txn в /click.
+    return f"""<VAST version="3.0"><Ad id="{_xml_escape(creative_id)}"><InLine>
+<AdSystem>CentralDSP</AdSystem>{extensions}<AdTitle>{_xml_escape(creative['name'])}</AdTitle>
+<Impression><![CDATA[{imp_pixel}]]></Impression>{f'<Impression><![CDATA[{third_imp}]]></Impression>' if third_imp else ''}
+<Creatives><Creative><Linear><Duration>{duration}</Duration>
+<TrackingEvents>{rtb_compat.vast_tracking_nodes(vevent)}</TrackingEvents>
+<VideoClicks><ClickThrough><![CDATA[{click_url}]]></ClickThrough>
+<ClickTracking><![CDATA[{click_beacon}]]></ClickTracking>{f'<ClickTracking><![CDATA[{third_click}]]></ClickTracking>' if third_click else ''}</VideoClicks>
+<MediaFiles><MediaFile delivery="progressive" type="{media_mime}" width="640" height="360"><![CDATA[{creative.get('video_url') or ''}]]></MediaFile></MediaFiles>
+</Linear></Creative></Creatives></InLine></Ad></VAST>"""
+
+
+def _fire_and_forget(coro) -> None:
+    """Run bid-path bookkeeping (event log, stats) off the critical path.
+
+    Bid responses must not wait on analytics writes: SSPs enforce tmax and
+    drop slow bids. Win/imp/click handlers still await their writes because
+    those are billing-relevant. Errors are logged, never propagated.
+    """
+    import asyncio
+
+    task = asyncio.get_running_loop().create_task(coro)
+
+    def _swallow(t: asyncio.Task) -> None:
+        exc = t.exception()
+        if exc is not None:
+            logger.warning("background bookkeeping failed: %s", exc)
+
+    task.add_done_callback(_swallow)
+
+
+def _is_test_bid(row) -> bool:
+    """bidmeta (Go пишет is_test=1 при OpenRTB test=1) или строка bid_events (034)."""
+    try:
+        v = row.get("is_test") if hasattr(row, "get") else row["is_test"]
+    except (KeyError, IndexError, TypeError):
+        return False
+    return v in (1, "1", True)
+
+
+def _row_get(row, key: str):
+    """bidmeta (dict из Redis) или asyncpg.Record (PG-fallback) — единый доступ."""
+    if row is None:
+        return None
+    if hasattr(row, "get"):
+        return row.get(key)
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        return None
+
+
+def _cpc_of(row) -> float | None:
+    """Цена клика CPC-бида из bidmeta (пишут оба биддера), иначе None = CPM.
+
+    PG-fallback строка bid_events этих полей не несёт: клик по биду старше
+    TTL bidmeta (1 ч) не биллится — недосписание, никогда не пересписание."""
+    if (_row_get(row, "bid_type") or "cpm") != "cpc":
+        return None
+    try:
+        cpc = float(_row_get(row, "bid_cpc") or 0)
+    except (TypeError, ValueError):
+        return None
+    return cpc if cpc > 0 else None
+
+
+def _fx_markup_of(cand) -> float | None:
+    """fx_markup_percent владельца кампании из app_settings (JSONB: число,
+    строка или уже распакованное значение). None -> fx.DEFAULT_MARKUP_PERCENT."""
+    raw = cand.get("fx_markup_percent")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    try:
+        return float(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_rub_price(reported, row):
+    """${AUCTION_PRICE} в валюте ответа -> RUB курсом бида (bidmeta.fx_rate).
+    Мусор/отсутствие цены оставляем как есть — clamp_clearing_price решит."""
+    try:
+        rate = float(_row_get(row, "fx_rate") or 1.0)
+        return float(reported) * rate if rate > 0 else reported
+    except (TypeError, ValueError):
+        return reported
+
+
+def _event_dims(row) -> dict[str, Any]:
+    """Измерения бида, наследуемые win/imp/click/view/loss (audit E-01).
+
+    Раньше win/imp/click писались без bundle/publisher/tagid/region/city —
+    в группировках «по площадкам» они попадали в «—», CTR/win-rate по
+    конкретному inventory были недостоверны.
+    """
+    out: dict[str, Any] = {
+        "imp_id": _row_get(row, "imp_id"),
+        "campaign_id": _row_get(row, "campaign_id"),
+        "line_item_id": _row_get(row, "line_item_id"),
+        "creative_id": _row_get(row, "creative_id"),
+        "supply_partner_id": _row_get(row, "supply_partner_id"),
+    }
+    for col in INVENTORY_DIMENSIONS:
+        v = _row_get(row, col)
+        if isinstance(v, str):
+            v = v.strip() or None
+            if v and col == "domain":
+                v = v.lower()
+        out[col] = v
+    return out
+
+
+async def _log_event(pool, event_type: str, **kw: Any) -> None:
+    """Строка bid_events. Договор о расходе (stats_math): clear_price несёт
+    только оплаченное событие — win (CPM, billing_event=win), billable (CPM,
+    billing_event=burl, R-07) или click (CPC, audit R-03); impression/
+    viewable/video/win_expired его не дублируют. `late` (R-07) — событие
+    после зафиксированного истечения дедлайна (billable после win_expired)."""
+    await pool.execute(
+        """
+        INSERT INTO bid_events (event_type, bid_id, imp_id, campaign_id, line_item_id, creative_id,
+                                supply_partner_id, price, clear_price, device_type, geo_country, geo_region, geo_city,
+                                ad_type, domain, bundle, publisher_id, tagid, os, browser, pctr, is_test, late)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+        """,
+        event_type, kw.get("bid_id", ""), kw.get("imp_id"), kw.get("campaign_id"),
+        kw.get("line_item_id"), kw.get("creative_id"), kw.get("supply_partner_id"),
+        kw.get("price"), kw.get("clear_price") if event_type in PAID_EVENT_TYPES else None,
+        kw.get("device_type"), kw.get("geo_country"), kw.get("geo_region"), kw.get("geo_city"),
+        kw.get("ad_type"), kw.get("domain"), kw.get("bundle"), kw.get("publisher_id"), kw.get("tagid"),
+        kw.get("os"), kw.get("browser"), kw.get("pctr"),
+        bool(kw.get("is_test", False)), bool(kw.get("late", False)),
+    )
+
+
+async def _bump_stats(db, col, spend: float, campaign_id, line_item_id, creative_id, supply_partner_id) -> None:
+    """+1 к счётчику(ам) `col` (имя или кортеж имён) и +spend в stats_hourly за текущий час."""
+    cols = (col,) if isinstance(col, str) else tuple(col)
+    await db.execute(
+        f"""
+        INSERT INTO stats_hourly (ts_hour, campaign_id, line_item_id, creative_id, supply_partner_id, {", ".join(cols)}, spend)
+        VALUES (date_trunc('hour', now()), $1, $2, $3, $4, {", ".join("1" for _ in cols)}, $5)
+        ON CONFLICT (ts_hour, campaign_id, line_item_id, creative_id, supply_partner_id)
+        DO UPDATE SET {", ".join(f"{c} = stats_hourly.{c} + 1" for c in cols)}, spend = stats_hourly.spend + $5
+        """,
+        campaign_id, line_item_id, creative_id, supply_partner_id, spend,
+    )
+
+
+# --- Идемпотентность трекинг-событий (audit E-02) -----------------------------
+#
+# Источник истины — строка bid_event_once(bid_id, kind), вставляемая в ОДНОЙ
+# транзакции с INSERT bid_events и UPSERT stats_hourly. Если любой шаг падает,
+# откатывается и заявка — повтор пикселя дописывает всё целиком. Redis
+# `once:*` — только fast-path для отсечения дублей, и ставится ПОСЛЕ коммита:
+# ключ никогда не переживёт неудавшуюся запись.
+
+
+async def _seen_fast(kind: str, bid: str) -> bool:
+    try:
+        return bool(await get_redis().exists(f"once:{kind}:{bid}"))
+    except Exception:
+        return False  # Redis недоступен — решает БД
+
+
+async def _remember_fast(kind: str, bid: str) -> None:
+    try:
+        await mark_once(kind, bid)
+    except Exception:
+        logger.warning("once fast-path not cached for %s:%s", kind, bid)
+
+
+async def _claim_once(conn, kind: str, bid: str) -> bool:
+    return bool(await conn.fetchval(
+        "INSERT INTO bid_event_once (bid_id, kind) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING true",
+        bid, kind,
+    ))
+
+
+@asynccontextmanager
+async def _once_txn(pool, kind: str, bid: str):
+    """Транзакция «ровно один раз» для (bid, kind).
+
+    Отдаёт соединение с открытой транзакцией и уже вставленной заявкой, либо
+    None, если событие уже учтено. Коммит — на выходе из блока; исключение в
+    теле откатывает и заявку, и все записи внутри.
+    """
+    if await _seen_fast(kind, bid):
+        yield None
+        return
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            if not await _claim_once(conn, kind, bid):
+                yield None
+                return
+            yield conn
+    await _remember_fast(kind, bid)
+
+
+def _stat_ids(row) -> tuple:
+    return (row["campaign_id"], row["line_item_id"], row["creative_id"], row["supply_partner_id"])
+
+
+
+def _parse_freq_caps(c) -> list[tuple[int, int]]:
+    """Multi-window caps from campaigns.frequency_caps (JSONB), legacy pair as fallback."""
+    raw = None
+    try:
+        raw = c["frequency_caps"]
+    except (KeyError, IndexError):
+        raw = None
+    windows: list[tuple[int, int]] = []
+    if raw:
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                raw = None
+        if isinstance(raw, list):
+            for w in raw[:3]:
+                try:
+                    imp = int(w.get("impressions", 0))
+                    hrs = int(w.get("period_hours", 24))
+                except (AttributeError, TypeError, ValueError):
+                    continue
+                if imp > 0 and hrs > 0:
+                    windows.append((imp, hrs))
+    if not windows:
+        try:
+            legacy = int(c["frequency_cap_impressions"] or 0)
+        except (KeyError, IndexError, TypeError):
+            legacy = 0
+        if legacy > 0:
+            try:
+                hrs = int(c["frequency_cap_period_hours"] or 24)
+            except (KeyError, IndexError, TypeError):
+                hrs = 24
+            windows.append((legacy, hrs))
+    return windows
+
+
+# ---------------------------------------------------------------------------
+# In-process TTL cache for the bid hot path (always-on bidder only).
+#
+# Candidate line items, partner rows and optimizer blocks change on human
+# timescales (seconds+), while the bidder answers 50-200 QPS. Caching them
+# in-process for RTB_CACHE_TTL seconds collapses 3 sequential DB roundtrips
+# per request into ~0. Budgets/QPS/freq-caps stay in Redis (cross-replica).
+# RTB_CACHE_TTL=0 disables caching (tests, simulator, serverless deploys).
+# ---------------------------------------------------------------------------
+RTB_CACHE_TTL = float(os.environ.get("RTB_CACHE_TTL", "0"))
+# Serve stale values for up to 5x TTL while ONE coroutine refreshes in the
+# background (single-flight). Prevents the thundering herd at TTL expiry:
+# without it, every in-flight request cache-misses simultaneously and fires
+# 3 sequential DB queries each, spiking p99 by 10-20x.
+RTB_CACHE_STALE_FACTOR = 5.0
+
+_hot_cache: dict = {}
+_refreshing: set = set()
+
+
+def _cache_get(key: str):
+    """Returns (value, fresh) - value may be stale; None means hard miss."""
+    if RTB_CACHE_TTL <= 0:
+        return None, False
+    hit = _hot_cache.get(key)
+    if hit is None:
+        return None, False
+    value, expires = hit
+    now = time.monotonic()
+    if now < expires:
+        return value, True
+    if now < expires + RTB_CACHE_TTL * (RTB_CACHE_STALE_FACTOR - 1):
+        return value, False  # stale but usable
+    _hot_cache.pop(key, None)
+    return None, False
+
+
+def _cache_put(key: str, value) -> None:
+    if RTB_CACHE_TTL > 0:
+        _hot_cache[key] = (value, time.monotonic() + RTB_CACHE_TTL)
+    _refreshing.discard(key)
+
+
+def _claim_refresh(key: str) -> bool:
+    """True for exactly one caller per expiry window (single-flight)."""
+    if key in _refreshing:
+        return False
+    _refreshing.add(key)
+    return True
+
+
+async def process_bid_request(
+    endpoint_key: str,
+    req: dict,
+    ssp_token: str | None = None,
+    client_ip: str | None = None,
+    *,
+    verify_token: bool = True,
+):
+    """Core bid logic. Returns a BidResponse dict or None (no-bid).
+    Raises 404 for unknown endpoint keys, 403 for a bad SSP token or
+    IP outside the partner whitelist, 429 when the partner exceeds QPS.
+    Partners in 'testing' status are served: this is the SSP onboarding
+    test phase (Часть SSP-онбординга).
+
+    verify_token=False — только для внутренней автопроверки (ssp_check):
+    открытый токен в БД не хранится (миграция 032), поэтому сервер сам
+    предъявить его не может. Публичный HTTP-роут всегда проверяет."""
+    pool = await get_pool()
+    _pkey = f"partner:{endpoint_key}"
+    partner, _fresh = _cache_get(_pkey)
+    if partner is None or (not _fresh and _claim_refresh(_pkey)):
+        partner = await pool.fetchrow(
+            "SELECT * FROM supply_partners WHERE endpoint_key = $1 AND status IN ('active','testing')", endpoint_key
+        )
+        if partner is not None:
+            _cache_put(_pkey, partner)
+        else:
+            _refreshing.discard(_pkey)
+    if not partner:
+        raise HTTPException(status_code=404, detail="Unknown endpoint")
+
+    # Optional per-partner shared secret. В БД только sha256-хэш (миграция 032):
+    # NULL/пусто = токен не выдан или отозван -> 403 всегда (fail-closed, audit
+    # S-06; паритет с Go partner_auth.go). В окне ротации принимается и
+    # предыдущий хэш (token_prev_hash до token_prev_valid_until, миграция 039).
+    keys = partner.keys()
+    expected_hash = partner["auth_token_hash"] if "auth_token_hash" in keys else None
+    if not expected_hash:
+        raise HTTPException(status_code=403, detail="SSP token not issued")
+    if verify_token and not ssp_tokens.verify_token(
+        ssp_token, expected_hash,
+        partner["token_prev_hash"] if "token_prev_hash" in keys else None,
+        partner["token_prev_valid_until"] if "token_prev_valid_until" in keys else None,
+    ):
+        raise HTTPException(status_code=403, detail="Invalid SSP token")
+
+    # IP whitelist партнёра (миграция 030): непустой список = только эти IP/CIDR.
+    # client_ip=None (симулятор/автопроверка) — внутренний вызов, проверка не нужна.
+    if client_ip is not None and "ip_whitelist" in partner.keys():
+        _wl = partner["ip_whitelist"]
+        if isinstance(_wl, str):
+            _wl = json.loads(_wl)
+        if _wl and not ssp_check.ip_allowed(client_ip, _wl):
+            raise HTTPException(status_code=403, detail="IP not in partner whitelist")
+
+    # Per-partner QPS limit, enforced across all replicas via Redis.
+    if not await check_qps(str(partner["id"]), partner["qps_limit"] or 0):
+        raise HTTPException(status_code=429, detail="QPS limit exceeded")
+
+    req_id = req.get("id") or str(uuid.uuid4())
+    imps = req.get("imp") or []
+    if not imps:
+        return None
+    try:
+        # OpenRTB 2.5: 1 = first price, 2 = second price (default when absent)
+        auction_type = int(req.get("at") or 2)
+    except (TypeError, ValueError):
+        auction_type = 2
+
+    device = req.get("device") or {}
+    geo = (device.get("geo") or {})
+    site = req.get("site") or {}
+    device_id = device.get("ifa") or device.get("ip") or ""
+    allowed_types = partner["allowed_ad_types"]
+    if isinstance(allowed_types, str):
+        allowed_types = json.loads(allowed_types)
+
+    # Валюта (audit R-03, договор в fx.py; паритет bidder-go internal/fx).
+    # Внутри всё в RUB; в ответе — валюта расчётов партнёра, если SSP её
+    # принимает, иначе RUB, иначе no-bid. Курс — ЦБ + наценка владельца
+    # кампании, один на весь бид (floor, цена, ${AUCTION_PRICE} при win).
+    partner_cur = ((partner["currency"] if "currency" in partner.keys() else None) or fx.RUB).upper()
+    resp_cur = fx.choose_currency(req.get("cur"), partner_cur)
+    if resp_cur is None:
+        obs_metrics.inc_no_bid("currency")
+        return None
+    fx_rates = await fx.rates_snapshot()
+    partner_floor_raw = float(partner["bid_floor"] or 0)
+
+    # Candidate line items: active campaign within budget & dates, active LI, approved creative
+    candidates, _fresh = _cache_get("candidates")
+    if candidates is None or (not _fresh and _claim_refresh("candidates")):
+        # erid-гейт — паритет с /rtb-feed/campaigns (ord.service.ERID_FEED_GATE_SQL)
+        candidates = await pool.fetch(
+        f"""
+        SELECT li.id AS li_id, li.bid_price, li.bid_type, li.max_bid, li.daily_budget AS li_budget,
+               li.targeting, li.campaign_id, li.user_id AS owner_id,
+               c.daily_budget AS camp_budget, c.frequency_cap_impressions, c.frequency_cap_period_hours, c.frequency_caps,
+               c.pacing, c.advertiser_id, c.bid_shading, c.objective, c.clean_traffic_only,
+               adv.domain AS adv_domain,
+               adv.balance AS adv_balance, c.total_budget, c.spent_total,
+               cr.id AS creative_id, cr.type, cr.width, cr.height, cr.asset_url, cr.click_url,
+               cr.html_snippet, cr.native_title, cr.native_description, cr.native_cta,
+               cr.native_icon_url, cr.video_url, cr.video_duration, cr.vast_xml, cr.name,
+               cr.imp_tracker_url, cr.click_tracker_url, cr.erid,
+               cp.name AS adv_name, cp.inn AS adv_inn, cp.ogrn AS adv_ogrn, cp.address AS adv_address,
+               fxs.value AS fx_markup_percent
+        FROM line_items li
+        JOIN campaigns c ON c.id = li.campaign_id AND c.status = 'active'
+             AND (c.start_date IS NULL OR c.start_date <= CURRENT_DATE)
+             AND (c.end_date IS NULL OR c.end_date >= CURRENT_DATE)
+             AND (c.total_budget <= 0 OR c.spent_total < c.total_budget)
+        JOIN advertisers adv ON adv.id = c.advertiser_id AND adv.status = 'active' AND adv.balance > 0
+        JOIN creatives cr ON cr.campaign_id = c.id AND cr.status = 'approved'
+             AND (cr.line_item_id IS NULL OR cr.line_item_id = li.id)
+        LEFT JOIN counterparties cp ON cp.id = cr.counterparty_id
+        LEFT JOIN app_settings fxs ON fxs.user_id = li.user_id AND fxs.key = 'fx_markup_percent'
+        WHERE li.status = 'active' AND li.bid_price > 0
+        {feed_gate_sql()}
+        """
+        )
+        _cache_put("candidates", candidates)
+    if not candidates:
+        return None
+
+    # Optimizer block lists — any dimension the platform observes can be blocked
+    camp_ids = list({c["campaign_id"] for c in candidates})
+    blocks_key = "blocks:" + ",".join(sorted(str(i) for i in camp_ids))
+    block_rows, _fresh = _cache_get(blocks_key)
+    if block_rows is None or (not _fresh and _claim_refresh(blocks_key)):
+        block_rows = await pool.fetch(
+            "SELECT campaign_id, block_type, block_value FROM optimizer_blocks WHERE campaign_id = ANY($1)",
+            camp_ids,
+        )
+        _cache_put(blocks_key, block_rows)
+    blocks: dict = {}
+    for b in block_rows:
+        blocks.setdefault(str(b["campaign_id"]), set()).add((b["block_type"], b["block_value"].lower()))
+
+    # Глобальные white/blacklist площадок (уровень аккаунта, раздел Настройки).
+    # Кэшируются так же, как блоки оптимизатора: TTL короткий, меняются людьми.
+    owner_ids = list({c["owner_id"] for c in candidates})
+    dl_key = "domain_lists:" + ",".join(sorted(str(i) for i in owner_ids))
+    dl_rows, _fresh = _cache_get(dl_key)
+    if dl_rows is None or (not _fresh and _claim_refresh(dl_key)):
+        dl_rows = await pool.fetch(
+            "SELECT user_id, domain, list_type FROM domain_lists WHERE user_id = ANY($1)",
+            owner_ids,
+        )
+        _cache_put(dl_key, dl_rows)
+    g_black: dict = {}
+    g_white: dict = {}
+    for r in dl_rows:
+        target = g_black if r["list_type"] == "black" else g_white
+        target.setdefault(str(r["user_id"]), set()).add(r["domain"].lower())
+
+    from datetime import datetime, timezone as _tz
+
+    from ml import pctr as ml_pctr
+    from ml import quality as ml_quality
+
+    req_domain = ((req.get("site") or req.get("app") or {}).get("domain")
+                  or (req.get("app") or {}).get("bundle") or "").lower()
+    # Clean-traffic (Часть B): set фродовых доменов из in-process кэша.
+    # Fail-open: нет данных -> пустой set, закупка не останавливается.
+    _dirty_domains: frozenset = frozenset()
+    if req_domain and any(c["clean_traffic_only"] for c in candidates):
+        _dirty_domains = await ml_quality.get_blocked_domains(pool)
+    # Scoring-профили (Часть 3b): per-campaign блок-лист доменов, рассчитанный
+    # пользовательским профилем в enforce-режиме. Fail-open через кэш.
+    _scoring_blocks: dict[str, frozenset] = {}
+    if req_domain:
+        import scoring as _scoring
+        for _cid in {str(c["campaign_id"]) for c in candidates}:
+            blocked = await _scoring.get_scoring_blocks(pool, _cid)
+            if blocked:
+                _scoring_blocks[_cid] = blocked
+    req_device = DEVICE_TYPES.get((req.get("device") or {}).get("devicetype", 0), "unknown")
+    req_geo = (geo.get("country") or "").lower()
+    req_os = _device_os(device)
+    req_browser = _device_browser(device)
+    req_hour = str(datetime.now(_tz.utc).hour)
+
+    seatbids = []
+    base = _base_url()
+
+    for imp in imps:
+        ad_type = _imp_ad_type(imp)
+        if not ad_type or ad_type not in allowed_types:
+            continue
+        imp_floor_raw = float(imp.get("bidfloor") or 0)
+        floor_cur = fx.floor_currency(imp.get("bidfloorcur"), req.get("cur"), partner_cur)
+        # OpenRTB-совместимость (audit R-04). Native: assets собираем по
+        # imp.native.request; нечитаемый request — весь imp не торгуется.
+        try:
+            native_req = rtb_compat.parse_native_request(imp.get("native")) if ad_type == "native" else None
+        except rtb_compat.NativeRequestError:
+            obs_metrics.inc_openrtb_incompat(rtb_compat.INCOMPAT_NATIVE_MALFORMED)
+            continue
+        # private_auction=1: SSP принимает только ставки по сделкам (§3.2.11).
+        private_only = rtb_compat.private_auction_only(imp)
+
+        best = None
+        for cand in candidates:
+            c = dict(cand)
+            targeting = c["targeting"]
+            if isinstance(targeting, str):
+                targeting = json.loads(targeting)
+            if not _creative_fits_imp(c, imp, ad_type):
+                continue
+            deal = rtb_compat.matched_deal(imp, targeting.get("deal_ids"))
+            if private_only and deal is None:
+                obs_metrics.inc_openrtb_incompat(rtb_compat.INCOMPAT_PRIVATE_AUCTION)
+                continue
+            native_assets = None
+            if native_req is not None:
+                native_assets = rtb_compat.build_native_assets(native_req, c)
+                if native_assets is None:
+                    obs_metrics.inc_openrtb_incompat(rtb_compat.INCOMPAT_NATIVE_ASSET)
+                    continue
+            # Ставка по сделке: floor и тип аукциона из deal (§3.2.12);
+            # deal.bidfloorcur -> bidfloorcur imp -> валюта партнёра.
+            cand_floor_raw, cand_floor_cur, cand_auction = imp_floor_raw, floor_cur, auction_type
+            if deal is not None:
+                if float(deal.get("bidfloor") or 0) > 0:
+                    cand_floor_raw = float(deal["bidfloor"])
+                    cand_floor_cur = fx.floor_currency(deal.get("bidfloorcur"), [floor_cur], partner_cur)
+                if int(deal.get("at") or 0):
+                    cand_auction = int(deal["at"])
+            # Курсы с наценкой владельца кампании: floor -> RUB, цена -> валюта
+            # ответа. Нет курса — кандидат не торгуется в этой валюте.
+            markup = _fx_markup_of(c)
+            rate_floor = fx.effective_rate(cand_floor_cur, fx_rates, markup)
+            rate_pfloor = fx.effective_rate(partner_cur, fx_rates, markup)
+            rate_resp = fx.effective_rate(resp_cur, fx_rates, markup)
+            if rate_floor is None or rate_pfloor is None or rate_resp is None:
+                obs_metrics.inc("rtb_nobid_fx_rate_missing_total")
+                continue
+            floor = max(cand_floor_raw * rate_floor, partner_floor_raw * rate_pfloor)
+            ssp_allow = targeting.get("ssp_allowlist") or []
+            if ssp_allow and str(partner["id"]) not in [str(s) for s in ssp_allow]:
+                continue
+            # Optimizer block lists — every observable dimension is enforceable
+            camp_blocks = blocks.get(str(c["campaign_id"]))
+            if camp_blocks:
+                if req_domain and ("domain", req_domain) in camp_blocks:
+                    continue
+                if ("supply_partner", str(partner["id"]).lower()) in camp_blocks:
+                    continue
+                if ("device_type", req_device) in camp_blocks:
+                    continue
+                if req_geo and ("geo_country", req_geo) in camp_blocks:
+                    continue
+                if ("os", req_os) in camp_blocks:
+                    continue
+                if ("browser", req_browser) in camp_blocks:
+                    continue
+                if ("ad_type", ad_type) in camp_blocks:
+                    continue
+                if ("creative", str(c["creative_id"]).lower()) in camp_blocks:
+                    continue
+                if ("line_item", str(c["li_id"]).lower()) in camp_blocks:
+                    continue
+                if ("hour", req_hour) in camp_blocks:
+                    continue
+            # Глобальные листы аккаунта: блэклист всегда исключает домен;
+            # непустой вайтлист пропускает ТОЛЬКО перечисленные домены.
+            owner = str(c["owner_id"])
+            if req_domain:
+                if owner in g_black and req_domain in g_black[owner]:
+                    continue
+                owner_white = g_white.get(owner)
+                if owner_white and req_domain not in owner_white:
+                    continue
+            # Clean-traffic (Часть B): кампания с тумблером не биддит на домены
+            # с низким quality score. Только opt-in, только известные домены.
+            if c["clean_traffic_only"] and req_domain and req_domain in _dirty_domains:
+                continue
+            # Scoring-профиль кампании (enforce): домен ниже порога качества — не биддим.
+            if req_domain:
+                _sb = _scoring_blocks.get(str(c["campaign_id"]))
+                if _sb and req_domain in _sb:
+                    continue
+            if not _match_targeting(targeting, req):
+                continue
+            if not _match_imp_targeting(targeting, imp):
+                continue
+            # Retargeting: audience include/exclude via Redis sets (fail-open)
+            _aud_inc = targeting.get("audience_include") or []
+            _aud_exc = targeting.get("audience_exclude") or []
+            if (_aud_inc or _aud_exc) and not await check_audiences(
+                    device_id or "", [str(x) for x in _aud_inc], [str(x) for x in _aud_exc]):
+                continue
+            # CPC (audit R-03): ставка за клик -> эквивалентная CPM через
+            # ожидаемый CTR (pCTR-модель, иначе консервативный fallback).
+            # Списание — по клику ровно bid_cpc (см. click()); win не списывает.
+            # max_bid для CPC — потолок клика, а не CPM.
+            c["_bid_type"] = (c.get("bid_type") or "cpm")
+            c["_bid_cpc"] = None
+            if c["_bid_type"] == "cpc":
+                bid_cpc = float(c["bid_price"])
+                if c["max_bid"]:
+                    bid_cpc = min(bid_cpc, float(c["max_bid"]))
+                ctr = await ml_pctr.expected_ctr(
+                    pool, domain=req_domain or None, creative_id=str(c["creative_id"]),
+                    device_type=req_device, hour=int(req_hour),
+                )
+                price = ml_pctr.cpc_to_cpm(bid_cpc, ctr)
+                c["_bid_cpc"] = bid_cpc
+            else:
+                price = float(c["bid_price"])
+                if c["max_bid"]:
+                    price = min(price, float(c["max_bid"]))
+            if price < floor:
+                continue
+            # Value-based биддинг (Часть B): для performance-целей корректируем
+            # бид множителем pctr/baseline с жёсткими guardrails:
+            #   * только objective clicks/conversions и bid_type CPM;
+            #   * множитель зажат в [0.7, 1.3] — модель тюнингует, не управляет;
+            #   * пол floor и потолок max_bid соблюдаются всегда;
+            #   * модель недоступна -> базовая цена (fail-safe).
+            c["_pctr"] = None
+            if (c.get("objective") in ("traffic", "conversions")
+                    and (c.get("bid_type") or "cpm") == "cpm"):
+                _pred = await ml_pctr.predict(
+                    pool, domain=req_domain or None,
+                    creative_id=str(c["creative_id"]),
+                    device_type=req_device, hour=int(req_hour),
+                )
+                if _pred is not None and _pred["matched"] > 0 and _pred["baseline"] > 0:
+                    _mult = min(1.3, max(0.7, _pred["pctr"] / _pred["baseline"]))
+                    price = max(floor, price * _mult)
+                    if c["max_bid"]:
+                        price = min(price, float(c["max_bid"]))
+                    c["_pctr"] = _pred["pctr"]
+            # Bid shading (opt-in, first-price only): pay closer to the
+            # clearing price, never below floor. Second-price auctions are
+            # excluded: shading there cuts win rate without saving money.
+            if should_shade(c["bid_shading"], cand_auction):
+                _sf = await shading_get_factor(str(c["campaign_id"]), str(partner["id"]))
+                if _sf < 1.0:
+                    price = max(floor * 1.01, price * _sf)
+                    if c["max_bid"] and c["_bid_type"] != "cpc":
+                        price = min(price, float(c["max_bid"]))
+            if best is None or price > best[0]:
+                c["_deal_id"] = str(deal["id"]) if deal is not None else None
+                c["_native_assets"] = native_assets
+                c["_fx_rate"] = rate_resp
+                best = (price, c)
+
+        if not best:
+            continue
+
+        price, c = best
+        cost = price / 1000.0  # CPM -> cost per impression
+
+        # Even pacing: cap the effective daily budget by the share of the
+        # BUSINESS day elapsed (Europe/Moscow — the same boundary as spend:*).
+        # Shared helper; Go mirrors it in redisx.EvenPacingBudget (audit R-03).
+        effective_budget = float(c["camp_budget"])
+        if (c.get("pacing") or "asap") == "even" and effective_budget > 0:
+            effective_budget = even_pacing_budget(effective_budget)
+
+        # Multi-window frequency caps (up to 3); legacy pair is the fallback
+        caps_list = _parse_freq_caps(c)
+        bid_id = str(uuid.uuid4())
+        # Single Redis roundtrip (audit M-05/M-06): frequency-cap check +
+        # atomic reservation on campaign daily, line-item daily, advertiser
+        # available balance and total-budget remaining; bid tracked in
+        # pending:bids until win/loss/expire.
+        total_budget = float(c.get("total_budget") or 0)
+        # OpenRTB test=1 (§3.2.1, audit E-04): SSP проверяет интеграцию. Отвечаем
+        # реальным бидом, но бюджет не резервируем, bids не считаем, а is_test
+        # едет в bidmeta и bid_events — win/imp/click по нему не тронут ни деньги,
+        # ни stats_hourly. Зеркало Go handler.go (req.Test == 1).
+        is_test_req = req.get("test") in (1, "1", True)
+        reserve_meta = {
+            "advertiser_id": str(c.get("advertiser_id") or ""),
+            "reserve": 0 if is_test_req else cost,
+            "has_total": 1 if total_budget > 0 else 0,
+            "has_li": 1 if float(c["li_budget"] or 0) > 0 else 0,
+            "business_date": business_date_str(),
+            # Frequency cap (R-06): settle_win инкрементирует freq:* по этим
+            # окнам, loss/expire снимает in-flight слот freqinf. Контракт с Go
+            # persistBidMeta (fdev/fcaps).
+            "fdev": device_id or "",
+            "fcaps": [list(w) for w in active_caps(caps_list)],
+            "fwin": 1 if _partner_flag(partner, "freq_cap_on_win") else 0,
+        }
+        if not is_test_req:
+            ok = await gate_and_reserve(
+                str(c["campaign_id"]), str(c["li_id"]), cost,
+                effective_budget, float(c["li_budget"] or 0),
+                device_id=device_id or "",
+                caps=caps_list,
+                bid_id=bid_id,
+                advertiser_id=reserve_meta["advertiser_id"],
+                adv_balance=float(c.get("adv_balance") or 0),
+                total_remaining=total_budget - float(c.get("spent_total") or 0),
+                has_total=total_budget > 0,
+            )
+            if not ok:
+                continue
+        event_token = sign_event_token(bid_id)
+        # Retargeting bridge: pixel reports clid == bid_id after the click
+        if device_id:
+            _fire_and_forget(store_clid_bridge(bid_id, device_id))
+        nurl = f"{base}/api/rtb/win?bid={event_token}&price=${{AUCTION_PRICE}}"
+        # burl (OpenRTB 2.5 §4.3.3, R-07): billable-событие; тот же токен, что и nurl.
+        burl = f"{base}/api/rtb/burl?bid={event_token}&price=${{AUCTION_PRICE}}"
+        adm = _build_adm(c, base, event_token)
+
+        # Synchronously cache bid metadata in Redis (sub-ms) so win/imp/click
+        # handlers can resolve the bid immediately; the Postgres insert below
+        # is fire-and-forget and may land after the SSP's win notice (GAP-011).
+        # Одни и те же inventory-измерения идут в bidmeta и в событие bid —
+        # win/imp/click наследуют их через _event_dims (audit E-01). Формат
+        # полей — контракт с Go persistBidMeta.
+        _site_or_app = req.get("site") or req.get("app") or {}
+        bid_dims = {
+            "device_type": DEVICE_TYPES.get(device.get("devicetype", 0), "unknown"),
+            "geo_country": geo.get("country"), "geo_region": geo.get("region"), "geo_city": geo.get("city"),
+            "ad_type": ad_type,
+            "domain": site.get("domain"), "bundle": (req.get("app") or {}).get("bundle"),
+            "publisher_id": str((_site_or_app.get("publisher") or {}).get("id") or "") or None,
+            "tagid": imp.get("tagid"),
+            "os": req_os, "browser": req_browser,
+        }
+        await get_redis().set(
+            f"bidmeta:{bid_id}",
+            json.dumps({
+                "bid_id": bid_id, "imp_id": imp.get("id"),
+                "campaign_id": str(c["campaign_id"]), "line_item_id": str(c["li_id"]),
+                "creative_id": str(c["creative_id"]), "supply_partner_id": str(partner["id"]),
+                "price": price,
+                **bid_dims,
+                "is_test": 1 if is_test_req else 0,
+                # CPC (R-03): win() не списывает, click() списывает bid_cpc.
+                "bid_type": c["_bid_type"],
+                "bid_cpc": c["_bid_cpc"],
+                # Валюта ответа и курс бида: win() переводит ${AUCTION_PRICE}
+                # (в cur) в RUB тем же курсом — без дрейфа к моменту нотиса.
+                "cur": resp_cur,
+                "fx_rate": c["_fx_rate"],
+                **reserve_meta,
+            }),
+            ex=3600,
+        )
+        _fire_and_forget(_log_event(
+            pool, "bid", bid_id=bid_id, imp_id=imp.get("id"),
+            campaign_id=c["campaign_id"], line_item_id=c["li_id"], creative_id=c["creative_id"],
+            supply_partner_id=partner["id"], price=price, pctr=c.get("_pctr"),
+            is_test=is_test_req, **bid_dims,
+        ))
+        if not is_test_req:
+            _fire_and_forget(_bump_stats(pool, "bids", 0, c["campaign_id"], c["li_id"], c["creative_id"], partner["id"]))
+        # Метрика в RUB — до перевода в валюту ответа.
+        obs_metrics.inc("rtb_bid_price_cpm_rub_sum", price)
+
+        bid_obj = {
+            "id": bid_id,
+            "impid": imp.get("id"),
+            "price": round(price / c["_fx_rate"], 4),  # RUB -> валюта ответа
+            "nurl": nurl,
+            "burl": burl,
+            "adm": adm,
+            "crid": str(c["creative_id"]),
+            "cid": str(c["campaign_id"]),
+            "adomain": [c["adv_domain"]] if c.get("adv_domain") else [],
+            "w": c.get("width"),
+            "h": c.get("height"),
+        }
+        if c.get("_deal_id"):
+            bid_obj["dealid"] = c["_deal_id"]
+        # seat: ID, который этот SSP присвоил нам как байеру (миграция 030)
+        _seat = (partner["seat_id"] if "seat_id" in partner.keys() else None) or "centraldsp"
+        seatbids.append({"bid": [bid_obj], "seat": _seat})
+
+    if not seatbids:
+        return None
+
+    # cur: валюта, в которой реально выставлены цены (fx.choose_currency)
+    return {
+        "id": req_id,
+        "bidid": str(uuid.uuid4()),
+        "cur": resp_cur,
+        "seatbid": seatbids,
+    }
+
+
+async def _bump_domain_stats(db, row, col: str | None, spend=0):
+    """Upsert domain_stats_hourly from a found bid_events row. Best-effort.
+
+    `db` — пул или соединение с открытой транзакцией. Во втором случае запрос
+    идёт под savepoint: проглоченная ошибка не должна переводить внешнюю
+    транзакцию (событие + stats_hourly) в состояние aborted.
+    """
+    domain = (row.get("domain") or "").strip().lower() if hasattr(row, "get") else (row["domain"] or "").strip().lower()
+    if not domain:
+        return
+    if col is None:
+        # R-07: только деньги (burl после win, который уже поднял wins).
+        sql = """
+        INSERT INTO domain_stats_hourly (ts_hour, campaign_id, supply_partner_id, domain, spend)
+        VALUES (date_trunc('hour', now()), $1, $2, $3, $4)
+        ON CONFLICT (ts_hour, campaign_id, supply_partner_id, domain)
+        DO UPDATE SET spend = domain_stats_hourly.spend + $4
+        """
+    else:
+        sql = f"""
+        INSERT INTO domain_stats_hourly (ts_hour, campaign_id, supply_partner_id, domain, {col}, spend)
+        VALUES (date_trunc('hour', now()), $1, $2, $3, 1, $4)
+        ON CONFLICT (ts_hour, campaign_id, supply_partner_id, domain)
+        DO UPDATE SET {col} = domain_stats_hourly.{col} + 1,
+                      spend = domain_stats_hourly.spend + $4
+        """
+    args = (row["campaign_id"], row["supply_partner_id"], domain, spend or 0)
+    try:
+        if hasattr(db, "transaction"):
+            async with db.transaction():
+                await db.execute(sql, *args)
+        else:
+            await db.execute(sql, *args)
+    except Exception:
+        logger.exception("domain stats bump failed (non-fatal)")
+
+
+async def _find_bid(pool, bid_id: str):
+    """Resolve bid metadata: Redis cache first (written synchronously in the
+    bid path), Postgres bid_events as fallback for older bids."""
+    try:
+        raw = await get_redis().get(f"bidmeta:{bid_id}")
+        if raw:
+            return json.loads(raw)
+    except Exception:
+        logger.exception("bidmeta redis lookup failed; falling back to PG")
+    return await pool.fetchrow(
+        "SELECT * FROM bid_events WHERE bid_id = $1 AND event_type = 'bid' ORDER BY id LIMIT 1", bid_id
+    )
+
+
+@router.get("/win")
+async def win_notice(bid: str, price: str | None = None):
+    """Win notice (nurl). `price` is the SSP-substituted ${AUCTION_PRICE};
+    it is untrusted input: clamped to [0, our bid price] before billing.
+    Billing is transactional and idempotent (see billing_core.bill_win).
+    `bid` is an HMAC-signed event token (see tokens.py).
+
+    R-07: for partners with supply_partners.billing_event='burl' the win is
+    NOT the billable event — see _win_pending_burl; money moves in
+    billing_notice (/burl). billing_event='win' keeps the pre-R-07 path."""
+    bid = verify_event_token(bid)
+    if not bid:
+        obs_metrics.inc("rtb_event_token_rejects_total")
+        raise HTTPException(status_code=403, detail="Invalid event token")
+    pool = await get_pool()
+    row = await _find_bid(pool, bid)
+    if not row:
+        raise HTTPException(status_code=404, detail="Unknown bid")
+    # ${AUCTION_PRICE} приходит в валюте ответа (bidmeta.cur); в RUB — курсом
+    # самого бида (bidmeta.fx_rate), затем clamp к нашей рублёвой цене.
+    # Нет fx_rate (PG-fallback / старый бид) = RUB, курс 1.
+    clear_price = clamp_clearing_price(_to_rub_price(price, row), row["price"] or 0)
+    cost = cpm_to_cost(clear_price)
+
+    # OpenRTB test=1 (bidmeta.is_test от Go-биддера): SSP проверяет интеграцию.
+    # Фиксируем win в журнале (видно в отчёте с флагом), но не списываем деньги
+    # и не трогаем stats_hourly — иначе тест SSP исказит расход клиента.
+    if _is_test_bid(row):
+        async with _once_txn(pool, "testwin", bid) as conn:
+            if conn is not None:
+                obs_metrics.inc("rtb_test_wins_total")
+                await _log_event(
+                    conn, "win", bid_id=bid, price=row["price"], clear_price=clear_price,
+                    is_test=True, **_event_dims(row),
+                )
+        return {"ok": True, "test": True}
+
+    # CPC (audit R-03): win — событие доставки, не оплаты. Деньги списывает
+    # click() ровно на bid_cpc; здесь только журнал (без clear_price — договор
+    # stats_math) и счётчик wins. Резерв Redis (ожидаемая стоимость показа)
+    # переводится в «потрачено» как есть: дневные лимиты и pacing работают по
+    # ожиданию, источник истины по деньгам — ledger.
+    if _cpc_of(row) is not None:
+        async with _once_txn(pool, "win", bid) as conn:
+            if conn is not None:
+                await _log_event(conn, "win", bid_id=bid, price=row["price"], **_event_dims(row))
+                await _bump_stats(conn, "wins", 0, *_stat_ids(row))
+                await _bump_domain_stats(conn, row, "wins")
+                obs_metrics.inc("rtb_wins_total")
+                obs_metrics.inc("rtb_cpc_wins_total")
+        try:
+            res = reservation_from_bidmeta(row)
+            if res:
+                res["bid_id"] = bid
+                await settle_win(res, float(res.get("reserve") or 0), assume_released=not isinstance(row, dict))
+        except Exception:
+            logger.exception("settle_win (cpc) failed for bid %s", bid)
+            obs_metrics.inc("rtb_settle_win_errors_total")
+        return {"ok": True, "cpc": True}
+
+    if await _partner_billing_event(pool, row["supply_partner_id"]) == "burl":
+        return await _win_pending_burl(pool, bid, row)
+
+    # Audit E-02: списание, событие win и stats_hourly — одна транзакция.
+    # bill_win внутри открывает свою transaction() -> под внешней это savepoint.
+    # Дедуп — transactions(bid_id) WHERE type='spend': повтор после падения
+    # любого шага снова проходит весь путь целиком, а не «duplicate».
+    # billing_event=win: win и есть billable-показ (R-07) — billable_imps растёт здесь.
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            result = await bill_win(
+                conn,
+                bid_id=bid,
+                campaign_id=row["campaign_id"],
+                line_item_id=row["line_item_id"],
+                cost=cost,
+            )
+            if not result.billed:
+                return {"ok": True, "duplicate": True}
+            await _log_event(
+                conn, "win", bid_id=bid, price=row["price"], clear_price=clear_price,
+                **_event_dims(row),
+            )
+            await _bump_stats(conn, ("wins", "billable_imps"), cost, *_stat_ids(row))
+            await _bump_domain_stats(conn, row, "wins", result.cost)
+
+    # Audit M-06: перевести резерв Redis в фактическое списание. Резерв был
+    # bid price/1000, списан clearing — разница возвращается на дневные ключи,
+    # доступный баланс и остаток total. Если резерв уже вернулся по loss/expire
+    # (или бид пришёл из PG-fallback без bidmeta), clearing досписывается.
+    try:
+        res = reservation_from_bidmeta(row)
+        if res:
+            res["bid_id"] = bid
+            if not res.get("advertiser_id") and result.advertiser_id:
+                # PG-fallback row без advertiser_id: bill_win его знает.
+                res["advertiser_id"] = result.advertiser_id
+            from_pg = not isinstance(row, dict)
+            code = await settle_win(res, float(cost), assume_released=from_pg)
+            obs_metrics.inc({0: "rtb_win_settle_duplicate_total", 2: "rtb_win_settle_recharged_total"}.get(code, "rtb_win_settle_converted_total"))
+    except Exception:
+        # Деньги в БД уже списаны (источник истины); Redis подтянет reconcile.
+        logger.exception("settle_win failed for bid %s", bid)
+        obs_metrics.inc("rtb_settle_win_errors_total")
+
+    obs_metrics.inc("rtb_wins_total")
+    obs_metrics.inc("rtb_win_spend_rub_sum", float(cost))
+    return {"ok": True}
+
+
+# --- Биллинг по burl (audit R-07) --------------------------------------------
+#
+# OpenRTB 2.5 §4.3.3: nurl — «вы победили», burl — «показ оплачивается». Для
+# SSP с billing_event='burl' деньги двигаются только на burl; nurl держит
+# бюджетный резерв (полная bid price — верхняя граница обязательства) до burl
+# или BURL_TTL. Состояния bidstate:{bid}: (nil) -> won -> win | won_expired
+# -> win (late). Идемпотентность: bid_event_once(bid, 'win'|'burl'|
+# 'win_expired') + transactions(bid_id, 'spend') в bill_win + prev-check Lua.
+
+PAID_EVENT_TYPES = ("win", "click", "billable")
+
+_BILLING_EVENT_CACHE_TTL = 60.0
+_billing_event_cache: dict[str, tuple[float, str]] = {}
+
+
+async def _partner_billing_event(pool, partner_id) -> str:
+    """supply_partners.billing_event партнёра ('win' | 'burl'), кэш 60 с.
+    Неизвестный/удалённый партнёр и старая схема (до 046) -> 'win'."""
+    import time as _time
+
+    key = str(partner_id or "")
+    if not key:
+        return "win"
+    now = _time.monotonic()
+    hit = _billing_event_cache.get(key)
+    if hit and hit[0] > now:
+        return hit[1]
+    try:
+        value = await pool.fetchval("SELECT billing_event FROM supply_partners WHERE id = $1", partner_id)
+    except Exception:
+        logger.exception("billing_event lookup failed for partner %s", partner_id)
+        return "win"
+    mode = value if value in ("win", "burl") else "win"
+    _billing_event_cache[key] = (now + _BILLING_EVENT_CACHE_TTL, mode)
+    return mode
+
+
+def reset_billing_event_cache() -> None:
+    _billing_event_cache.clear()
+
+
+async def _win_pending_burl(pool, bid: str, row) -> dict:
+    """nurl партнёра с billing_event=burl: событие win без денег, wins+1,
+    резерв остаётся, бид уходит в pending:burl (cache.win_pending)."""
+    counted = False
+    async with _once_txn(pool, "win", bid) as conn:
+        if conn is not None:
+            await _log_event(conn, "win", bid_id=bid, price=row["price"], **_event_dims(row))
+            await _bump_stats(conn, "wins", 0, *_stat_ids(row))
+            await _bump_domain_stats(conn, row, "wins")
+            counted = True
+    if not counted:
+        return {"ok": True, "duplicate": True}
+    try:
+        res = reservation_from_bidmeta(row) if isinstance(row, dict) else None
+        if res:
+            res["bid_id"] = bid
+            code = await win_pending(res)
+            if code == 1:
+                obs_metrics.inc("rtb_win_pending_burl_total")
+            elif code == 2:
+                obs_metrics.inc("rtb_win_pending_unreserved_total")
+    except Exception:
+        # Событие win уже в БД; без записи в pending:burl резерв снимет
+        # sweeper Go по своему TTL, а burl досписает clearing (recharge).
+        logger.exception("win_pending failed for bid %s", bid)
+        obs_metrics.inc("rtb_win_pending_errors_total")
+    obs_metrics.inc("rtb_wins_total")
+    obs_metrics.inc_burl_outcome(row["supply_partner_id"], "won")
+    return {"ok": True, "pending_burl": True}
+
+
+@router.get("/burl")
+async def billing_notice(bid: str, price: str | None = None):
+    """Billing notice (burl, OpenRTB 2.5 §4.3.3). Тот же токен и ${AUCTION_PRICE},
+    что у nurl. Деньги списываются здесь только для партнёров с
+    billing_event='burl'; для 'win' — уже списаны на nurl, burl лишь сигнал,
+    что биржа его шлёт (rtb_burl_in_win_mode_total). Ровно одно списание на
+    бид (bill_win); поздний burl после win_expired списывается и помечается
+    late (R-07)."""
+    bid = verify_event_token(bid)
+    if not bid:
+        obs_metrics.inc("rtb_event_token_rejects_total")
+        raise HTTPException(status_code=403, detail="Invalid event token")
+    pool = await get_pool()
+    row = await _find_bid(pool, bid)
+    if not row:
+        raise HTTPException(status_code=404, detail="Unknown bid")
+    if await _partner_billing_event(pool, row["supply_partner_id"]) != "burl":
+        obs_metrics.inc("rtb_burl_in_win_mode_total")
+        return {"ok": True, "ignored": "billing_event=win"}
+
+    clear_price = clamp_clearing_price(_to_rub_price(price, row), row["price"] or 0)
+    cost = cpm_to_cost(clear_price)
+
+    if _is_test_bid(row):
+        async with _once_txn(pool, "burl", bid) as conn:
+            if conn is not None:
+                await _log_event(
+                    conn, "billable", bid_id=bid, price=row["price"], clear_price=clear_price,
+                    is_test=True, **_event_dims(row),
+                )
+        return {"ok": True, "test": True}
+
+    if _cpc_of(row) is not None:
+        # CPC (R-03): деньги на click; burl — только счётчик billable-показов.
+        async with _once_txn(pool, "burl", bid) as conn:
+            if conn is not None:
+                await _log_event(conn, "billable", bid_id=bid, price=row["price"], **_event_dims(row))
+                await _bump_stats(conn, "billable_imps", 0, *_stat_ids(row))
+        return {"ok": True, "cpc": True}
+
+    # Списание, событие billable и stats_hourly — одна транзакция (как win_notice).
+    # late — по факту в БД (bid_event_once 'win_expired'), а не по Redis.
+    async with pool.acquire() as conn, conn.transaction():
+        result = await bill_win(
+            conn,
+            bid_id=bid,
+            campaign_id=row["campaign_id"],
+            line_item_id=row["line_item_id"],
+            cost=cost,
+        )
+        if not result.billed:
+            obs_metrics.inc("rtb_burl_duplicate_total")
+            return {"ok": True, "duplicate": True}
+        late = bool(await conn.fetchval(
+            "SELECT 1 FROM bid_event_once WHERE bid_id = $1 AND kind = 'win_expired'", bid,
+        ))
+        had_win = bool(await conn.fetchval(
+            "SELECT 1 FROM bid_event_once WHERE bid_id = $1 AND kind = 'win'", bid,
+        ))
+        await _log_event(
+            conn, "billable", bid_id=bid, price=row["price"], clear_price=clear_price,
+            late=late, **_event_dims(row),
+        )
+        await _bump_stats(conn, "billable_imps", cost, *_stat_ids(row))
+        await _bump_domain_stats(conn, row, None, result.cost)
+
+    # Redis: резерв (won) -> clearing; после won_expired/loss/expire — recharge.
+    try:
+        res = reservation_from_bidmeta(row)
+        if res:
+            res["bid_id"] = bid
+            if not res.get("advertiser_id") and result.advertiser_id:
+                res["advertiser_id"] = result.advertiser_id
+            from_pg = not isinstance(row, dict)
+            code = await settle_win(res, float(cost), assume_released=from_pg)
+            obs_metrics.inc({
+                0: "rtb_win_settle_duplicate_total",
+                2: "rtb_win_settle_recharged_total",
+                3: "rtb_win_settle_recharged_total",
+            }.get(code, "rtb_win_settle_converted_total"))
+    except Exception:
+        logger.exception("settle_win (burl) failed for bid %s", bid)
+        obs_metrics.inc("rtb_settle_win_errors_total")
+
+    obs_metrics.inc("rtb_burl_total")
+    obs_metrics.inc("rtb_win_spend_rub_sum", float(cost))
+    if late:
+        obs_metrics.inc("rtb_burl_late_total")
+    if not had_win:
+        obs_metrics.inc("rtb_burl_without_nurl_total")
+    obs_metrics.inc_burl_outcome(row["supply_partner_id"], "late" if late else "billed")
+    return {"ok": True, "late": late, "paused": result.paused}
+
+
+async def sweep_pending_burl(limit: int = 1000) -> dict:
+    """pending:burl -> win_expired для выигрышей без burl за BURL_TTL (R-07).
+    Резерв освобождается (cache.expire_burl), денег нет, событие win_expired
+    остаётся для сверки с отчётом SSP. Вызывается GET /cron/sweep-burl."""
+    import time as _time
+
+    now = int(_time.time())
+    pool = await get_pool()
+    due = await pending_burl_due(now, limit)
+    expired = billed = orphans = reserve_missing = 0
+    for bid in due:
+        row = await _find_bid(pool, bid)
+        res = reservation_from_bidmeta(row) if isinstance(row, dict) else None
+        if not res:
+            # bidmeta истёк или бид без резерва: очередь чистим, деньги не трогаем.
+            await get_redis().zrem(PENDING_BURL_KEY, bid)
+            orphans += 1
+            continue
+        res["bid_id"] = bid
+        code = await expire_burl(res)
+        if code == 0:
+            billed += 1
+            continue
+        if code == 2:
+            reserve_missing += 1
+            obs_metrics.inc("rtb_burl_expire_reserve_missing_total")
+        expired += 1
+        async with _once_txn(pool, "win_expired", bid) as conn:
+            if conn is not None:
+                await _log_event(conn, "win_expired", bid_id=bid, price=row["price"], **_event_dims(row))
+        obs_metrics.inc("rtb_win_without_burl_total")
+        obs_metrics.inc_burl_outcome(row["supply_partner_id"], "expired")
+    size, oldest_age = await pending_burl_stats(now)
+    obs_metrics.set_gauge("rtb_pending_burl_size", size)
+    obs_metrics.set_gauge("rtb_pending_burl_oldest_age_seconds", oldest_age)
+    return {
+        "due": len(due), "expired": expired, "already_billed": billed,
+        "orphans": orphans, "reserve_missing": reserve_missing,
+        "pending": size, "oldest_age_seconds": oldest_age,
+    }
+
+
+def _partner_flag(partner, name: str) -> bool:
+    """Boolean partner column that may be absent on older schemas (Record or dict)."""
+    try:
+        keys = partner.keys() if hasattr(partner, "keys") else ()
+        return bool(partner[name]) if name in keys else False
+    except Exception:
+        return False
+
+
+@router.get("/imp")
+async def impression(bid: str):
+    bid = verify_event_token(bid)
+    if not bid:
+        return Response(content=_PIXEL, media_type="image/gif")
+    pool = await get_pool()
+    # Бид ищем до заявки на дедуп: неизвестный bid не должен «сжигать» ключ
+    # (bidmeta мог ещё не долететь в Redis, а PG-fallback — быть за партицией).
+    row = await _find_bid(pool, bid)
+    if not row:
+        return Response(content=_PIXEL, media_type="image/gif")
+    is_test = _is_test_bid(row)
+    counted = False
+    async with _once_txn(pool, "imp", bid) as conn:
+        if conn is not None:
+            await _log_event(conn, "impression", bid_id=bid, is_test=is_test, **_event_dims(row))
+            if not is_test:
+                # Тестовый показ SSP: в журнале есть, в статистике клиента — нет.
+                await _bump_stats(conn, "impressions", 0, *_stat_ids(row))
+                await _bump_domain_stats(conn, row, "impressions")
+            counted = True
+    if counted:
+        obs_metrics.inc("rtb_imps_total")
+        if not is_test:
+            # Frequency cap (audit R-06): показ подтверждён — бронь win → счётчики
+            # окон. После коммита bid_event_once: Redis не откатить, а
+            # недосчитанный кап безопаснее пересчитанного. PG-fallback без
+            # bidmeta (fdev/fcaps) ничего не считает — безопасная сторона.
+            try:
+                res = reservation_from_bidmeta(row) if isinstance(row, dict) else None
+                if res and res.get("caps"):
+                    res["bid_id"] = bid
+                    outcome = await confirm_imp(res)
+                    if outcome.late:
+                        # Бронь уже истекла (или win не приходил): показ засчитан,
+                        # но слот был свободен. Рост вместе с win_without_imp =
+                        # пиксель медленный, а не сломанный → поднять WIN_IMP_TTL.
+                        obs_metrics.inc("rtb_imp_late_after_reservation_total")
+                else:
+                    obs_metrics.inc("rtb_imp_freq_uncounted_total")
+            except Exception:
+                logger.exception("confirm_imp failed for bid %s", bid)
+                obs_metrics.inc("rtb_imp_freq_errors_total")
+    return Response(content=_PIXEL, media_type="image/gif")
+
+
+_PIXEL = bytes.fromhex("47494638396101000100800000ffffff00000021f90401000000002c00000000010001000002024401003b")
+
+
+@router.get("/view")
+async def viewable_impression(bid: str):
+    """Viewability-маячок (MRC: >=50% площади в зоне видимости >=1 сек).
+
+    Дёргается скриптом-замером из разметки баннера (IntersectionObserver),
+    eventtrackers-пикселем натива/пуша или событием start видео. Идемпотентен
+    через _once_txn — повторные срабатывания не задваивают статистику.
+    """
+    bid = verify_event_token(bid)
+    if not bid:
+        return Response(content=_PIXEL, media_type="image/gif")
+    pool = await get_pool()
+    row = await _find_bid(pool, bid)
+    if row:
+        await _record_viewable(pool, bid, row)
+    return Response(content=_PIXEL, media_type="image/gif")
+
+
+async def _record_viewable(pool, bid: str, row) -> None:
+    """Событие viewable + viewable_imps ровно один раз на бид (/rtb/view:
+    IO-скрипт баннера и native eventtrackers event=2). Тестовый бид (E-04):
+    журнал — да, статистика — нет."""
+    is_test = _is_test_bid(row)
+    async with _once_txn(pool, "view", bid) as conn:
+        if conn is None:
+            return
+        await _log_event(conn, "viewable", bid_id=bid, is_test=is_test, **_event_dims(row))
+        if not is_test:
+            await _bump_stats(conn, "viewable_imps", 0, *_stat_ids(row))
+            await _bump_domain_stats(conn, row, "viewable_imps")
+    if not is_test:
+        obs_metrics.inc("rtb_viewable_imps_total")
+
+
+_VIDEO_EVENTS = {"start", "firstQuartile", "midpoint", "thirdQuartile", "complete", "skip"}
+
+
+@router.get("/vevent")
+async def video_event(bid: str, e: str):
+    """VAST tracking-event callback: start / quartiles / complete / skip."""
+    if e not in _VIDEO_EVENTS:
+        return Response(content=_PIXEL, media_type="image/gif")
+    bid = verify_event_token(bid)
+    if not bid:
+        return Response(content=_PIXEL, media_type="image/gif")
+    pool = await get_pool()
+    row = await _find_bid(pool, bid)
+    if not row:
+        return Response(content=_PIXEL, media_type="image/gif")
+    is_test = _is_test_bid(row)
+    async with _once_txn(pool, f"vev:{e}", bid) as conn:
+        if conn is not None:
+            await _log_event(conn, f"video_{e}", bid_id=bid, is_test=is_test, **_event_dims(row))
+            if is_test:
+                pass   # тестовый бид (E-04): в журнале есть, в статистике нет
+            elif e == "start":
+                await _bump_stats(conn, "video_starts", 0, *_stat_ids(row))
+            elif e == "complete":
+                await _bump_stats(conn, "video_completes", 0, *_stat_ids(row))
+    # Audit R-05: start плеера — не viewable по MRC (50% пикселей 2 с непрерывно);
+    # для видео viewable_imps не заявляем до появления OMID/VPAID-замера.
+    return Response(content=_PIXEL, media_type="image/gif")
+
+
+@router.get("/click")
+async def click(bid: str, beacon: int = 0):
+    """Клик по биду. Редирект — только на click_url креатива из bidmeta/БД;
+    цель в query (старый &r=…) не принимается: токен бида публичен (лежит в
+    разметке), и open redirect с нашего домена превращался бы в фишинг.
+    beacon=1 — учёт без перехода (HTML5 без макроса клика, VAST ClickTracking)."""
+    bid = verify_event_token(bid)
+    if not bid:
+        raise HTTPException(status_code=403, detail="Invalid event token")
+    pool = await get_pool()
+    row = await _find_bid(pool, bid)
+    if row:
+        is_test = _is_test_bid(row)
+        cpc = None if is_test else _cpc_of(row)
+        async with _once_txn(pool, "click", bid) as conn:
+            if conn is not None:
+                # CPC (audit R-03): оплаченное событие — первый клик по биду.
+                # bill_win идемпотентен по bid_id (ledger type='spend'), поэтому
+                # один показ оплачивается не более одного раза, сколько бы
+                # кликов ни пришло; clear_price клика = цена клика (stats_math).
+                charged = None
+                if cpc is not None:
+                    result = await bill_win(
+                        conn, bid_id=bid, campaign_id=row["campaign_id"],
+                        line_item_id=row["line_item_id"], cost=Decimal(str(cpc)),
+                        description=f"Click bid={bid}",
+                    )
+                    if result.billed:
+                        charged = result.cost
+                        obs_metrics.inc("rtb_cpc_clicks_billed_total")
+                        obs_metrics.inc("rtb_win_spend_rub_sum", float(charged))
+                await _log_event(
+                    conn, "click", bid_id=bid, is_test=is_test,
+                    clear_price=charged, **_event_dims(row),
+                )
+                if not is_test:
+                    # Тестовый клик SSP (E-04): в журнале есть, в статистике клиента — нет.
+                    await _bump_stats(conn, "clicks", float(charged or 0), *_stat_ids(row))
+                    await _bump_domain_stats(conn, row, "clicks", float(charged or 0))
+                    obs_metrics.inc("rtb_clicks_total")
+    if beacon:
+        return Response(content=_PIXEL, media_type="image/gif")
+    target = ""
+    if row and row["creative_id"]:
+        target = await pool.fetchval("SELECT click_url FROM creatives WHERE id = $1", row["creative_id"]) or ""
+    if rtb_compat.safe_url(target):
+        return Response(status_code=302, headers={"Location": _with_clid(target, bid)})
+    return Response(content=_PIXEL, media_type="image/gif")
+
+
+def _with_clid(url: str, bid: str) -> str:
+    """Лендинг получает cdsp_clid=<bid> для атрибуции конверсий Central Pixel;
+    query дописывается до #fragment, а не после него."""
+    parts = urlsplit(url)
+    query = f"{parts.query}&cdsp_clid={bid}" if parts.query else f"cdsp_clid={bid}"
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))

@@ -1,0 +1,6 @@
+{
+  "name": "video: SSP accepts only webm/HLS, creative is mp4 -> video_mime",
+  "imp": {"id": "1", "video": {"mimes": ["video/webm", "application/x-mpegURL"], "protocols": [3]}},
+  "creative": {"type": "video", "video_url": "https://cdn.example/spot.mp4", "video_duration": 15},
+  "expect": {"incompat": "video_mime"}
+}

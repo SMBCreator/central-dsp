@@ -1,0 +1,422 @@
+# Central DSP — базовый Compose (локальная разработка / один VPS).
+#
+#   docker compose up -d --build                      # dev: порты на 127.0.0.1, hot reload backend
+#   COMPOSE_FILE=compose.yml:compose.prod.yml         # production: + Caddy/TLS, порты закрыты (см. compose.prod.yml)
+#   --profile monitoring                              # + Prometheus (никогда не стартует по умолчанию)
+#   compose.external.yml                              # managed Postgres/Redis вместо встроенных
+#
+# Требуется Docker Compose >= 2.24 (теги !override/!reset, env_file.required).
+# Планировщик задач /cron/* — сервис `scheduler` (audit O-01, C1b); до его
+# появления см. docs/DEPLOYMENT.md §9.1.
+# Единственный боевой биддер — bidder-go. Python-ветка bid-запросов и legacy
+# Java RTB4FREE-биддер в стек не входят (решение 2026-09-11, C1c/C1d).
+
+name: centraldsp
+
+x-env-file: &env-file
+  env_file:
+    - path: .env
+      required: false
+
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: "50m"
+      max-file: "5"
+
+# Ресурсы (audit O-07 / C6). Здесь ТОЛЬКО soft reservations — kernel при memory
+# pressure сначала отбирает у тех, кто выше своей брони; ничего не убивает и не
+# троттлит. Hard limits (OOM-kill / CPU throttling) осознанно НЕ включены по
+# умолчанию: для DSP неверный лимит опаснее его отсутствия (OOM биддера в RTB
+# burst, рост p99 -> timeouts/no-bid). Они задаются отдельно, после benchmark
+# (rtb_load + профилирование) — compose.limits.yml, docs/DEPLOYMENT.md §12.
+# reservations.cpus Compose в standalone-режиме не применяет — не задаём.
+x-res-postgres:  &res-postgres  { deploy: { resources: { reservations: { memory: 512M } } } }
+x-res-redis:     &res-redis     { deploy: { resources: { reservations: { memory: 256M } } } }
+x-res-backend:   &res-backend   { deploy: { resources: { reservations: { memory: 384M } } } }
+x-res-scheduler: &res-scheduler { deploy: { resources: { reservations: { memory: 128M } } } }
+x-res-bidder:    &res-bidder    { deploy: { resources: { reservations: { memory: 256M } } } }
+x-res-frontend:  &res-frontend  { deploy: { resources: { reservations: { memory: 256M } } } }
+x-res-prom:      &res-prom      { deploy: { resources: { reservations: { memory: 256M } } } }
+x-res-small:     &res-small     { deploy: { resources: { reservations: { memory: 64M } } } }
+
+services:
+
+  # ─────────────────────────────────────────
+  # POSTGRES — схема накатывается ТОЛЬКО backend/migrate.py при старте backend
+  # (никаких init.sql: файла нет, а Docker создал бы вместо него каталог).
+  # ─────────────────────────────────────────
+  postgres:
+    # Audit O-07 / C6: tag + digest; обновление — отдельный PR (docs/DEPLOYMENT.md §13).
+    image: postgres:15.19-alpine@sha256:fe0737ba566a2c5b2a28f34433c0a423261900ec17b9bf7ad115e1aae7e57f1b
+    restart: unless-stopped
+    <<: [*logging, *res-postgres]
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-centraldsp}
+      POSTGRES_USER: ${POSTGRES_USER:-centraldsp}
+      # Пустой пароль контейнер postgres отвергает сам («superuser password is not
+      # specified»); :? здесь нельзя — compose.external.yml оставляет переменную пустой.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-centraldsp} -d ${POSTGRES_DB:-centraldsp}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - centraldsp
+
+  # ─────────────────────────────────────────
+  # REDIS — критическое состояние торгов (audit M-03): дневные расходы
+  # spend:*, резервы, dedup, bidmeta, rtb:events stream, freq caps.
+  # Поэтому:
+  #   * noeviction — потеря ключа spend:* = «новый нулевой расход» и
+  #     перерасход бюджета; при нехватке памяти Redis должен отвечать ошибкой
+  #     (биддер уйдёт в no-bid), а не тихо забывать деньги;
+  #   * AOF everysec + именованный volume — рестарт/пересборка контейнера не
+  #     обнуляет счётчики; RPO ≤ 1 с;
+  #   * один и тот же REDIS_URL у backend и bidder-go (см. ниже) — иначе
+  #     callbacks/consumer читают другую базу.
+  # Backend и Go проверяют maxmemory-policy на старте и в production
+  # отказываются работать с любой eviction-политикой.
+  # ─────────────────────────────────────────
+  redis:
+    image: redis:7.4.11-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+    restart: unless-stopped
+    <<: [*logging, *res-redis]
+    command: >
+      redis-server
+      --maxmemory ${REDIS_MAXMEMORY:-1gb}
+      --maxmemory-policy noeviction
+      --appendonly yes
+      --appendfsync everysec
+      --save ""
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - centraldsp
+
+  # ─────────────────────────────────────────
+  # BACKEND (FastAPI — Campaign API, events /rtb/win|imp|click|burl, ОРД, cron-ручки)
+  # ─────────────────────────────────────────
+  backend:
+    build: ./backend
+    image: centraldsp/backend:local
+    restart: unless-stopped
+    <<: [*env-file, *logging, *res-backend]
+    # Graceful shutdown (C6): uvicorn --timeout-graceful-shutdown 20 + close
+    # пулов PG/Redis в lifespan; SIGKILL только если не уложились в 30s.
+    stop_grace_period: 30s
+    environment:
+      # Встроенный Postgres по умолчанию; для managed PG задайте DATABASE_URL
+      # в .env (см. compose.external.yml / .env.external.example).
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-centraldsp}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-centraldsp}}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      # Audit R-06: бронь freq cap на win до imp-пикселя; то же значение у bidder-go.
+      WIN_IMP_TTL: ${WIN_IMP_TTL:-120}
+      # Audit R-07: ожидание burl у SSP с billing_event=burl (только backend).
+      BURL_TTL: ${BURL_TTL:-600}
+      RTB_API_TOKEN: ${RTB_API_TOKEN:?set RTB_API_TOKEN in .env (openssl rand -hex 32)}
+      EVENT_TOKEN_SECRET: ${EVENT_TOKEN_SECRET:?set EVENT_TOKEN_SECRET in .env (openssl rand -hex 32)}
+      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in .env (openssl rand -hex 32)}
+      # Bearer для /cron/* — его предъявляет планировщик; без него ручки закрыты.
+      CRON_SECRET: ${CRON_SECRET:?set CRON_SECRET in .env (openssl rand -hex 32)}
+      # Bearer для /alerts/webhook — его предъявляет Alertmanager (profile
+      # monitoring). Пусто = в production ручка отвечает 503, алерты не доходят.
+      ALERT_WEBHOOK_SECRET: ${ALERT_WEBHOOK_SECRET:-}
+      # Публичный домен: из него строятся адреса, уходящие наружу (пиксель,
+      # /uploads/..., nurl/burl биддера). Обязателен (audit E-05 / O-01).
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?set PUBLIC_BASE_URL in .env (https://your-domain)}
+      PUBLIC_BIDDER_BASE_URL: ${PUBLIC_BIDDER_BASE_URL:-${PUBLIC_BASE_URL}}
+      PUBLIC_ORIGINS: ${PUBLIC_ORIGINS:-${PUBLIC_BASE_URL}}
+      # production => fail-fast на пустых/плейсхолдерных секретах при старте
+      # (backend/startup_checks.py). Для локальной разработки: APP_ENV=dev в .env.
+      APP_ENV: ${APP_ENV:-production}
+      # Автопроверка SSP и симулятор из кабинета бьют в боевой Go-биддер по HTTP
+      # (ssp_check.go_bidder_caller). Тот же RTB_API_TOKEN подписывает запрос.
+      # Python reference engine симулятора (C1d) — только вне production и только
+      # с SIMULATOR_ALLOW_PYTHON_REFERENCE=1; в production включённый флаг валит старт.
+      BIDDER_URL: http://bidder-go:8090
+      SIMULATOR_ALLOW_PYTHON_REFERENCE: ${SIMULATOR_ALLOW_PYTHON_REFERENCE:-false}
+      # Consumer событий Go-биддера (rtb:events -> bid_events/stats_hourly);
+      # RTB_EVENTS_CONSUMER=0 выключает (например, на реплике backend'а).
+      RTB_EVENTS_CONSUMER: ${RTB_EVENTS_CONSUMER:-1}
+      # Файлы креативов (баннеры/видео) — на именованном volume, чтобы не
+      # терялись при пересборке контейнера. См. docs/DEPLOYMENT.md §5.1.
+      UPLOAD_DIR: /data/uploads
+      MAX_IMAGE_UPLOAD_BYTES: ${MAX_IMAGE_UPLOAD_BYTES:-2097152}    # 2 МБ
+      MAX_VIDEO_UPLOAD_BYTES: ${MAX_VIDEO_UPLOAD_BYTES:-52428800}   # 50 МБ
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app                        # hot reload dev (compose.prod.yml убирает)
+      - geoip_data:/data:ro                   # GeoLite2 DB (read-only)
+      - uploads_data:/data/uploads            # креативы (persistent)
+    healthcheck:
+      # В образе python:slim нет curl/wget. Только /health (liveness): отказ
+      # Postgres/Redis не должен делать живой процесс unhealthy. Readiness
+      # (PG, Redis, consumer) — GET /ready, его читают deploy gate
+      # (ops/preprod_check.sh) и Prometheus (backend_ready). Audit O-05.
+      # Probe тоже не от root: docker exec стартует от пользователя образа (root,
+      # он нужен entrypoint'у для chown volume) — setpriv сбрасывает до app.
+      test: ["CMD", "setpriv", "--reuid=10001", "--regid=10001", "--clear-groups", "--", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    # Audit S-06: наружу публикует только реверс-прокси (Caddy, compose.prod.yml).
+    # Прямой доступ к сервисам с публичного адреса закрыт — иначе TRUSTED_PROXIES
+    # и IP-whitelist SSP обходятся запросом мимо прокси.
+    ports:
+      - "127.0.0.1:8000:8000"
+    networks:
+      - centraldsp
+
+  # ─────────────────────────────────────────
+  # SCHEDULER — планировщик /cron/* (audit O-01, C1b). Тот же образ, что backend;
+  # расписание в PostgreSQL (scheduled_jobs), правится через /scheduler/jobs.
+  # Заменяет crontab/Vercel Cron; отдельных воркеров/beat в проекте нет.
+  # ─────────────────────────────────────────
+  scheduler:
+    image: centraldsp/backend:local
+    restart: unless-stopped
+    <<: [*env-file, *logging, *res-scheduler]
+    stop_grace_period: 30s
+    command: ["python", "scheduler.py"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-centraldsp}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-centraldsp}}
+      CRON_SECRET: ${CRON_SECRET:?set CRON_SECRET in .env (openssl rand -hex 32)}
+      BACKEND_INTERNAL_URL: http://backend:8000
+      SCHEDULER_TICK: ${SCHEDULER_TICK:-15}
+      SCHEDULER_METRICS_ADDR: ":8001"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "setpriv", "--reuid=10001", "--regid=10001", "--clear-groups", "--", "python", "scheduler.py", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - centraldsp
+
+  # ─────────────────────────────────────────
+  # BIDDER-GO (Go OpenRTB 2.5 Engine) — единственный боевой биддер.
+  # Backend ходит в него по BIDDER_URL для автопроверки SSP и рефреша фида.
+  # ─────────────────────────────────────────
+  bidder-go:
+    build: ./bidder-go
+    image: centraldsp/bidder-go:local
+    restart: unless-stopped
+    <<: [*logging, *res-bidder]
+    stop_grace_period: 15s
+    environment:
+      BIDDER_ADDR: ":8090"
+      BACKEND_INTERNAL_URL: http://backend:8000
+      # Тот же Redis, что у backend: контрактные ключи (bidmeta, spend:*,
+      # rtb:events) должны жить в одной базе. Отдельный REDIS_URL_BIDDER
+      # намеренно убран (audit M-03).
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      RTB_API_TOKEN: ${RTB_API_TOKEN:?set RTB_API_TOKEN in .env}
+      EVENT_TOKEN_SECRET: ${EVENT_TOKEN_SECRET:?set EVENT_TOKEN_SECRET in .env (openssl rand -hex 32)}
+      # База nurl/burl/lurl/click, которые уходят SSP. Обязана быть публичной:
+      # с внутренним/localhost адресом биддер в production не стартует
+      # (bidder-go/internal/config).
+      EVENT_BASE_URL: ${PUBLIC_BASE_URL:?set PUBLIC_BASE_URL in .env}
+      APP_ENV: ${APP_ENV:-production}
+      INTERNAL_FEED_TOKEN: ${INTERNAL_FEED_TOKEN:-}
+      # Audit S-06: X-Forwarded-For принимается только от этих сетей (реверс-
+      # прокси). Дефолт в бинаре — loopback + приватные сети; за внешним LB
+      # перечислите его адреса. Пусто = XFF игнорируется всегда.
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.0/8,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7}
+      # Audit R-02: предел торговли по устаревшему снапшоту фида; дальше
+      # no-bid (feed_stale) и /healthz 503 (readiness; контейнер при этом
+      # остаётся healthy — HEALTHCHECK ходит в /livez, audit O-05).
+      FEED_MAX_AGE: ${FEED_MAX_AGE:-120s}
+      # Audit R-06: бронь freq cap на win до imp-пикселя; то же значение у backend.
+      WIN_IMP_TTL: ${WIN_IMP_TTL:-120}
+      # Audit R-03: предфильтр (боты / чужое гео / без device id / datacenter-IP)
+      # — те же переменные и тот же Redis SET prefilter:dc_subnets, что у backend.
+      THROTTLE_ENABLED: ${THROTTLE_ENABLED:-1}
+      THROTTLE_COUNTRIES: ${THROTTLE_COUNTRIES:-ru,rus}
+      THROTTLE_REQUIRE_DEVICE_ID: ${THROTTLE_REQUIRE_DEVICE_ID:-1}
+    depends_on:
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    # Только loopback: SSP ходят через Caddy (/rtb/* -> bidder-go:8090),
+    # поэтому RemoteAddr у биддера всегда прокси, а реальный IP — в XFF.
+    ports:
+      - "127.0.0.1:8090:8090"
+    healthcheck:
+      # Образ distroless: ни sh, ни wget. Бинарь сам ходит в /livez (liveness).
+      # Readiness (фид свежий, Redis отвечает) — GET /healthz: 503 + reasons,
+      # его читают preprod_check и Prometheus (bidder_ready/bidder_redis_up).
+      test: ["CMD", "/bidder", "-healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - centraldsp
+
+  # ─────────────────────────────────────────
+  # FRONTEND (Next.js admin UI)
+  # ─────────────────────────────────────────
+  frontend:
+    build: ./frontend
+    image: centraldsp/frontend:local
+    restart: unless-stopped
+    <<: [*logging, *res-frontend]
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      # Штатно /api/* до Next.js не доходит (Caddy -> backend:8000). Если всё же
+      # дошёл — проксируем в backend по сети compose, а не в 127.0.0.1 контейнера.
+      # Mock-fallback в production-сборке выключен; ALLOW_MOCK_FALLBACK=1 включает осознанно.
+      BACKEND_INTERNAL_URL: http://backend:8000
+      ALLOW_MOCK_FALLBACK: ${ALLOW_MOCK_FALLBACK:-0}
+      # AI-инструменты (audit S-05): без ключа /ai-api/* отвечает 503; rate limit
+      # per user — общий счётчик в том же Redis, что и у backend.
+      AI_GATEWAY_API_KEY: ${AI_GATEWAY_API_KEY:-}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+    depends_on:
+      backend:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - centraldsp
+
+  # ─────────────────────────────────────────
+  # PROMETHEUS — только `docker compose --profile monitoring up -d`.
+  # Порт на loopback; наружу — только через SSH-туннель/VPN или Caddy с
+  # basic_auth (никогда не открывать 9090/9091 в интернет).
+  # ─────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.55.1@sha256:2659f4c2ebb718e7695cb9b25ffa7d6be64db013daba13e05c875451cf51b0d3
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    <<: [*logging, *res-prom]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-15d}
+      - --web.enable-lifecycle
+    volumes:
+      - ./ops/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./ops/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:9091:9090"
+    depends_on:
+      backend:
+        condition: service_started
+      bidder-go:
+        condition: service_started
+    networks:
+      - centraldsp
+
+  # Доставка алертов (audit C4b / N-02): Prometheus -> Alertmanager -> backend
+  # POST /alerts/webhook (Bearer ALERT_WEBHOOK_SECRET) -> in-app суперадминам +
+  # письма на адреса из настроек. Только profile monitoring, порт 9093 не
+  # публикуется. Alertmanager не читает env в конфиге, поэтому токен кладём в
+  # файл на старте (credentials_file в ops/alertmanager/alertmanager.yml);
+  # образ на busybox — /bin/sh есть. Пустой секрет валит контейнер на старте с
+  # понятной ошибкой (не `${VAR:?}`: compose интерполирует env всех сервисов
+  # даже вне активного профиля, и drill/CI без монитринга падали бы тоже).
+  alertmanager:
+    image: prom/alertmanager:v0.27.0@sha256:e13b6ed5cb929eeaee733479dce55e10eb3bc2e9c4586c705a4e8da41e5eacf5
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    <<: [*logging, *res-small]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        [ -n "$$ALERT_WEBHOOK_SECRET" ] ||
+        { echo "ALERT_WEBHOOK_SECRET is empty: set it in .env (openssl rand -hex 32)" >&2; exit 1; };
+        umask 077 && printf '%s' "$$ALERT_WEBHOOK_SECRET" > /tmp/webhook_token &&
+        exec /bin/alertmanager --config.file=/etc/alertmanager/alertmanager.yml
+        --storage.path=/alertmanager --cluster.listen-address=
+    environment:
+      ALERT_WEBHOOK_SECRET: ${ALERT_WEBHOOK_SECRET:-}
+    volumes:
+      - ./ops/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    depends_on:
+      backend:
+        condition: service_started
+    networks:
+      - centraldsp
+
+  # Метрики хоста для алертов по диску/inode/памяти/load (audit O-05,
+  # ops/prometheus/alerts.yml группа centraldsp-node). Только profile
+  # monitoring; порт 9100 не публикуется — Prometheus ходит по внутренней сети.
+  #
+  # Host mounts (все read-only) и зачем каждый:
+  #   /proc -> /host/proc  meminfo, loadavg, stat (CPU), 1/mounts — таблица
+  #                        монтирований хоста для filesystem-коллектора; без
+  #                        него виден только procfs контейнера.
+  #   /sys  -> /host/sys   block-устройства (diskstats), сетевые интерфейсы.
+  #   /     -> /rootfs     statfs реальных ФС хоста по mountpoint'ам из
+  #                        /host/proc/1/mounts (rslave — подмонтированные
+  #                        разделы вроде /boot или /var видны).
+  # pid: host не нужен: host-таблица монтирований читается из смонтированного
+  # /host/proc/1/mounts, а не через собственный PID namespace; включать только
+  # для коллекторов processes/systemd, которых здесь нет.
+  node-exporter:
+    image: prom/node-exporter:v1.8.2@sha256:4032c6d5bfd752342c3e631c2f1de93ba6b86c41db6b167b9a35372c139e7706
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    <<: [*logging, *res-small]
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/rootfs
+      # Docker-слои, tmpfs и служебные mount'ы — не диски хоста.
+      - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run|var/lib/docker/.+|var/lib/containers/.+)($$|/)
+      - --collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tmpfs|tracefs)$$
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro,rslave
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - centraldsp
+
+volumes:
+  postgres_data:
+  redis_data:            # AOF: дневные расходы/резервы/stream — бэкапить вместе с БД
+  uploads_data:          # файлы креативов (баннеры/видео); бэкапить вместе с БД
+  geoip_data:            # Mount your GeoLite2-City.mmdb here in production
+                         # docker run --rm -v centraldsp_geoip_data:/data alpine
+                         # wget -O /data/GeoLite2-City.mmdb <maxmind_url>
+  prometheus_data:
+  alertmanager_data:
+
+networks:
+  centraldsp:
+    name: centraldsp-network
+    driver: bridge

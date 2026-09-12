@@ -1,176 +1,160 @@
-from __future__ import annotations
-from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
-from sqlalchemy import select
-from sqlalchemy.orm import Session
-from database import SessionLocal
-from auth import get_current_user
-from models import Rule, RuleLog, Campaign, User
+from fastapi import APIRouter, Depends, HTTPException
 
-router = APIRouter(prefix="/api/rules", tags=["AutoPilot Rules"])
+from auth import current_user
+from rbac import require_platform_write
+from db import get_pool
+from rules_engine import evaluate_rules_for_user
+from schemas import RuleIn, RulePatch
 
+router = APIRouter(prefix="/rules", tags=["rules"])
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-# ── Schemas ───────────────────────────────────────────────────────────────────
-
-class RuleCreate(BaseModel):
-    campaign_id: int
-    metric: str          # win_rate | cpa | roi | spend
-    condition: str       # < > <= >= ==
-    threshold: float
-    action: str          # pause_campaign | stop_campaign | increase_bid 20 | decrease_bid 15 | notify
-    is_active: bool = True
-
-
-class RuleUpdate(BaseModel):
-    metric: Optional[str] = None
-    condition: Optional[str] = None
-    threshold: Optional[float] = None
-    action: Optional[str] = None
-    is_active: Optional[bool] = None
-
-
-class RuleOut(BaseModel):
-    id: int
-    campaign_id: int
-    metric: str
-    condition: str
-    threshold: float
-    action: str
-    is_active: bool
-    triggered: bool
-
-    class Config:
-        from_attributes = True
-
-
-class RuleLogOut(BaseModel):
-    id: int
-    rule_id: int
-    campaign_id: int
-    metric_value: Optional[float]
-    action_taken: Optional[str]
-    created_at: Optional[str]
-
-    class Config:
-        from_attributes = True
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-VALID_METRICS = {"win_rate", "cpa", "roi", "spend"}
-VALID_CONDITIONS = {"<", ">", "<=", ">=", "=="}
-VALID_ACTIONS_PREFIX = {"pause_campaign", "stop_campaign", "increase_bid", "decrease_bid", "notify"}
-
-
-def _validate(payload):
-    if hasattr(payload, "metric") and payload.metric and payload.metric not in VALID_METRICS:
-        raise HTTPException(400, f"metric must be one of {VALID_METRICS}")
-    if hasattr(payload, "condition") and payload.condition and payload.condition not in VALID_CONDITIONS:
-        raise HTTPException(400, f"condition must be one of {VALID_CONDITIONS}")
-    if hasattr(payload, "action") and payload.action:
-        action_base = payload.action.strip().lower().split()[0]
-        if action_base not in VALID_ACTIONS_PREFIX:
-            raise HTTPException(400, f"action must start with one of {VALID_ACTIONS_PREFIX}")
+# Библиотека готовых шаблонов правил. Статичный каталог — единый источник
+# для фронта, чтобы шаблоны не расходились между интерфейсами.
+RULE_TEMPLATES = [
+    {
+        "key": "pause_low_ctr",
+        "name": "Пауза при низком CTR",
+        "description": "Кампания тратит, но не кликается — остановить и разобраться.",
+        "metric": "ctr", "operator": "lt", "threshold": 0.05,
+        "action": "pause_campaign", "action_value": None, "window_hours": 24,
+    },
+    {
+        "key": "pause_budget_burn",
+        "name": "Стоп при израсходовании 95% бюджета",
+        "description": "Страховка от перерасхода: пауза, когда бюджет почти исчерпан.",
+        "metric": "budget_spent_pct", "operator": "gte", "threshold": 95,
+        "action": "pause_campaign", "action_value": None, "window_hours": 24,
+    },
+    {
+        "key": "cpa_guard",
+        "name": "Снизить ставку при дорогом CPA",
+        "description": "Конверсия дороже 1500 ₽ — снижаем ставку на 15%, охлаждаем закупку.",
+        "metric": "cpa", "operator": "gt", "threshold": 1500,
+        "action": "decrease_bid", "action_value": 15, "window_hours": 48,
+    },
+    {
+        "key": "cpc_guard",
+        "name": "Снизить ставку при дорогом клике",
+        "description": "CPC выше 50 ₽ за сутки — снижаем ставку на 10%.",
+        "metric": "cpc", "operator": "gt", "threshold": 50,
+        "action": "decrease_bid", "action_value": 10, "window_hours": 24,
+    },
+    {
+        "key": "scale_high_cvr",
+        "name": "Масштабировать при высоком CVR",
+        "description": "Конверсия из клика выше 5% — повышаем дневной бюджет на 20%.",
+        "metric": "cvr", "operator": "gt", "threshold": 5,
+        "action": "increase_daily_budget", "action_value": 20, "window_hours": 72,
+    },
+    {
+        "key": "auto_blacklist",
+        "name": "Автоблэклист площадок без кликов",
+        "description": "Домены с 500+ показов и нулём кликов за 3 дня — в чёрный список.",
+        "metric": "impressions", "operator": "gt", "threshold": 500,
+        "action": "blacklist_domains", "action_value": 500, "window_hours": 72,
+    },
+    {
+        "key": "low_win_rate",
+        "name": "Поднять ставку при низком Win Rate",
+        "description": "Выигрываем меньше 5% аукционов — ставка неконкурентна, поднимаем на 10%.",
+        "metric": "win_rate", "operator": "lt", "threshold": 5,
+        "action": "increase_bid", "action_value": 10, "window_hours": 24,
+    },
+    {
+        "key": "notify_spend_spike",
+        "name": "Уведомление о всплеске расхода",
+        "description": "Расход за сутки превысил 50 000 ₽ — зафиксировать срабатывание.",
+        "metric": "spend", "operator": "gt", "threshold": 50000,
+        "action": "notify", "action_value": None, "window_hours": 24,
+    },
+]
 
 
-def _own_campaign(db, campaign_id, user):
-    c = db.execute(select(Campaign).where(
-        Campaign.id == campaign_id, Campaign.user_id == user.id
-    )).scalar_one_or_none()
-    if not c:
-        raise HTTPException(404, "Campaign not found")
-    return c
+@router.get("/templates")
+async def list_templates(user: dict = Depends(current_user)):
+    """Каталог готовых шаблонов правил."""
+    return RULE_TEMPLATES
 
 
-# ── Endpoints ─────────────────────────────────────────────────────────────────
-
-@router.post("", response_model=RuleOut, status_code=status.HTTP_201_CREATED)
-def create_rule(
-    payload: RuleCreate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    _validate(payload)
-    _own_campaign(db, payload.campaign_id, current_user)
-    rule = Rule(**payload.model_dump(), triggered=False)
-    db.add(rule); db.commit(); db.refresh(rule)
-    return rule
+def _serialize(row) -> dict:
+    d = dict(row)
+    for k in ("id", "user_id", "campaign_id"):
+        if d.get(k) is not None:
+            d[k] = str(d[k])
+    for k in ("threshold", "action_value"):
+        if d.get(k) is not None:
+            d[k] = float(d[k])
+    return d
 
 
-@router.get("", response_model=List[RuleOut])
-def list_rules(
-    campaign_id: Optional[int] = None,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    q = select(Rule).join(Campaign, Campaign.id == Rule.campaign_id).where(
-        Campaign.user_id == current_user.id
+@router.get("")
+async def list_rules(user: dict = Depends(current_user)):
+    pool = await get_pool()
+    rows = await pool.fetch(
+        "SELECT * FROM rules WHERE user_id = $1 ORDER BY created_at DESC", user["id"]
     )
-    if campaign_id:
-        q = q.where(Rule.campaign_id == campaign_id)
-    return db.execute(q).scalars().all()
+    return [_serialize(r) for r in rows]
 
 
-@router.patch("/{rule_id}", response_model=RuleOut)
-def update_rule(
-    rule_id: int,
-    payload: RuleUpdate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    _validate(payload)
-    rule = db.execute(select(Rule).where(Rule.id == rule_id)).scalar_one_or_none()
-    if not rule:
-        raise HTTPException(404, "Rule not found")
-    _own_campaign(db, rule.campaign_id, current_user)
-    for field, value in payload.model_dump(exclude_unset=True).items():
-        setattr(rule, field, value)
-    db.add(rule); db.commit(); db.refresh(rule)
-    return rule
+@router.post("", status_code=201)
+async def create_rule(body: RuleIn, user: dict = Depends(require_platform_write)):
+    pool = await get_pool()
+    if body.campaign_id:
+        camp = await pool.fetchval(
+            "SELECT 1 FROM campaigns WHERE id = $1 AND user_id = $2", body.campaign_id, user["id"]
+        )
+        if not camp:
+            raise HTTPException(status_code=404, detail="Кампания не найдена")
+    row = await pool.fetchrow(
+        """
+        INSERT INTO rules (user_id, campaign_id, name, metric, operator, threshold, action, action_value, window_hours)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *
+        """,
+        user["id"], body.campaign_id, body.name, body.metric, body.operator,
+        body.threshold, body.action, body.action_value, body.window_hours,
+    )
+    return _serialize(row)
 
 
-@router.delete("/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_rule(
-    rule_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    rule = db.execute(select(Rule).where(Rule.id == rule_id)).scalar_one_or_none()
-    if not rule:
-        raise HTTPException(404, "Rule not found")
-    _own_campaign(db, rule.campaign_id, current_user)
-    db.delete(rule); db.commit()
+@router.patch("/{rule_id}")
+async def update_rule(rule_id: str, body: RulePatch, user: dict = Depends(require_platform_write)):
+    updates = body.model_dump(exclude_none=True)
+    if not updates:
+        raise HTTPException(status_code=400, detail="Нет полей для обновления")
+    pool = await get_pool()
+    sets, values = [], []
+    for i, (k, v) in enumerate(updates.items(), start=3):
+        sets.append(f"{k} = ${i}")
+        values.append(v)
+    row = await pool.fetchrow(
+        f"UPDATE rules SET {', '.join(sets)}, updated_at = now() WHERE id = $1 AND user_id = $2 RETURNING *",
+        rule_id, user["id"], *values,
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Правило не найдено")
+    return _serialize(row)
 
 
-@router.get("/{rule_id}/logs", response_model=List[RuleLogOut])
-def get_rule_logs(
-    rule_id: int,
-    limit: int = 50,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    rule = db.execute(select(Rule).where(Rule.id == rule_id)).scalar_one_or_none()
-    if not rule:
-        raise HTTPException(404, "Rule not found")
-    _own_campaign(db, rule.campaign_id, current_user)
-    logs = db.execute(
-        select(RuleLog).where(RuleLog.rule_id == rule_id)
-        .order_by(RuleLog.id.desc()).limit(limit)
-    ).scalars().all()
-    return [
-        RuleLogOut(
-            id=l.id, rule_id=l.rule_id, campaign_id=l.campaign_id,
-            metric_value=float(l.metric_value) if l.metric_value else None,
-            action_taken=l.action_taken,
-            created_at=str(l.created_at) if hasattr(l, "created_at") else None,
-        ) for l in logs
-    ]
+@router.delete("/{rule_id}", status_code=204)
+async def delete_rule(rule_id: str, user: dict = Depends(require_platform_write)):
+    pool = await get_pool()
+    result = await pool.execute(
+        "DELETE FROM rules WHERE id = $1 AND user_id = $2", rule_id, user["id"]
+    )
+    if result == "DELETE 0":
+        raise HTTPException(status_code=404, detail="Правило не найдено")
+
+
+@router.post("/evaluate")
+async def evaluate_now(user: dict = Depends(require_platform_write)):
+    """Run all active rules for the current user immediately.
+
+    Форма ответа согласована с фронтом (кнопка «Проверить сейчас»):
+    evaluated — сколько активных правил проверено, triggered — сколько сработало.
+    """
+    pool = await get_pool()
+    evaluated = await pool.fetchval(
+        "SELECT count(*) FROM rules WHERE user_id = $1 AND status = 'active'", user["id"]
+    )
+    triggered = await evaluate_rules_for_user(str(user["id"]))
+    return {"evaluated": int(evaluated or 0), "triggered": len(triggered), "details": triggered}

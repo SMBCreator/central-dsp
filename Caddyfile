@@ -1,0 +1,79 @@
+# Central DSP — production routing (compose.prod.yml монтирует этот файл).
+# Переменные: DOMAIN (обязательна), ACME_EMAIL (обязательна) — из .env.
+#
+# Один публичный домен. Отдельный RTB-хост для внешних SSP зарезервирован
+# архитектурно, но в первом релизе не включается: чтобы включить, добавьте
+# второй site-блок (пример в конце файла) и задайте PUBLIC_BIDDER_BASE_URL.
+
+{
+	email {$ACME_EMAIL}
+	# Admin API остаётся на 127.0.0.1:2019 внутри контейнера (healthcheck).
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	# Видеокреативы до 50 МБ (MAX_VIDEO_UPLOAD_BYTES) + multipart-накладные.
+	request_body {
+		max_size 60MB
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+
+	# Management API. Backend слушает без префикса (/auth/me, /campaigns, ...),
+	# поэтому /api срезается. Backend сам ставит X-Forwarded-* от Caddy в
+	# доверенные (TRUSTED_PROXIES: сеть compose — приватная).
+	handle_path /api/* {
+		reverse_proxy backend:8000
+	}
+
+	# OpenRTB-эндпоинт SSP: POST /rtb/bid/{key}, а также /rtb/loss (lurl).
+	# Без strip: Go-биддер сам обслуживает /rtb/*.
+	handle /rtb/* {
+		reverse_proxy bidder-go:8090 {
+			# Аукцион укладывается в 100–300 мс; висящие соединения не держим.
+			transport http {
+				response_header_timeout 5s
+			}
+		}
+	}
+
+	# Файлы креативов: backend отдаёт /uploads/* с volume uploads_data
+	# (PUBLIC_BASE_URL/uploads/... уходит в креативы и ОРД).
+	handle /uploads/* {
+		header Cache-Control "public, max-age=86400, immutable"
+		reverse_proxy backend:8000
+	}
+
+	# Кабинет (Next.js). /ai-api/* — route handlers Next, остаются здесь.
+	handle {
+		reverse_proxy frontend:3000
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}
+
+# ── Зарезервировано: отдельный RTB-хост для внешних SSP ──────────────────
+# Раскомментируйте, задайте RTB_DOMAIN в compose.prod.yml (environment caddy)
+# и PUBLIC_BIDDER_BASE_URL=https://<RTB_DOMAIN> в .env. Хост обязан отличаться
+# от DOMAIN — иначе Caddy откажет («ambiguous site definition»).
+#
+# {$RTB_DOMAIN} {
+# 	request_body {
+# 		max_size 1MB
+# 	}
+# 	handle /rtb/* {
+# 		reverse_proxy bidder-go:8090
+# 	}
+# 	handle {
+# 		respond 404
+# 	}
+# }

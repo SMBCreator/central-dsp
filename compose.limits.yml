@@ -1,0 +1,58 @@
+# Central DSP — hard resource limits (audit O-07 / C6). ОТДЕЛЬНЫЙ overlay, по
+# умолчанию НЕ подключён:
+#
+#   COMPOSE_FILE=compose.yml:compose.prod.yml:compose.limits.yml
+#
+# Почему не в compose.yml: для DSP неверный hard limit опаснее его отсутствия —
+# OOM-kill bidder-go в RTB burst, CPU throttling -> рост p95/p99 -> auction
+# timeout/no-bid, eviction в Redis, connection exhaustion в PostgreSQL. Значения
+# ОБЯЗАНЫ быть результатом benchmark (backend/loadtest/rtb_load.py до целевого
+# QPS + профилирование CPU/heap/GC, p50/p95/p99, OOM/restart behavior), а не
+# предположением. Порядок и методика — docs/DEPLOYMENT.md §12.
+#
+# Все значения без default: подключили overlay без .env-значений -> compose
+# падает на interpolation, а не молча ставит чей-то «разумный» лимит.
+# Правило: limit = измеренный peak + headroom (RTB burst, Go GC, PG shared
+# buffers/work_mem, Redis fragmentation, overlap при rolling restart).
+# После `up` обязательно: ops/check_cgroup_limits.sh — сверяет реальный cgroup
+# (memory.max / cpu.max) внутри контейнеров с этим файлом.
+
+services:
+  postgres:
+    deploy:
+      resources:
+        limits:
+          memory: ${LIMIT_POSTGRES_MEM:?set LIMIT_POSTGRES_MEM (e.g. 2G) after benchmark, see docs/DEPLOYMENT.md §12}
+          cpus: ${LIMIT_POSTGRES_CPUS:?set LIMIT_POSTGRES_CPUS (e.g. 2.0) after benchmark}
+  redis:
+    deploy:
+      resources:
+        limits:
+          # Должен быть > maxmemory Redis (compose.yml command) + fragmentation/AOF rewrite.
+          memory: ${LIMIT_REDIS_MEM:?set LIMIT_REDIS_MEM after benchmark}
+          cpus: ${LIMIT_REDIS_CPUS:?set LIMIT_REDIS_CPUS after benchmark}
+  backend:
+    deploy:
+      resources:
+        limits:
+          memory: ${LIMIT_BACKEND_MEM:?set LIMIT_BACKEND_MEM after benchmark}
+          cpus: ${LIMIT_BACKEND_CPUS:?set LIMIT_BACKEND_CPUS after benchmark}
+  scheduler:
+    deploy:
+      resources:
+        limits:
+          memory: ${LIMIT_SCHEDULER_MEM:?set LIMIT_SCHEDULER_MEM after benchmark}
+          cpus: ${LIMIT_SCHEDULER_CPUS:?set LIMIT_SCHEDULER_CPUS after benchmark}
+  bidder-go:
+    deploy:
+      resources:
+        limits:
+          # Самый чувствительный сервис: OOM здесь = потерянные impressions.
+          memory: ${LIMIT_BIDDER_MEM:?set LIMIT_BIDDER_MEM after rtb_load benchmark}
+          cpus: ${LIMIT_BIDDER_CPUS:?set LIMIT_BIDDER_CPUS after rtb_load benchmark}
+  frontend:
+    deploy:
+      resources:
+        limits:
+          memory: ${LIMIT_FRONTEND_MEM:?set LIMIT_FRONTEND_MEM after benchmark}
+          cpus: ${LIMIT_FRONTEND_CPUS:?set LIMIT_FRONTEND_CPUS after benchmark}

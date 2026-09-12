@@ -1,0 +1,9 @@
+{
+  "name": "video: mp4 in mimes, VAST3 in protocols, 30s within [5,60] -> compatible; MediaFile type video/mp4, Duration 00:00:30",
+  "imp": {
+    "id": "1",
+    "video": {"mimes": ["video/webm", "video/mp4"], "protocols": [2, 3, 5, 6], "minduration": 5, "maxduration": 60}
+  },
+  "creative": {"type": "video", "video_url": "https://cdn.example/spot.mp4?v=3", "video_duration": 30},
+  "expect": {"incompat": null, "video_mime": "video/mp4", "vast_protocols": [3, 6], "vast_duration": "00:00:30"}
+}

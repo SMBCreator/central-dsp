@@ -1,0 +1,11 @@
+{
+  "name": "central-dsp",
+  "private": true,
+  "description": "Root manifest for v0 preview only (pnpm). Real apps live in frontend/ (Next.js), backend/ (FastAPI), bidder-go/ (Go). CI and deploy operate inside those subfolders. No packageManager field on purpose: pnpm requires an exact semver here, and an exact semver conflicts with `pnpm/action-setup version: 9` in .github/workflows/ci.yml.",
+  "scripts": {
+    "dev": "pnpm --dir frontend dev",
+    "build": "pnpm --dir frontend build",
+    "start": "pnpm --dir frontend start",
+    "lint": "pnpm --dir frontend lint"
+  }
+}

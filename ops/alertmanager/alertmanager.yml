@@ -1,0 +1,45 @@
+# Central DSP — Alertmanager (compose profile monitoring, audit C4b / N-02).
+#
+# Единственный получатель — backend: POST /alerts/webhook с Bearer-токеном.
+# Backend сам решает, кому и как доставить (in-app суперадминам, письма на
+# адреса из настроек через notification_outbox). Никаких SMTP/Telegram здесь —
+# один канал доставки, одна точка настройки в UI.
+#
+# Токен: Alertmanager не подставляет env в конфиг, поэтому compose при старте
+# записывает $ALERT_WEBHOOK_SECRET в /tmp/webhook_token (см. compose.yml).
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: backend
+  group_by: ["alertname"]
+  group_wait: 30s
+  group_interval: 5m
+  # Повтор firing раз в 4 часа: backend дедуплицирует по fingerprint+startsAt,
+  # так что повтор не породит второго письма — но переживёт потерянный запрос.
+  repeat_interval: 4h
+  routes:
+    # Watchdog всегда горит (vector(1)): heartbeat, backend по нему обновляет
+    # alert_watchdog_last_received_ts; правило AlertPipelineDead ловит тишину.
+    - matchers: ["alertname = Watchdog"]
+      receiver: backend
+      group_wait: 0s
+      group_interval: 1m
+      repeat_interval: 10m
+
+receivers:
+  - name: backend
+    webhook_configs:
+      - url: http://backend:8000/alerts/webhook
+        send_resolved: true
+        max_alerts: 200
+        http_config:
+          authorization:
+            type: Bearer
+            credentials_file: /tmp/webhook_token
+
+inhibit_rules:
+  # Пока горит critical, warning того же алерта на том же инстансе не шумит.
+  - source_matchers: ["severity = critical"]
+    target_matchers: ["severity = warning"]
+    equal: ["alertname", "instance"]

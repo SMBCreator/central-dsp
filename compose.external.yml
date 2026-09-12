@@ -1,0 +1,42 @@
+# Central DSP — managed Postgres/Redis вместо встроенных контейнеров.
+#
+#   .env:  COMPOSE_FILE=compose.yml:compose.external.yml:compose.prod.yml
+#          DATABASE_URL=postgresql://...   REDIS_URL=rediss://...   (см. .env.external.example)
+#
+# Встроенные postgres/redis уводятся под неактивный профиль и не стартуют;
+# зависимости сервисов на них снимаются. Требования к внешнему Redis те же,
+# что к встроенному (audit M-03): maxmemory-policy=noeviction + AOF/RDB —
+# backend и bidder-go проверяют это на старте и в production не поднимаются
+# с eviction-политикой.
+
+services:
+
+  postgres:
+    profiles: ["bundled-db-disabled"]
+
+  redis:
+    profiles: ["bundled-db-disabled"]
+
+  backend:
+    depends_on: !reset []
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env (managed Postgres)}
+      REDIS_URL: ${REDIS_URL:?set REDIS_URL in .env (managed Redis, noeviction)}
+
+  scheduler:
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env (managed Postgres)}
+
+  bidder-go:
+    depends_on: !override
+      backend:
+        condition: service_started
+    environment:
+      REDIS_URL: ${REDIS_URL:?set REDIS_URL in .env (managed Redis, noeviction)}
+
+  frontend:
+    depends_on: !override
+      backend:
+        condition: service_started
+    environment:
+      REDIS_URL: ${REDIS_URL:?set REDIS_URL in .env}

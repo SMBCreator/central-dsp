@@ -21,7 +21,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
+# NOTE: bare "lib/" would also ignore frontend/lib — keep it scoped to Python build output
+/backend/lib/
 lib64/
 parts/
 sdist/
@@ -34,20 +35,15 @@ wheels/
 venv/
 env/
 
-# Node / Vue
+# Node / Next.js
 node_modules/
 dist/
 .vite/
 .nuxt/
 .output/
-
-# Java / Maven
-target/
-*.class
-*.jar
-*.war
-*.ear
-.mvn/
+.next/
+next-env.d.ts
+.vercel/
 
 # Docker volumes
 postgres_data/
@@ -82,3 +78,5 @@ GeoLite2-*/
 htmlcov/
 .coverage
 coverage.xml
+bidder-go/bin/
+backend/uploads/

@@ -1,0 +1,27 @@
+{
+  "name": "native: assets exactly as requested (ids/len), optional missing icon skipped",
+  "imp": {
+    "id": "1",
+    "native": {
+      "request": "{\"ver\":\"1.2\",\"assets\":[{\"id\":101,\"required\":1,\"title\":{\"len\":10}},{\"id\":102,\"required\":1,\"img\":{\"type\":3,\"wmin\":300,\"hmin\":250}},{\"id\":103,\"required\":0,\"img\":{\"type\":1,\"w\":50,\"h\":50}},{\"id\":104,\"required\":0,\"data\":{\"type\":2,\"len\":5}},{\"id\":105,\"required\":0,\"data\":{\"type\":12}}]}"
+    }
+  },
+  "creative": {
+    "type": "native",
+    "native_title": "Скидка на всё до 50%",
+    "native_description": "Описание длинное",
+    "native_cta": "",
+    "native_icon_url": "",
+    "asset_url": "https://cdn.example/main.jpg",
+    "width": 600,
+    "height": 500
+  },
+  "expect": {
+    "native_assets": [
+      {"id": 101, "title": {"text": "Скидка на "}},
+      {"id": 102, "img": {"url": "https://cdn.example/main.jpg", "w": 600, "h": 500}},
+      {"id": 104, "data": {"value": "Описа"}},
+      {"id": 105, "data": {"value": "Подробнее"}}
+    ]
+  }
+}

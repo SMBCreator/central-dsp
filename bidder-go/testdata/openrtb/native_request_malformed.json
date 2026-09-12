@@ -1,0 +1,9 @@
+{
+  "name": "native: request is not JSON -> whole imp incompat",
+  "imp": {
+    "id": "1",
+    "native": {"request": "{assets: [oops"}
+  },
+  "creative": {"type": "native", "native_title": "x", "asset_url": "https://cdn.example/a.jpg"},
+  "expect": {"incompat": "native_request_malformed"}
+}

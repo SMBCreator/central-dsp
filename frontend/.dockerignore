@@ -1,0 +1,11 @@
+# Не попадает в build context frontend-образа (C6).
+node_modules/
+.next/
+.git/
+*.log
+.env
+.env.*
+coverage/
+__tests__/
+**/*.test.ts
+**/*.test.tsx

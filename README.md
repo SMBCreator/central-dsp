@@ -1,94 +1,100 @@
-# 🎯 Central DSP
+# Central DSP
 
-> Self-hosted Demand Side Platform (DSP) — based on [RTB4FREE](https://github.com/RTB4FREE) open-source stack.
+Self-hosted programmatic DSP для российского рынка: OpenRTB 2.5/2.6 биддер на Go,
+кабинет рекламодателя/агентства на Next.js, management API на FastAPI, биллинг
+в копейках с ledger в PostgreSQL, маркировка рекламы через ОРД (38-ФЗ/347-ФЗ),
+RBAC на 9 ролей.
 
-**Stack:** Java (RTB4FREE bidder) + Python/FastAPI (backend) + Vue 3 + Vite + Tailwind (frontend) + PostgreSQL + Redis + Celery
+## Стек и границы ответственности
 
----
+| Компонент | Технология | Что делает |
+|---|---|---|
+| `bidder-go/` | Go 1.25, Redis | **Единственный production RTB runtime**: `POST /rtb/bid/{endpoint_key}`, `/rtb/loss`; таргетинг, прайсинг, bid shading, pCTR, budget-gate в Redis (Lua), события в Redis Stream `rtb:events` |
+| `backend/` | Python 3.12, FastAPI, asyncpg | Management API, аутентификация и RBAC, биллинг/ledger, event-callbacks (`/rtb/win`, `/burl`, `/imp`, `/click`, `/view`, `/vevent`), ОРД, статистика, feed кандидатов для Go (`/rtb-feed/*`), `/cron/*`, симулятор |
+| `backend/scheduler.py` | тот же образ backend | Планировщик `/cron/*` по таблице `scheduled_jobs` (PostgreSQL). Единственный production scheduler |
+| `frontend/` | Next.js 16, React 19, Tailwind | Кабинет: кампании, креативы, аудитории, отчёты, биллинг, ОРД, supply-партнёры, пользователи |
+| PostgreSQL 15 | — | Источник истины: сущности, ledger, `bid_events` (партиции), `stats_hourly`, `scheduled_jobs`, `audit_log` |
+| Redis 7 | — | Горячий путь биддера: бюджет-гейт, счётчики, кэш кандидатов, `rtb:events` |
+| Caddy | `compose.prod.yml` | TLS, маршрутизация `/api/*` → backend, `/rtb/*` → bidder-go, остальное → frontend |
+| Prometheus | profile `monitoring` | Метрики backend / bidder-go / scheduler, алерты `ops/prometheus/alerts.yml` |
 
-## 🏗 Architecture Overview
+Явно зафиксированные решения (подробно — `docs/ARCHITECTURE.md`):
 
+```text
+Production RTB bidder:        Go bidder only (bidder-go/).
+Legacy Java RTB4FREE:         deprecated and removed (C1c).
+Python RTB serving:           deprecated; removed separately in C1d.
+Python process_bid_request:   reference implementation for parity tests only,
+                              not a production RTB serving runtime.
+Scheduler:                    PostgreSQL scheduled_jobs + backend/scheduler.py.
+Celery / Beat / Flower:       not used in target production architecture.
+Vercel:                       preview/frontend deployment only; not part of
+                              production runtime, not a source of scheduler config.
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      Central DSP                            │
-│                                                             │
-│  ┌──────────────┐   ┌──────────────┐   ┌───────────────┐  │
-│  │  RTB4FREE    │   │  FastAPI     │   │   Vue 3 UI    │  │
-│  │  Bidder      │◄──│  Backend     │──►│   Frontend    │  │
-│  │  (Java:8080) │   │  (:8000)     │   │   (:80)       │  │
-│  └──────┬───────┘   └──────┬───────┘   └───────────────┘  │
-│         │                  │                                │
-│  ┌──────▼───────┐   ┌──────▼───────┐                       │
-│  │  Redis 7     │   │  PostgreSQL  │                       │
-│  │  (broker)    │   │  15 (main DB)│                       │
-│  └──────────────┘   └──────────────┘                       │
-│                                                             │
-│  ┌──────────────┐   ┌──────────────┐                       │
-│  │  Celery      │   │  Flower      │                       │
-│  │  Worker+Beat │   │  (:5555)     │                       │
-│  └──────────────┘   └──────────────┘                       │
-└─────────────────────────────────────────────────────────────┘
-```
 
-## 🚀 Quick Start (Development)
+## Быстрый старт (dev, Docker Compose)
 
 ```bash
-# Clone
 git clone https://github.com/SMBCreator/central-dsp.git
 cd central-dsp
-
-# Copy env
-cp .env.example .env
-# Edit .env — set your passwords and secrets
-
-# Start all services
-docker-compose up --build
+cp .env.example .env          # заполнить секреты: openssl rand -hex 32
+docker compose up -d --build
 ```
 
-Open **http://ads.local** (add `127.0.0.1 ads.local` to `/etc/hosts` or Windows hosts file)
-
-| Service | URL |
+| Сервис | Адрес (dev) |
 |---|---|
-| Main UI | http://ads.local |
-| API Swagger | http://ads.local:8000/docs |
-| Celery Flower | http://ads.local:5555 |
-| RTB Bidder | http://ads.local:8080 |
+| Кабинет | http://127.0.0.1:3000 |
+| API / Swagger | http://127.0.0.1:8000/docs |
+| Go bidder | http://127.0.0.1:8090/healthz |
+| Prometheus (`--profile monitoring`) | http://127.0.0.1:9091 |
 
-## 📁 Project Structure
+Production-топология (`compose.prod.yml`: Caddy 80/443, внутренние порты
+закрыты) и вариант с managed PostgreSQL/Redis (`compose.external.yml`) —
+в `docs/DEPLOYMENT.md`.
 
+## Тесты
+
+```bash
+# backend: нужен PostgreSQL (DATABASE_URL=postgresql://...), схема — python migrate.py
+cd backend && pip install . pytest pytest-asyncio httpx "fakeredis[lua]" pyyaml && pytest
+
+# Go bidder (включая Go/Python parity tests)
+cd bidder-go && go test ./...
+
+# frontend
+cd frontend && pnpm install && pnpm exec tsc --noEmit && pnpm test && pnpm build
 ```
-central-dsp/
-├── bidder/              # RTB4FREE Java bidder (forked from RTB4FREE/bidder)
-├── backend/             # FastAPI — tracker, SmartLink, AutoPilot, RTB Bridge
-├── frontend/            # Vue 3 + Vite + Tailwind — main UI
-├── docker-compose.yml   # All services
-├── .env.example         # Environment variables template
-└── docs/                # Architecture docs, API specs
+
+CI (`.github/workflows/ci.yml`) прогоняет то же самое плюс `docker compose
+config` для трёх топологий, `caddy validate` и `promtool check rules`.
+
+## Структура репозитория
+
+```text
+backend/          FastAPI: routers/, migrations/, scheduler.py, ord/, tests/
+bidder-go/        Go bidder: cmd/bidder, internal/{rtb,targeting,shading,pctr,feed,redisx,...}
+frontend/         Next.js кабинет: app/, components/, lib/
+compose.yml       dev-стек; compose.prod.yml / compose.external.yml — overlays
+Caddyfile         реверс-прокси production
+ops/prometheus/   prometheus.yml, alerts.yml
+docs/             см. ниже
 ```
 
-## 🗺 Roadmap
+## Документация
 
-| Phase | What | Status |
-|---|---|---|
-| Phase 0 | Fork RTB4FREE, monorepo setup | 🔄 In Progress |
-| Phase 1 | RTB Bridge (FastAPI ↔ Java bidder) | ⬜ |
-| Phase 2 | DB schema: creatives, targeting, auction_logs | ⬜ |
-| Phase 3 | Vue UI: RTB tabs (Bidder, Creatives, Targeting) | ⬜ |
-| Phase 4 (Step 0) | Pixel Center + S2S Postback + Events TimeSeries | ⬜ |
-| Phase 5 (Step 1) | JWT Auth + multi-user + roles | ⬜ |
-| Phase 6 | Connect first SSP (Beeswax test endpoint) | ⬜ |
-| Phase 7 | Bidding algorithm + AutoPilot RTB rules | ⬜ |
-| Phase 8 (Step 2) | Analytics + Charts + Attribution + CSV export | ⬜ |
-| Phase 9 (Step 4) | Celery full migration + Flower | ⬜ |
-| Phase 10 (Step 3) | Ad Networks API (Yandex, Kadam, PropellerAds) | ⬜ |
-| Phase 11 (Step 6) | Production: Caddy SSL, Grafana, MaxMind, Backups | ⬜ |
+| Документ | Назначение |
+|---|---|
+| `docs/ARCHITECTURE.md` | Целевая архитектура: компоненты, потоки данных, контракты, решения |
+| `docs/DEPLOYMENT.md` | Dev / prod / external Compose, Caddy, секреты, миграции, планировщик, бэкапы, smoke и пилот |
+| `docs/CONTRACTS.md` | Контракты между UI, FastAPI, Postgres, Redis и Go bidder и тесты, которые их охраняют |
+| `docs/audit/remediation_plan_2026-09-06.md` | **Единственный активный план работ** (roadmap + remediation) |
+| `docs/runbooks/` | Действия при алертах и релизах |
+| `docs/audit/` | RBAC-матрица, parity matrix, audit evidence, security notes |
+| `docs/ord_checklist.md`, `docs/audit/ord_spec.md` | Интеграция с ОРД / ЕРИР |
 
-## 🔗 Based On
+Исторические планы (RTB4FREE/Java, старый Vue, Celery) удалены из рабочего
+дерева и доступны только через Git history.
 
-- [RTB4FREE/bidder](https://github.com/RTB4FREE/bidder) — OpenRTB 2.0 bidder (Apache 2.0)
-- [RTB4FREE/campaign-manager](https://github.com/RTB4FREE/campaign-manager) — Campaign UI reference
-- CentralDSP v2 — SmartLink + Tracker + AutoPilot (private, already built)
+## Лицензия
 
-## 📄 License
-
-Private. All rights reserved.
+Proprietary. Все права принадлежат владельцу репозитория.
