@@ -201,7 +201,8 @@ jobs:
           s = json.load(open('/tmp/limits.json'))['services']
           for n in ('postgres', 'redis', 'backend', 'scheduler', 'bidder-go', 'frontend'):
               lim = s[n]['deploy']['resources']['limits']
-              assert lim['memory'] == '1073741824' and lim['cpus'] == '1.5', (n, lim)
+              # compose рендерит memory строкой в байтах, cpus — числом; сравниваем по значению
+              assert int(lim['memory']) == 1073741824 and float(lim['cpus']) == 1.5, (n, lim)
               assert s[n]['deploy']['resources']['reservations']['memory'], n
           PY
           # без overlay — только reservations, ни одного hard limit
