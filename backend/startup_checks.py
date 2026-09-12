@@ -82,6 +82,12 @@ def collect_problems(env: Mapping[str, str] | None = None) -> list[str]:
     p = _database_url_problem(env.get("DATABASE_URL"))
     if p:
         problems.append(p)
+    # C4b / N-02: секрет webhook Alertmanager опционален (profile monitoring может
+    # быть выключен), но если задан — плейсхолдер/слабое значение недопустимы.
+    if (env.get("ALERT_WEBHOOK_SECRET") or "").strip():
+        p = _secret_problem("ALERT_WEBHOOK_SECRET", env.get("ALERT_WEBHOOK_SECRET"))
+        if p:
+            problems.append(f"{p} — закрывает /alerts/webhook (приёмник Alertmanager)")
     p = registration_mode_problem(env)
     if p:
         problems.append(p)
@@ -156,6 +162,16 @@ def collect_warnings(env: Mapping[str, str] | None = None) -> list[str]:
         warnings.append(
             "PUBLIC_BIDDER_BASE_URL/PUBLIC_BASE_URL не заданы — UI не может выдать SSP публичный URL "
             "Go-биддера (/rtb/bid/{key}); партнёры получат неверный адрес (R-01)"
+        )
+    if not (env.get("ALERT_WEBHOOK_SECRET") or "").strip():
+        warnings.append(
+            "ALERT_WEBHOOK_SECRET не задан — /alerts/webhook отвечает 503, технические алерты из "
+            "Alertmanager не доходят до суперадмина (C4b)"
+        )
+    if not (env.get("SMTP_HOST") or "").strip() or not (env.get("SMTP_FROM") or "").strip():
+        warnings.append(
+            "SMTP_HOST/SMTP_FROM не заданы — письма (алерты, бизнес-уведомления) копятся в "
+            "notification_outbox и не отправляются (C4b)"
         )
     if not (env.get("PUBLIC_API_BASE_URL") or env.get("PUBLIC_BASE_URL") or "").strip():
         warnings.append(

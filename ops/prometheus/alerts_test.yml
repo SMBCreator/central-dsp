@@ -106,6 +106,34 @@ tests:
 
   - interval: 1m
     input_series:
+      # Watchdog горит всегда, даже без единой серии.
+      - series: 'notify_smtp_configured{job="backend",instance="backend:8000"}'
+        values: '1x5'
+    promql_expr_test:
+      - expr: ALERTS{alertname="Watchdog",alertstate="firing"}
+        eval_time: 5m
+        exp_samples:
+          - labels: '{__name__="ALERTS", alertname="Watchdog", alertstate="firing", severity="none"}'
+            value: 1
+
+  - interval: 1m
+    input_series:
+      # Последний Watchdog пришёл в t=0 (ts=0 при time()=0 в тестах promtool), дальше тишина:
+      # через 60 мин выражение > 3600 истинно, for 15m → firing к 80-й минуте; в 30 мин — тихо.
+      - series: 'alert_watchdog_last_received_ts{job="backend",instance="backend:8000"}'
+        values: '0x90'
+    promql_expr_test:
+      - expr: ALERTS{alertname="AlertPipelineDead",alertstate="firing"}
+        eval_time: 30m
+        exp_samples: []
+      - expr: ALERTS{alertname="AlertPipelineDead",alertstate="firing"}
+        eval_time: 80m
+        exp_samples:
+          - labels: '{__name__="ALERTS", alertname="AlertPipelineDead", alertstate="firing", severity="critical", job="backend", instance="backend:8000"}'
+            value: 1
+
+  - interval: 1m
+    input_series:
       # Серии нет вовсе (backend после рестарта, scheduled_jobs без успеха) — absent() алертит.
       - series: 'up{job="backend",instance="backend:8000"}'
         values: '1x20'

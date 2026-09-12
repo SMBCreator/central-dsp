@@ -738,14 +738,45 @@ consumer и cron тормозят. `top` — кто ест: миграция/р�
 
 ---
 
-## notifications — NotifySmtpNotConfigured / NotifyOutboxStuck / NotifyEmailsFailing
+## notifications — Watchdog / AlertPipelineDead / NotifySmtpNotConfigured / NotifyOutboxStuck / NotifyEmailsFailing
 
-Сторожевой пёс самой системы оповещения (C4b). Все внешние письма — алерты
-суперадмину от Alertmanager и бизнес-уведомления рекламодателям — проходят
-через таблицу `notification_outbox`; отправляет их задача scheduler
-`notify_dispatch` (`/cron/notify-dispatch`, раз в минуту) по SMTP из `SMTP_*`.
+Сторожевой пёс самой системы оповещения (C4b). Цепочка доставки алертов:
+
+```
+Prometheus (alerts.yml) → Alertmanager (ops/alertmanager/alertmanager.yml, profile monitoring)
+  → POST backend /alerts/webhook  [Bearer ALERT_WEBHOOK_SECRET]
+      → alert_events (дедуп по fingerprint+status+startsAt; страница «Алерты» в UI)
+      → in-app уведомление каждому суперадмину (type=tech_alert)
+      → notification_outbox → scheduler notify_dispatch → SMTP (SMTP_*)
+```
+
+Адреса для писем — UI суперадмина, Настройки → Алерты (`GET/PUT /settings/alerting`,
+`platform_settings.alerting`); пусто = email всех активных суперадминов. Порог
+`email_min_severity` (по умолчанию warning) касается только писем, in-app идёт
+всегда. Кнопка «Тестовое письмо» (`POST /settings/alerting/test`) гонит письмо
+через тот же outbox — это проверка всей цепочки, а не только SMTP.
 Если этот контур сломан, остальные алерты **тоже никуда не доходят** — поэтому
 эти правила стоит смотреть первыми при любой «подозрительной тишине».
+
+**Watchdog** (severity=none): `vector(1)`, горит всегда — это норма. Alertmanager
+доставляет его в backend каждые 10 мин, backend только обновляет
+`alert_watchdog_last_received_ts` и не сохраняет/не рассылает. Резолвить не нужно.
+
+**AlertPipelineDead** (critical): backend не видел Watchdog > 1 ч (после рестарта
+backend даёт себе час форы). Письмом он, естественно, не придёт — виден в
+Prometheus `/alerts` (127.0.0.1:9091) и в UI «Алерты» (`pipeline.healthy=false`).
+1. `docker compose --profile monitoring ps alertmanager` — контейнер жив? Логи:
+   `docker compose logs --tail 50 alertmanager`. `context deadline` / `connection
+   refused` к backend:8000 — сеть compose или backend не поднялся.
+2. `401 invalid webhook token` / `503 ALERT_WEBHOOK_SECRET is not configured` в
+   логах backend — секрет расходится между `.env` (backend) и alertmanager
+   (он пишет `$ALERT_WEBHOOK_SECRET` в `/tmp/webhook_token` на старте).
+   Поправить `.env`, `docker compose --profile monitoring up -d backend alertmanager`.
+3. Prometheus видит Alertmanager? `curl -s 127.0.0.1:9091/api/v1/alertmanagers`
+   — `activeAlertmanagers` должен содержать `alertmanager:9093`.
+4. Проверить руками: `curl -s -X POST -H "Authorization: Bearer $ALERT_WEBHOOK_SECRET"
+   -H 'content-type: application/json' -d '{"alerts":[]}' http://127.0.0.1:8000/alerts/webhook`
+   → `{"received":0,...}`.
 
 **NotifySmtpNotConfigured** (warning): в очереди есть письма, `SMTP_HOST`/`SMTP_FROM`
 пустые. Ничего не потеряно — заполнить `SMTP_*` в `.env`, `docker compose up -d backend

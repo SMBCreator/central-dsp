@@ -105,7 +105,7 @@ def test_scrape_job_names_match_alert_selectors():
 # ---------------------------------------------------------------- node-exporter
 
 def test_monitoring_services_only_under_profile():
-    for svc in ("prometheus", "node-exporter"):
+    for svc in ("prometheus", "node-exporter", "alertmanager"):
         assert SERVICES[svc].get("profiles") == ["monitoring"], f"{svc} должен стартовать только с --profile monitoring"
 
 

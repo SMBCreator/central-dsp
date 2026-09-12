@@ -234,7 +234,8 @@ def test_notification_alert_rules_exist_and_have_runbook():
     doc = yaml.safe_load((ROOT / "ops" / "prometheus" / "alerts.yml").read_text(encoding="utf-8"))
     group = next(g for g in doc["groups"] if g["name"] == "centraldsp-notifications")
     names = {r["alert"] for r in group["rules"]}
-    assert names == {"NotifySmtpNotConfigured", "NotifyOutboxStuck", "NotifyEmailsFailing"}
+    assert names == {"NotifySmtpNotConfigured", "NotifyOutboxStuck", "NotifyEmailsFailing",
+                     "Watchdog", "AlertPipelineDead"}
     for r in group["rules"]:
         assert "rtb_alerts.md#notifications" in r["annotations"]["description"]
     tests = yaml.safe_load((ROOT / "ops" / "prometheus" / "alerts_test.yml").read_text(encoding="utf-8"))

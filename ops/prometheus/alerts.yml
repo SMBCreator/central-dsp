@@ -558,6 +558,31 @@ groups:
             notify_email_retry_total и last_error в таблице).
             Runbook: rtb_alerts.md#notifications
 
+      - alert: Watchdog
+        expr: vector(1)
+        labels:
+          severity: none
+        annotations:
+          summary: "Heartbeat pipeline алертов (всегда горит — это нормально)"
+          description: >-
+            Всегда активный алерт: Alertmanager доставляет его в backend каждые
+            10 минут, backend обновляет alert_watchdog_last_received_ts. Не
+            требует действий; если он ПЕРЕСТАЛ приходить — сработает
+            AlertPipelineDead. Runbook: rtb_alerts.md#notifications
+
+      - alert: AlertPipelineDead
+        expr: time() - alert_watchdog_last_received_ts > 3600
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Backend не получал Watchdog от Alertmanager больше часа"
+          description: >-
+            Цепочка Prometheus -> Alertmanager -> /alerts/webhook порвана: другие
+            алерты тоже не доходят до суперадмина. Проверить контейнер alertmanager,
+            ALERT_WEBHOOK_SECRET (401/503 в логах backend), сеть compose.
+            Виден в UI «Алерты» (pipeline.healthy=false). Runbook: rtb_alerts.md#notifications
+
       - alert: NotifyEmailsFailing
         expr: increase(notify_email_failed_total[1h]) > 0
         labels:

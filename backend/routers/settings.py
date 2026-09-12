@@ -375,3 +375,62 @@ async def ml_status(user: dict = Depends(_require_platform_admin)):
             "params": params,
         }
     return out
+
+
+# ---- Технические алерты (audit C4b / N-02): куда слать письма ----------------
+# Хранится в platform_settings key='alerting'. Пустой список адресов = письма
+# уходят на email всех активных суперадминов (см. alerting.resolve_recipients).
+import alerting as _alerting  # noqa: E402
+import notify_outbox as _notify_outbox  # noqa: E402
+
+
+class AlertingSettingsIn(BaseModel):
+    emails: list[str] = Field(default_factory=list, max_length=20)
+    email_min_severity: str = Field(default="warning", pattern="^(info|warning|critical)$")
+    email_on_resolve: bool = True
+
+
+async def _alerting_view(pool) -> dict:
+    settings = await _alerting.load_settings(pool)
+    recipients, source = await _alerting.resolve_recipients(pool, settings)
+    return {
+        **settings,
+        "effective_recipients": recipients,
+        "recipients_source": source,
+        "smtp_configured": _notify_outbox.is_configured(),
+        "webhook_secret_configured": bool(_alerting.webhook_secret()),
+    }
+
+
+@router.get("/alerting")
+async def get_alerting_settings(user: dict = Depends(_require_superadmin)):
+    return await _alerting_view(await get_pool())
+
+
+@router.put("/alerting")
+async def put_alerting_settings(body: AlertingSettingsIn, user: dict = Depends(_require_superadmin)):
+    try:
+        settings = _alerting.normalise_settings(body.model_dump())
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    pool = await get_pool()
+    await _alerting.save_settings(pool, settings, user["id"])
+    return await _alerting_view(pool)
+
+
+@router.post("/alerting/test")
+async def send_test_alert_email(user: dict = Depends(_require_superadmin)):
+    """Тестовое письмо через тот же outbox/SMTP, что и настоящие алерты."""
+    pool = await get_pool()
+    recipients, source = await _alerting.resolve_recipients(pool)
+    if not recipients:
+        raise HTTPException(400, "Нет адресов: добавьте email в настройках или укажите email у суперадмина")
+    queued = await _notify_outbox.enqueue_email(
+        pool, recipients=recipients, kind="tech_alert_test", source="settings",
+        subject="Тестовое письмо: технические алерты",
+        body_text="Если вы читаете это письмо — Central DSP умеет доставлять технические алерты на этот адрес.\n",
+        body_html="<p style='font:14px system-ui'>Если вы читаете это письмо — Central DSP умеет "
+                  "доставлять технические алерты на этот адрес.</p>",
+    )
+    return {"queued": queued, "recipients": recipients, "recipients_source": source,
+            "smtp_configured": _notify_outbox.is_configured()}

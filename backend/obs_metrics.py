@@ -70,6 +70,11 @@ _COUNTER_HELP = {
     # O-01 (C1b): процесс scheduler — вызов /cron/* не вернул 2xx (timeout/unreachable/4xx/5xx).
     "scheduler_job_failures_total": "Scheduled job dispatches that did not end with HTTP 2xx from the backend (timeout, connection error, 4xx/5xx).",
     # C4b / N-01: исходы отправки писем из notification_outbox (/cron/notify-dispatch).
+    # C4b / N-02: алерты из Alertmanager по исходу (stored|duplicate|invalid|watchdog).
+    "alert_webhook_stored_total": "Alert transitions from /alerts/webhook stored in alert_events (new firing/resolved).",
+    "alert_webhook_duplicate_total": "Alert transitions already present in alert_events (Alertmanager repeat_interval).",
+    "alert_webhook_invalid_total": "Alerts on /alerts/webhook rejected as malformed (no alertname/fingerprint/startsAt).",
+    "alert_webhook_watchdog_total": "Watchdog heartbeats received from Alertmanager (not stored, updates the gauge).",
     "notify_email_sent_total": "Outbox emails delivered to the SMTP server.",
     "notify_email_retry_total": "Outbox email attempts that failed and were rescheduled with backoff.",
     "notify_email_failed_total": "Outbox emails given up after NOTIFY_MAX_ATTEMPTS (status=failed).",
@@ -110,6 +115,8 @@ _GAUGE_HELP = {
     "rtb_events_lag": "Entries in rtb:events not yet delivered to the backend group (XINFO GROUPS lag).",
     # R-07: очередь выигрышей, ждущих burl. Обновляется GET /cron/sweep-burl.
     # C4b / N-01: очередь уведомлений (обновляет dispatcher и seed при старте).
+    # C4b / N-02: unix-время последнего Watchdog от Alertmanager (seed=now при старте).
+    "alert_watchdog_last_received_ts": "Unix time when Alertmanager last delivered the Watchdog alert to the backend.",
     "notify_outbox_queued": "Rows in notification_outbox with status=queued (waiting for delivery).",
     "notify_outbox_oldest_age_seconds": "Age of the oldest queued notification (0 when the queue is empty).",
     "notify_smtp_configured": "1 when SMTP_HOST and SMTP_FROM are set (the dispatcher can actually send).",

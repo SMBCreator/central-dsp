@@ -108,6 +108,9 @@ services:
       SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in .env (openssl rand -hex 32)}
       # Bearer для /cron/* — его предъявляет планировщик; без него ручки закрыты.
       CRON_SECRET: ${CRON_SECRET:?set CRON_SECRET in .env (openssl rand -hex 32)}
+      # Bearer для /alerts/webhook — его предъявляет Alertmanager (profile
+      # monitoring). Пусто = в production ручка отвечает 503, алерты не доходят.
+      ALERT_WEBHOOK_SECRET: ${ALERT_WEBHOOK_SECRET:-}
       # Публичный домен: из него строятся адреса, уходящие наружу (пиксель,
       # /uploads/..., nurl/burl биддера). Обязателен (audit E-05 / O-01).
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?set PUBLIC_BASE_URL in .env (https://your-domain)}
@@ -308,6 +311,34 @@ services:
     networks:
       - centraldsp
 
+  # Доставка алертов (audit C4b / N-02): Prometheus -> Alertmanager -> backend
+  # POST /alerts/webhook (Bearer ALERT_WEBHOOK_SECRET) -> in-app суперадминам +
+  # письма на адреса из настроек. Только profile monitoring, порт 9093 не
+  # публикуется. Alertmanager не читает env в конфиге, поэтому токен кладём в
+  # файл на старте (credentials_file в ops/alertmanager/alertmanager.yml);
+  # образ на busybox — /bin/sh есть.
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    <<: *logging
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        umask 077 && printf '%s' "$$ALERT_WEBHOOK_SECRET" > /tmp/webhook_token &&
+        exec /bin/alertmanager --config.file=/etc/alertmanager/alertmanager.yml
+        --storage.path=/alertmanager --cluster.listen-address=
+    environment:
+      ALERT_WEBHOOK_SECRET: ${ALERT_WEBHOOK_SECRET:?set ALERT_WEBHOOK_SECRET in .env (openssl rand -hex 32)}
+    volumes:
+      - ./ops/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    depends_on:
+      backend:
+        condition: service_started
+    networks:
+      - centraldsp
+
   # Метрики хоста для алертов по диску/inode/памяти/load (audit O-05,
   # ops/prometheus/alerts.yml группа centraldsp-node). Только profile
   # monitoring; порт 9100 не публикуется — Prometheus ходит по внутренней сети.
@@ -355,6 +386,7 @@ volumes:
                          # docker run --rm -v centraldsp_geoip_data:/data alpine
                          # wget -O /data/GeoLite2-City.mmdb <maxmind_url>
   prometheus_data:
+  alertmanager_data:
 
 networks:
   centraldsp:

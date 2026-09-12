@@ -47,6 +47,7 @@ EXEMPT_PREFIXES: tuple[str, ...] = (
     "/rtb-feed",
     "/pixel/collect",
     "/cron",
+    "/alerts/webhook",  # Alertmanager, Bearer ALERT_WEBHOOK_SECRET
     "/health",
     "/metrics",
 )

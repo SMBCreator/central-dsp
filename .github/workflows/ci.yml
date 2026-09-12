@@ -109,9 +109,9 @@ jobs:
       - name: docker compose config (dev + monitoring)
         run: |
           docker compose -f compose.yml --env-file .env.example --profile monitoring config --services > /tmp/mon.services
-          grep -qx prometheus /tmp/mon.services && grep -qx node-exporter /tmp/mon.services
-          # Без профиля monitoring ни Prometheus, ни node-exporter (host mounts) не стартуют.
-          ! docker compose -f compose.yml --env-file .env.example config --services | grep -qxE 'prometheus|node-exporter'
+          grep -qx prometheus /tmp/mon.services && grep -qx node-exporter /tmp/mon.services && grep -qx alertmanager /tmp/mon.services
+          # Без профиля monitoring ни Prometheus, ни node-exporter (host mounts), ни Alertmanager не стартуют.
+          ! docker compose -f compose.yml --env-file .env.example config --services | grep -qxE 'prometheus|node-exporter|alertmanager'
       - name: docker compose config (production)
         run: docker compose -f compose.yml -f compose.prod.yml --env-file .env.example config -q
       - name: docker compose config (managed Postgres/Redis)

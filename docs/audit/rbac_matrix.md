@@ -14,6 +14,8 @@
 | **DELETE** | `/advertisers/{advertiser_id}` | roles | admin, advertiser, agency, manager, superadmin |
 | GET | `/advertisers/{advertiser_id}` | session | любая роль (scope внутри хендлера) |
 | **PATCH** | `/advertisers/{advertiser_id}` | roles | admin, advertiser, agency, manager, superadmin |
+| GET | `/alerts/events` | roles | superadmin |
+| **POST** | `/alerts/webhook` | none | Bearer ALERT_WEBHOOK_SECRET (Alertmanager) |
 | GET | `/audiences` | session | любая роль (scope внутри хендлера) |
 | **POST** | `/audiences` | roles | admin, advertiser, agency, manager, superadmin |
 | **DELETE** | `/audiences/{segment_id}` | roles | admin, advertiser, agency, manager, superadmin |
@@ -143,6 +145,9 @@
 | GET | `/scoring/report.csv` | session | любая роль (scope внутри хендлера) |
 | GET | `/settings` | session | любая роль (scope внутри хендлера) |
 | **PATCH** | `/settings` | roles+flag | admin, advertiser, agency, manager, superadmin + client[can_edit_campaigns] |
+| GET | `/settings/alerting` | roles | superadmin |
+| **PUT** | `/settings/alerting` | roles | superadmin |
+| **POST** | `/settings/alerting/test` | roles | superadmin |
 | GET | `/settings/domain-lists` | session | любая роль (scope внутри хендлера) |
 | **POST** | `/settings/domain-lists` | roles+flag | admin, advertiser, agency, manager, superadmin + client[can_edit_campaigns] |
 | **DELETE** | `/settings/domain-lists/{item_id}` | roles+flag | admin, advertiser, agency, manager, superadmin + client[can_edit_campaigns] |

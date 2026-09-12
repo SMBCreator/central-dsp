@@ -15,7 +15,7 @@ MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
 # Публичные высокочастотные POST (win/imp/click биддера, пиксель) и служебные
 # пути не пишутся в audit_log — иначе одна строка на каждое событие трафика.
 # Управляющие ручки пикселя (/pixels...) под префикс не попадают и аудируются.
-SKIP_PREFIXES = ("/rtb/", "/pixel/collect", "/health", "/ready", "/auth/login", "/auth/register", "/cron/")
+SKIP_PREFIXES = ("/rtb/", "/pixel/collect", "/health", "/ready", "/auth/login", "/auth/register", "/cron/", "/alerts/webhook")
 
 
 class AuditMiddleware(BaseHTTPMiddleware):

@@ -71,7 +71,10 @@ def test_every_rule_has_severity_summary_and_runbook_anchor():
     runbook = RUNBOOK.read_text(encoding="utf-8")
     anchors = set(re.findall(r"^## ([a-z0-9-]+) — ", runbook, flags=re.M))
     for r in _rules():
-        assert r["labels"].get("severity") in ("warning", "critical"), r["alert"]
+        # Watchdog — heartbeat pipeline (C4b), не алерт: severity=none, backend его
+        # не сохраняет и не рассылает. Все остальные правила — warning|critical.
+        allowed = ("none",) if r["alert"] == "Watchdog" else ("warning", "critical")
+        assert r["labels"].get("severity") in allowed, r["alert"]
         assert r["annotations"].get("summary"), r["alert"]
         m = re.search(r"rtb_alerts\.md#([a-z0-9-]+)", r["annotations"].get("description", ""))
         assert m, f"{r['alert']} has no runbook link"

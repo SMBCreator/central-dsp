@@ -39,6 +39,7 @@ NO_COOKIE_AUTH = {
 }
 NO_COOKIE_AUTH_PREFIX = {
     "/cron/": "Bearer CRON_SECRET",
+    "/alerts/webhook": "Bearer ALERT_WEBHOOK_SECRET (Alertmanager)",
     "/rtb-feed/": "Bearer RTB_API_TOKEN",
     "/rtb/": "endpoint_key / event-токен (HMAC)",
 }

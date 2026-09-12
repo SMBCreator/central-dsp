@@ -12,6 +12,7 @@ UPLOAD_DIR = os.environ.get("UPLOAD_DIR", os.path.join(os.path.dirname(__file__)
 from fastapi.responses import JSONResponse
 
 from routers.advertisers import router as advertisers_router
+from routers.alerts import router as alerts_router
 from routers.bidder_feed import router as bidder_feed_router
 from routers.auth_router import router as auth_router
 from routers.billing import router as billing_router
@@ -87,8 +88,10 @@ async def _lifespan(_app: FastAPI):
         logging.getLogger("startup").warning("seed_gauges_from_db skipped: %s", e)
     # C4b: без SMTP письма копятся в notification_outbox и никуда не уходят —
     # алерты суперадмину и бизнес-уведомления молчат. Не фатально, но громко.
+    import alerting
     import notify_outbox
 
+    alerting.seed_watchdog()
     if not notify_outbox.is_configured():
         logging.getLogger("startup").warning(
             "SMTP_HOST/SMTP_FROM not set: notification emails (tech alerts, business events) "
@@ -139,6 +142,7 @@ app.include_router(groups_router)
 app.include_router(settings_router)
 app.include_router(geo_router)
 app.include_router(notifications_router)
+app.include_router(alerts_router)
 app.include_router(moderation_router)
 app.include_router(audit_router)
 
