@@ -25,6 +25,22 @@ x-logging: &logging
       max-size: "50m"
       max-file: "5"
 
+# Ресурсы (audit O-07 / C6). Здесь ТОЛЬКО soft reservations — kernel при memory
+# pressure сначала отбирает у тех, кто выше своей брони; ничего не убивает и не
+# троттлит. Hard limits (OOM-kill / CPU throttling) осознанно НЕ включены по
+# умолчанию: для DSP неверный лимит опаснее его отсутствия (OOM биддера в RTB
+# burst, рост p99 -> timeouts/no-bid). Они задаются отдельно, после benchmark
+# (rtb_load + профилирование) — compose.limits.yml, docs/DEPLOYMENT.md §12.
+# reservations.cpus Compose в standalone-режиме не применяет — не задаём.
+x-res-postgres:  &res-postgres  { deploy: { resources: { reservations: { memory: 512M } } } }
+x-res-redis:     &res-redis     { deploy: { resources: { reservations: { memory: 256M } } } }
+x-res-backend:   &res-backend   { deploy: { resources: { reservations: { memory: 384M } } } }
+x-res-scheduler: &res-scheduler { deploy: { resources: { reservations: { memory: 128M } } } }
+x-res-bidder:    &res-bidder    { deploy: { resources: { reservations: { memory: 256M } } } }
+x-res-frontend:  &res-frontend  { deploy: { resources: { reservations: { memory: 256M } } } }
+x-res-prom:      &res-prom      { deploy: { resources: { reservations: { memory: 256M } } } }
+x-res-small:     &res-small     { deploy: { resources: { reservations: { memory: 64M } } } }
+
 services:
 
   # ─────────────────────────────────────────
@@ -32,9 +48,10 @@ services:
   # (никаких init.sql: файла нет, а Docker создал бы вместо него каталог).
   # ─────────────────────────────────────────
   postgres:
-    image: postgres:15-alpine
+    # Audit O-07 / C6: tag + digest; обновление — отдельный PR (docs/DEPLOYMENT.md §13).
+    image: postgres:15.19-alpine@sha256:fe0737ba566a2c5b2a28f34433c0a423261900ec17b9bf7ad115e1aae7e57f1b
     restart: unless-stopped
-    <<: *logging
+    <<: [*logging, *res-postgres]
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-centraldsp}
       POSTGRES_USER: ${POSTGRES_USER:-centraldsp}
@@ -66,9 +83,9 @@ services:
   # отказываются работать с любой eviction-политикой.
   # ─────────────────────────────────────────
   redis:
-    image: redis:7-alpine
+    image: redis:7.4.11-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
     restart: unless-stopped
-    <<: *logging
+    <<: [*logging, *res-redis]
     command: >
       redis-server
       --maxmemory ${REDIS_MAXMEMORY:-1gb}
@@ -93,7 +110,10 @@ services:
     build: ./backend
     image: centraldsp/backend:local
     restart: unless-stopped
-    <<: [*env-file, *logging]
+    <<: [*env-file, *logging, *res-backend]
+    # Graceful shutdown (C6): uvicorn --timeout-graceful-shutdown 20 + close
+    # пулов PG/Redis в lifespan; SIGKILL только если не уложились в 30s.
+    stop_grace_period: 30s
     environment:
       # Встроенный Postgres по умолчанию; для managed PG задайте DATABASE_URL
       # в .env (см. compose.external.yml / .env.external.example).
@@ -147,7 +167,9 @@ services:
       # Postgres/Redis не должен делать живой процесс unhealthy. Readiness
       # (PG, Redis, consumer) — GET /ready, его читают deploy gate
       # (ops/preprod_check.sh) и Prometheus (backend_ready). Audit O-05.
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)"]
+      # Probe тоже не от root: docker exec стартует от пользователя образа (root,
+      # он нужен entrypoint'у для chown volume) — setpriv сбрасывает до app.
+      test: ["CMD", "setpriv", "--reuid=10001", "--regid=10001", "--clear-groups", "--", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -168,7 +190,8 @@ services:
   scheduler:
     image: centraldsp/backend:local
     restart: unless-stopped
-    <<: [*env-file, *logging]
+    <<: [*env-file, *logging, *res-scheduler]
+    stop_grace_period: 30s
     command: ["python", "scheduler.py"]
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-centraldsp}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-centraldsp}}
@@ -180,7 +203,7 @@ services:
       backend:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "scheduler.py", "--healthcheck"]
+      test: ["CMD", "setpriv", "--reuid=10001", "--regid=10001", "--clear-groups", "--", "python", "scheduler.py", "--healthcheck"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -196,7 +219,8 @@ services:
     build: ./bidder-go
     image: centraldsp/bidder-go:local
     restart: unless-stopped
-    <<: *logging
+    <<: [*logging, *res-bidder]
+    stop_grace_period: 15s
     environment:
       BIDDER_ADDR: ":8090"
       BACKEND_INTERNAL_URL: http://backend:8000
@@ -255,7 +279,7 @@ services:
     build: ./frontend
     image: centraldsp/frontend:local
     restart: unless-stopped
-    <<: *logging
+    <<: [*logging, *res-frontend]
     ports:
       - "127.0.0.1:3000:3000"
     environment:
@@ -288,10 +312,10 @@ services:
   # basic_auth (никогда не открывать 9090/9091 в интернет).
   # ─────────────────────────────────────────
   prometheus:
-    image: prom/prometheus:v2.55.1
+    image: prom/prometheus:v2.55.1@sha256:2659f4c2ebb718e7695cb9b25ffa7d6be64db013daba13e05c875451cf51b0d3
     profiles: ["monitoring"]
     restart: unless-stopped
-    <<: *logging
+    <<: [*logging, *res-prom]
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
@@ -320,10 +344,10 @@ services:
   # понятной ошибкой (не `${VAR:?}`: compose интерполирует env всех сервисов
   # даже вне активного профиля, и drill/CI без монитринга падали бы тоже).
   alertmanager:
-    image: prom/alertmanager:v0.27.0
+    image: prom/alertmanager:v0.27.0@sha256:e13b6ed5cb929eeaee733479dce55e10eb3bc2e9c4586c705a4e8da41e5eacf5
     profiles: ["monitoring"]
     restart: unless-stopped
-    <<: *logging
+    <<: [*logging, *res-small]
     entrypoint: ["/bin/sh", "-c"]
     command:
       - >-
@@ -359,10 +383,10 @@ services:
   # /host/proc/1/mounts, а не через собственный PID namespace; включать только
   # для коллекторов processes/systemd, которых здесь нет.
   node-exporter:
-    image: prom/node-exporter:v1.8.2
+    image: prom/node-exporter:v1.8.2@sha256:4032c6d5bfd752342c3e631c2f1de93ba6b86c41db6b167b9a35372c139e7706
     profiles: ["monitoring"]
     restart: unless-stopped
-    <<: *logging
+    <<: [*logging, *res-small]
     command:
       - --path.procfs=/host/proc
       - --path.sysfs=/host/sys

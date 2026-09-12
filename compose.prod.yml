@@ -42,8 +42,13 @@ services:
     ports: !reset []
 
   caddy:
-    image: caddy:2-alpine
+    # Audit O-07 / C6: tag + digest; обновление — отдельный PR (docs/DEPLOYMENT.md §13).
+    image: caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
     restart: always
+    deploy:
+      resources:
+        reservations:
+          memory: 64M
     logging:
       driver: json-file
       options:

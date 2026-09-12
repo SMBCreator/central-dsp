@@ -1,0 +1,20 @@
+# Override для ops/tests/integration_smoke.sh (CI job integration, C6):
+# публикует backend/bidder-go ТОЛЬКО на тестовых портах 127.0.0.1 (dev-порты
+# 8000/8090 убраны — не столкнёмся с production-стеком на той же машине),
+# убирает dev bind-mount ./backend:/app — тестируется код ИЗ ОБРАЗА, а не
+# checkout; сеть с именем проекта. Использовать ТОЛЬКО с
+# COMPOSE_PROJECT_NAME=centraldsp-ci-* (guard в скрипте).
+services:
+  backend:
+    ports: !override
+      - "127.0.0.1:${IT_BACKEND_PORT:-18000}:8000"
+    volumes: !override
+      - geoip_data:/data:ro
+      - uploads_data:/data/uploads
+  bidder-go:
+    ports: !override
+      - "127.0.0.1:${IT_BIDDER_PORT:-18090}:8090"
+
+networks:
+  centraldsp:
+    name: ${COMPOSE_PROJECT_NAME}-network

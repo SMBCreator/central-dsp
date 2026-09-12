@@ -39,8 +39,10 @@ from routers.simulator import router as simulator_router
 from routers.stats import router as stats_router
 from routers.supply_partners import router as supply_partners_router
 
+import validation_i18n
 from audit import AuditMiddleware
 from csrf import OriginGuardMiddleware
+from http_hardening import NoStoreMiddleware
 from contextlib import asynccontextmanager
 
 
@@ -102,8 +104,15 @@ async def _lifespan(_app: FastAPI):
     try:
         yield
     finally:
+        # Graceful shutdown (C6): сначала фоновые задачи, затем клиентские пулы,
+        # чтобы consumer не пытался писать в уже закрытый пул.
         await readiness.stop_background()
         await events_consumer.stop_background()
+        from cache import close_redis
+        from db import close_pool
+
+        await close_redis()
+        await close_pool()
 
 
 app = FastAPI(
@@ -112,6 +121,8 @@ app = FastAPI(
     description="Demand-Side Platform: management API + OpenRTB 2.5 bidder",
     lifespan=_lifespan,
 )
+
+validation_i18n.install(app)
 
 app.add_middleware(AuditMiddleware)
 # CSRF (audit S-01): мутирующий запрос с чужим Origin -> 403 до роутера и до
@@ -269,4 +280,8 @@ class ApiPrefixStripper:
         await self.asgi_app(scope, receive, send)
 
 
+# Cache-Control: no-store для персональных ответов API (C6). Снаружи всех
+# http-мидлварей, но внутри ApiPrefixStripper: exempt-список сверяется с путём
+# уже без префикса /api.
+app.add_middleware(NoStoreMiddleware)
 app.add_middleware(ApiPrefixStripper)

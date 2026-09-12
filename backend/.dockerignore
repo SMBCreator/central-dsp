@@ -1,0 +1,13 @@
+# Не попадает в build context backend-образа (C6): тесты, кэш, локальные данные.
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+tests/
+loadtest/
+uploads/
+*.log
+.env
+.env.*

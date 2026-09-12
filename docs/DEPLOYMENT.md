@@ -225,6 +225,55 @@ docker compose up -d --build
 docker compose logs backend --tail 10   # миграции применились?
 ```
 
+### 8.1. Non-root backend и существующий volume `uploads_data`
+
+Начиная с C6 backend и scheduler работают **не от root**, а от системного
+пользователя `app` (uid/gid `10001:10001`); frontend — от `node` (1000);
+bidder-go — distroless `nonroot` (65532). Volume `uploads_data`, созданный
+прежней root-версией образа, при этом переживает апгрейд **без ручных
+действий**: entrypoint backend'а (`backend/docker-entrypoint.sh`) стартует
+от root, работает только с точкой монтирования `/data/uploads`
+(`UPLOAD_DIR`) и:
+
+1. отказывает, если путь вне allowlist (`/data/<dir>`, `/app/uploads`) или
+   если на месте каталога symlink (exit 78, приложение не стартует);
+2. если владелец каталога уже `10001:10001` — ничего не делает;
+3. если владелец другой (legacy root-owned volume) — меняет владельца каталога
+   и одним проходом `find -xdev` только тех файлов поддерева, что принадлежат
+   не `app`; никакого `chown -R /`, symlink не раскрываются, границы mount не
+   пересекаются, системные каталоги и код образа не трогаются;
+4. пишет в лог `entrypoint: uploads dir /data/uploads owned by 0:0 (legacy
+   root-owned volume?) -> chown 10001:10001` и `fixed owner on N entries`;
+5. `exec setpriv --reuid=10001 --regid=10001 --clear-groups --inh-caps=-all
+   --bounding-set=-all --no-new-privs` — процесс Python не может вернуть root.
+
+Проверка после апгрейда:
+
+```bash
+docker compose logs backend | grep entrypoint:
+docker compose exec backend sh -c 'grep -E "^(Uid|NoNewPrivs):" /proc/1/status'   # Uid: 10001 …, NoNewPrivs: 1
+docker compose exec backend stat -c '%u:%g %n' /data/uploads                        # 10001:10001
+```
+
+Для очень большого volume, который уже один раз обработан, обход поддерева
+можно отключить: `UPLOADS_OWNERSHIP_SCAN=0` в `.env` (каталог всё равно
+проверяется на каждом старте).
+
+**Emergency fallback (только если entrypoint по какой-то причине не смог, и это
+видно в логе):** ручной `chown` с хоста, строго по каталогу volume и без
+следования по ссылкам:
+
+```bash
+docker compose stop backend scheduler
+docker run --rm -v centraldsp_uploads_data:/data/uploads --entrypoint sh centraldsp/backend:local \
+  -c 'chown -h 10001:10001 /data/uploads && find /data/uploads -xdev -mindepth 1 -exec chown -h 10001:10001 {} +'
+docker compose up -d backend scheduler
+```
+
+Это не штатный путь миграции: штатный — сам деплой. CI проверяет сценарий
+«root-owned volume -> апгрейд -> upload/чтение/удаление» на реальном Docker
+(`ops/tests/uploads_owner_docker.sh`, `ops/tests/integration_smoke.sh`).
+
 ## 9. Бэкапы (обязательно с первого дня)
 
 Целевые показатели: **RPO ≤ 24 ч** (ежедневный полный дамп), **RTO ≤ 1 ч**
@@ -462,3 +511,92 @@ Alertmanager не стартует с пустым секретом). Backend с
 | Кампания не стартует | нет одобренного креатива или баланс 0 | одобрить креатив, пополнить баланс |
 | ОРД-ошибки при создании креатива | неверный API-ключ или прод вместо песочницы | «Настройки -> ОРД Озон -> Проверить связь» |
 | 429 на API | сработал rate limit (300 req/min на пользователя) | это защита; для интеграций поднять лимит в `main.py` |
+| После апгрейда upload креатива падает, в логе backend `PermissionError`/`EACCES` на `/data/uploads` | entrypoint не смог исправить владельца legacy-volume (см. `docker compose logs backend \| grep entrypoint:`) | п. 8.1: разобрать причину по логу (symlink? путь вне allowlist?), при необходимости emergency fallback |
+| backend/bidder-go перезапускается с `OOMKilled` | подключён `compose.limits.yml` с лимитом ниже реального пика | п. 12: снять лимит (убрать overlay), перемерить под нагрузкой, вернуть с headroom |
+
+## 12. Ресурсы контейнеров: reservations сейчас, limits после benchmark
+
+В `compose.yml` для всех сервисов заданы **только soft reservations**
+(`deploy.resources.reservations.memory`): при нехватке памяти ядро сначала
+отбирает у тех, кто выше своей брони, но никого не убивает и не троттлит.
+
+**Hard limits по умолчанию выключены — осознанно.** В DSP неверный лимит
+опаснее его отсутствия:
+
+| Лимит занижен у | Последствие |
+|---|---|
+| bidder-go (memory) | OOM-kill во время RTB burst -> потерянные impressions |
+| bidder-go (cpu) | throttling -> рост p95/p99 -> auction timeout / no-bid |
+| Redis | eviction/OOM -> потеря резервов и бюджетных счётчиков |
+| PostgreSQL | медленные запросы, connection exhaustion, лаг scheduler, сбои биллинга/ОРД |
+| backend | падение callback'ов win/burl/click |
+
+Лимиты живут в отдельном overlay `compose.limits.yml`, все значения — через
+переменные `.env` **без default** (`LIMIT_<SERVICE>_MEM/CPUS`): подключили
+overlay без значений — compose падает на interpolation, а не молча ставит
+чей-то «разумный» лимит. Одинаковые лимиты для dev/CI/prod не используются:
+dev и CI работают без overlay.
+
+Порядок включения лимитов в production:
+
+1. Benchmark на реальном профиле: `backend/loadtest/rtb_load.py` до целевого
+   QPS (+ ramp 10 -> 50 -> 200 из п. 10.2), параллельно снять: CPU и memory
+   профиль каждого контейнера (`docker stats`, node-exporter/cAdvisor), Go
+   heap/GC (`/metrics` биддера: `go_memstats_*`, `go_gc_duration_seconds`),
+   p50/p95/p99 биддера, error/no-bid/timeout rate, Redis `used_memory`/
+   `mem_fragmentation_ratio`, PostgreSQL connections/cache hit, поведение при
+   рестарте и overlap при `up -d` (два экземпляра одновременно).
+2. Определить: `reservation` = нормальная ожидаемая нагрузка; `limit` =
+   измеренный peak + headroom (RTB burst, Go GC, PG shared_buffers/work_mem,
+   Redis fragmentation + AOF rewrite, rolling deployment). Лимит Redis обязан
+   быть выше `maxmemory` из `compose.yml`.
+3. Записать `LIMIT_*` в `.env`, подключить overlay:
+   `COMPOSE_FILE=compose.yml:compose.prod.yml:compose.limits.yml`,
+   `docker compose up -d`.
+4. **Проверить реальный cgroup, а не намерение:** `ops/check_cgroup_limits.sh`
+   сверяет `memory.max`/`cpu.max` внутри контейнеров и `HostConfig` с
+   отрендеренным compose. `FAIL` = Compose в этом режиме лимит не применил —
+   задача не закрыта.
+5. Алерты (Prometheus, п. 10): container memory/CPU usage к лимиту, CPU
+   throttling, `OOMKilled` count, Go heap/GC pause, Redis
+   `maxmemory`/evictions, PG connections, bidder p95/p99, backend callback
+   errors, scheduler lag. Без них лимит — слепой выключатель.
+
+## 13. Базовые образы: pin по digest и контролируемое обновление
+
+Все внешние образы закреплены **tag с patch-версией + immutable digest**
+(`postgres:15.19-alpine@sha256:…`, `redis:7.4.11-alpine@…`,
+`python:3.12.14-slim-bookworm@…`, `node:22.23.2-alpine@…`,
+`golang:1.25.14-alpine@…`, `distroless/static-debian12:nonroot@…`,
+`caddy:2.11.4-alpine@…`, `prom/*@…`). Плавающие теги (`python:3.12-slim`,
+`postgres:15-alpine`) не используются: они меняют содержимое между двумя
+сборками, и CI, локальная среда и VPS собирают разные образы при неизменном
+Dockerfile. Тест `backend/tests/test_c6_images_compose.py` не даст
+вернуть плавающий тег.
+
+Зависимости backend ставятся из `backend/requirements.lock` с
+`--require-hashes --only-binary=:all:` (hash mismatch = ошибка сборки), frontend
+— `pnpm install --frozen-lockfile` с pinned pnpm, bidder-go — `go.sum`.
+PostgreSQL major = **15** в CI, compose и production; смена major PostgreSQL,
+Node или Python — отдельная задача совместимости, не часть обновления digest.
+
+**Digest pin не значит «никогда не обновлять».** Регламент security-обновления
+базовых образов (отдельный PR, не чаще/реже чем нужно по CVE, минимум раз в
+месяц проверка):
+
+1. Проверить новые patch-версии и security-фиксы:
+   `docker buildx imagetools inspect python:3.12-slim-bookworm` (и остальные) —
+   актуальный tag и digest; сверить с release notes / CVE.
+2. Обновить tag+digest в `backend/Dockerfile`, `frontend/Dockerfile`,
+   `bidder-go/Dockerfile`, `compose.yml`, `compose.prod.yml`,
+   `.github/workflows/ci.yml` (postgres service, caddy validate, promtool) — все
+   вхождения одного образа синхронно.
+3. Обновление `requirements.lock`, если нужно: команда в его заголовке; только в
+   том же или отдельном PR, никогда «неявно» при сборке.
+4. PR обязан пройти полный CI: backend tests, frontend typecheck/build, Go
+   tests, `docker-build` всех трёх образов, `container-smoke`, `integration`,
+   `compose`, `security` (pip-audit по lock, pnpm audit, govulncheck).
+5. В описании PR — changelog: что обновлено, старый и новый digest, ссылка на
+   CVE/release notes. Rollback = revert PR и `docker compose up -d --build`.
+6. На VPS: обычный п. 8. Образы с digest не обновятся сами при `pull`/`build` —
+   это и есть цель.

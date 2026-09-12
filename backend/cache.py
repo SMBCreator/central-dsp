@@ -19,6 +19,18 @@ def get_redis() -> redis.Redis:
     return _client
 
 
+async def close_redis() -> None:
+    """Graceful shutdown (C6): закрыть соединения Redis и сбросить singleton."""
+    global _client
+    client, _client = _client, None
+    if client is None:
+        return
+    try:
+        await client.aclose()
+    except Exception:  # noqa: BLE001 — shutdown не должен падать из-за уже мёртвого Redis
+        pass
+
+
 # --- Budget guard -----------------------------------------------------------
 # Atomically reserve spend against a daily budget. Returns True when the
 # reservation fits inside the budget, False otherwise (and rolls back).
