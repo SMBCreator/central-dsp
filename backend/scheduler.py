@@ -70,6 +70,8 @@ CONNECT_TIMEOUT_SECONDS = 10.0
 DEFAULT_JOBS: tuple[dict, ...] = (
     {"name": "sweep_burl", "path": "/cron/sweep-burl", "schedule": "* * * * *", "timeout_seconds": 50,
      "description": "R-07: выигрыши без burl за BURL_TTL -> win_expired, резерв возвращён."},
+    {"name": "notify_dispatch", "path": "/cron/notify-dispatch", "schedule": "* * * * *", "timeout_seconds": 50,
+     "description": "C4b: отправка писем из notification_outbox (алерты суперадмину, бизнес-уведомления)."},
     {"name": "reconcile_reserves", "path": "/cron/reconcile-reserves", "schedule": "*/5 * * * *", "timeout_seconds": 240,
      "description": "Сверка Redis avail:adv/avail:camp с БД; чинит дрейф после сбоев Redis."},
     {"name": "audience_sync", "path": "/cron/audience-sync", "schedule": "15 * * * *", "timeout_seconds": 600,

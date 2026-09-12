@@ -69,6 +69,10 @@ _COUNTER_HELP = {
     "ord_notification_errors_total": "ERIR error notifications pulled from the ORD provider by GET /cron/ord-notifications (B13g); each marks its object erir_error.",
     # O-01 (C1b): процесс scheduler — вызов /cron/* не вернул 2xx (timeout/unreachable/4xx/5xx).
     "scheduler_job_failures_total": "Scheduled job dispatches that did not end with HTTP 2xx from the backend (timeout, connection error, 4xx/5xx).",
+    # C4b / N-01: исходы отправки писем из notification_outbox (/cron/notify-dispatch).
+    "notify_email_sent_total": "Outbox emails delivered to the SMTP server.",
+    "notify_email_retry_total": "Outbox email attempts that failed and were rescheduled with backoff.",
+    "notify_email_failed_total": "Outbox emails given up after NOTIFY_MAX_ATTEMPTS (status=failed).",
     "scheduler_lease_lost_total": "Running scheduled jobs whose lease was taken over by another scheduler instance (no heartbeat for LEASE_SECONDS). Must stay 0: >0 means a job ran twice in parallel.",
 }
 
@@ -105,6 +109,10 @@ _GAUGE_HELP = {
     "rtb_events_pending": "Delivered-but-unacked entries in the backend consumer group (PEL size).",
     "rtb_events_lag": "Entries in rtb:events not yet delivered to the backend group (XINFO GROUPS lag).",
     # R-07: очередь выигрышей, ждущих burl. Обновляется GET /cron/sweep-burl.
+    # C4b / N-01: очередь уведомлений (обновляет dispatcher и seed при старте).
+    "notify_outbox_queued": "Rows in notification_outbox with status=queued (waiting for delivery).",
+    "notify_outbox_oldest_age_seconds": "Age of the oldest queued notification (0 when the queue is empty).",
+    "notify_smtp_configured": "1 when SMTP_HOST and SMTP_FROM are set (the dispatcher can actually send).",
     "rtb_pending_burl_size": "Won bids of billing_event=burl partners still waiting for their burl (ZCARD pending:burl).",
     "rtb_pending_burl_oldest_age_seconds": "Age of the oldest win still waiting for its burl (0 when the queue is empty).",
     # O-01 (C1b): экспортирует процесс scheduler (backend/scheduler.py, :8001/metrics), не backend.
@@ -137,6 +145,7 @@ CRON_JOBS = (
     "audience_sync",
     "sweep_burl",
     "ord_notifications",
+    "notify_dispatch",
 )
 _CRON_RESULTS = ("ok", "error")
 

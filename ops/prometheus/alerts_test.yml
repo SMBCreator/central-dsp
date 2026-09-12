@@ -44,6 +44,66 @@ tests:
         eval_time: 10m
         exp_samples: []
 
+  # ---- Notifications (C4b / N-01): сторожевой пёс системы оповещения ----------
+  - interval: 1m
+    input_series:
+      # SMTP не настроен, очередь непуста 20 мин → NotifySmtpNotConfigured; OutboxStuck молчит (configured=0).
+      - series: 'notify_smtp_configured{job="backend",instance="backend:8000"}'
+        values: '0x25'
+      - series: 'notify_outbox_queued{job="backend",instance="backend:8000"}'
+        values: '3x25'
+      - series: 'notify_outbox_oldest_age_seconds{job="backend",instance="backend:8000"}'
+        values: '4000x25'
+    promql_expr_test:
+      - expr: ALERTS{alertname="NotifySmtpNotConfigured",alertstate="firing"}
+        eval_time: 20m
+        exp_samples:
+          - labels: '{__name__="ALERTS", alertname="NotifySmtpNotConfigured", alertstate="firing", severity="warning", job="backend", instance="backend:8000"}'
+            value: 1
+      - expr: ALERTS{alertname="NotifyOutboxStuck",alertstate="firing"}
+        eval_time: 20m
+        exp_samples: []
+
+  - interval: 1m
+    input_series:
+      # SMTP настроен, но старейшее письмо ждёт > 30 мин уже 15 мин → NotifyOutboxStuck.
+      - series: 'notify_smtp_configured{job="backend",instance="backend:8000"}'
+        values: '1x25'
+      - series: 'notify_outbox_queued{job="backend",instance="backend:8000"}'
+        values: '1x25'
+      - series: 'notify_outbox_oldest_age_seconds{job="backend",instance="backend:8000"}'
+        values: '2000+60x25'
+    promql_expr_test:
+      - expr: ALERTS{alertname="NotifyOutboxStuck",alertstate="firing"}
+        eval_time: 20m
+        exp_samples:
+          - labels: '{__name__="ALERTS", alertname="NotifyOutboxStuck", alertstate="firing", severity="critical", job="backend", instance="backend:8000"}'
+            value: 1
+      - expr: ALERTS{alertname="NotifySmtpNotConfigured",alertstate="firing"}
+        eval_time: 20m
+        exp_samples: []
+
+  - interval: 1m
+    input_series:
+      # Пустая очередь при настроенном SMTP — тишина.
+      - series: 'notify_smtp_configured{job="backend",instance="backend:8000"}'
+        values: '1x25'
+      - series: 'notify_outbox_queued{job="backend",instance="backend:8000"}'
+        values: '0x25'
+      - series: 'notify_outbox_oldest_age_seconds{job="backend",instance="backend:8000"}'
+        values: '0x25'
+      - series: 'notify_email_failed_total{job="backend",instance="backend:8000"}'
+        values: '0x10 1x15'
+    promql_expr_test:
+      - expr: ALERTS{alertname="NotifyOutboxStuck",alertstate="firing"}
+        eval_time: 20m
+        exp_samples: []
+      - expr: ALERTS{alertname="NotifyEmailsFailing",alertstate="firing"}
+        eval_time: 20m
+        exp_samples:
+          - labels: '{__name__="ALERTS", alertname="NotifyEmailsFailing", alertstate="firing", severity="warning", job="backend", instance="backend:8000"}'
+            value: 1
+
   - interval: 1m
     input_series:
       # Серии нет вовсе (backend после рестарта, scheduled_jobs без успеха) — absent() алертит.

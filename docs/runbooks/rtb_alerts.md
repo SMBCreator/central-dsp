@@ -738,6 +738,47 @@ consumer и cron тормозят. `top` — кто ест: миграция/р�
 
 ---
 
+## notifications — NotifySmtpNotConfigured / NotifyOutboxStuck / NotifyEmailsFailing
+
+Сторожевой пёс самой системы оповещения (C4b). Все внешние письма — алерты
+суперадмину от Alertmanager и бизнес-уведомления рекламодателям — проходят
+через таблицу `notification_outbox`; отправляет их задача scheduler
+`notify_dispatch` (`/cron/notify-dispatch`, раз в минуту) по SMTP из `SMTP_*`.
+Если этот контур сломан, остальные алерты **тоже никуда не доходят** — поэтому
+эти правила стоит смотреть первыми при любой «подозрительной тишине».
+
+**NotifySmtpNotConfigured** (warning): в очереди есть письма, `SMTP_HOST`/`SMTP_FROM`
+пустые. Ничего не потеряно — заполнить `SMTP_*` в `.env`, `docker compose up -d backend
+scheduler`; dispatcher отправит хвост в течение минуты.
+
+**NotifyOutboxStuck** (critical): SMTP настроен, но старейшее письмо ждёт > 30 мин.
+1. Задача запускается? `cron_job_runs_total{cron_job="notify_dispatch"}` растёт,
+   `scheduler_jobs_overdue` = 0. Нет — см. [#scheduler](#scheduler).
+2. Что говорит SMTP:
+   ```sql
+   SELECT id, recipient, kind, attempts, next_attempt_at, left(last_error, 200)
+   FROM notification_outbox WHERE status = 'queued' ORDER BY created_at LIMIT 20;
+   ```
+   `last_error` — текст исключения `smtplib`: `SMTPAuthenticationError` (логин/пароль
+   или у провайдера нужен «пароль приложения»), `SMTPRecipientsRefused` (адрес
+   отвергнут — исправить в настройках), `ConnectionRefused`/`timeout` (порт/файрвол:
+   587 STARTTLS или 465 `SMTP_SSL=1`).
+3. Проверить руками из контейнера backend: `docker compose exec backend python -c
+   "import asyncio, notify_outbox as n; from email.message import EmailMessage;
+   m=EmailMessage(); m['From']=n.smtp_config().sender; m['To']='you@example.com';
+   m['Subject']='test'; m.set_content('ok'); asyncio.run(n.smtp_send(n.smtp_config(), m))"`.
+4. После исправления ничего сбрасывать не нужно: backoff 1→5→15→60 мин, строки
+   уйдут сами. Ускорить — `UPDATE notification_outbox SET next_attempt_at = now()
+   WHERE status = 'queued'` и `POST /scheduler/jobs/notify_dispatch/run`.
+
+**NotifyEmailsFailing** (warning): письма исчерпали `NOTIFY_MAX_ATTEMPTS` (8) и
+переведены в `failed`. Обычно один-два адреса с опечаткой — `SELECT recipient,
+last_error FROM notification_outbox WHERE status='failed' AND created_at > now() -
+interval '1 day'`. Переотправить после исправления: `UPDATE ... SET status='queued',
+attempts=0, next_attempt_at=now() WHERE id IN (...)`.
+
+Retention: `sent`/`failed` старше 30 дней удаляет `/cron/retention`; `queued` не трогает.
+
 ## Куда смотреть в первую очередь при любом алерте
 
 0. `docker compose ps` и `up` в Prometheus: если цель `TargetDown` — метрик

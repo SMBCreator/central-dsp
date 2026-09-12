@@ -82,6 +82,11 @@ async def seed_gauges_from_db() -> None:
     for r in rows:
         if r["name"] in obs_metrics.CRON_JOBS:
             obs_metrics.seed_cron_last_success(r["name"], float(r["ts"]))
+    # C4b: очередь уведомлений видна с первого скрейпа, не после первого dispatch.
+    import notify_outbox
+
+    obs_metrics.set_gauge("notify_smtp_configured", 1.0 if notify_outbox.is_configured() else 0.0)
+    await notify_outbox.refresh_gauges(pool)
 
 
 @router.get("/rules")
@@ -191,6 +196,17 @@ async def sweep_burl(request: Request):
     from routers.rtb import sweep_pending_burl
 
     return await sweep_pending_burl()
+
+
+@router.get("/notify-dispatch")
+@_cron_job("notify_dispatch")
+async def notify_dispatch(request: Request):
+    """C4b / N-01: один проход отправки notification_outbox по SMTP. Без
+    SMTP_HOST — no-op (строки ждут, gauge notify_smtp_configured=0)."""
+    _check_secret(request)
+    import notify_outbox
+
+    return await notify_outbox.dispatch(await get_pool())
 
 
 @router.get("/audience-sync")
@@ -545,6 +561,10 @@ async def bid_events_retention(request: Request):
         "DELETE FROM rtb_events_inbox WHERE created_at < now() - interval '3 days'"
     )
     inbox_deleted = int(inbox_status.rsplit(" ", 1)[-1] or 0)
+    # C4b: доставленные/провалившиеся уведомления старше 30 дней; queued не трогаем.
+    import notify_outbox
+
+    outbox_deleted = await notify_outbox.purge_old(pool)
 
     partitioned = await pool.fetchval(
         """SELECT EXISTS (
@@ -556,6 +576,7 @@ async def bid_events_retention(request: Request):
             "skipped": "bid_events is not partitioned (apply migration 033)",
             "once_deleted": once_deleted,
             "inbox_deleted": inbox_deleted,
+            "outbox_deleted": outbox_deleted,
         }
 
     created = await pool.fetchval(
@@ -572,4 +593,5 @@ async def bid_events_retention(request: Request):
         "rows_in_default_partition": in_default,
         "once_deleted": once_deleted,
         "inbox_deleted": inbox_deleted,
+        "outbox_deleted": outbox_deleted,
     }

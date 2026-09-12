@@ -85,6 +85,15 @@ async def _lifespan(_app: FastAPI):
         await asyncio.wait_for(seed_gauges_from_db(), timeout=3)
     except Exception as e:  # noqa: BLE001 — БД может быть недоступна; метрика просто absent
         logging.getLogger("startup").warning("seed_gauges_from_db skipped: %s", e)
+    # C4b: без SMTP письма копятся в notification_outbox и никуда не уходят —
+    # алерты суперадмину и бизнес-уведомления молчат. Не фатально, но громко.
+    import notify_outbox
+
+    if not notify_outbox.is_configured():
+        logging.getLogger("startup").warning(
+            "SMTP_HOST/SMTP_FROM not set: notification emails (tech alerts, business events) "
+            "will stay queued in notification_outbox until SMTP is configured"
+        )
     events_consumer.start_background()
     readiness.start_background()
     try:

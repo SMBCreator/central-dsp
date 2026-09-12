@@ -528,6 +528,47 @@ groups:
   # Доступность целей и readiness (audit O-05). `up` пишет сам Prometheus:
   # 0 = скрейп не удался (процесс мёртв, порт не слушает, сеть). Отдельно от
   # readiness: backend_ready/bidder_ready = процесс жив, но зависимость сломана.
+  # ---- Доставка уведомлений (audit C4b / N-01) --------------------------------
+  # Если outbox не разгребается, молчат и алерты суперадмину, и бизнес-письма:
+  # эти правила — «сторожевой пёс» самой системы оповещения.
+  - name: centraldsp-notifications
+    rules:
+      - alert: NotifySmtpNotConfigured
+        expr: notify_smtp_configured == 0 and notify_outbox_queued > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "В notification_outbox есть письма, но SMTP не настроен"
+          description: >-
+            SMTP_HOST/SMTP_FROM пустые: dispatcher не отправляет, очередь растёт
+            ({{ $value }} строк). Заполнить SMTP_* в .env и перезапустить backend.
+            Runbook: rtb_alerts.md#notifications
+
+      - alert: NotifyOutboxStuck
+        expr: notify_smtp_configured == 1 and notify_outbox_oldest_age_seconds > 1800
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Уведомления не доставляются — самое старое письмо ждёт дольше 30 мин"
+          description: >-
+            SMTP настроен, но notification_outbox не пустеет: /cron/notify-dispatch
+            не запускается (scheduler) или SMTP отвечает ошибкой (см.
+            notify_email_retry_total и last_error в таблице).
+            Runbook: rtb_alerts.md#notifications
+
+      - alert: NotifyEmailsFailing
+        expr: increase(notify_email_failed_total[1h]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Письма переведены в failed после NOTIFY_MAX_ATTEMPTS попыток"
+          description: >-
+            {{ $value }} писем за час исчерпали попытки: адрес отвергнут SMTP или
+            сервер стабильно недоступен. Смотреть last_error в notification_outbox.
+            Runbook: rtb_alerts.md#notifications
+
   - name: centraldsp-availability
     rules:
       - alert: TargetDown
