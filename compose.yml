@@ -316,7 +316,9 @@ services:
   # письма на адреса из настроек. Только profile monitoring, порт 9093 не
   # публикуется. Alertmanager не читает env в конфиге, поэтому токен кладём в
   # файл на старте (credentials_file в ops/alertmanager/alertmanager.yml);
-  # образ на busybox — /bin/sh есть.
+  # образ на busybox — /bin/sh есть. Пустой секрет валит контейнер на старте с
+  # понятной ошибкой (не `${VAR:?}`: compose интерполирует env всех сервисов
+  # даже вне активного профиля, и drill/CI без монитринга падали бы тоже).
   alertmanager:
     image: prom/alertmanager:v0.27.0
     profiles: ["monitoring"]
@@ -325,11 +327,13 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - >-
+        [ -n "$$ALERT_WEBHOOK_SECRET" ] ||
+        { echo "ALERT_WEBHOOK_SECRET is empty: set it in .env (openssl rand -hex 32)" >&2; exit 1; };
         umask 077 && printf '%s' "$$ALERT_WEBHOOK_SECRET" > /tmp/webhook_token &&
         exec /bin/alertmanager --config.file=/etc/alertmanager/alertmanager.yml
         --storage.path=/alertmanager --cluster.listen-address=
     environment:
-      ALERT_WEBHOOK_SECRET: ${ALERT_WEBHOOK_SECRET:?set ALERT_WEBHOOK_SECRET in .env (openssl rand -hex 32)}
+      ALERT_WEBHOOK_SECRET: ${ALERT_WEBHOOK_SECRET:-}
     volumes:
       - ./ops/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
       - alertmanager_data:/alertmanager
