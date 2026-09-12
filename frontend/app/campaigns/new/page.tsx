@@ -190,7 +190,7 @@ export default function NewCampaignPage() {
   }
 
   return (
-    <main className="p-4 md:p-6">
+    <div className="p-4 md:p-6">
       <header className="mb-6">
         <h1 className="text-xl font-semibold text-foreground">Новая кампания</h1>
         <p className="mt-0.5 text-sm text-muted">
@@ -590,6 +590,6 @@ export default function NewCampaignPage() {
           </div>
         </aside>
       </div>
-    </main>
+    </div>
   )
 }

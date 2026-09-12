@@ -1,6 +1,8 @@
 "use client"
 
 import { useEffect, useRef, type ReactNode } from "react"
+import Link from "next/link"
+import { useFocusTrap } from "@/lib/focus-trap"
 import { STATUS_LABELS } from "@/lib/types"
 
 /*
@@ -131,6 +133,7 @@ export function Button({
   type = "button",
   disabled,
   className = "",
+  href,
 }: {
   children: ReactNode
   onClick?: () => void
@@ -138,6 +141,8 @@ export function Button({
   type?: "button" | "submit"
   disabled?: boolean
   className?: string
+  /** Кнопка-ссылка: рендерится <a> (next/link) с теми же стилями. Вложение <button> в <a> невалидно (F-01). */
+  href?: string
 }) {
   const styles = {
     primary: "bg-primary text-primary-foreground hover:bg-primary/85",
@@ -145,13 +150,16 @@ export function Button({
     danger: "bg-danger/10 text-danger hover:bg-danger/20",
     ghost: "text-muted hover:bg-panel hover:text-foreground",
   }
+  const cls = `inline-flex h-8 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg border border-transparent px-3 text-sm font-medium outline-none transition-all select-none focus-visible:ring-2 focus-visible:ring-ring/50 active:translate-y-px disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 ${styles[variant]} ${className}`
+  if (href !== undefined) {
+    return (
+      <Link href={href} onClick={onClick} className={cls} aria-disabled={disabled || undefined}>
+        {children}
+      </Link>
+    )
+  }
   return (
-    <button
-      type={type}
-      onClick={onClick}
-      disabled={disabled}
-      className={`inline-flex h-8 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg border border-transparent px-3 text-sm font-medium outline-none transition-all select-none focus-visible:ring-2 focus-visible:ring-ring/50 active:translate-y-px disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 ${styles[variant]} ${className}`}
-    >
+    <button type={type} onClick={onClick} disabled={disabled} className={cls}>
       {children}
     </button>
   )
@@ -269,50 +277,16 @@ export function Modal({
   size?: "md" | "lg" | "xl"
 }) {
   const dialogRef = useRef<HTMLDivElement>(null)
-  const openerRef = useRef<HTMLElement | null>(null)
 
   // Esc закрывает; фокус переносится в диалог при открытии и возвращается
   // на кнопку-инициатор при закрытии (ТЗ п.5: модалки — Esc, фокус-ловушка).
-  useEffect(() => {
-    if (!open) return
-    openerRef.current = document.activeElement as HTMLElement | null
-    const first = dialogRef.current?.querySelector<HTMLElement>(
-      'input:not([type=hidden]), select, textarea, button:not([aria-label="Закрыть"]), [href], [tabindex]:not([tabindex="-1"])',
-    )
-    ;(first ?? dialogRef.current)?.focus()
-
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation()
-        onClose()
-        return
-      }
-      if (e.key !== "Tab" || !dialogRef.current) return
-      const nodes = Array.from(
-        dialogRef.current.querySelectorAll<HTMLElement>(
-          'input:not([type=hidden]):not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
-        ),
-      )
-      if (!nodes.length) return
-      const firstEl = nodes[0]
-      const lastEl = nodes[nodes.length - 1]
-      if (e.shiftKey && document.activeElement === firstEl) {
-        e.preventDefault()
-        lastEl.focus()
-      } else if (!e.shiftKey && document.activeElement === lastEl) {
-        e.preventDefault()
-        firstEl.focus()
-      }
-    }
-    document.addEventListener("keydown", onKey)
-    const prevOverflow = document.body.style.overflow
-    document.body.style.overflow = "hidden"
-    return () => {
-      document.removeEventListener("keydown", onKey)
-      document.body.style.overflow = prevOverflow
-      openerRef.current?.focus?.()
-    }
-  }, [open, onClose])
+  // Реализация общая с мобильным меню — lib/focus-trap.ts (F-01).
+  useFocusTrap(dialogRef, open, onClose, {
+    initialFocus: () =>
+      dialogRef.current?.querySelector<HTMLElement>(
+        'input:not([type=hidden]), select, textarea, button:not([aria-label="Закрыть"]), [href], [tabindex]:not([tabindex="-1"])',
+      ) ?? null,
+  })
 
   if (!open) return null
   const widthCls = size === "xl" ? "max-w-5xl" : size === "lg" || wide ? "max-w-2xl" : "max-w-md"

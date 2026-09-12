@@ -242,9 +242,7 @@ function GroupsTab({
                       <span className="font-mono text-[11px] text-muted">расход {fmtMoney(g.spent_total)}</span>
                     </button>
                     <div className="flex items-center gap-1.5">
-                      <Link href={`/analytics?group_id=${g.id}`}>
-                        <Button variant="ghost">Статистика</Button>
-                      </Link>
+                      <Button href={`/analytics?group_id=${g.id}`} variant="ghost">Статистика</Button>
                       <Button variant="ghost" onClick={() => openRename(g)}>
                         Переименовать
                       </Button>
@@ -401,9 +399,7 @@ export default function CampaignsPage() {
           <p className="mt-0.5 text-sm text-muted">Управление рекламными кампаниями и группами</p>
         </div>
         {writable ? (
-          <Link href="/campaigns/new">
-            <Button disabled={!advertisers || advertisers.length === 0}>Создать кампанию</Button>
-          </Link>
+          <Button href="/campaigns/new" disabled={!advertisers || advertisers.length === 0}>Создать кампанию</Button>
         ) : null}
       </div>
 
@@ -435,9 +431,7 @@ export default function CampaignsPage() {
             title="Сначала добавьте рекламодателя"
             description="Кампания создаётся для конкретного рекламодателя."
             action={
-              <Link href="/advertisers">
-                <Button>К рекламодателям</Button>
-              </Link>
+              <Button href="/advertisers">К рекламодателям</Button>
             }
           />
         </Card>

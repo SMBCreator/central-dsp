@@ -248,9 +248,7 @@ export default function DashboardPage() {
               title="Пока нет данных"
               description="Запустите кампанию или отправьте тестовый трафик через RTB-тестер."
               action={
-                <Link href="/rtb-test">
-                  <Button variant="secondary">Открыть RTB-тестер</Button>
-                </Link>
+                <Button href="/rtb-test" variant="secondary">Открыть RTB-тестер</Button>
               }
             />
           )
@@ -292,9 +290,7 @@ export default function DashboardPage() {
               title="Нет кампаний"
               description="Создайте первую кампанию, чтобы начать закупку трафика."
               action={
-                <Link href="/campaigns">
-                  <Button>Создать кампанию</Button>
-                </Link>
+                <Button href="/campaigns">Создать кампанию</Button>
               }
             />
           )

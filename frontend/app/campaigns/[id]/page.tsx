@@ -999,9 +999,7 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
             title="Креативы"
             subtitle="Объявления этой кампании. Показываются только одобренные модерацией; для трафика РФ нужна маркировка (erid)."
             action={
-              <Link href={`/creatives?campaign_id=${id}`}>
-                <Button>Добавить / управлять</Button>
-              </Link>
+              <Button href={`/creatives?campaign_id=${id}`}>Добавить / управлять</Button>
             }
           />
           {campaignCreatives ? (
@@ -1030,9 +1028,7 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
                 title="Нет креативов"
                 description="Добавьте хотя бы один креатив, чтобы кампания могла показываться."
                 action={
-                  <Link href={`/creatives?campaign_id=${id}`}>
-                    <Button>Добавить креатив</Button>
-                  </Link>
+                  <Button href={`/creatives?campaign_id=${id}`}>Добавить креатив</Button>
                 }
               />
             )

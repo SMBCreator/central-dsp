@@ -114,9 +114,10 @@ export async function api<T = unknown>(
     }
     // F5: единый toast-обработчик — ни одна ошибка API не проглатывается молча.
     // Динамический импорт, чтобы lib/api.ts оставался импортируемым из любого контекста.
-    // Исключение: 401 на /auth/me — это штатная проверка «есть ли сессия»
-    // (AppShell уводит на /login), тост здесь только шумит.
-    const silent = res.status === 401 && path === "/auth/me"
+    // Исключение: /auth/me — любую его ошибку AppShell показывает полноэкранным
+    // состоянием (F-01: 401 → /login, 403 → «доступ закрыт», 5xx → retry);
+    // тост здесь дублировал бы тот же текст вторым role=alert.
+    const silent = path === "/auth/me"
     if (typeof window !== "undefined" && !silent) {
       import("@/components/toaster").then(({ toastError }) => toastError(detail)).catch(() => {})
     }

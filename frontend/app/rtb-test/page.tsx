@@ -1,7 +1,6 @@
 "use client"
 
 import { useState } from "react"
-import Link from "next/link"
 import useSWR, { mutate } from "swr"
 import { api, ApiError, fetcher } from "@/lib/api"
 import { AD_TYPE_LABELS, fmtNum, type SupplyPartner } from "@/lib/types"
@@ -87,9 +86,7 @@ export default function RtbTestPage() {
             title="Нет активных SSP-партнёров"
             description="Сначала подключите SSP — симулятор отправляет запросы на его endpoint."
             action={
-              <Link href="/supply">
-                <Button>Подключить SSP</Button>
-              </Link>
+              <Button href="/supply">Подключить SSP</Button>
             }
           />
         </Card>

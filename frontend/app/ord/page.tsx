@@ -190,7 +190,7 @@ export default function OrdPage() {
   }
 
   return (
-    <main className="space-y-4 p-6">
+    <div className="space-y-4 p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-lg font-semibold text-foreground">Маркировка (ОРД)</h1>
@@ -575,6 +575,6 @@ export default function OrdPage() {
           </div>
         </form>
       </Modal>
-    </main>
+    </div>
   )
 }
