@@ -46,12 +46,17 @@ LEVEL_CITY, LEVEL_REGION, LEVEL_COUNTRY, LEVEL_UNKNOWN = "city", "region", "coun
 _CITY_TYPES = ("city", "town")
 
 
-def _env_flag(name: str) -> bool:
-    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on")
 
 
 def geo_v2_enabled() -> bool:
-    return _env_flag("GEO_V2_ENABLED")
+    # Включён по умолчанию: справочник приезжает с образом (geo_seed.py).
+    # GEO_V2_ENABLED=0 — аварийное выключение.
+    return _env_flag("GEO_V2_ENABLED", default=True)
 
 
 def latlon_enabled() -> bool:

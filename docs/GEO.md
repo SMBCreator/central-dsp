@@ -19,11 +19,38 @@
 | `geo_places` | места: `id` = geonameid, `type` (country / region / city / town), `parent_id`, `region_code` (ISO 3166-2), `aliases` (нормализованные синонимы), координаты, население |
 | `geo_ssp_alias` | значения конкретной SSP (`partner_id`, `kind` = region / city, `value_norm`) → место |
 
-Импорт: `ops/geo_import.py` (GeoNames CC BY 4.0 + коды ISO 3166-2 из Wikidata CC0).
+### Справочник в репозитории (по умолчанию)
+
+`backend/data/geo_places.seed.jsonl.gz` (~250 КБ) — готовый справочник:
+
+* РФ — 85 субъектов (с кодами ISO 3166-2; Крым и Севастополь — как в UI) и
+  ~4900 населённых пунктов от 1000 жителей;
+* остальной мир — 252 страны (таргетинг по стране).
+
+`backend/geo_seed.py` загружает его при каждом старте backend сразу после
+`migrate.py` (CMD в `backend/Dockerfile`). Сеть и ручные шаги не нужны.
+
+* Активной версии нет → загружает.
+* Активна прошлая версия из seed, в образе новая → обновляет.
+* Активна версия, загруженная вручную через `ops/geo_import.py`, → не трогает.
+* Тот же seed (совпал sha256) → ничего не делает, старт не замедляется.
+
+Ошибка загрузки не валит старт backend: группы с выбранными местами просто не
+покупают (fail-closed), причина — в логе `geo seed: ...`. `GEO_SEED_AUTOLOAD=0`
+отключает автозагрузку; `python geo_seed.py --force` в контейнере backend —
+принудительно загрузить seed.
+
+### Пересборка справочника
+
+`ops/geo_import.py` (GeoNames CC BY 4.0 + коды ISO 3166-2 из Wikidata CC0):
 
 ```bash
-python ops/geo_import.py --dsn "$DATABASE_URL"                 # скачать и загрузить
-python ops/geo_import.py --dsn ... --data-dir /var/cache/geo   # с кэшем файлов
+# обновить seed в репозитории (затем закоммитить файл)
+python ops/geo_import.py --export backend/data/geo_places.seed.jsonl.gz
+# загрузить в БД напрямую (такая версия помечается origin=manual)
+python ops/geo_import.py --dsn "$DATABASE_URL"
+# города и регионы других стран
+python ops/geo_import.py --dsn ... --world-regions --world-min-population 15000
 python ops/geo_import.py --data-dir ... --offline --dry-run    # только статистика
 ```
 
@@ -71,7 +98,9 @@ python ops/geo_import.py --data-dir ... --offline --dry-run    # только с
 
 | Переменная | Где | По умолчанию | Смысл |
 | --- | --- | --- | --- |
-| `GEO_V2_ENABLED` | backend | выкл. | v2-ключи работают; фид отдаёт `geo_version` |
+| `GEO_V2_ENABLED` | backend | **вкл.** | v2-ключи работают; фид отдаёт `geo_version`. `0` — аварийное выключение |
+| `GEO_SEED_AUTOLOAD` | backend | вкл. | загрузка справочника из репозитория при старте |
+| `THROTTLE_COUNTRIES` | bidder | пусто | предфильтр по стране до таргетинга; пусто — все страны, `ru,rus` — только РФ |
 | `GEO_LATLON_ENABLED` | backend и bidder | выкл. | ближайший город по координатам |
 | `GEO_LATLON_RADIUS_KM` | backend и bidder | 25 | радиус поиска по координатам |
 
@@ -103,8 +132,18 @@ python ops/geo_import.py --data-dir ... --offline --dry-run    # только с
 | POST | `/geo/places/resolve` | список названий → места (found / ambiguous / not_found) |
 | GET / PUT | `/supply-partners/{id}/geo-aliases` | алиасы SSP (только admin) |
 
-## Включение в production
+## erid и зарубежное гео
 
-1. Применить миграцию 060 и выполнить `ops/geo_import.py`.
-2. Выставить `GEO_V2_ENABLED=1` на backend. Go подхватит справочник при следующем рефреше фида.
-3. Смотреть на `bidder_geo_resolve_total` и `/internal/geo/unmatched`, добавлять алиасы для частых нераспознанных значений.
+Креатив без erid попадает в фид, только если группа гарантированно не
+показывается в РФ (`ord.service._not_ru_only_sql`): `geo_countries` без RU
+**или** `geo_place_ids`, где все места известны и ни одно не в РФ, а
+`geo_unknown` не `lenient`. Тот же критерий — в `campaign_targets_ru`
+(модерация, launch gate кампании).
+
+## Production
+
+Ничего включать не нужно: миграция 060 и справочник применяются при старте
+backend, Go подхватывает справочник при ближайшем рефреше фида. После деплоя:
+
+1. `GET /geo/config` — `v2_enabled: true`, `dataset_version: geonames-…`.
+2. Смотреть на `bidder_geo_resolve_total` и `/internal/geo/unmatched`, добавлять алиасы для частых нераспознанных значений.

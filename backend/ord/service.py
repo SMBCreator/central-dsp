@@ -25,13 +25,37 @@ from .adapter import MOCK_PROVIDER, OrdError, get_ord_adapter, mock_allowed, moc
 # (campaigns.py, проверка ord_marking) — расходиться они не должны.
 _RU_CODES_SQL = "('RU','RUS')"
 
-_NOT_RU_ONLY_SQL = f"""
-            COALESCE(jsonb_array_length(li.targeting->'geo_countries'), 0) > 0
-            AND NOT EXISTS (
-                SELECT 1 FROM jsonb_array_elements_text(li.targeting->'geo_countries') g
-                WHERE upper(g) IN {_RU_CODES_SQL}
+
+def _not_ru_only_sql(t: str) -> str:
+    """Группа гарантированно не показывается в РФ. Старые ключи и GEO v2
+    проверяются в биддере через AND, поэтому достаточно любого из условий:
+      * geo_countries непуст и без RU;
+      * geo_place_ids непуст, все места есть в справочнике и ни одно не в RU,
+        а geo_unknown не lenient (lenient покупает запросы без гео — они могут быть из РФ).
+    Нечисловой или неизвестный id места считается РФ (консервативно)."""
+    return f"""COALESCE((
+            (
+                COALESCE(jsonb_array_length({t}->'geo_countries'), 0) > 0
+                AND NOT EXISTS (
+                    SELECT 1 FROM jsonb_array_elements_text({t}->'geo_countries') g
+                    WHERE upper(g) IN {_RU_CODES_SQL}
+                )
             )
-"""
+            OR (
+                CASE WHEN jsonb_typeof({t}->'geo_place_ids') = 'array'
+                     THEN jsonb_array_length({t}->'geo_place_ids') ELSE 0 END > 0
+                AND COALESCE({t}->>'geo_unknown', 'strict') <> 'lenient'
+                AND NOT EXISTS (
+                    SELECT 1 FROM jsonb_array_elements_text({t}->'geo_place_ids') pid
+                    LEFT JOIN geo_places gp
+                      ON gp.id = CASE WHEN pid ~ '^[0-9]{{1,18}}$' THEN pid::bigint END
+                    WHERE gp.id IS NULL OR gp.country_iso = 'RU'
+                )
+            )
+        ), false)"""
+
+
+_NOT_RU_ONLY_SQL = _not_ru_only_sql("li.targeting")
 
 ERID_FEED_GATE_SQL = f"""
     AND (
@@ -92,13 +116,10 @@ def feed_gate_sql() -> str:
 
 async def campaign_targets_ru(pool, campaign_id: str) -> bool:
     """True, если хотя бы одна группа кампании показывается в РФ
-    (явно RU или без ограничения по странам). Нет групп → True (консервативно)."""
+    (явно RU или без ограничения по стране). Нет групп → True (консервативно).
+    Тот же критерий, что erid-гейт фида (_not_ru_only_sql)."""
     targets_ru = await pool.fetchval(
-        f"""SELECT bool_or(
-                 COALESCE(jsonb_array_length(targeting->'geo_countries'), 0) = 0
-                 OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(targeting->'geo_countries') g
-                            WHERE upper(g) IN {_RU_CODES_SQL})
-               )
+        f"""SELECT bool_or(NOT {_not_ru_only_sql("targeting")})
            FROM line_items WHERE campaign_id = $1""",
         campaign_id,
     )
@@ -308,7 +329,7 @@ async def register_creative(pool, creative: dict, *, contract_id: str | None = N
             why = CHAIN_NOT_CONFIRMED
         elif camp:
             why = ("Договор цепочки ОРД кампании не зарегистрирован в ОРД. "
-                   "Зарегистрируйте его в разделе «Маркировка (ОРД)».")
+                   "Зарегистрируйте его в разде��е «Маркировка (ОРД)».")
         else:
             why = (
                 "Нет зарегистрированного в ОРД договора для контрагента креатива. "

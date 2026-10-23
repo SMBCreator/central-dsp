@@ -154,7 +154,7 @@ def test_api_feed_and_aliases(env):
 
 
 def test_geo_feed_is_off_without_flag(env, monkeypatch):
-    monkeypatch.delenv("GEO_V2_ENABLED")
+    monkeypatch.setenv("GEO_V2_ENABLED", "0")
 
     async def scenario():
         conn = await asyncpg.connect(DATABASE_URL)

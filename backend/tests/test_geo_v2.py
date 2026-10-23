@@ -56,8 +56,15 @@ def _req(country="RUS", region="", city=""):
 SOCHI = INDEX.resolve("", "RUS", "", "Сочи")
 
 
-def test_flag_off_v2_targeting_is_fail_closed(monkeypatch):
+def test_flag_is_on_by_default(monkeypatch):
     monkeypatch.delenv("GEO_V2_ENABLED", raising=False)
+    assert geo_v2.geo_v2_enabled() is True
+    monkeypatch.setenv("GEO_V2_ENABLED", "")
+    assert geo_v2.geo_v2_enabled() is True
+
+
+def test_flag_off_v2_targeting_is_fail_closed(monkeypatch):
+    monkeypatch.setenv("GEO_V2_ENABLED", "0")
     assert _match_targeting({"geo_place_ids": [542415]}, _req(city="Сочи"), geo_v2_resolved=SOCHI) is False
     assert _match_targeting({"geo_exclude_place_ids": [524901]}, _req(city="Сочи"), geo_v2_resolved=SOCHI) is False
 

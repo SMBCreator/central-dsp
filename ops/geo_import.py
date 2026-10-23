@@ -3,8 +3,16 @@
 
 Источники:
   * GeoNames (CC BY 4.0, https://www.geonames.org): countryInfo, admin1CodesASCII,
-    cities5000 (РФ) / cities15000 (остальные страны), alternateNamesV2 (ru/en/abbr).
+    cities1000 (РФ) / cities15000 (остальные страны), alternateNamesV2 (ru/en/abbr).
   * Wikidata (CC0): коды ISO 3166-2 регионов (P300) по GeoNames ID (P1566).
+
+Объём по умолчанию: РФ — все субъекты и населённые пункты от 1000 жителей,
+остальной мир — только страны (--world-regions / --world-min-population
+добавляют регионы и города других стран).
+
+Справочник в репозитории (backend/data/geo_places.seed.jsonl.gz) собирается
+  python ops/geo_import.py --export backend/data/geo_places.seed.jsonl.gz
+и загружается сам при старте backend (backend/geo_seed.py).
 
 Идемпотентность и версии:
   * id места = geonameid, поэтому повторный импорт обновляет строки, а
@@ -25,6 +33,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import csv
+import gzip
 import hashlib
 import io
 import json
@@ -39,12 +48,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
 from geo_norm import geo_normalize  # noqa: E402
+from geo_seed import COLUMNS, load_records  # noqa: E402
 
 GEONAMES_BASE = "https://download.geonames.org/export/dump/"
 GEONAMES_FILES = (
     "countryInfo.txt",
     "admin1CodesASCII.txt",
-    "cities5000.zip",
+    "cities1000.zip",
     "cities15000.zip",
     "alternateNamesV2.zip",
 )
@@ -57,7 +67,7 @@ SOURCE = "geonames+wikidata"
 LICENSE = "GeoNames CC BY 4.0 (https://www.geonames.org); ISO 3166-2: Wikidata CC0"
 
 # Меняйте при любом изменении правил ниже или geo_norm: это меняет sha версии.
-RULES_VERSION = "2"
+RULES_VERSION = "3"
 
 # Части населённых пунктов, исторические и заброшенные — не места для таргетинга.
 EXCLUDED_FCODES = frozenset({"PPLX", "PPLH", "PPLQ", "PPLW", "PPLCH"})
@@ -80,12 +90,6 @@ EXTRA_ALIASES: dict[int, list[str]] = {
     536203: ["SPB", "СПб", "Питер", "Sankt-Peterburg", "St Petersburg"],  # Санкт-Петербург (субъект)
     498817: ["SPB", "СПб", "Питер"],  # Санкт-Петербург (город)
 }
-
-COLUMNS = (
-    "id", "country_iso", "region_code", "name_ru", "name_en", "name_ru_norm", "name_en_norm",
-    "aliases", "type", "lat", "lon", "population", "parent_id", "source", "dataset_version",
-)
-
 
 @dataclass
 class Place:
@@ -186,7 +190,9 @@ def load_iso_codes(path: Path) -> dict[int, list[str]]:
     return out
 
 
-def build_places(data_dir: Path, ru_min_pop: int, world_min_pop: int) -> tuple[list[Place], dict]:
+def build_places(
+    data_dir: Path, ru_min_pop: int, world_min_pop: int, world_regions: bool = False
+) -> tuple[list[Place], dict]:
     places: dict[int, Place] = {}
     country_gid: dict[str, int] = {}
     stats: dict[str, int] = {}
@@ -211,7 +217,7 @@ def build_places(data_dir: Path, ru_min_pop: int, world_min_pop: int) -> tuple[l
             override = RU_UI_OVERRIDES.get(code)
             if override:
                 cc = "RU"
-            if cc not in country_gid:
+            if cc not in country_gid or (cc != "RU" and not world_regions):
                 continue
             admin1_gid[code] = gid
             region_code = None
@@ -253,8 +259,9 @@ def build_places(data_dir: Path, ru_min_pop: int, world_min_pop: int) -> tuple[l
                 lat=float(r[4]), lon=float(r[5]), population=pop, extra_names=[r[2]],
             )
 
-    add_cities("cities5000.zip", lambda cc, pop: cc == "RU" and pop >= ru_min_pop)
-    add_cities("cities15000.zip", lambda cc, pop: cc != "RU" and pop >= world_min_pop)
+    add_cities("cities1000.zip", lambda cc, pop: cc == "RU" and pop >= ru_min_pop)
+    if world_min_pop > 0:
+        add_cities("cities15000.zip", lambda cc, pop: cc != "RU" and pop >= world_min_pop)
     stats["cities"] = sum(1 for p in places.values() if p.type in ("city", "town"))
     stats["cities_ru"] = sum(1 for p in places.values() if p.type in ("city", "town") and p.country_iso == "RU")
 
@@ -350,28 +357,23 @@ async def load_db(dsn: str, records: list[tuple], version: str, sha: str, stats:
         if active and active["sha"] == sha:
             print(f"версия {active['version']} уже активна (sha совпадает) — ничего не делаю")
             return
-        async with conn.transaction():
-            await conn.execute("CREATE TEMP TABLE geo_places_in (LIKE geo_places INCLUDING DEFAULTS) ON COMMIT DROP")
-            await conn.copy_records_to_table("geo_places_in", records=records, columns=list(COLUMNS))
-            # Коды ISO могут переехать между местами — освобождаем их до upsert.
-            await conn.execute("UPDATE geo_places SET region_code = NULL WHERE region_code IS NOT NULL")
-            cols = ", ".join(COLUMNS)
-            updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in COLUMNS if c != "id")
-            await conn.execute(
-                f"INSERT INTO geo_places ({cols}) SELECT {cols} FROM geo_places_in "
-                f"ON CONFLICT (id) DO UPDATE SET {updates}, updated_at = now()"
-            )
-            await conn.execute("UPDATE geo_dataset_versions SET is_active = false WHERE is_active")
-            await conn.execute(
-                """INSERT INTO geo_dataset_versions (version, source, license, places_count, is_active, meta)
-                   VALUES ($1, $2, $3, $4, true, $5::jsonb)
-                   ON CONFLICT (version) DO UPDATE SET is_active = true, places_count = EXCLUDED.places_count,
-                       meta = EXCLUDED.meta, imported_at = now()""",
-                version, SOURCE, LICENSE, len(records), json.dumps({"sha256": sha, "stats": stats}),
-            )
+        # origin=manual: автозагрузка seed при старте backend эту версию не перезапишет.
+        await load_records(conn, records, version, SOURCE, LICENSE, {"sha256": sha, "stats": stats, "origin": "manual"})
         print(f"импортирована версия {version}: {len(records)} мест")
     finally:
         await conn.close()
+
+
+def export_seed(path: Path, records: list[tuple], version: str, sha: str, stats: dict) -> None:
+    header = {"version": version, "sha256": sha, "source": SOURCE, "license": LICENSE,
+              "stats": stats, "columns": list(COLUMNS)}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # mtime=0: одинаковые входы дают байт-в-байт одинаковый файл (чистый git diff).
+    with path.open("wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", mtime=0, compresslevel=9) as gz:
+        gz.write((json.dumps(header, ensure_ascii=False) + "\n").encode())
+        for r in records:
+            gz.write((json.dumps(list(r), ensure_ascii=False, separators=(",", ":")) + "\n").encode())
+    print(f"seed записан: {path} ({path.stat().st_size // 1024} КБ, {len(records)} мест)")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -381,20 +383,26 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--offline", action="store_true", help="не скачивать, взять файлы из --data-dir")
     ap.add_argument("--refresh", action="store_true", help="перекачать файлы, даже если они есть в кэше")
     ap.add_argument("--dry-run", action="store_true", help="разобрать и вывести статистику, без записи в БД")
-    ap.add_argument("--ru-min-population", type=int, default=5000)
-    ap.add_argument("--world-min-population", type=int, default=15000)
+    ap.add_argument("--export", type=Path, help="записать seed-файл (jsonl.gz) вместо загрузки в БД")
+    ap.add_argument("--ru-min-population", type=int, default=1000)
+    ap.add_argument("--world-min-population", type=int, default=0, help="0 — без городов вне РФ")
+    ap.add_argument("--world-regions", action="store_true", help="регионы (admin1) стран вне РФ")
     args = ap.parse_args(argv)
-    if not args.dry_run and not args.dsn:
-        ap.error("--dsn обязателен без --dry-run")
+    if not args.dry_run and not args.dsn and not args.export:
+        ap.error("нужен --dsn, --export или --dry-run")
 
     fetch_inputs(args.data_dir, args.offline, args.refresh)
-    sha = inputs_sha(args.data_dir)
+    params = f"ru>={args.ru_min_population};world>={args.world_min_population};world_regions={args.world_regions}"
+    sha = hashlib.sha256((inputs_sha(args.data_dir) + params).encode()).hexdigest()
     version = f"geonames-{date.today():%Y%m%d}-{sha[:8]}"
-    places, extra = build_places(args.data_dir, args.ru_min_population, args.world_min_population)
+    places, extra = build_places(args.data_dir, args.ru_min_population, args.world_min_population, args.world_regions)
     records = to_records(places, extra["alts"], version)
     stats = extra["stats"] | {"places": len(records)}
     print(json.dumps({"version": version, **stats}, ensure_ascii=False))
     if args.dry_run:
+        return 0
+    if args.export:
+        export_seed(args.export, records, version, sha, stats)
         return 0
     asyncio.run(load_db(args.dsn, records, version, sha, stats))
     return 0
