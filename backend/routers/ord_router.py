@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from auth import current_user
 from rbac import assert_in_scope, assert_owned_by, require_platform_write, scope_for
@@ -37,6 +37,26 @@ class CounterpartyIn(BaseModel):
     # Наша организация (ОРС): isOpc в ОРД, владелец сводной площадки. Ровно одна на платформу.
     is_self: bool = False
     rs_url: Optional[str] = Field(default=None, max_length=500)   # URL рекламной системы (rsUrl)
+    # C30: иностранное ЮЛ (legal_type=foreign) — страна по ОКСМ + налоговый/рег. номер
+    region_number: Optional[str] = Field(default=None, pattern=r"^\d{3}$")
+    tax_id: Optional[str] = Field(default=None, max_length=64)
+    registration_number: Optional[str] = Field(default=None, max_length=64)
+
+    @model_validator(mode="after")
+    def _foreign_requisites(self):
+        if self.legal_type != "foreign":
+            # Реквизиты иностранца у резидента РФ не храним — ОРД их отклонит.
+            self.region_number = self.tax_id = self.registration_number = None
+            return self
+        from ord.ozon_mapping import foreign_requisites
+        from ord.adapter import OrdDataError
+        self.tax_id = (self.tax_id or "").strip() or None
+        self.registration_number = (self.registration_number or "").strip() or None
+        try:
+            foreign_requisites(self.model_dump())
+        except OrdDataError as e:
+            raise ValueError(str(e).split(": ", 1)[-1])
+        return self
 
 
 class ContractIn(BaseModel):
@@ -137,21 +157,28 @@ async def create_counterparty(body: CounterpartyIn, user: dict = Depends(require
         if body.is_self:
             await conn.execute("UPDATE counterparties SET is_self = false, updated_at = now() WHERE is_self AND inn <> $1", body.inn)
         row = await conn.fetchrow(
-            """INSERT INTO counterparties (user_id, advertiser_id, name, inn, ogrn, legal_type, role, address, is_self, rs_url)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+            """INSERT INTO counterparties (user_id, advertiser_id, name, inn, ogrn, legal_type, role, address, is_self, rs_url,
+                                          region_number, tax_id, registration_number)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
                ON CONFLICT (user_id, inn, role) DO UPDATE
                  SET name = EXCLUDED.name, ogrn = COALESCE(EXCLUDED.ogrn, counterparties.ogrn),
+                     region_number = COALESCE(EXCLUDED.region_number, counterparties.region_number),
+                     tax_id = COALESCE(EXCLUDED.tax_id, counterparties.tax_id),
+                     registration_number = COALESCE(EXCLUDED.registration_number, counterparties.registration_number),
                      address = COALESCE(EXCLUDED.address, counterparties.address),
                      is_self = counterparties.is_self OR EXCLUDED.is_self,
                      rs_url = COALESCE(EXCLUDED.rs_url, counterparties.rs_url),
                      ord_status = CASE WHEN counterparties.ord_status IN ('registered', 'erir_error')
                                         AND (counterparties.is_self <> (counterparties.is_self OR EXCLUDED.is_self)
-                                             OR counterparties.rs_url IS DISTINCT FROM COALESCE(EXCLUDED.rs_url, counterparties.rs_url))
+                                             OR counterparties.rs_url IS DISTINCT FROM COALESCE(EXCLUDED.rs_url, counterparties.rs_url)
+                                             OR counterparties.region_number IS DISTINCT FROM COALESCE(EXCLUDED.region_number, counterparties.region_number)
+                                             OR counterparties.tax_id IS DISTINCT FROM COALESCE(EXCLUDED.tax_id, counterparties.tax_id)
+                                             OR counterparties.registration_number IS DISTINCT FROM COALESCE(EXCLUDED.registration_number, counterparties.registration_number))
                                        THEN 'pending' ELSE counterparties.ord_status END,
                      updated_at = now()
                RETURNING *""",
             owner, body.advertiser_id, body.name, body.inn, body.ogrn, body.legal_type, role, body.address,
-            body.is_self, body.rs_url,
+            body.is_self, body.rs_url, body.region_number, body.tax_id, body.registration_number,
         )
     return _row(row)
 

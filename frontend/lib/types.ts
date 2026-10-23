@@ -395,7 +395,10 @@ export interface Counterparty {
   name: string
   inn: string | null
   ogrn: string | null
-  legal_type: "ul" | "ip" | "fl" | string | null
+  legal_type: "ul" | "ip" | "fl" | "foreign" | string | null
+  region_number?: string | null
+  tax_id?: string | null
+  registration_number?: string | null
   role: "advertiser" | "agency" | "ors" | "publisher" | string | null
   advertiser_id: string | null
   address: string | null

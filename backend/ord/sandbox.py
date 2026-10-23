@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import random
+import secrets
 import time
 import uuid
 from datetime import date, timedelta
@@ -42,6 +43,9 @@ STEPS: list[dict[str, Any]] = [
     {"key": "kktu", "title": "Справочник ККТУ (dict/kktu)", "depends": ["ping"]},
     {"key": "org_advertiser", "title": "Организация рекламодателя (РД)", "depends": ["ping"]},
     {"key": "org_self", "title": "Организация ОРС (мы)", "depends": ["ping"]},
+    # C30 [V]: принимает ли ОРД иностранное ЮЛ с regionNumber/taxId/registrationNumber.
+    # Вне цепочки договора — её ошибка не блокирует остальные шаги.
+    {"key": "org_foreign", "title": "Иностранная организация (C30)", "depends": ["ping"]},
     {"key": "platform", "title": "Площадка ОРС", "depends": ["org_self"]},
     {"key": "contract", "title": "Договор РД → ОРС", "depends": ["org_advertiser", "org_self"]},
     {"key": "creative", "title": "Креатив и получение erid", "depends": ["contract"]},
@@ -90,6 +94,7 @@ def build_context(params: dict[str, Any], today: date | None = None) -> dict[str
     platform = {"external_id": f"{pfx}-platform", "name": "Central DSP sandbox",
                 "platform_type": "system", "url": url}
     creative_id = f"{pfx}-creative:v1"
+    foreign_tax_id = "".join(str(secrets.randbelow(10)) for _ in range(12))  # формат БИН Казахстана
     return {
         "run_id": run,
         "period": period,
@@ -110,6 +115,16 @@ def build_context(params: dict[str, Any], today: date | None = None) -> dict[str
             "is_self": True,
             "rs_url": url,
             "platforms": [{**platform, "is_owner": True}],
+        },
+        "foreign": {
+            "external_id": f"{pfx}-org-foreign",
+            "inn": foreign_tax_id,
+            "name": f"Test Foreign LLP {run}",
+            "legal_type": "foreign",
+            "role": "advertiser",
+            "region_number": "398",
+            "tax_id": foreign_tax_id,
+            "registration_number": foreign_tax_id,
         },
         "platform": platform,
         "contract": {
@@ -207,6 +222,7 @@ class SandboxRunner:
             "kktu": ("POST", "/api/external/dict/kktu", {}, None),
             "org_advertiser": ("POST", "/api/external/v6/organisation", organisation_body(ctx["advertiser"]), None),
             "org_self": ("POST", "/api/external/v6/organisation", organisation_body(ctx["self"]), None),
+            "org_foreign": ("POST", "/api/external/v6/organisation", organisation_body(ctx["foreign"]), None),
             "platform": ("POST", "/api/external/v6/platform", platform_body(ctx["platform"]), None),
             "contract": ("POST", "/api/external/v6/contract", contract_body(ctx["contract"]), None),
             "creative": ("POST", "/api/external/v4/creative", creative_body(ctx["creative"]), None),

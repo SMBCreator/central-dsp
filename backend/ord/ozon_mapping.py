@@ -14,6 +14,8 @@ from typing import Any
 from .adapter import OrdDataError
 
 # --- контрагент -------------------------------------------------------------
+RUSSIA_OKSM = "643"
+
 LEGAL_TYPE = {
     "ul": "LEGAL_TYPE_LEGAL",
     "ip": "LEGAL_TYPE_ENTREPRENEUR",
@@ -131,7 +133,30 @@ def organisation_body(data: dict[str, Any]) -> dict[str, Any]:
         body["rsUrl"] = data["rs_url"]
     if data.get("platforms"):
         body["platforms"] = [platform_link(p) for p in data["platforms"]]
+    if (data.get("legal_type") or "ul") == "foreign":
+        body.update(foreign_requisites(data))
     return body
+
+
+def foreign_requisites(data: dict[str, Any]) -> dict[str, Any]:
+    """C30: иностранное ЮЛ — страна по ОКСМ и номер налогоплательщика или
+    регистрационный номер. Без них ОРД/ЕРИР карточку не примет, поэтому
+    ошибка данных поднимается до отправки."""
+    region = str(data.get("region_number") or "").strip()
+    tax_id = str(data.get("tax_id") or "").strip()
+    reg_no = str(data.get("registration_number") or "").strip()
+    if not (len(region) == 3 and region.isdigit()):
+        raise OrdDataError("foreign_region_missing: для иностранного контрагента нужен код страны по ОКСМ (3 цифры)")
+    if region == RUSSIA_OKSM:
+        raise OrdDataError("foreign_region_russia: код ОКСМ 643 — это РФ; выберите тип «Юрлицо»")
+    if not (tax_id or reg_no):
+        raise OrdDataError("foreign_ids_missing: укажите налоговый или регистрационный номер иностранного контрагента")
+    out: dict[str, Any] = {"regionNumber": region}
+    if tax_id:
+        out["taxId"] = tax_id
+    if reg_no:
+        out["registrationNumber"] = reg_no
+    return out
 
 
 def contract_body(data: dict[str, Any]) -> dict[str, Any]:
