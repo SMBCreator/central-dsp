@@ -321,7 +321,7 @@ func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 	}
 
 	view := buildRequestView(&req)
-	deviceID := deviceIDOf(&req)
+	deviceID := deviceIDOf(&req, partner.ID)
 
 	var bids []Bid
 	var rubSum float64
@@ -1355,27 +1355,47 @@ func buildImpView(imp *Imp) *targeting.ImpView {
 	return v
 }
 
-func deviceIDOf(req *BidRequest) string {
-	if req.Device != nil && req.Device.IFA != "" {
+// deviceIDOf — ключ пользователя для freq caps, audiences и clidmap.
+//
+// F-A1:
+//   - Нулевой IFA (LAT/ATT: "00000000-0000-0000-0000-000000000000") — не
+//     идентификатор: иначе все такие устройства схлопываются в одного
+//     пользователя и разом упираются в freq cap.
+//   - user.id — ID в пространстве конкретного SSP; без префикса партнёра
+//     одинаковые строки разных SSP смешивались в одном счётчике/сегменте.
+//     IFA, eids (UID2/ID5) и buyeruid (наш ID после cookie sync) глобальны
+//     и остаются без префикса.
+func deviceIDOf(req *BidRequest, partnerID string) string {
+	if req.Device != nil && !isZeroID(req.Device.IFA) {
 		return req.Device.IFA
 	}
 	if req.User != nil {
 		// user.eids (UID2/ID5) — приоритетнее анонимного user.id.
 		for _, eid := range req.User.EIDs {
 			for _, uid := range eid.UIDs {
-				if uid.ID != "" {
+				if !isZeroID(uid.ID) {
 					return uid.ID
 				}
 			}
 		}
 		if req.User.ID != "" {
-			return req.User.ID
+			return "p:" + partnerID + ":" + req.User.ID
 		}
 		if req.User.BuyerUID != "" {
 			return req.User.BuyerUID
 		}
 	}
 	return ""
+}
+
+// isZeroID: пусто или только нули/дефисы (обнулённый рекламный ID).
+func isZeroID(id string) bool {
+	for _, r := range id {
+		if r != '0' && r != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func impAdType(imp *Imp) string {
