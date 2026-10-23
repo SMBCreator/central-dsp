@@ -92,6 +92,11 @@ DEFAULT_JOBS: tuple[dict, ...] = (
      "description": "Housekeeping счётчиков прошлых бизнес-дней (граница дня — Europe/Moscow в ключах, не этот cron)."},
     {"name": "ord_export", "path": "/cron/ord-export", "schedule": "0 3 2 * *", "timeout_seconds": 7200,
      "description": "ОРД: месячная статистика за прошлый месяц (2-е число, 06:00 МСК). Идемпотентно."},
+    # ID sync (A.4): без ID_SYNC_ENABLED обе ручки — no-op {"skipped": "disabled"}.
+    {"name": "id_sync_purge", "path": "/cron/id-sync-purge", "schedule": "40 0 * * *", "timeout_seconds": 1800,
+     "description": "ID sync: удалить просроченные соответствия id_sync_map (Redis истекает по TTL)."},
+    {"name": "rebuild_idsync", "path": "/cron/rebuild-idsync", "schedule": "20 * * * *", "timeout_seconds": 1800,
+     "description": "ID sync: досев idsync:* в Redis из id_sync_map (самовосстановление после потери Redis)."},
     # «Часть B»: выключены по умолчанию — включает админ, когда фича используется.
     {"name": "fx_refresh", "path": "/cron/fx-refresh", "schedule": "10 0 * * *", "timeout_seconds": 120, "enabled": False,
      "description": "Курс ЦБ РФ (нужен только при RTB_CURRENCY != RUB)."},

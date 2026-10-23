@@ -874,6 +874,28 @@ Retention: `sent`/`failed` старше 30 дней удаляет `/cron/retent
 3. Строка `sent` → письмо ушло на SMTP; дальше спам-фильтр получателя (SPF/DKIM для
    домена `SMTP_FROM`).
 
+## id-sync — IdentifiedShareDrop
+
+**Что значит:** при `ID_SYNC_ENABLED=1` биддер считает источник ключа
+пользователя по каждому SSP (`bidder_identity_source_total{partner,source}`).
+Доля запросов, у которых нашёлся хоть какой-то ID (не `anonymous`), за час
+упала больше чем на 30 % относительно средней за 7 дней.
+
+**Почему важно:** без ID не работают ретаргетинг-аудитории и frequency cap
+(запросы торгуются как анонимные), а для кампаний с include-сегментами
+показы фактически прекращаются.
+
+**Что делать:**
+1. Разбивка по `source` для партнёра: что исчезло — `buyeruid`/`eids`/`ifa`
+   (SSP перестал передавать поле: спросить SSP, см. чек-лист A.9 в
+   `docs/ID_SYNC.md`) или `idsync` (наш sync).
+2. Если упал `idsync`: `id_sync_requests_total{partner}` в backend — идут ли
+   вызовы `/sync/{id}/in` и с каким `status` (`consent_denied`, `invalid`,
+   `rate_limited`); `bidder_idsync_lookup_errors_total` — ошибки Redis.
+3. Redis терял данные — `GET /cron/rebuild-idsync` (или дождаться джобы
+   `rebuild_idsync`, раз в час) досевает `idsync:*` из PostgreSQL.
+4. Откат фичи целиком: `ID_SYNC_ENABLED=0` в backend и bidder-go, перезапуск.
+
 ## Куда смотреть в первую очередь при любом алерте
 
 0. `docker compose ps` и `up` в Prometheus: если цель `TargetDown` — метрик

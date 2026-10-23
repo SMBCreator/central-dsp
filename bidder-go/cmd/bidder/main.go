@@ -170,8 +170,16 @@ func main() {
 	pf := prefilter.New(pfCfg, dcSource)
 	pf.Refresh()
 	h.SetPrefilter(pf)
+	// ID sync (docs/ID_SYNC.md): по умолчанию off — идентификация как раньше.
+	idSync := os.Getenv("ID_SYNC_ENABLED")
+	h.SetIDSync(idSync == "1" || strings.EqualFold(idSync, "true"))
+	slog.Info("id sync", "enabled", h.IDSyncEnabled())
 	slog.Info("prefilter", "enabled", pfCfg.Enabled, "countries", len(pfCfg.Countries),
 		"require_device_id", pfCfg.RequireDeviceID, "dc_cache", dcSource != nil)
+
+	geoOpts := rtb.GeoOptionsFromEnv()
+	h.SetGeoOptions(geoOpts)
+	slog.Info("geo v2", "latlon", geoOpts.LatLon, "radius_km", geoOpts.RadiusKM)
 
 	// Prometheus-метрики: счётчики hot path + gauges состояния (GAP-011).
 	reg := metrics.New()
@@ -214,6 +222,8 @@ func main() {
 	// (draft->testing должен попасть в снапшот сразу, а не через 30 с).
 	// Только с internal-токеном; Caddy этот путь наружу не проксирует.
 	mux.HandleFunc("POST /internal/feed/reload", h.FeedReload)
+	// GEO v2: топ несопоставленных region/city от SSP (для geo_ssp_alias).
+	mux.HandleFunc("GET /internal/geo/unmatched", h.GeoUnmatched)
 
 	srv := &http.Server{
 		Addr:              addr,

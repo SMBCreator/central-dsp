@@ -44,13 +44,13 @@ export default function AudiencesPage() {
     try {
       await api("/audiences", {
         method: "POST",
-        body: JSON.stringify({
+        body: {
           pixel_id: form.pixel_id || pixels?.[0]?.id,
           name: form.name,
           rule_type: form.rule_type,
           rule_value: form.rule_type === "all_visitors" ? null : form.rule_value || null,
           ttl_days: form.ttl_days,
-        }),
+        },
       })
       await mutate("/audiences")
       setOpen(false)
@@ -63,7 +63,7 @@ export default function AudiencesPage() {
   }
 
   const toggleActive = async (s: Segment) => {
-    await api(`/audiences/${s.id}`, { method: "PATCH", body: JSON.stringify({ is_active: !s.is_active }) })
+    await api(`/audiences/${s.id}`, { method: "PATCH", body: { is_active: !s.is_active } })
     await mutate("/audiences")
   }
 

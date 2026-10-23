@@ -98,6 +98,11 @@ def collect_problems(env: Mapping[str, str] | None = None) -> list[str]:
             "SIMULATOR_ALLOW_PYTHON_REFERENCE включён — Python reference engine симулятора разрешён только "
             "в development/test (C1d); в production симулятор ходит только в bidder-go"
         )
+    # ID sync (A.3): подпись /out-ссылок. Нужен, только когда фича включена.
+    if _truthy(env.get("ID_SYNC_ENABLED")):
+        p = _secret_problem("ID_SYNC_SECRET", env.get("ID_SYNC_SECRET"))
+        if p:
+            problems.append(f"{p} — подписывает /sync/*/out (ID_SYNC_ENABLED=1)")
     if env.get("RTB_ALLOW_UNSIGNED_EVENTS", "").strip() == "1":
         problems.append(
             "RTB_ALLOW_UNSIGNED_EVENTS=1 — принимаются неподписанные win/imp/click (любой может списать бюджет); "

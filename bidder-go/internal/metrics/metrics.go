@@ -16,6 +16,7 @@ import (
 	"math"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -82,6 +83,9 @@ type Registry struct {
 	// (= rtb_nobid_fx_rate_missing_total в Python). Не no-bid запроса целиком.
 	fxRateMissing atomic.Int64
 	panics        atomic.Int64 // паники хендлеров, перехваченные recover-middleware
+	// GEO v2: уровень сопоставления гео запроса (city/region/country/unknown).
+	// Кардинальность фиксирована — четыре значения.
+	geoResolve sync.Map // level -> *atomic.Int64
 
 	// Per-partner (endpoint_key): запросы и биды. Кардинальность = число SSP
 	// (единицы-десятки), поэтому безопасно для Prometheus.
@@ -93,6 +97,13 @@ type Registry struct {
 	bidPriceMilliCPM atomic.Int64
 
 	latency histogram
+
+	// ID sync (план predeploy A.7). Ключ "partner_id\x00label"; кардинальность =
+	// число SSP × bounded enum. Пишутся только при ID_SYNC_ENABLED.
+	identitySource     sync.Map // partner\x00source -> *atomic.Int64
+	audienceMatch      sync.Map // partner\x00result -> *atomic.Int64
+	idsyncLookup       histogram
+	idsyncLookupErrors atomic.Int64
 
 	// Gauges снимаются колбэками в момент скрейпа.
 	gaugesMu sync.Mutex
@@ -195,6 +206,17 @@ func (r *Registry) IncBookkeepingError() { r.bookkeepingErrors.Add(1) }
 // IncFXRateMissing — кандидат пропущен: нет курса для валюты floor/ответа (R-03).
 func (r *Registry) IncFXRateMissing() { r.fxRateMissing.Add(1) }
 
+// IncGeoResolve — гео запроса сопоставлено со справочником на уровне level.
+func (r *Registry) IncGeoResolve(level string) {
+	if r == nil {
+		return
+	}
+	switch level {
+	case "city", "region", "country", "unknown":
+		incMap(&r.geoResolve, level, 1)
+	}
+}
+
 // IncPanic — хендлер упал с паникой, процесс выжил благодаря recover.
 func (r *Registry) IncPanic() { r.panics.Add(1) }
 
@@ -218,13 +240,72 @@ func incMap(m *sync.Map, key string, n int64) {
 }
 
 func writeLabeled(w http.ResponseWriter, m *sync.Map, name, help string) {
+	writeLabeledBy(w, m, name, help, "endpoint_key")
+}
+
+func writeLabeledBy(w http.ResponseWriter, m *sync.Map, name, help, label string) {
 	fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s counter\n", name, help, name)
 	keys := make([]string, 0, 8)
 	m.Range(func(k, _ any) bool { keys = append(keys, k.(string)); return true })
 	sort.Strings(keys)
 	for _, k := range keys {
 		v, _ := m.Load(k)
-		fmt.Fprintf(w, "%s{endpoint_key=%q} %d\n", name, k, v.(*atomic.Int64).Load())
+		fmt.Fprintf(w, "%s{%s=%q} %d\n", name, label, k, v.(*atomic.Int64).Load())
+	}
+}
+
+// IncIdentitySource — источник identity_key bid-запроса (rtb.resolveIdentity).
+func (r *Registry) IncIdentitySource(partnerID, source string) {
+	incMap(&r.identitySource, partnerID+"\x00"+source, 1)
+}
+
+// IncAudienceMatch — проверка аудиторий кандидата: match | nomatch | no_identity.
+func (r *Registry) IncAudienceMatch(partnerID, result string) {
+	incMap(&r.audienceMatch, partnerID+"\x00"+result, 1)
+}
+
+// ObserveIDSyncLookup — латентность единственного Redis GET idsync:* в hot path.
+func (r *Registry) ObserveIDSyncLookup(sec float64) { r.idsyncLookup.observe(sec) }
+
+// IncIDSyncLookupError — ошибка/таймаут Redis при lookup (запрос идёт дальше без него).
+func (r *Registry) IncIDSyncLookupError() { r.idsyncLookupErrors.Add(1) }
+
+func (h *histogram) observe(sec float64) {
+	idx := len(latencyBuckets)
+	for i, b := range latencyBuckets {
+		if sec <= b {
+			idx = i
+			break
+		}
+	}
+	h.counts[idx].Add(1)
+	h.sumUS.Add(int64(sec * 1e6))
+	h.total.Add(1)
+}
+
+func writeHistogram(w http.ResponseWriter, h *histogram, name, help string) {
+	fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s histogram\n", name, help, name)
+	var cum int64
+	for i, b := range latencyBuckets {
+		cum += h.counts[i].Load()
+		fmt.Fprintf(w, "%s_bucket{le=%q} %d\n", name, formatFloat(b), cum)
+	}
+	cum += h.counts[len(latencyBuckets)].Load()
+	fmt.Fprintf(w, "%s_bucket{le=\"+Inf\"} %d\n", name, cum)
+	fmt.Fprintf(w, "%s_sum %g\n", name, float64(h.sumUS.Load())/1e6)
+	fmt.Fprintf(w, "%s_count %d\n", name, h.total.Load())
+}
+
+// writeLabeled2 — счётчик с двумя label (partner + второй), ключ "a\x00b".
+func writeLabeled2(w http.ResponseWriter, m *sync.Map, name, help, label string) {
+	fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s counter\n", name, help, name)
+	keys := make([]string, 0, 8)
+	m.Range(func(k, _ any) bool { keys = append(keys, k.(string)); return true })
+	sort.Strings(keys)
+	for _, k := range keys {
+		v, _ := m.Load(k)
+		partner, second, _ := strings.Cut(k, "\x00")
+		fmt.Fprintf(w, "%s{partner=%q,%s=%q} %d\n", name, partner, label, second, v.(*atomic.Int64).Load())
 	}
 }
 
@@ -302,6 +383,13 @@ func (r *Registry) write(w http.ResponseWriter) {
 
 	writeLabeled(w, &r.partnerRequests, "bidder_partner_requests_total", "Bid requests by SSP endpoint_key.")
 	writeLabeled(w, &r.partnerBids, "bidder_partner_bids_total", "Bids submitted by SSP endpoint_key.")
+	writeLabeledBy(w, &r.geoResolve, "bidder_geo_resolve_total", "GEO v2: bid requests by geo resolution level (only when a campaign uses v2 geo).", "level")
+
+	// ID sync (A.7). Доля анонимных = bidder_identity_source_total{source="anonymous"} / sum.
+	writeLabeled2(w, &r.identitySource, "bidder_identity_source_total", "Bid requests by SSP partner and identity source (ID sync A.6; only with ID_SYNC_ENABLED).", "source")
+	writeLabeled2(w, &r.audienceMatch, "bidder_audience_match_total", "Audience-targeted candidate checks by SSP partner and result (ID sync A.7).", "result")
+	writeHistogram(w, &r.idsyncLookup, "bidder_idsync_lookup_latency_seconds", "Latency of the single Redis idsync:* lookup per bid request (ID sync A.6).")
+	c("bidder_idsync_lookup_errors_total", "idsync:* lookups that failed or timed out (request continued without the mapping).", r.idsyncLookupErrors.Load())
 
 	fmt.Fprintf(w, "# HELP bidder_bid_price_cpm_rub_sum Sum of submitted bid prices (RUB CPM). Avg = sum/bidder_bids_total.\n# TYPE bidder_bid_price_cpm_rub_sum counter\n")
 	fmt.Fprintf(w, "bidder_bid_price_cpm_rub_sum %g\n", float64(r.bidPriceMilliCPM.Load())/1000)

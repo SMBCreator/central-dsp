@@ -58,18 +58,21 @@ def test_invoice_body_ors_contracts():
         "contracts": [{"contract_external_id": "CT-I1", "amount_gross": Decimal("35.00"), "is_vat": True},
                       {"contract_external_id": "CT-I2", "amount_gross": Decimal("15.00"), "is_vat": True}],
     })
-    assert body["externalContractId"] == "CT-E1" and body["price"] == "50.00" and body["withNds"] is True
+    assert body["externalContractId"] == "CT-E1"
+    assert body["servicePrice"] == {"amount": "50.00", "excludingAmount": "40.98", "vatRate": "22"}
     assert body["clientRole"] == "ORGANISATION_ROLE_RA" and body["contractorRole"] == "ORGANISATION_ROLE_ORS"
     assert body["contracts"] == [
-        {"externalContractId": "CT-I1", "price": "35.00", "withNds": True},
-        {"externalContractId": "CT-I2", "price": "15.00", "withNds": True},
+        {"externalContractId": "CT-I1", "price": {"amount": "35.00", "excludingAmount": "28.69", "vatRate": "22"}},
+        {"externalContractId": "CT-I2", "price": {"amount": "15.00", "excludingAmount": "12.30", "vatRate": "22"}},
     ]
     # акт B13b без contracts — один договор акта, старое поле amount
     legacy = invoice_body({
         "external_id": "inv-0", "contract_external_id": "CT-1", "number": "А-0", "invoice_date": "2026-02-05",
         "period_start": "2026-01-01", "period_end": "2026-01-31", "amount": 10, "is_vat": False,
     })
-    assert legacy["contracts"] == [{"externalContractId": "CT-1", "price": "10.00", "withNds": False}]
+    no_vat = {"amount": "10.00", "excludingAmount": "10.00", "vatRate": "100"}  # 100 = без НДС
+    assert legacy["contracts"] == [{"externalContractId": "CT-1", "price": no_vat}]
+    assert legacy["servicePrice"] == no_vat
 
 
 def test_invoice_link_and_unlink_bodies_per_contract():

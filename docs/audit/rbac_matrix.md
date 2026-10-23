@@ -56,18 +56,25 @@
 | GET | `/cron/audience-sync` | none | Bearer CRON_SECRET |
 | GET | `/cron/domain-quality` | none | Bearer CRON_SECRET |
 | GET | `/cron/fx-refresh` | none | Bearer CRON_SECRET |
+| GET | `/cron/id-sync-purge` | none | Bearer CRON_SECRET |
 | GET | `/cron/ml-train` | none | Bearer CRON_SECRET |
 | GET | `/cron/notify-business-checks` | none | Bearer CRON_SECRET |
 | GET | `/cron/notify-dispatch` | none | Bearer CRON_SECRET |
 | GET | `/cron/optimize` | none | Bearer CRON_SECRET |
 | GET | `/cron/ord-export` | none | Bearer CRON_SECRET |
 | GET | `/cron/ord-notifications` | none | Bearer CRON_SECRET |
+| GET | `/cron/rebuild-idsync` | none | Bearer CRON_SECRET |
 | GET | `/cron/reconcile-reserves` | none | Bearer CRON_SECRET |
 | GET | `/cron/reset-daily` | none | Bearer CRON_SECRET |
 | GET | `/cron/retention` | none | Bearer CRON_SECRET |
 | GET | `/cron/rules` | none | Bearer CRON_SECRET |
 | GET | `/cron/shading` | none | Bearer CRON_SECRET |
 | GET | `/cron/sweep-burl` | none | Bearer CRON_SECRET |
+| GET | `/geo/config` | session | любая роль (scope внутри хендлера) |
+| GET | `/geo/places` | session | любая роль (scope внутри хендлера) |
+| **POST** | `/geo/places/resolve` | session | любая роль (scope внутри хендлера) — чтение через POST (тело = список названий до 500 строк): поиск по общему справочнику geo_places, без записи |
+| GET | `/geo/places/search` | session | любая роль (scope внутри хендлера) |
+| GET | `/geo/places/{place_id}/children` | session | любая роль (scope внутри хендлера) |
 | GET | `/geo/search` | session | любая роль (scope внутри хендлера) |
 | GET | `/groups` | session | любая роль (scope внутри хендлера) |
 | **POST** | `/groups` | roles | admin, advertiser, agency, manager, superadmin |
@@ -119,6 +126,7 @@
 | GET | `/pixels/{pixel_id}/stats` | session | любая роль (scope внутри хендлера) |
 | GET | `/ready` | none | публично (readiness: deploy gate, Prometheus); статусы без секретов |
 | GET | `/rtb-feed/campaigns` | none | Bearer RTB_API_TOKEN |
+| GET | `/rtb-feed/geo` | none | Bearer RTB_API_TOKEN |
 | GET | `/rtb-feed/partners` | none | Bearer RTB_API_TOKEN |
 | GET | `/rtb/burl` | none | endpoint_key / event-токен (HMAC) |
 | GET | `/rtb/click` | none | endpoint_key / event-токен (HMAC) |
@@ -158,6 +166,7 @@
 | **DELETE** | `/settings/ord` | roles | superadmin |
 | GET | `/settings/ord` | roles | superadmin |
 | **PUT** | `/settings/ord` | roles | superadmin |
+| **POST** | `/settings/ord/sandbox-run` | roles | superadmin |
 | **POST** | `/settings/ord/test` | roles | superadmin |
 | GET | `/settings/public` | session | любая роль (scope внутри хендлера) |
 | **DELETE** | `/settings/throttle/subnets` | roles | admin, superadmin |
@@ -183,9 +192,17 @@
 | **DELETE** | `/supply-partners/{partner_id}` | roles | admin, superadmin |
 | **PATCH** | `/supply-partners/{partner_id}` | roles | admin, superadmin |
 | **POST** | `/supply-partners/{partner_id}/check` | roles | admin, superadmin |
+| GET | `/supply-partners/{partner_id}/geo-aliases` | roles | admin, superadmin |
+| **PUT** | `/supply-partners/{partner_id}/geo-aliases` | roles | admin, superadmin |
+| **DELETE** | `/supply-partners/{partner_id}/geo-aliases/{alias_id}` | roles | admin, superadmin |
 | GET | `/supply-partners/{partner_id}/stats` | session | любая роль (scope внутри хендлера) |
+| GET | `/supply-partners/{partner_id}/sync-urls` | roles | admin, superadmin |
 | **DELETE** | `/supply-partners/{partner_id}/token` | roles | admin, superadmin |
 | **POST** | `/supply-partners/{partner_id}/token` | roles | admin, superadmin |
+| **POST** | `/sync/delete` | none | публично (ID sync, ID_SYNC_ENABLED; только cookie dsp_uid, rate-limit, /out — HMAC) |
+| GET | `/sync/optout` | none | публично (ID sync, ID_SYNC_ENABLED; только cookie dsp_uid, rate-limit, /out — HMAC) |
+| GET | `/sync/{partner_key}/in` | none | публично (ID sync, ID_SYNC_ENABLED; только cookie dsp_uid, rate-limit, /out — HMAC) |
+| GET | `/sync/{partner_key}/out` | none | публично (ID sync, ID_SYNC_ENABLED; только cookie dsp_uid, rate-limit, /out — HMAC) |
 | GET | `/users` | session | любая роль (scope внутри хендлера) |
 | **POST** | `/users` | roles | admin, agency, superadmin |
 | GET | `/users/me/markup` | session | любая роль (scope внутри хендлера) |

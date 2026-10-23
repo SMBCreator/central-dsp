@@ -15,6 +15,7 @@ import os
 from fastapi import APIRouter, Header, HTTPException
 
 import fx
+import geo_v2
 from db import get_pool
 from ord.service import feed_gate_sql
 
@@ -49,11 +50,20 @@ async def partners_feed(authorization: str | None = Header(default=None)):
     rows = await pool.fetch(
         """SELECT id, endpoint_key, auth_token_hash, qps_limit, bid_floor, status,
                   allowed_ad_types, ip_whitelist, currency, seat_id, freq_cap_on_win,
+                  identity, id_sync_salt,
                   CASE WHEN token_prev_valid_until > now() THEN token_prev_hash END AS token_prev_hash,
                   CASE WHEN token_prev_valid_until > now() THEN token_prev_valid_until END AS token_prev_valid_until
            FROM supply_partners WHERE status IN ('active', 'testing')"""
     )
-    return {"partners": [dict(r) for r in rows], "fx_rates": await fx.rates_snapshot()}
+    # identity/id_sync_salt (миграция 058, ID sync A.6): Go читает их только при
+    # ID_SYNC_ENABLED. jsonb из asyncpg приходит строкой — отдаём объектом.
+    partners = []
+    for r in rows:
+        d = dict(r)
+        if isinstance(d.get("identity"), str):
+            d["identity"] = json.loads(d["identity"])
+        partners.append(d)
+    return {"partners": partners, "fx_rates": await fx.rates_snapshot()}
 
 
 def _num_or_none(raw) -> float | None:
@@ -176,7 +186,20 @@ async def campaigns_feed(authorization: str | None = Header(default=None)):
         ],
         "scoring_blocks": [{"campaign_id": str(r["campaign_id"]), "domain": r["domain"]} for r in scoring_rows],
         "dirty_domains": dirty_domains,
+        # GEO v2: Go перезагружает /rtb-feed/geo только при смене версии.
+        # None = флаг выключен или справочник не загружен.
+        "geo_version": await geo_v2.feed_version(pool) if geo_v2.geo_v2_enabled() else None,
     }
+
+
+@router.get("/geo")
+async def geo_feed(authorization: str | None = Header(default=None)):
+    """Справочник GEO v2 для Go: места (нормализованные синонимы, родитель,
+    ISO 3166-2, координаты городов) и алиасы значений SSP."""
+    _check(authorization)
+    if not geo_v2.geo_v2_enabled():
+        raise HTTPException(404, "GEO_V2_ENABLED is off")
+    return await geo_v2.feed_payload(await get_pool())
 
 
 async def _load_pctr_model(pool) -> dict | None:
