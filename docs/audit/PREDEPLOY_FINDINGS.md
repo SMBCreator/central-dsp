@@ -77,3 +77,9 @@
 НДС: по `ext_v6Price/ext_v7Price.vatRate` допустимы `100` (без НДС), `0, 5, 7, 10, 20, 22`. В коде НДС передаётся только булевым `withNds` — нужен расчёт `amount / excludingAmount / vatRate` из `money.py` (ставка 22%).
 
 Правка затрагивает только адаптер `ozon_mapping.py` + пути в `ozon.py` (+ тесты `test_ord_ozon_mapping.py`). Логика цепочки, состояния, гейты, freeze полей не меняются — соответствует C.3.
+
+### Раздел C — итог (ветка `feat/predeploy-c-ord`)
+- Закрыты все P0/P1 из таблицы выше. Полная таблица и решения — `docs/ord/DIFF.md` (C1–C30).
+- Найдено дополнительно при контрактном тесте: `withNds` в договоре v6 (C7), `objectType` ошибок ЕРИР приходит как `ERROR_NOTIFICATION_OBJECT_TYPE_*` и раньше всегда становился `unknown` (C23), неверный хост sandbox `ord-sandbox.ozon.ru` вместо `api-ord-sandbox.ozon.ru` (C25).
+- **Отступление от DoD «тесты без изменения ожиданий»:** 11 unit-тестов (`test_ord_ozon_mapping.py`, `test_ord_invoice_ors_unit.py`, `test_ord_notifications_unit.py`) закрепляли прежние (неверные) пути и формы тел. Их ожидания обновлены на swagger, смысл проверок сохранён; новый `test_ord_swagger_contract.py` проверяет тела против спеки.
+- Открыто: C29 (сверка ККТУ с `dict/kktu`), C30 (реквизиты иностранных контрагентов), sandbox E2E C.4 — нужен тестовый ключ.

@@ -188,7 +188,7 @@ _require_superadmin = _require_roles("superadmin")
 
 _ORD_BASE_URLS = {
     "production": "https://api-ord.ozon.ru",
-    "sandbox": "https://ord-sandbox.ozon.ru",
+    "sandbox": "https://api-ord-sandbox.ozon.ru",  # docs/ord/swagger_ord_ozon.json
 }
 
 

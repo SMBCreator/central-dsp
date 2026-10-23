@@ -1,16 +1,17 @@
 """Маппинг наших сущностей в модели API ОРД Ozon (api-ord.ozon.ru).
 
-Источник: спецификация Ozon ОРД (/api/external/*), сверена с открытым
-клиентом frollow/ozon-ord (2024) — публичная документация доступна только из
-личного кабинета. Пункты, которые надо перепроверить с реальным ключом,
-помечены "[V]" в docs/audit/ord_spec.md.
+Источник истины: docs/ord/swagger_ord_ozon.json (OpenAPI 3.0.0, 43 пути).
+Версии методов и схемы тел сверены в docs/ord/DIFF.md; контракт тел
+проверяется тестом tests/test_ord_swagger_contract.py (без сети).
 
 Все функции чистые: dict -> dict, без сети и БД — покрыты unit-тестами.
 """
 from __future__ import annotations
 
-import hashlib
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
+
+from .adapter import OrdDataError
 
 # --- контрагент -------------------------------------------------------------
 LEGAL_TYPE = {
@@ -49,24 +50,43 @@ ADV_OBJECT_TYPE = {
     "video": "ADV_OBJECT_TYPE_VIDEO",
     "native": "ADV_OBJECT_TYPE_TEXT_GRAPHIC_BLOCK",
     "push": "ADV_OBJECT_TYPE_TEXT_GRAPHIC_BLOCK",
-    "html5": "ADV_OBJECT_TYPE_BANNER",
+    "html5": "ADV_OBJECT_TYPE_BANNER_HTML5",
 }
+MEDIA_FILE_TYPE = {"video": "MEDIA_FILE_TYPE_VIDEO"}
 PAYMENT_TYPE = {"cpm": "PAYMENT_TYPE_CPM", "cpc": "PAYMENT_TYPE_CPC", "cpa": "PAYMENT_TYPE_CPA"}
 
+# --- деньги -----------------------------------------------------------------
+# ОРД: vatRate "100" = без НДС; иначе ставка в процентах (enum swagger).
+NO_VAT = "100"
+VAT_RATES = {0, 5, 7, 10, 20, 22}
+DEFAULT_VAT_RATE = 22  # НДС в РФ с 01.01.2026 (как ord.invoices.DEFAULT_VAT_RATE)
 
-def _address(data: dict[str, Any]) -> dict[str, str]:
-    return {
-        "address": data.get("address") or "",
-        "locality": data.get("locality") or "",
-        "postcode": data.get("postcode") or "",
-    }
+
+def _q2(v: Any) -> Decimal:
+    return Decimal(str(v or 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def price_obj(gross: Any, is_vat: bool, vat_rate: Any = None, net: Any = None) -> dict[str, str]:
+    """Объект цены ОРД {amount (с НДС), excludingAmount (без НДС), vatRate}.
+
+    Наши суммы — с НДС (как в первичке). net передаётся, если уже посчитан
+    (акт хранит amount_net), иначе выводится из ставки.
+    """
+    g = _q2(gross)
+    if not is_vat:
+        return {"amount": f"{g:.2f}", "excludingAmount": f"{g:.2f}", "vatRate": NO_VAT}
+    rate = DEFAULT_VAT_RATE if vat_rate in (None, "") else int(vat_rate)
+    if rate not in VAT_RATES:
+        raise OrdDataError(f"Ставка НДС {rate}% не поддерживается ОРД (допустимо: {sorted(VAT_RATES)})")
+    n = _q2(net) if net is not None else _q2(g / (Decimal(1) + Decimal(rate) / Decimal(100)))
+    return {"amount": f"{g:.2f}", "excludingAmount": f"{n:.2f}", "vatRate": str(rate)}
 
 
 PLATFORM_TYPE = {"site": "PLATFORM_TYPE_SITE", "app": "PLATFORM_TYPE_APP", "system": "PLATFORM_TYPE_SYSTEM"}
 
 
 def platform_body(data: dict[str, Any]) -> dict[str, Any]:
-    """ord.platform -> POST /api/external/platform (сводная площадка ОРС)."""
+    """ord.platform -> POST /api/external/v6/platform (сводная площадка ОРС)."""
     return {
         "externalPlatformId": data["external_id"],
         "appName": data["name"],
@@ -87,33 +107,35 @@ def platform_link(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def organisation_body(data: dict[str, Any]) -> dict[str, Any]:
-    """counterparties -> POST /api/external/organisation."""
+    """counterparties -> POST /api/external/v6/organisation.
+
+    v6: наименование — name (для ИП/ФЛ это ФИО), адрес — одна строка address.
+    ОГРН/ОГРНИП в v6 не передаются (ОРД берёт их по ИНН); у нас поле остаётся
+    для договоров и UI.
+    """
     body: dict[str, Any] = {
         "externalOrganisationId": data["external_id"],
         "inn": data["inn"],
-        "fullOpf": data["name"],
+        "name": data["name"],
         "legalType": LEGAL_TYPE.get(data.get("legal_type") or "ul", "LEGAL_TYPE_LEGAL"),
         # isOpc = оператор рекламной системы (мы), isPp = рекламораспространитель
         # (владелец площадки). Латинские двойники кириллических ОРС/РР в API Ozon.
         "isOpc": bool(data.get("is_self")),
         "isPp": data.get("role") == "publisher",
-        "legalAddress": _address(data),
-        "postAddress": _address(data),
     }
+    if data.get("address"):
+        body["address"] = data["address"]
+    if data.get("kpp"):
+        body["kpp"] = data["kpp"]
     if data.get("is_self") and data.get("rs_url"):
         body["rsUrl"] = data["rs_url"]
     if data.get("platforms"):
         body["platforms"] = [platform_link(p) for p in data["platforms"]]
-    if data.get("ogrn"):
-        key = "ogrnip" if data.get("legal_type") == "ip" else "ogrn"
-        body[key] = data["ogrn"]
-    if data.get("legal_type") == "fl":
-        body["fio"] = data["name"]
     return body
 
 
 def contract_body(data: dict[str, Any]) -> dict[str, Any]:
-    """ord_contracts -> POST /api/external/contract.
+    """ord_contracts -> POST /api/external/v6/contract.
 
     Заказчик/исполнитель передаются внешними ID их организаций — без них ОРД не
     свяжет договор с контрагентами (audit L-03). externalParentId — родительский
@@ -128,7 +150,6 @@ def contract_body(data: dict[str, Any]) -> dict[str, Any]:
         "actionType": "ACTION_TYPE_DISTRIBUTION",
         "contractNumber": data.get("number") or "",
         "contractDate": str(data["signed_at"]),
-        "withNds": bool(data.get("is_vat", True)),
         "isCreativeReporter": True,
     }
     if data.get("amount") is not None:
@@ -138,37 +159,37 @@ def contract_body(data: dict[str, Any]) -> dict[str, Any]:
     return body
 
 
-def _file_id(url: str) -> str:
-    return hashlib.sha1(url.encode()).hexdigest()[:32]
-
-
 def creative_body(data: dict[str, Any]) -> dict[str, Any]:
-    """Провайдеро-нейтральный payload (ord/service.py::_payload) -> POST /api/external/creative.
+    """Провайдеро-нейтральный payload (ord/service.py::_payload) -> POST /api/external/v4/creative.
 
     externalCreativeId = '<creative_id>:v<version>' — каждая версия содержимого
     получает собственный erid, старый остаётся в истории (ord_creatives).
+
+    v4: ККТУ — kktuCategory[] (обязателен с 13.01.2025); тип оплаты в креативе
+    не передаётся (он в статистике). file.id — int64 ID файла, загруженного в
+    ОРД, поэтому внешние медиа передаются только ссылкой originalUrl.
     """
     media: list[dict[str, Any]] = []
+    file_type = MEDIA_FILE_TYPE.get(data.get("type") or "", "MEDIA_FILE_TYPE_IMAGE")
     for url in data.get("media_urls") or []:
-        media.append({"description": data["name"], "file": {"id": _file_id(url), "originalUrl": url, "url": url}})
+        media.append({"file": {"originalUrl": url, "fileType": file_type}})
     for text in data.get("texts") or []:
         media.append({"text": text})
     if data.get("html_snippet"):
-        media.append({"description": "html5", "text": data["html_snippet"]})
+        media.append({"text": data["html_snippet"]})
     if data.get("vast_xml"):
-        media.append({"description": "vast", "text": data["vast_xml"]})
+        media.append({"text": data["vast_xml"]})
     if not media:
         media.append({"text": data.get("description") or data["name"]})
     body: dict[str, Any] = {
         "externalCreativeId": data["external_creative_id"],
         "externalContractIds": [data["contract_external_id"]],
+        "creativeType": "CREATIVE_TYPE_CREATIVE",
         "title": data["name"],
         "description": data.get("description") or data["name"],
         "advObjectType": ADV_OBJECT_TYPE.get(data.get("type") or "banner", "ADV_OBJECT_TYPE_BANNER"),
-        "paymentType": PAYMENT_TYPE.get(data.get("payment_type") or "cpm", "PAYMENT_TYPE_CPM"),
-        "okvedCodes": [data["kktu"]] if data.get("kktu") else [],
+        "kktuCategory": [data["kktu"]] if data.get("kktu") else [],
         "isSocialAdv": False,
-        "isNative": (data.get("type") in ("native", "push")),
         "mediaData": media,
     }
     if data.get("click_url"):
@@ -178,25 +199,29 @@ def creative_body(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def creative_erid(response: dict[str, Any]) -> str | None:
-    """erid из ответа /api/external/creative: поле creative.marker (в некоторых
-    версиях — erid на верхнем уровне)."""
+    """erid из ответа /api/external/v4/creative: creative.marker (swagger);
+    остальные ключи — защитный fallback."""
     cr = response.get("creative") or {}
     return cr.get("marker") or cr.get("erid") or response.get("marker") or response.get("erid")
 
 
 def statistic_body(period_start: str, period_end: str, row: dict[str, Any], platform_id: str) -> dict[str, Any]:
-    """Строка месячной статистики -> элемент statistics[] для POST /api/external/v2/statistic.
+    """Строка месячной статистики -> элемент statistics[] для POST /api/external/v6/statistic.
 
     externalStatisticId = '<creative_id>:v<version>:<YYYY-MM>' — повторная
     отправка за тот же период = upsert (коррекция), а не дубль.
     unitCost — цена за единицу (CPM: за 1000 показов; CPC: за клик).
+    v6: обязательны paymentType и price{amount, excludingAmount, vatRate}.
 
     Строка акта (B13b) передаёт дополнительно:
       date_start/date_end        — месяц ∩ период акта (иначе границы месяца);
       invoice_impressions        — viewsCountByInvoice (показы по акту; факт — impressions);
-      invoice_spend, unit_cost   — сумма и цена по акту.
+      invoice_spend, unit_cost   — сумма и цена по акту;
+      payment_type, vat_rate     — тип оплаты и ставка НДС строки.
     """
     imps = int(row.get("impressions") or 0)
+    clicks = int(row.get("clicks") or 0)
+    ptype = row.get("payment_type") if row.get("payment_type") in PAYMENT_TYPE else "cpm"
     inv_imps = row.get("invoice_impressions")
     inv_imps = imps if inv_imps is None else int(inv_imps)
     spend = row.get("invoice_spend")
@@ -204,7 +229,10 @@ def statistic_body(period_start: str, period_end: str, row: dict[str, Any], plat
         spend = row.get("spend") or row.get("amount") or 0
     unit_cost = row.get("unit_cost")
     if unit_cost is None:
-        unit_cost = (float(spend) / imps * 1000) if imps else 0.0
+        if ptype == "cpc":
+            unit_cost = (float(spend) / clicks) if clicks else 0.0
+        else:
+            unit_cost = (float(spend) / imps * 1000) if imps else 0.0
     start = row.get("date_start") or period_start
     end = row.get("date_end") or period_end
     return {
@@ -217,9 +245,9 @@ def statistic_body(period_start: str, period_end: str, row: dict[str, Any], plat
         "dateEndFact": end,
         "viewsCountByFact": str(imps),
         "viewsCountByInvoice": str(inv_imps),
-        "moneySpent": f"{float(spend):.2f}",
+        "paymentType": PAYMENT_TYPE[ptype],
+        "price": price_obj(spend, bool(row.get("with_vat", True)), row.get("vat_rate")),
         "unitCost": f"{float(unit_cost):.4f}",
-        "withNds": bool(row.get("with_vat", True)),
     }
 
 
@@ -236,20 +264,22 @@ def _link_groups(data: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def invoice_body(data: dict[str, Any]) -> dict[str, Any]:
-    """ord_invoices -> POST /api/external/v2/invoice (upsert по externalInvoiceId).
+    """ord_invoices -> POST /api/external/v7/invoice (upsert по externalInvoiceId).
 
     ОРС-модель: externalContractId — исполнительский договор (заказчик —
     агентство/рекламодатель, исполнитель — ОРС, contractorRole=ORS); contracts[]
     — изначальные договоры кампаний с их долями суммы (ord_invoice_contracts).
-    Без contracts (акты B13b, режим self) — один договор акта. price — с НДС
-    при withNds, clientRole — из роли заказчика договора (RD/RA).
+    Без contracts (акты B13b, режим self) — один договор акта.
+    v7: сумма акта — servicePrice{amount, excludingAmount, vatRate}, доли
+    договоров — contracts[].price того же вида; clientRole — из роли заказчика.
     """
     gross = data.get("amount_gross", data.get("amount"))
-    price = f"{float(gross):.2f}"
     with_nds = bool(data.get("is_vat", True))
-    contracts = data.get("contracts") or [
-        {"contract_external_id": data["contract_external_id"], "amount_gross": gross, "is_vat": with_nds}
-    ]
+    vat_rate = data.get("vat_rate")
+    contracts = data.get("contracts") or [{
+        "contract_external_id": data["contract_external_id"], "amount_gross": gross,
+        "amount_net": data.get("amount_net"), "vat_rate": vat_rate, "is_vat": with_nds,
+    }]
     return {
         "externalInvoiceId": data["external_id"],
         "externalContractId": data["contract_external_id"],
@@ -257,14 +287,16 @@ def invoice_body(data: dict[str, Any]) -> dict[str, Any]:
         "invoiceDate": str(data["invoice_date"]),
         "startDate": str(data["period_start"]),
         "endDate": str(data["period_end"]),
-        "price": price,
-        "withNds": with_nds,
+        "invoiceType": "INVOICE_TYPE_INVOICE",
+        "servicePrice": price_obj(gross, with_nds, vat_rate, data.get("amount_net")),
         "clientRole": ORGANISATION_ROLE.get(data.get("client_role") or "advertiser", "ORGANISATION_ROLE_RD"),
         "contractorRole": ORGANISATION_ROLE.get(data.get("contractor_role") or "ors", "ORGANISATION_ROLE_ORS"),
         "contracts": [{
             "externalContractId": c["contract_external_id"],
-            "price": f"{float(c.get('amount_gross', c.get('amount', 0))):.2f}",
-            "withNds": bool(c.get("is_vat", with_nds)),
+            "price": price_obj(
+                c.get("amount_gross", c.get("amount", 0)), bool(c.get("is_vat", with_nds)),
+                c.get("vat_rate", vat_rate), c.get("amount_net"),
+            ),
         } for c in contracts],
     }
 
