@@ -7,10 +7,13 @@
 
 import json
 import secrets
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 
 from auth import current_user
+from geo_norm import geo_normalize
 from rbac import require_admin
 from db import get_pool
 from schemas import SupplyPartnerIn, SupplyPartnerPatch
@@ -384,3 +387,76 @@ async def partner_stats(
         ],
         "ad_types": [{"ad_type": r["ad_type"], **_metrics(r)} for r in ad_types],
     }
+
+
+# ---------- GEO v2: алиасы значений SSP (docs/GEO.md) ----------
+
+
+class GeoAliasIn(BaseModel):
+    kind: Literal["region", "city"]
+    ssp_value: str = Field(min_length=1, max_length=200)
+    place_id: int = Field(gt=0)
+
+
+async def _own_partner(pool, partner_id: str, user: dict) -> None:
+    if not await pool.fetchval(
+        "SELECT 1 FROM supply_partners WHERE id = $1 AND user_id = $2", partner_id, user["id"]
+    ):
+        raise HTTPException(status_code=404, detail="SSP-партнёр не найден")
+
+
+def _alias_out(r) -> dict:
+    return {
+        "id": r["id"], "kind": r["kind"], "ssp_value": r["ssp_value"], "place_id": r["place_id"],
+        "place_name": r["name_ru"], "place_type": r["type"], "updated_at": r["updated_at"].isoformat(),
+    }
+
+
+@router.get("/{partner_id}/geo-aliases")
+async def list_geo_aliases(partner_id: str, user: dict = Depends(require_admin)):
+    pool = await get_pool()
+    await _own_partner(pool, partner_id, user)
+    rows = await pool.fetch(
+        """SELECT a.id, a.kind, a.ssp_value, a.place_id, a.updated_at, p.name_ru, p.type
+             FROM geo_ssp_alias a JOIN geo_places p ON p.id = a.place_id
+            WHERE a.partner_id = $1 ORDER BY a.kind, a.value_norm""",
+        partner_id,
+    )
+    return [_alias_out(r) for r in rows]
+
+
+@router.put("/{partner_id}/geo-aliases")
+async def upsert_geo_alias(partner_id: str, body: GeoAliasIn, user: dict = Depends(require_admin)):
+    """Значение SSP (как пришло в device.geo.region/city) -> место справочника.
+    Повтор с тем же значением перезаписывает привязку (идемпотентно)."""
+    value_norm = geo_normalize(body.ssp_value)
+    if not value_norm:
+        raise HTTPException(status_code=422, detail="ssp_value пустое после нормализации")
+    pool = await get_pool()
+    await _own_partner(pool, partner_id, user)
+    place_type = await pool.fetchval("SELECT type FROM geo_places WHERE id = $1", body.place_id)
+    expected = ("region",) if body.kind == "region" else ("city", "town")
+    if place_type not in expected:
+        raise HTTPException(status_code=422, detail=f"place_id {body.place_id}: ожидается {' / '.join(expected)}")
+    row = await pool.fetchrow(
+        """WITH up AS (
+               INSERT INTO geo_ssp_alias (partner_id, kind, ssp_value, value_norm, place_id, created_by)
+               VALUES ($1, $2, $3, $4, $5, $6)
+               ON CONFLICT (partner_id, kind, value_norm)
+               DO UPDATE SET ssp_value = EXCLUDED.ssp_value, place_id = EXCLUDED.place_id, updated_at = now()
+               RETURNING id, kind, ssp_value, place_id, updated_at)
+           SELECT up.*, p.name_ru, p.type FROM up JOIN geo_places p ON p.id = up.place_id""",
+        partner_id, body.kind, body.ssp_value.strip(), value_norm, body.place_id, user["id"],
+    )
+    return _alias_out(row)
+
+
+@router.delete("/{partner_id}/geo-aliases/{alias_id}", status_code=204)
+async def delete_geo_alias(partner_id: str, alias_id: int, user: dict = Depends(require_admin)):
+    pool = await get_pool()
+    await _own_partner(pool, partner_id, user)
+    deleted = await pool.fetchval(
+        "DELETE FROM geo_ssp_alias WHERE id = $1 AND partner_id = $2 RETURNING id", alias_id, partner_id
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Алиас не найден")

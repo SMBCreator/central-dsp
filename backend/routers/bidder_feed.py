@@ -15,6 +15,7 @@ import os
 from fastapi import APIRouter, Header, HTTPException
 
 import fx
+import geo_v2
 from db import get_pool
 from ord.service import feed_gate_sql
 
@@ -176,7 +177,20 @@ async def campaigns_feed(authorization: str | None = Header(default=None)):
         ],
         "scoring_blocks": [{"campaign_id": str(r["campaign_id"]), "domain": r["domain"]} for r in scoring_rows],
         "dirty_domains": dirty_domains,
+        # GEO v2: Go перезагружает /rtb-feed/geo только при смене версии.
+        # None = флаг выключен или справочник не загружен.
+        "geo_version": await geo_v2.feed_version(pool) if geo_v2.geo_v2_enabled() else None,
     }
+
+
+@router.get("/geo")
+async def geo_feed(authorization: str | None = Header(default=None)):
+    """Справочник GEO v2 для Go: места (нормализованные синонимы, родитель,
+    ISO 3166-2, координаты городов) и алиасы значений SSP."""
+    _check(authorization)
+    if not geo_v2.geo_v2_enabled():
+        raise HTTPException(404, "GEO_V2_ENABLED is off")
+    return await geo_v2.feed_payload(await get_pool())
 
 
 async def _load_pctr_model(pool) -> dict | None:

@@ -29,6 +29,7 @@ logger = logging.getLogger("rtb")
 import obs_metrics
 import ssp_check
 import ssp_tokens
+import geo_v2
 from country_codes import normalize_country
 from billing_core import bill_win
 from business_day import business_date_str, even_pacing_budget
@@ -122,7 +123,22 @@ def _imp_ad_type(imp: dict) -> str | None:
 CONNECTION_TYPES = {0: "unknown", 1: "ethernet", 2: "wifi", 3: "cellular", 4: "cellular", 5: "cellular", 6: "cellular"}
 
 
-def _match_targeting(targeting: dict, req: dict) -> bool:
+def _targeting_of(cand) -> dict:
+    t = cand["targeting"]
+    if isinstance(t, str):
+        try:
+            return json.loads(t) or {}
+        except ValueError:
+            return {}
+    return t or {}
+
+
+def _match_targeting(
+    targeting: dict,
+    req: dict,
+    geo_v2_resolved: "geo_v2.Resolved | None" = None,
+    geo_v2_index: "geo_v2.GeoIndex | None" = None,
+) -> bool:
     """Match line item targeting JSON against an OpenRTB 2.5 BidRequest.
 
     Supported keys (all optional; empty = no restriction):
@@ -154,6 +170,10 @@ def _match_targeting(targeting: dict, req: dict) -> bool:
     cities = targeting.get("geo_cities") or []
     if cities and (geo.get("city") or "").lower() not in [c.lower() for c in cities]:
         return False
+    # GEO v2 (docs/GEO.md): проверяется вместе со старыми ключами (AND).
+    if geo_v2.has_geo_v2(targeting):
+        if not geo_v2.geo_v2_enabled() or not geo_v2.match_geo_v2(targeting, geo_v2_resolved, geo_v2_index):
+            return False
 
     # --- Device ---
     device_types = targeting.get("device_types") or []
@@ -657,7 +677,7 @@ def _event_dims(row) -> dict[str, Any]:
     """Измерения бида, наследуемые win/imp/click/view/loss (audit E-01).
 
     Раньше win/imp/click писались без bundle/publisher/tagid/region/city —
-    в группировках «по площадкам» они попадали в «—», CTR/win-rate по
+    в группировках «по площадкам» они попад��ли в «—», CTR/win-rate по
     конкретному inventory были недостоверны.
     """
     out: dict[str, Any] = {
@@ -1039,6 +1059,12 @@ async def process_bid_request(
     req_os = _device_os(device)
     req_browser = _device_browser(device)
     req_hour = str(datetime.now(_tz.utc).hour)
+    # GEO v2: гео запроса сопоставляется со справочником один раз на запрос,
+    # а не на каждого кандидата. Без флага не нужно: v2-группы fail-closed.
+    req_geo_v2 = req_geo_index = None
+    if geo_v2.geo_v2_enabled() and any(geo_v2.has_geo_v2(_targeting_of(c)) for c in candidates):
+        req_geo_index = await geo_v2.get_index(pool)
+        req_geo_v2 = geo_v2.resolve_request(req_geo_index, str(partner["id"]), req)
 
     seatbids = []
     base = _base_url()
@@ -1140,7 +1166,7 @@ async def process_bid_request(
                 _sb = _scoring_blocks.get(str(c["campaign_id"]))
                 if _sb and req_domain in _sb:
                     continue
-            if not _match_targeting(targeting, req):
+            if not _match_targeting(targeting, req, geo_v2_resolved=req_geo_v2, geo_v2_index=req_geo_index):
                 continue
             if not _match_imp_targeting(targeting, imp):
                 continue
@@ -1151,7 +1177,7 @@ async def process_bid_request(
                     device_id or "", [str(x) for x in _aud_inc], [str(x) for x in _aud_exc]):
                 continue
             # CPC (audit R-03): ставка за клик -> эквивалентная CPM через
-            # ожидаемый CTR (pCTR-модель, иначе консервативный fallback).
+            # ожидаемый CTR (pCTR-моде��ь, иначе консервативный fallback).
             # Списание — по клику ровно bid_cpc (см. click()); win не списывает.
             # max_bid для CPC — потолок клика, а не CPM.
             c["_bid_type"] = (c.get("bid_type") or "cpm")
@@ -1331,7 +1357,7 @@ async def process_bid_request(
         }
         if c.get("_deal_id"):
             bid_obj["dealid"] = c["_deal_id"]
-        # seat: ID, который этот SSP присвоил нам как байеру (миграция 030)
+        # seat: ID, который этот SSP присвоил нам как байеру (ми��рация 030)
         _seat = (partner["seat_id"] if "seat_id" in partner.keys() else None) or "centraldsp"
         seatbids.append({"bid": [bid_obj], "seat": _seat})
 
@@ -1463,7 +1489,7 @@ async def win_notice(bid: str, price: str | None = None):
 
     # Audit E-02: списание, событие win и stats_hourly — одна транзакция.
     # bill_win внутри открывает свою transaction() -> под внешней это savepoint.
-    # Дедуп — transactions(bid_id) WHERE type='spend': повтор после падения
+    # Дедуп — transactions(bid_id) WHERE type='spend': повто�� после падения
     # любого шага снова проходит весь путь целиком, а не «duplicate».
     # billing_event=win: win и есть billable-показ (R-07) — billable_imps растёт здесь.
     async with pool.acquire() as conn:
@@ -1620,7 +1646,7 @@ async def billing_notice(bid: str, price: str | None = None):
                 await _bump_stats(conn, "billable_imps", 0, *_stat_ids(row))
         return {"ok": True, "cpc": True}
 
-    # Списание, событие billable и stats_hourly — одна транзакция (как win_notice).
+    # Списание, событие billable и stats_hourly — одна транзакц��я (как win_notice).
     # late — по факту в БД (bid_event_once 'win_expired'), а не по Redis.
     async with pool.acquire() as conn, conn.transaction():
         result = await bill_win(

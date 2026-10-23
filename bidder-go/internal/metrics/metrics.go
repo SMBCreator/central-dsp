@@ -82,6 +82,9 @@ type Registry struct {
 	// (= rtb_nobid_fx_rate_missing_total в Python). Не no-bid запроса целиком.
 	fxRateMissing atomic.Int64
 	panics        atomic.Int64 // паники хендлеров, перехваченные recover-middleware
+	// GEO v2: уровень сопоставления гео запроса (city/region/country/unknown).
+	// Кардинальность фиксирована — четыре значения.
+	geoResolve sync.Map // level -> *atomic.Int64
 
 	// Per-partner (endpoint_key): запросы и биды. Кардинальность = число SSP
 	// (единицы-десятки), поэтому безопасно для Prometheus.
@@ -195,6 +198,17 @@ func (r *Registry) IncBookkeepingError() { r.bookkeepingErrors.Add(1) }
 // IncFXRateMissing — кандидат пропущен: нет курса для валюты floor/ответа (R-03).
 func (r *Registry) IncFXRateMissing() { r.fxRateMissing.Add(1) }
 
+// IncGeoResolve — гео запроса сопоставлено со справочником на уровне level.
+func (r *Registry) IncGeoResolve(level string) {
+	if r == nil {
+		return
+	}
+	switch level {
+	case "city", "region", "country", "unknown":
+		incMap(&r.geoResolve, level, 1)
+	}
+}
+
 // IncPanic — хендлер упал с паникой, процесс выжил благодаря recover.
 func (r *Registry) IncPanic() { r.panics.Add(1) }
 
@@ -218,13 +232,17 @@ func incMap(m *sync.Map, key string, n int64) {
 }
 
 func writeLabeled(w http.ResponseWriter, m *sync.Map, name, help string) {
+	writeLabeledBy(w, m, name, help, "endpoint_key")
+}
+
+func writeLabeledBy(w http.ResponseWriter, m *sync.Map, name, help, label string) {
 	fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s counter\n", name, help, name)
 	keys := make([]string, 0, 8)
 	m.Range(func(k, _ any) bool { keys = append(keys, k.(string)); return true })
 	sort.Strings(keys)
 	for _, k := range keys {
 		v, _ := m.Load(k)
-		fmt.Fprintf(w, "%s{endpoint_key=%q} %d\n", name, k, v.(*atomic.Int64).Load())
+		fmt.Fprintf(w, "%s{%s=%q} %d\n", name, label, k, v.(*atomic.Int64).Load())
 	}
 }
 
@@ -302,6 +320,7 @@ func (r *Registry) write(w http.ResponseWriter) {
 
 	writeLabeled(w, &r.partnerRequests, "bidder_partner_requests_total", "Bid requests by SSP endpoint_key.")
 	writeLabeled(w, &r.partnerBids, "bidder_partner_bids_total", "Bids submitted by SSP endpoint_key.")
+	writeLabeledBy(w, &r.geoResolve, "bidder_geo_resolve_total", "GEO v2: bid requests by geo resolution level (only when a campaign uses v2 geo).", "level")
 
 	fmt.Fprintf(w, "# HELP bidder_bid_price_cpm_rub_sum Sum of submitted bid prices (RUB CPM). Avg = sum/bidder_bids_total.\n# TYPE bidder_bid_price_cpm_rub_sum counter\n")
 	fmt.Fprintf(w, "bidder_bid_price_cpm_rub_sum %g\n", float64(r.bidPriceMilliCPM.Load())/1000)

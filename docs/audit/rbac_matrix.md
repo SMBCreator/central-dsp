@@ -68,6 +68,11 @@
 | GET | `/cron/rules` | none | Bearer CRON_SECRET |
 | GET | `/cron/shading` | none | Bearer CRON_SECRET |
 | GET | `/cron/sweep-burl` | none | Bearer CRON_SECRET |
+| GET | `/geo/config` | session | любая роль (scope внутри хендлера) |
+| GET | `/geo/places` | session | любая роль (scope внутри хендлера) |
+| **POST** | `/geo/places/resolve` | session | любая роль (scope внутри хендлера) — чтение через POST (тело = список названий до 500 строк): поиск по общему справочнику geo_places, без записи |
+| GET | `/geo/places/search` | session | любая роль (scope внутри хендлера) |
+| GET | `/geo/places/{place_id}/children` | session | любая роль (scope внутри хендлера) |
 | GET | `/geo/search` | session | любая роль (scope внутри хендлера) |
 | GET | `/groups` | session | любая роль (scope внутри хендлера) |
 | **POST** | `/groups` | roles | admin, advertiser, agency, manager, superadmin |
@@ -119,6 +124,7 @@
 | GET | `/pixels/{pixel_id}/stats` | session | любая роль (scope внутри хендлера) |
 | GET | `/ready` | none | публично (readiness: deploy gate, Prometheus); статусы без секретов |
 | GET | `/rtb-feed/campaigns` | none | Bearer RTB_API_TOKEN |
+| GET | `/rtb-feed/geo` | none | Bearer RTB_API_TOKEN |
 | GET | `/rtb-feed/partners` | none | Bearer RTB_API_TOKEN |
 | GET | `/rtb/burl` | none | endpoint_key / event-токен (HMAC) |
 | GET | `/rtb/click` | none | endpoint_key / event-токен (HMAC) |
@@ -183,6 +189,9 @@
 | **DELETE** | `/supply-partners/{partner_id}` | roles | admin, superadmin |
 | **PATCH** | `/supply-partners/{partner_id}` | roles | admin, superadmin |
 | **POST** | `/supply-partners/{partner_id}/check` | roles | admin, superadmin |
+| GET | `/supply-partners/{partner_id}/geo-aliases` | roles | admin, superadmin |
+| **PUT** | `/supply-partners/{partner_id}/geo-aliases` | roles | admin, superadmin |
+| **DELETE** | `/supply-partners/{partner_id}/geo-aliases/{alias_id}` | roles | admin, superadmin |
 | GET | `/supply-partners/{partner_id}/stats` | session | любая роль (scope внутри хендлера) |
 | **DELETE** | `/supply-partners/{partner_id}/token` | roles | admin, superadmin |
 | **POST** | `/supply-partners/{partner_id}/token` | roles | admin, superadmin |
