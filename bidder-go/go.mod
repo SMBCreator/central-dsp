@@ -1,6 +1,6 @@
 module github.com/SMBCreator/central-dsp/bidder-go
 
-go 1.25.14
+go 1.26.10
 
 // Планируемые зависимости имплементационной итерации (сейчас скелет — stdlib only):
 //   github.com/redis/go-redis/v9   — freq caps / budget reserve / shading factors / QPS

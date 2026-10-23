@@ -29,6 +29,7 @@ logger = logging.getLogger("rtb")
 import obs_metrics
 import ssp_check
 import ssp_tokens
+from country_codes import normalize_country
 from billing_core import bill_win
 from business_day import business_date_str, even_pacing_budget
 from audiences import check_audiences, store_clid_bridge
@@ -145,7 +146,7 @@ def _match_targeting(targeting: dict, req: dict) -> bool:
 
     # --- Geo ---
     countries = targeting.get("geo_countries") or []
-    if countries and (geo.get("country") or "").upper() not in [c.upper() for c in countries]:
+    if countries and normalize_country(geo.get("country")) not in {normalize_country(c) for c in countries}:
         return False
     regions = targeting.get("geo_regions") or []
     if regions and (geo.get("region") or "").lower() not in [r.lower() for r in regions]:
