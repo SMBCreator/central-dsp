@@ -42,7 +42,7 @@ Go-биддер и ключ `stats_hourly` не менялись (решение
 * Строка = креатив × версия × период; `externalStatisticId =
   <creative_id>:v<version>:<period>` → повторная отправка = upsert в ОРД.
 * Контракт адаптера: `submit_stats(period, rows) -> {"accepted": [ids], "rejected": [{id, error}]}`.
-  Ozon: батчи по 100 в `POST /api/external/v2/statistic`; батч с 4xx досылается
+  Ozon: батчи по 100 в `POST /api/external/v6/statistic`; батч с 4xx досылается
   построчно (`OrdDataError`), 5xx/сеть → `OrdError` на всю выгрузку.
 * Результат построчно в `ord_export_rows` (`accepted | rejected` + `error`).
   Строка без подтверждения провайдера считается `rejected`.
@@ -64,19 +64,20 @@ Go-биддер и ключ `stats_hourly` не менялись (решение
 
 ## 4. Маппинг в API Ozon (`ord/ozon_mapping.py`)
 
-Базовый URL `https://api-ord.ozon.ru`, `Authorization: Bearer <key>`. Все
+Базовый URL `https://api-ord.ozon.ru` (sandbox `https://api-ord-sandbox.ozon.ru`), `Authorization: Bearer <key>`.
+Версии методов и поля сверены со swagger: `docs/ord/DIFF.md`. Все
 операции — upsert по внешнему ID (наш UUID).
 
 | Наше | Ozon | Ключевые поля |
 |---|---|---|
-| counterparties | `POST /api/external/organisation` | `externalOrganisationId`, `inn`, `fullOpf`, `legalType` (ul→LEGAL, ip→ENTREPRENEUR, fl→INDIVIDUAL, foreign→FOREIGN_LEGAL), `ogrn`/`ogrnip`, адреса `[V]` |
-| ord_contracts | `POST /api/external/contract` | `externalContractId`, `externalOrganisationCustomerId`/`PerformerId` (внешние ID сторон, обе `registered`), `contractType` (service→SERVICE, mediation→INTERMEDIARY, additional→ADDITIONAL_AGREEMENT), `subjectType`, `actionType=DISTRIBUTION`, `contractNumber`, `contractDate`, `withNds`, `price`, `externalParentId` (родительский договор цепочки), `isCreativeReporter=true` |
-| ord_creatives | `POST /api/external/creative` | `externalCreativeId=<id>:v<n>`, `externalContractIds`, `title`, `description`, `advObjectType` (banner/html5→BANNER, video→VIDEO `[V]`, native/push→TEXT_GRAPHIC_BLOCK), `paymentType` (CPM по умолчанию), `okvedCodes=[kktu]`, `mediaData` (file {id,url} `[V]` — возможно, нужна предзагрузка через `/api/external/file`), `targetLink`, `urlList`; ответ `creative.marker` = erid |
-| площадка DSP | `POST /api/external/platform` | `externalPlatformId` = env `ORD_PLATFORM_EXTERNAL_ID` (по умолчанию `central-dsp`), `platformType=PLATFORM_TYPE_SYSTEM` `[V]` регистрируется вручную/при первом экспорте |
-| статистика | `POST /api/external/v2/statistic` `{statistics:[...]}` | `externalStatisticId`, `externalCreativeId`, `externalPlatformId`, `dateStart/EndPlan`, `dateStart/EndFact` (границы месяца), `viewsCountByFact`, `viewsCountByInvoice`, `moneySpent`, `unitCost` (за 1000 показов), `withNds` |
-| ord_invoices (акт) | `POST /api/external/v2/invoice` | `externalInvoiceId` = наш UUID, `externalContractId`, `invoiceNumber`, `invoiceDate`, `startDate/endDate`, `price` (= `amount`), `withNds`, `clientRole`/`contractorRole` (RD/RA/RR/ORS), `contracts=[{externalContractId, price, withNds}]` (один договор); повтор = редактирование `[V]` |
-| детализация акта | `POST /api/external/v3/invoice/creative/unlink` (`deleteAllCreatives`) → `.../creative/link` | `externalInvoiceId`, `externalContractId`, `externalCreativeIds=[<id>:v<n>]`; 4xx на unlink нового акта игнорируется `[V]` |
-| строки акта | `POST /api/external/v2/statistic` | тот же `externalStatisticId`, что у месячной выгрузки; `dateStart/EndFact` = месяц ∩ период акта, `viewsCountByFact` = факт, `viewsCountByInvoice`/`moneySpent`/`unitCost` = значения акта `[V]` |
+| counterparties | `POST /api/external/v6/organisation` | `externalOrganisationId`, `inn`, `name`, `legalType` (ul→LEGAL, ip→ENTREPRENEUR, fl→INDIVIDUAL, foreign→FOREIGN_LEGAL), `isOpc`/`isPp`, `address` (строка), `rsUrl` + `platforms[]` у ОРС |
+| ord_contracts | `POST /api/external/v6/contract` | `externalContractId`, `externalOrganisationCustomerId`/`PerformerId` (внешние ID сторон, обе `registered`), `contractType` (service→SERVICE, mediation→INTERMEDIARY, additional→ADDITIONAL_AGREEMENT), `subjectType`, `actionType=DISTRIBUTION`, `contractNumber`, `contractDate`, `price`, `externalParentId` (родительский договор цепочки), `isCreativeReporter=true` |
+| ord_creatives | `POST /api/external/v4/creative` | `externalCreativeId=<id>:v<n>`, `externalContractIds`, `creativeType=CREATIVE`, `title`, `description`, `advObjectType` (banner→BANNER, html5→BANNER_HTML5, video→VIDEO, native/push→TEXT_GRAPHIC_BLOCK), `kktuCategory=[kktu]`, `mediaData` (`file{originalUrl, fileType}` / `text`), `targetLink`, `urlList`; ответ `creative.marker` = erid |
+| площадка DSP | `POST /api/external/v6/platform` | `externalPlatformId` = env `ORD_PLATFORM_EXTERNAL_ID` (по умолчанию `central-dsp`), `appName`, `platformType`, `url`; регистрируется при первом экспорте |
+| статистика | `POST /api/external/v6/statistic` `{statistics:[...]}` | `externalStatisticId`, `externalCreativeId`, `externalPlatformId`, `dateStart/EndPlan`, `dateStart/EndFact` (границы месяца), `viewsCountByFact`, `viewsCountByInvoice`, `paymentType`, `price{amount, excludingAmount, vatRate}`, `unitCost` (CPM — за 1000 показов, CPC — за клик) |
+| ord_invoices (акт) | `POST /api/external/v7/invoice` | `externalInvoiceId` = наш UUID, `externalContractId`, `invoiceNumber`, `invoiceDate`, `startDate/endDate`, `invoiceType=INVOICE`, `servicePrice{amount, excludingAmount, vatRate}`, `clientRole`/`contractorRole` (RD/RA/RR/ORS), `contracts=[{externalContractId, price{…}}]`; повтор = редактирование |
+| детализация акта | `POST /api/external/v3/invoice/creative/unlink` (`deleteAllCreatives`) → `.../creative/link` | `externalInvoiceId`, `externalContractId`, `externalCreativeIds=[<id>:v<n>]`; 4xx на unlink нового акта игнорируется |
+| строки акта | `POST /api/external/v6/statistic` | тот же `externalStatisticId`, что у месячной выгрузки; `dateStart/EndFact` = месяц ∩ период акта, `viewsCountByFact` = факт, `viewsCountByInvoice`/`price`/`unitCost`/`paymentType` = значения акта |
 
 Роли контрагентов (`counterparties.role` → `ORGANISATION_ROLE_*`): advertiser→RD,
 agency→RA, publisher→RR, ors→ORS. Срок подачи актов и статистики за месяц N —
@@ -262,7 +263,7 @@ Drawer «Добавление акта»: шапка договора (номе�
 
 **B13g — ошибки ЕРИР (сделано 2026-09-11, миграция 052, `ord/notifications.py`).** Ozon принимает объект синхронно
 (`external_id`/erid), ЕРИР проверяет позже и присылает отказ в ОРД; мы забираем их кроном `/cron/ord-notifications`
-(`45 * * * *`) через `POST /api/external/notification/error_list {pageSize, gtNotificationId}` постранично по курсору
+(`45 * * * *`) через `GET /api/external/notification/error_list?pageSize&gtNotificationId` постранично по курсору
 `platform_settings.ord_notification_cursor = {last_id}` (id монотонный). Таблица `ord_notifications`
 (UNIQUE `(provider, notification_id)` → upsert, `object_type` organisation|contract|creative|invoice|platform|unknown,
 `external_id` = наш id как в ОРД: `<uuid>` для организации/договора/акта, `<creative_id>:v<n>` для версии erid,

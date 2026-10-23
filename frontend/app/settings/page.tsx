@@ -255,7 +255,7 @@ function OrdCard() {
           <Field label="Окружение" hint="Песочница — для проверки интеграции без публикации">
             <select className={inputCls} value={env} onChange={(e) => setEnv(e.target.value as "production" | "sandbox")}>
               <option value="production">Прод (api-ord.ozon.ru)</option>
-              <option value="sandbox">Песочница (ord-sandbox.ozon.ru)</option>
+              <option value="sandbox">Песочница (api-ord-sandbox.ozon.ru)</option>
             </select>
           </Field>
           <div className="sm:col-span-3">

@@ -660,7 +660,9 @@ async def submit(pool, invoice: dict) -> dict:
             "invoice_impressions": int(it["impressions"]),
             "invoice_spend": str(it["spend"]),
             "unit_cost": str(it["unit_cost"]),
+            "payment_type": it["payment_type"],
             "with_vat": bool(full["is_vat"]),
+            "vat_rate": full["vat_rate"],
         })
     accepted: set[str] = set()
     rejected: dict[str, str] = {}
