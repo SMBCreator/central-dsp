@@ -42,6 +42,7 @@ NO_COOKIE_AUTH_PREFIX = {
     "/alerts/webhook": "Bearer ALERT_WEBHOOK_SECRET (Alertmanager)",
     "/rtb-feed/": "Bearer RTB_API_TOKEN",
     "/rtb/": "endpoint_key / event-токен (HMAC)",
+    "/sync/": "публично (ID sync, ID_SYNC_ENABLED; только cookie dsp_uid, rate-limit, /out — HMAC)",
 }
 
 # Мутирующие маршруты только с current_user: проверка прав внутри хендлера

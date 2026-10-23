@@ -170,6 +170,10 @@ func main() {
 	pf := prefilter.New(pfCfg, dcSource)
 	pf.Refresh()
 	h.SetPrefilter(pf)
+	// ID sync (docs/ID_SYNC.md): по умолчанию off — идентификация как раньше.
+	idSync := os.Getenv("ID_SYNC_ENABLED")
+	h.SetIDSync(idSync == "1" || strings.EqualFold(idSync, "true"))
+	slog.Info("id sync", "enabled", h.IDSyncEnabled())
 	slog.Info("prefilter", "enabled", pfCfg.Enabled, "countries", len(pfCfg.Countries),
 		"require_device_id", pfCfg.RequireDeviceID, "dc_cache", dcSource != nil)
 

@@ -46,6 +46,8 @@ EXEMPT_PREFIXES: tuple[str, ...] = (
     "/rtb",
     "/rtb-feed",
     "/pixel/collect",
+    # ID sync (A.3): публичные пиксели SSP, cookie кабинета не используют.
+    "/sync",
     "/cron",
     "/alerts/webhook",  # Alertmanager, Bearer ALERT_WEBHOOK_SECRET
     "/health",

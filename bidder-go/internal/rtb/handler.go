@@ -50,6 +50,9 @@ type Handler struct {
 	// prefilter — O(1)-отсев ботов/чужого гео/datacenter-IP до таргетинга
 	// (audit R-03, порт backend/prefilter.py). nil = выключен.
 	prefilter *prefilter.Filter
+	// idSyncEnabled — ID_SYNC_ENABLED (план predeploy A.6). false = прежняя
+	// идентификация deviceIDOf байт в байт, без Redis-вызова и новых метрик.
+	idSyncEnabled bool
 	// now — часы бюджетного гейта (бизнес-день, even pacing); nil = time.Now.
 	// Подменяются только в тестах.
 	now func() time.Time
@@ -67,6 +70,12 @@ func (h *Handler) SetMetrics(r *metrics.Registry) { h.metrics = r }
 
 // SetPrefilter подключает предфильтр (см. internal/prefilter).
 func (h *Handler) SetPrefilter(f *prefilter.Filter) { h.prefilter = f }
+
+// SetIDSync включает resolveIdentity (ID_SYNC_ENABLED).
+func (h *Handler) SetIDSync(enabled bool) { h.idSyncEnabled = enabled }
+
+// IDSyncEnabled — для лога старта.
+func (h *Handler) IDSyncEnabled() bool { return h.idSyncEnabled }
 
 // SetInternalToken задаёт секрет для заголовка internalCheckHeader.
 func (h *Handler) SetInternalToken(t string) { h.internalToken = t }
@@ -321,7 +330,7 @@ func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 	}
 
 	view := buildRequestView(&req)
-	deviceID := deviceIDOf(&req)
+	deviceID := h.identityOf(ctx, &req, partner)
 
 	var bids []Bid
 	var rubSum float64
@@ -449,7 +458,7 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 		}
 		// Ретаргетинг-сегменты — единственный Redis-вызов среди фильтров, поэтому
 		// после всех in-memory проверок; у большинства line items сегментов нет.
-		if c.T != nil && !h.audienceOK(rctx, c.T.AudienceInclude, c.T.AudienceExclude, deviceID) {
+		if c.T != nil && !h.audienceChecked(rctx, c.T.AudienceInclude, c.T.AudienceExclude, deviceID, partner) {
 			continue
 		}
 		// Курсы с наценкой владельца: floor -> RUB, цена RUB -> валюта ответа.
@@ -1355,27 +1364,76 @@ func buildImpView(imp *Imp) *targeting.ImpView {
 	return v
 }
 
-func deviceIDOf(req *BidRequest) string {
-	if req.Device != nil && req.Device.IFA != "" {
+// identityOf — ключ пользователя для аудиторий и frequency cap. Флаг ID sync
+// выключен — прежний deviceIDOf; включён — resolveIdentity (A.6) + метрика источника.
+func (h *Handler) identityOf(ctx context.Context, req *BidRequest, partner *feed.Partner) string {
+	if !h.idSyncEnabled {
+		return deviceIDOf(req, partner.ID)
+	}
+	key, source := h.resolveIdentity(ctx, req, partner)
+	if h.metrics != nil {
+		h.metrics.IncIdentitySource(partner.ID, source)
+	}
+	return key
+}
+
+// audienceChecked — audienceOK + метрика bidder_audience_match_total при ID sync.
+func (h *Handler) audienceChecked(ctx context.Context, include, exclude []string, deviceID string, partner *feed.Partner) bool {
+	ok := h.audienceOK(ctx, include, exclude, deviceID)
+	if h.idSyncEnabled && h.metrics != nil && (len(include) > 0 || len(exclude) > 0) {
+		result := "nomatch"
+		switch {
+		case deviceID == "":
+			result = "no_identity"
+		case ok:
+			result = "match"
+		}
+		h.metrics.IncAudienceMatch(partner.ID, result)
+	}
+	return ok
+}
+
+// deviceIDOf — ключ пользователя для freq caps, audiences и clidmap.
+//
+// F-A1:
+//   - Нулевой IFA (LAT/ATT: "00000000-0000-0000-0000-000000000000") — не
+//     идентификатор: иначе все такие устройства схлопываются в одного
+//     пользователя и разом упираются в freq cap.
+//   - user.id — ID в пространстве конкретного SSP; без префикса партнёра
+//     одинаковые строки разных SSP смешивались в одном счётчике/сегменте.
+//     IFA, eids (UID2/ID5) и buyeruid (наш ID после cookie sync) глобальны
+//     и остаются без префикса.
+func deviceIDOf(req *BidRequest, partnerID string) string {
+	if req.Device != nil && !isZeroID(req.Device.IFA) {
 		return req.Device.IFA
 	}
 	if req.User != nil {
 		// user.eids (UID2/ID5) — приоритетнее анонимного user.id.
 		for _, eid := range req.User.EIDs {
 			for _, uid := range eid.UIDs {
-				if uid.ID != "" {
+				if !isZeroID(uid.ID) {
 					return uid.ID
 				}
 			}
 		}
 		if req.User.ID != "" {
-			return req.User.ID
+			return "p:" + partnerID + ":" + req.User.ID
 		}
 		if req.User.BuyerUID != "" {
 			return req.User.BuyerUID
 		}
 	}
 	return ""
+}
+
+// isZeroID: пусто или только нули/дефисы (обнулённый рекламный ID).
+func isZeroID(id string) bool {
+	for _, r := range id {
+		if r != '0' && r != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func impAdType(imp *Imp) string {

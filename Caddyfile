@@ -43,6 +43,14 @@
 		}
 	}
 
+	# ID sync (docs/ID_SYNC.md): публичные пиксели SSP, backend без strip
+	# (роутер /sync). Рекомендуется вынести на поддомен sync.<DOMAIN>, чтобы
+	# браузер не отправлял сюда cookie кабинета; backend их и так не читает.
+	handle /sync/* {
+		header Cache-Control "no-store"
+		reverse_proxy backend:8000
+	}
+
 	# Файлы креативов: backend отдаёт /uploads/* с volume uploads_data
 	# (PUBLIC_BASE_URL/uploads/... уходит в креативы и ОРД).
 	handle /uploads/* {

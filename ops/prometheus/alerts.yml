@@ -124,6 +124,31 @@ groups:
             либо сломан nurl/каналы уведомлений, либо SSP не засчитывает победы.
             Runbook: rtb_alerts.md#win-gap
 
+      # --- ID sync (план predeploy A.7) -----------------------------------------
+      # Доля идентифицированных запросов партнёра за час упала больше чем на 30 %
+      # к 7-дневной норме. Серии есть только при ID_SYNC_ENABLED. Label partner =
+      # supply_partners.id.
+      - alert: IdentifiedShareDrop
+        expr: |
+          (
+            1 - sum by (partner) (rate(bidder_identity_source_total{source="anonymous"}[1h]))
+                / clamp_min(sum by (partner) (rate(bidder_identity_source_total[1h])), 0.001)
+          )
+          < 0.7 * (
+            1 - sum by (partner) (rate(bidder_identity_source_total{source="anonymous"}[7d]))
+                / clamp_min(sum by (partner) (rate(bidder_identity_source_total[7d])), 0.001)
+          )
+          and sum by (partner) (rate(bidder_identity_source_total[1h])) > 1
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SSP {{ $labels.partner }}: доля идентифицированных запросов упала > 30 % к 7-дневной норме"
+          description: >-
+            SSP перестал присылать buyeruid/eids/ifa/user.id, сломался sync-пиксель
+            (нет новых соответствий) или Redis теряет idsync:*. Аудитории и
+            частота по партнёру деградируют. Runbook: rtb_alerts.md#id-sync
+
   - name: centraldsp-backend-python
     rules:
       # --- Аномалия спенда ------------------------------------------------------
