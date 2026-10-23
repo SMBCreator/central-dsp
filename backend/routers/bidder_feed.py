@@ -49,11 +49,20 @@ async def partners_feed(authorization: str | None = Header(default=None)):
     rows = await pool.fetch(
         """SELECT id, endpoint_key, auth_token_hash, qps_limit, bid_floor, status,
                   allowed_ad_types, ip_whitelist, currency, seat_id, freq_cap_on_win,
+                  identity, id_sync_salt,
                   CASE WHEN token_prev_valid_until > now() THEN token_prev_hash END AS token_prev_hash,
                   CASE WHEN token_prev_valid_until > now() THEN token_prev_valid_until END AS token_prev_valid_until
            FROM supply_partners WHERE status IN ('active', 'testing')"""
     )
-    return {"partners": [dict(r) for r in rows], "fx_rates": await fx.rates_snapshot()}
+    # identity/id_sync_salt (миграция 058, ID sync A.6): Go читает их только при
+    # ID_SYNC_ENABLED. jsonb из asyncpg приходит строкой — отдаём объектом.
+    partners = []
+    for r in rows:
+        d = dict(r)
+        if isinstance(d.get("identity"), str):
+            d["identity"] = json.loads(d["identity"])
+        partners.append(d)
+    return {"partners": partners, "fx_rates": await fx.rates_snapshot()}
 
 
 def _num_or_none(raw) -> float | None:

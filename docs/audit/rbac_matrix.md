@@ -56,12 +56,14 @@
 | GET | `/cron/audience-sync` | none | Bearer CRON_SECRET |
 | GET | `/cron/domain-quality` | none | Bearer CRON_SECRET |
 | GET | `/cron/fx-refresh` | none | Bearer CRON_SECRET |
+| GET | `/cron/id-sync-purge` | none | Bearer CRON_SECRET |
 | GET | `/cron/ml-train` | none | Bearer CRON_SECRET |
 | GET | `/cron/notify-business-checks` | none | Bearer CRON_SECRET |
 | GET | `/cron/notify-dispatch` | none | Bearer CRON_SECRET |
 | GET | `/cron/optimize` | none | Bearer CRON_SECRET |
 | GET | `/cron/ord-export` | none | Bearer CRON_SECRET |
 | GET | `/cron/ord-notifications` | none | Bearer CRON_SECRET |
+| GET | `/cron/rebuild-idsync` | none | Bearer CRON_SECRET |
 | GET | `/cron/reconcile-reserves` | none | Bearer CRON_SECRET |
 | GET | `/cron/reset-daily` | none | Bearer CRON_SECRET |
 | GET | `/cron/retention` | none | Bearer CRON_SECRET |
@@ -184,8 +186,13 @@
 | **PATCH** | `/supply-partners/{partner_id}` | roles | admin, superadmin |
 | **POST** | `/supply-partners/{partner_id}/check` | roles | admin, superadmin |
 | GET | `/supply-partners/{partner_id}/stats` | session | любая роль (scope внутри хендлера) |
+| GET | `/supply-partners/{partner_id}/sync-urls` | roles | admin, superadmin |
 | **DELETE** | `/supply-partners/{partner_id}/token` | roles | admin, superadmin |
 | **POST** | `/supply-partners/{partner_id}/token` | roles | admin, superadmin |
+| **POST** | `/sync/delete` | none | публично (ID sync, ID_SYNC_ENABLED; только cookie dsp_uid, rate-limit, /out — HMAC) |
+| GET | `/sync/optout` | none | публично (ID sync, ID_SYNC_ENABLED; только cookie dsp_uid, rate-limit, /out — HMAC) |
+| GET | `/sync/{partner_key}/in` | none | публично (ID sync, ID_SYNC_ENABLED; только cookie dsp_uid, rate-limit, /out — HMAC) |
+| GET | `/sync/{partner_key}/out` | none | публично (ID sync, ID_SYNC_ENABLED; только cookie dsp_uid, rate-limit, /out — HMAC) |
 | GET | `/users` | session | любая роль (scope внутри хендлера) |
 | **POST** | `/users` | roles | admin, agency, superadmin |
 | GET | `/users/me/markup` | session | любая роль (scope внутри хендлера) |

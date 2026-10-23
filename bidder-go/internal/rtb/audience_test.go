@@ -17,7 +17,7 @@ import (
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/redisx"
 )
 
-func newMiniRedisHandler(t *testing.T) (*Handler, *miniredis.Miniredis) {
+func newMiniRedisHandler(t testing.TB) (*Handler, *miniredis.Miniredis) {
 	t.Helper()
 	mr := miniredis.RunT(t)
 	rc, err := redisx.New("redis://" + mr.Addr() + "/0")
