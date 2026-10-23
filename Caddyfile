@@ -25,6 +25,15 @@
 		-Server
 	}
 
+	# Служебные ручки backend — только изнутри сети compose (scheduler, bidder-go,
+	# Prometheus, Alertmanager ходят на backend:8000 напрямую, мимо Caddy).
+	# Снаружи — 404, даже при утечке Bearer-токена. /api/health и /api/ready
+	# остаются открытыми (deploy gate, ops/preprod_check.sh).
+	@internal_only path /api/metrics /api/metrics/* /api/cron/* /api/rtb-feed/* /api/alerts/webhook /api/docs /api/docs/* /api/redoc /api/openapi.json
+	handle @internal_only {
+		respond 404
+	}
+
 	# Management API. Backend слушает без префикса (/auth/me, /campaigns, ...),
 	# поэтому /api срезается. Backend сам ставит X-Forwarded-* от Caddy в
 	# доверенные (TRUSTED_PROXIES: сеть compose — приватная).
