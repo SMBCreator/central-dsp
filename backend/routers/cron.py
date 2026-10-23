@@ -237,6 +237,30 @@ async def audience_sync(request: Request):
     return result
 
 
+@router.get("/id-sync-purge")
+@_cron_job("id_sync_purge")
+async def id_sync_purge(request: Request):
+    """ID sync (A.4): просроченные строки id_sync_map. Флаг off — no-op."""
+    _check_secret(request)
+    import id_sync
+
+    if not id_sync.enabled():
+        return {"skipped": "disabled"}
+    return {"deleted": await id_sync.purge_expired(await get_pool())}
+
+
+@router.get("/rebuild-idsync")
+@_cron_job("rebuild_idsync")
+async def rebuild_idsync(request: Request):
+    """ID sync (A.4): idsync:* в Redis из PostgreSQL. Флаг off — no-op."""
+    _check_secret(request)
+    import id_sync
+
+    if not id_sync.enabled():
+        return {"skipped": "disabled"}
+    return {"written": await id_sync.rebuild_redis(await get_pool())}
+
+
 @router.get("/ord-notifications")
 @_cron_job("ord_notifications")
 async def ord_notifications(request: Request):

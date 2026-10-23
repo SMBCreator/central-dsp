@@ -350,6 +350,17 @@ class CreativePatch(BaseModel):
 
 
 # --- Supply partners --------------------------------------------------------------
+class PartnerIdentityIn(BaseModel):
+    """ID sync партнёра (план predeploy A.5). Глубокая проверка — id_sync.validate_identity_config."""
+    sync_enabled: bool = False
+    sync_in_param: str = Field(default="ssp_uid", max_length=32)
+    sync_callback_url_template: str | None = Field(default=None, max_length=1024)
+    sync_redirect_hosts: list[str] = Field(default_factory=list, max_length=16)
+    id_source: str = Field(default="user_id", max_length=80)
+    ttl_days: int = Field(default=90, ge=1, le=395)
+    requires_consent: bool = True
+
+
 class SupplyPartnerIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     auction_type: int = Field(default=2, ge=1, le=2)
@@ -368,6 +379,7 @@ class SupplyPartnerIn(BaseModel):
     # per SSP (см. миграции 046/043). None -> DEFAULT БД ('burl' / false).
     billing_event: str | None = Field(default=None, pattern="^(win|burl)$")
     freq_cap_on_win: bool | None = None
+    identity: PartnerIdentityIn | None = None
 
 
 class SupplyPartnerPatch(BaseModel):
@@ -386,6 +398,7 @@ class SupplyPartnerPatch(BaseModel):
     contact_email: str | None = Field(default=None, max_length=200)
     billing_event: str | None = Field(default=None, pattern="^(win|burl)$")
     freq_cap_on_win: bool | None = None
+    identity: PartnerIdentityIn | None = None
 
 
 # --- Rules ---------------------------------------------------------------------

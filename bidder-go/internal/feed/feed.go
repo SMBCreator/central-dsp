@@ -183,12 +183,24 @@ type Partner struct {
 	TokenPrevHash       string     `json:"token_prev_hash"`
 	TokenPrevValidUntil *time.Time `json:"token_prev_valid_until"`
 
+	// ID sync (миграция 058, docs/ID_SYNC.md). Читаются только при
+	// ID_SYNC_ENABLED; nil/"" = sync для партнёра не настроен.
+	Identity   *PartnerIdentity `json:"identity"`
+	IDSyncSalt string           `json:"id_sync_salt"`
+
 	AllowedTypes map[string]bool `json:"-"`
 	IPNets       []*net.IPNet    `json:"-"` // распарсенный IPWhitelist
 	// WhitelistInvalid — ip_whitelist не разобрался целиком. Fail-closed: такой
 	// партнёр не биддится (метрика bidder_no_bid_total{reason="whitelist_invalid"}),
 	// а не торгуется с любым IP, как было бы при молчаливом пропуске мусора.
 	WhitelistInvalid bool `json:"-"`
+}
+
+// PartnerIdentity — часть supply_partners.identity, нужная биддеру (A.5/A.6).
+// Остальные поля конфига (callback, allowlist, consent) использует только backend.
+type PartnerIdentity struct {
+	SyncEnabled bool   `json:"sync_enabled"`
+	IDSource    string `json:"id_source"` // buyeruid | user_id | ifa | eids:<source>
 }
 
 // ParseIPWhitelist разбирает JSON-массив строк IP или CIDR (объект/строка с

@@ -6,6 +6,7 @@
 """
 
 import json
+import os
 import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -15,12 +16,13 @@ from rbac import require_admin
 from db import get_pool
 from schemas import SupplyPartnerIn, SupplyPartnerPatch
 from stats_math import derive, money, pct, spend_expr
+import id_sync
 import ssp_check
 import ssp_tokens
 
 router = APIRouter(prefix="/supply-partners", tags=["supply-partners"])
 
-_JSONB_FIELDS = {"allowed_ad_types", "ip_whitelist"}
+_JSONB_FIELDS = {"allowed_ad_types", "ip_whitelist", "identity"}
 
 
 def _serialize(row) -> dict:
@@ -28,7 +30,7 @@ def _serialize(row) -> dict:
     d["id"] = str(d["id"])
     d["user_id"] = str(d["user_id"])
     d["bid_floor"] = float(d["bid_floor"])
-    for k in ("allowed_ad_types", "ip_whitelist", "last_check"):
+    for k in ("allowed_ad_types", "ip_whitelist", "last_check", "identity"):
         if isinstance(d.get(k), str):
             d[k] = json.loads(d[k])
     # В БД только хэш (миграция 032); наружу — признак и хвост для сверки
@@ -36,6 +38,7 @@ def _serialize(row) -> dict:
     hint = d.pop("auth_token_hint", None)
     d.pop("auth_token", None)  # на случай прогона до миграции 032
     d.pop("token_prev_hash", None)  # хэш предыдущего токена наружу не нужен
+    d.pop("id_sync_salt", None)  # соль хэша чужих ID наружу не нужна
     d["has_auth_token"] = bool(token_hash)
     d["auth_token_hint"] = f"…{hint}" if token_hash and hint else None
     return d
@@ -55,6 +58,13 @@ def _require_token_for_serving(status: str | None, token_hash: str | None) -> No
             detail="Сначала выпустите токен партнёра (POST /supply-partners/{id}/token): "
                    "без токена биддер отвечает 403 и перевод в testing/active бессмыслен",
         )
+
+
+def _validated_identity(cfg: dict) -> dict:
+    try:
+        return id_sync.validate_identity_config(cfg)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"ID sync: {exc}") from exc
 
 
 def _validated_whitelist(items: list[str]) -> list[str]:
@@ -78,6 +88,7 @@ async def create_partner(body: SupplyPartnerIn, user: dict = Depends(require_adm
     pool = await get_pool()
     endpoint_key = secrets.token_urlsafe(16)
     whitelist = _validated_whitelist(body.ip_whitelist)
+    identity = _validated_identity(body.identity.model_dump()) if body.identity else None
     # billing_event/freq_cap_on_win: не передано -> DEFAULT БД (046: новые
     # партнёры — burl; 043: freq cap по imp).
     row = await pool.fetchrow(
@@ -85,15 +96,16 @@ async def create_partner(body: SupplyPartnerIn, user: dict = Depends(require_adm
         INSERT INTO supply_partners
             (user_id, name, endpoint_key, auction_type, bid_floor, qps_limit, allowed_ad_types, notes,
              protocol_version, currency, tmax_ms, ip_whitelist, seat_id, contact_email, status,
-             billing_event, freq_cap_on_win)
+             billing_event, freq_cap_on_win, identity, id_sync_salt)
         VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12::jsonb,$13,$14,'draft',
-                COALESCE($15, 'burl'), COALESCE($16, false)) RETURNING *
+                COALESCE($15, 'burl'), COALESCE($16, false), $17::jsonb, $18) RETURNING *
         """,
         user["id"], body.name, endpoint_key, body.auction_type, body.bid_floor,
         body.qps_limit, json.dumps(body.allowed_ad_types), body.notes,
         body.protocol_version, body.currency, body.tmax_ms,
         json.dumps(whitelist), body.seat_id, body.contact_email,
         body.billing_event, body.freq_cap_on_win,
+        json.dumps(identity) if identity else None, id_sync.new_salt() if identity else None,
     )
     return _serialize(row)
 
@@ -106,6 +118,8 @@ async def update_partner(partner_id: str, body: SupplyPartnerPatch, user: dict =
     pool = await get_pool()
     if "ip_whitelist" in updates:
         updates["ip_whitelist"] = _validated_whitelist(updates["ip_whitelist"])
+    if "identity" in updates:
+        updates["identity"] = _validated_identity(updates["identity"])
     if updates.get("status") in _SERVING_STATUSES:
         current = await pool.fetchrow(
             "SELECT auth_token_hash FROM supply_partners WHERE id = $1 AND user_id = $2",
@@ -122,6 +136,10 @@ async def update_partner(partner_id: str, body: SupplyPartnerPatch, user: dict =
         else:
             sets.append(f"{k} = ${i}")
             values.append(v)
+    if "identity" in updates:
+        # Соль выдаётся один раз: смена соли обнулила бы все соответствия.
+        sets.append(f"id_sync_salt = COALESCE(id_sync_salt, ${len(values) + 3})")
+        values.append(id_sync.new_salt())
     row = await pool.fetchrow(
         f"UPDATE supply_partners SET {', '.join(sets)}, updated_at = now() WHERE id = $1 AND user_id = $2 RETURNING *",
         partner_id, user["id"], *values,
@@ -129,6 +147,48 @@ async def update_partner(partner_id: str, body: SupplyPartnerPatch, user: dict =
     if not row:
         raise HTTPException(status_code=404, detail="SSP-партнёр не найден")
     return _serialize(row)
+
+
+def _sync_base_url() -> str:
+    for var in ("ID_SYNC_BASE_URL", "PUBLIC_BASE_URL"):
+        val = (os.environ.get(var) or "").strip().rstrip("/")
+        if val:
+            return val
+    return ""
+
+
+@router.get("/{partner_id}/sync-urls")
+async def sync_urls(partner_id: str, user: dict = Depends(require_admin)):
+    """URL для анкеты SSP (A.3): пиксель /in с макросом и одноразовая подписанная
+    ссылка /out (живёт 10 минут) — для ручной проверки цикла."""
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        "SELECT id, identity FROM supply_partners WHERE id = $1 AND user_id = $2", partner_id, user["id"]
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="SSP-партнёр не найден")
+    raw = row["identity"]
+    identity = id_sync.PartnerIdentity.from_json(json.loads(raw) if isinstance(raw, str) else raw)
+    base = _sync_base_url()
+    key = str(row["id"])
+    out_url = None
+    try:
+        p = id_sync.signed_out_params(key)
+        out_url = f"{base}/sync/{key}/out?ts={p['ts']}&sig={p['sig']}"
+    except RuntimeError:
+        out_url = None
+    mappings = await pool.fetchval(
+        "SELECT count(*) FROM id_sync_map WHERE partner_id = $1 AND expires_at > now()", row["id"]
+    )
+    return {
+        "enabled_globally": id_sync.enabled(),
+        "partner_sync_enabled": identity.sync_enabled,
+        "in_url": f"{base}/sync/{key}/in?{identity.sync_in_param}={{SSP_UID}}&gdpr={{GDPR}}&gdpr_consent={{GDPR_CONSENT}}",
+        "out_url": out_url,
+        "optout_url": f"{base}/sync/optout",
+        "active_mappings": int(mappings or 0),
+        "secret_configured": out_url is not None,
+    }
 
 
 @router.delete("/{partner_id}", status_code=204)

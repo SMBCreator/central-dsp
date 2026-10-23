@@ -272,6 +272,28 @@ export interface SupplyPartner {
   billing_event?: "win" | "burl"
   // R-06: freq cap бронируется на nurl, а не на пикселе показа (SSP без imp-пикселя)
   freq_cap_on_win?: boolean
+  // ID sync (миграция 058, docs/ID_SYNC.md); null — не настроен
+  identity?: PartnerIdentity | null
+}
+
+export type PartnerIdentity = {
+  sync_enabled: boolean
+  sync_in_param: string
+  sync_callback_url_template: string | null
+  sync_redirect_hosts: string[]
+  id_source: string
+  ttl_days: number
+  requires_consent: boolean
+}
+
+export type SyncUrls = {
+  enabled_globally: boolean
+  partner_sync_enabled: boolean
+  in_url: string
+  out_url: string | null
+  optout_url: string
+  active_mappings: number
+  secret_configured: boolean
 }
 
 export interface SupplyPartnerMetrics {
