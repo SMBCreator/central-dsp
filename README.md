@@ -9,7 +9,7 @@ RBAC на 9 ролей.
 
 | Компонент | Технология | Что делает |
 |---|---|---|
-| `bidder-go/` | Go 1.25, Redis | **Единственный production RTB runtime**: `POST /rtb/bid/{endpoint_key}`, `/rtb/loss`; таргетинг, прайсинг, bid shading, pCTR, budget-gate в Redis (Lua), события в Redis Stream `rtb:events` |
+| `bidder-go/` | Go 1.26, Redis | **Единственный production RTB runtime**: `POST /rtb/bid/{endpoint_key}`, `/rtb/loss`; таргетинг, прайсинг, bid shading, pCTR, budget-gate в Redis (Lua), события в Redis Stream `rtb:events` |
 | `backend/` | Python 3.12, FastAPI, asyncpg | Management API, аутентификация и RBAC, биллинг/ledger, event-callbacks (`/rtb/win`, `/burl`, `/imp`, `/click`, `/view`, `/vevent`), ОРД, статистика, feed кандидатов для Go (`/rtb-feed/*`), `/cron/*`, симулятор |
 | `backend/scheduler.py` | тот же образ backend | Планировщик `/cron/*` по таблице `scheduled_jobs` (PostgreSQL). Единственный production scheduler |
 | `frontend/` | Next.js 16, React 19, Tailwind | Кабинет: кампании, креативы, аудитории, отчёты, биллинг, ОРД, supply-партнёры, пользователи |
