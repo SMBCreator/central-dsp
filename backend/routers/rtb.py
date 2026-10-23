@@ -677,7 +677,7 @@ def _event_dims(row) -> dict[str, Any]:
     """Измерения бида, наследуемые win/imp/click/view/loss (audit E-01).
 
     Раньше win/imp/click писались без bundle/publisher/tagid/region/city —
-    в группировках «по площадкам» они попад��ли в «—», CTR/win-rate по
+    в группировках «по площадкам» они попадали в «—», CTR/win-rate по
     конкретному inventory были недостоверны.
     """
     out: dict[str, Any] = {
@@ -1177,7 +1177,7 @@ async def process_bid_request(
                     device_id or "", [str(x) for x in _aud_inc], [str(x) for x in _aud_exc]):
                 continue
             # CPC (audit R-03): ставка за клик -> эквивалентная CPM через
-            # ожидаемый CTR (pCTR-моде��ь, иначе консервативный fallback).
+            # ожидаемый CTR (pCTR-модель, иначе консервативный fallback).
             # Списание — по клику ровно bid_cpc (см. click()); win не списывает.
             # max_bid для CPC — потолок клика, а не CPM.
             c["_bid_type"] = (c.get("bid_type") or "cpm")
@@ -1357,7 +1357,7 @@ async def process_bid_request(
         }
         if c.get("_deal_id"):
             bid_obj["dealid"] = c["_deal_id"]
-        # seat: ID, который этот SSP присвоил нам как байеру (ми��рация 030)
+        # seat: ID, который этот SSP присвоил нам как байеру (миграция 030)
         _seat = (partner["seat_id"] if "seat_id" in partner.keys() else None) or "centraldsp"
         seatbids.append({"bid": [bid_obj], "seat": _seat})
 
@@ -1489,7 +1489,7 @@ async def win_notice(bid: str, price: str | None = None):
 
     # Audit E-02: списание, событие win и stats_hourly — одна транзакция.
     # bill_win внутри открывает свою transaction() -> под внешней это savepoint.
-    # Дедуп — transactions(bid_id) WHERE type='spend': повто�� после падения
+    # Дедуп — transactions(bid_id) WHERE type='spend': повтор после падения
     # любого шага снова проходит весь путь целиком, а не «duplicate».
     # billing_event=win: win и есть billable-показ (R-07) — billable_imps растёт здесь.
     async with pool.acquire() as conn:
@@ -1646,7 +1646,7 @@ async def billing_notice(bid: str, price: str | None = None):
                 await _bump_stats(conn, "billable_imps", 0, *_stat_ids(row))
         return {"ok": True, "cpc": True}
 
-    # Списание, событие billable и stats_hourly — одна транзакц��я (как win_notice).
+    # Списание, событие billable и stats_hourly — одна транзакция (как win_notice).
     # late — по факту в БД (bid_event_once 'win_expired'), а не по Redis.
     async with pool.acquire() as conn, conn.transaction():
         result = await bill_win(

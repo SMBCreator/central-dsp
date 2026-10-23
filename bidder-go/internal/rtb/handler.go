@@ -219,7 +219,7 @@ func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "feed stale", http.StatusServiceUnavailable)
 		return
 	}
-	// ��аритет с Python (rtb.py): партнёр торгуется в статусах active и testing.
+	// Паритет с Python (rtb.py): партнёр торгуется в статусах active и testing.
 	// testing = онбординг: реальные биды, чтобы SSP видел ответы; deny-статусы
 	// (draft/paused/blocked) фид не отдаёт вовсе (bidder_feed.py).
 	partner := snap.Partners[r.PathValue("endpointKey")]
@@ -572,7 +572,7 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 			if c.Pacing == "even" {
 				campBudget = redisx.EvenPacingBudget(campBudget, now)
 			}
-			// Audit M-05: одним Lua — дневные бюджеты кампании и группы, доступ��ый
+			// Audit M-05: одним Lua — дневные бюджеты кампании и группы, доступный
 			// баланс рекламодателя и остаток общего бюджета; бид попадает в
 			// pending:bids до win/loss/expire (M-06).
 			res, okRes, err := h.redis.Reserve(rctx, now, redisx.ReserveInput{
