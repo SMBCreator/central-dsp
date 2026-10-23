@@ -118,12 +118,12 @@ export default function UsersPage() {
     try {
       await api("/users", {
         method: "POST",
-        body: JSON.stringify({
+        body: {
           email: cEmail, name: cName, password: cPassword, role: cRole,
           parent_user_id: cParent || null,
           markup_pct: Number(cMarkup) || 0,
           permissions: cPerms,
-        }),
+        },
       })
       setCreateOpen(false)
       mutate()
@@ -138,11 +138,11 @@ export default function UsersPage() {
     try {
       await api(`/users/${editUser.id}`, {
         method: "PATCH",
-        body: JSON.stringify({
+        body: {
           markup_pct: Number(eMarkup) || 0,
           permissions: ePerms,
           status: eStatus,
-        }),
+        },
       })
       setEditUser(null)
       mutate()

@@ -111,14 +111,14 @@ export default function AccessPage() {
     try {
       await api("/share/links", {
         method: "POST",
-        body: JSON.stringify({
+        body: {
           name: lName,
           advertiser_id: lAdv || null,
           brand_name: lBrand || null,
           brand_color: lColor || null,
           expires_days: lDays ? Number(lDays) : null,
           markup_extra_pct: canMarkup && lExtra ? Number(lExtra) : null,
-        }),
+        },
       })
       setLinkModal(false)
       setLName("")
@@ -137,14 +137,14 @@ export default function AccessPage() {
     try {
       await api("/share/guests", {
         method: "POST",
-        body: JSON.stringify({
+        body: {
           email: gEmail,
           password: gPassword,
           name: gName,
           advertiser_id: gAdv || null,
           brand_name: gBrand || null,
           markup_extra_pct: canMarkup && gExtra ? Number(gExtra) : null,
-        }),
+        },
       })
       setGuestModal(false)
       setGEmail("")
