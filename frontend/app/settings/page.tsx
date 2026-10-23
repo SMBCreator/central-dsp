@@ -5,6 +5,7 @@ import useSWR from "swr"
 import { api, fetcher } from "@/lib/api"
 import { Button, Card, CardHeader, EmptyState, Field, PillTabs, Spinner, Table } from "@/components/ui"
 import { MlStatusCard } from "@/components/ml-status-card"
+import { OrdSandboxCard } from "@/components/ord-sandbox-card"
 
 type AppSettings = {
   currency: string
@@ -297,6 +298,12 @@ function OrdCard() {
   )
 }
 
+function OrdSandboxSection() {
+  const { data: ord } = useSWR<OrdSettings>("/settings/ord", fetcher)
+  if (!ord) return null
+  return <OrdSandboxCard savedSandbox={Boolean(ord.configured && ord.environment === "sandbox")} />
+}
+
 export default function SettingsPage() {
   const { data: settings, mutate: mutateSettings } = useSWR<AppSettings>("/settings", fetcher)
   const { data: fx } = useSWR<FxInfo>("/settings/fx?currency=USD", fetcher)
@@ -315,7 +322,7 @@ export default function SettingsPage() {
     if (markup === null) return
     setSaving(true)
     try {
-      await api("/settings", { method: "PATCH", body: JSON.stringify({ fx_markup_pct: Number(markup) }) })
+      await api("/settings", { method: "PATCH", body: { fx_markup_pct: Number(markup) } })
       setMarkup(null)
       await mutateSettings()
     } finally {
@@ -330,7 +337,7 @@ export default function SettingsPage() {
     try {
       await api("/settings/domain-lists", {
         method: "POST",
-        body: JSON.stringify({ domain: d, list_type: listType, source: "manual" }),
+        body: { domain: d, list_type: listType, source: "manual" },
       })
       setNewDomain("")
       await mutateDomains()
@@ -384,6 +391,8 @@ export default function SettingsPage() {
       </Card>
 
       <OrdCard />
+
+      <OrdSandboxSection />
 
       <MlStatusCard />
 
