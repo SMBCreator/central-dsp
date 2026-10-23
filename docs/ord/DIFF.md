@@ -39,8 +39,8 @@
 | C26 | ретраи | 429 | лимиты не описаны | 429 = ошибка данных, без повтора | P2 | 429 ретраится как 5xx (3 попытки, backoff); повтор безопасен — upsert по `external*Id` |
 | C27 | аутентификация | схема | `securitySchemes` в спеке нет | `Authorization: Bearer <key>` | P3 | без изменений **[V]** в sandbox |
 | C28 | ошибки | тело | `rpcStatus {error: string}` для любых не-200 | текст ответа в `OrdError` | — | без изменений |
-| C29 | ККТУ в UI | справочник | источник — `POST /api/external/dict/kktu` | `frontend/lib/kktu.json` из официального xlsx (294 листа) | P1 | **[V]** сверить коды с `dict/kktu` при первом sandbox-прогоне |
-| C30 | иностранные контрагенты | поля | `regionNumber` (ОКСМ), `taxId`, `registrationNumber` | не передаются | P2 | **не закрыто**: в модели `counterparties` нет этих полей; иностранные организации в ОРД сейчас уйдут без обязательных для них реквизитов |
+| C29 | ККТУ в UI | справочник | источник — `POST /api/external/dict/kktu` | `frontend/lib/kktu.json` из официального xlsx (294 листа) | P1 | **инструмент готов**: Настройки → «Тест в песочнице ОРД» → «Только сверка ККТУ» загружает `dict/kktu` и показывает коды, которых нет у нас / удалены / переименованы (`frontend/lib/kktu-compare.ts`). Остаётся прогнать с ключом песочницы и обновить `kktu.json` по отчёту |
+| C30 | иностранные контрагенты | поля | `regionNumber` (ОКСМ), `taxId`, `registrationNumber` | не передаются | P2 | **закрыто**: миграция `059_counterparty_foreign.sql` (`region_number` с CHECK на 3 цифры, `tax_id`, `registration_number`); для `legal_type=foreign` `organisation_body()` добавляет `regionNumber` + `taxId`/`registrationNumber`, без страны или обоих номеров — `OrdDataError` до отправки (643 = РФ отклоняется). API валидирует то же (422), UI — поля в формах контрагента. **[V]**: что ОРД ждёт в обязательном `inn` у иностранца — проверяется шагом песочницы «Иностранная организация (C30)» |
 
 ## НДС
 

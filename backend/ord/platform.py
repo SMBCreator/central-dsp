@@ -48,6 +48,8 @@ def org_payload(cp: dict[str, Any], platform: dict[str, Any] | None = None) -> d
         "external_id": str(cp["id"]), "name": cp["name"], "inn": cp["inn"], "ogrn": cp.get("ogrn"),
         "legal_type": cp["legal_type"], "role": cp["role"], "address": cp.get("address"),
         "is_self": bool(cp.get("is_self")), "rs_url": cp.get("rs_url"),
+        "region_number": cp.get("region_number"), "tax_id": cp.get("tax_id"),
+        "registration_number": cp.get("registration_number"),
     }
     if data["is_self"] and platform:
         data["platforms"] = [{

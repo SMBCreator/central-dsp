@@ -272,6 +272,63 @@ async def test_ord_connection(user: dict = Depends(_require_superadmin)):
         raise HTTPException(502, str(e))
 
 
+class OrdSandboxRunIn(BaseModel):
+    # Пусто = взять сохранённый ключ, но только если он от песочницы.
+    api_key: Optional[str] = Field(default=None, min_length=8, max_length=512)
+    advertiser_inn: Optional[str] = Field(default=None, pattern=r"^\d{10}$")
+    advertiser_name: Optional[str] = Field(default=None, max_length=200)
+    self_inn: Optional[str] = Field(default=None, pattern=r"^\d{10}$")
+    self_name: Optional[str] = Field(default=None, max_length=200)
+    kktu: Optional[str] = Field(default=None, pattern=r"^\d{1,2}\.\d{1,2}\.\d{1,2}$")
+    steps: Optional[list[str]] = None
+
+
+@router.post("/ord/sandbox-run")
+async def run_ord_sandbox(body: OrdSandboxRunIn, user: dict = Depends(_require_superadmin)):
+    """Сквозной прогон цепочки в песочнице ОРД (ord/sandbox.py). Ничего не
+    пишет в БД кабинета; хост всегда api-ord-sandbox.ozon.ru."""
+    from ord.adapter import get_ord_settings
+    from ord.sandbox import SANDBOX_BASE_URL, STEP_KEYS, SandboxRunner, build_context, inn10_checksum_ok
+
+    key = (body.api_key or "").strip()
+    if not key:
+        cfg = await get_ord_settings()
+        if not cfg.get("api_key"):
+            raise HTTPException(400, "Вставьте API-ключ песочницы ОРД Озон")
+        if "sandbox" not in (cfg.get("base_url") or ""):
+            raise HTTPException(400, "Сохранён продовый ключ — для теста вставьте ключ песочницы")
+        key = cfg["api_key"]
+    for field in ("advertiser_inn", "self_inn"):
+        inn = getattr(body, field)
+        if inn and not inn10_checksum_ok(inn):
+            raise HTTPException(400, f"{field}: неверная контрольная цифра ИНН")
+    if body.steps:
+        unknown = sorted(set(body.steps) - set(STEP_KEYS))
+        if unknown:
+            raise HTTPException(400, f"Неизвестные шаги: {', '.join(unknown)}")
+
+    ctx = build_context({
+        **body.model_dump(exclude={"api_key", "steps"}, exclude_none=True),
+        "platform_url": os.getenv("ORD_PLATFORM_URL") or os.getenv("PUBLIC_BASE_URL") or None,
+    })
+    steps = await SandboxRunner(key).run(ctx, body.steps)
+    summary = {s: sum(1 for r in steps if r["status"] == s) for s in ("ok", "error", "skipped")}
+    return {
+        "run_id": ctx["run_id"],
+        "base_url": SANDBOX_BASE_URL,
+        "period": ctx["period"],
+        "entities": {
+            "advertiser": {"external_id": ctx["advertiser"]["external_id"], "inn": ctx["advertiser"]["inn"]},
+            "self": {"external_id": ctx["self"]["external_id"], "inn": ctx["self"]["inn"]},
+            "contract": ctx["contract"]["external_id"],
+            "creative": ctx["creative"]["external_creative_id"],
+            "invoice": ctx["invoice"]["external_id"],
+        },
+        "summary": summary,
+        "steps": steps,
+    }
+
+
 # ------------------------------------------- Throttling: datacenter-подсети --
 # Платформенный список CIDR (/16, /24), которые предфильтр отсекает до полного
 # цикла (prefilter.py, Часть C). Хранится в Redis SET; управление — admin+.

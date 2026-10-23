@@ -4,6 +4,8 @@ import { useMemo, useState } from "react"
 import useSWR, { mutate } from "swr"
 import { api, fetcher } from "@/lib/api"
 import { Button, Field, inputCls, Modal, Spinner } from "@/components/ui"
+import { ForeignRequisitesFields } from "@/components/foreign-requisites-fields"
+import { EMPTY_FOREIGN, foreignPayload, foreignRequisitesError } from "@/lib/oksm"
 import type { Counterparty, OrdContract } from "@/lib/types"
 
 /**
@@ -95,17 +97,27 @@ function CounterpartyModal({
   open, onClose, onCreated, role, title,
 }: { open: boolean; onClose: () => void; onCreated: (cp: Counterparty) => void; role: "advertiser" | "agency"; title: string }) {
   const [form, setForm] = useState({ name: "", inn: "", ogrn: "", legal_type: "ul", address: "" })
+  const [foreign, setForeign] = useState(EMPTY_FOREIGN)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
+    const foreignError = form.legal_type === "foreign" ? foreignRequisitesError(foreign) : null
+    if (foreignError) {
+      setError(foreignError)
+      return
+    }
     setSaving(true)
     setError(null)
     try {
-      const cp = await api<Counterparty>("/ord/counterparties", { method: "POST", body: { ...form, role } })
+      const cp = await api<Counterparty>("/ord/counterparties", {
+        method: "POST",
+        body: { ...form, ...foreignPayload(form.legal_type, foreign), role },
+      })
       await mutate("/ord/counterparties")
       setForm({ name: "", inn: "", ogrn: "", legal_type: "ul", address: "" })
+      setForeign(EMPTY_FOREIGN)
       onCreated(cp)
       onClose()
     } catch (err) {
@@ -134,6 +146,7 @@ function CounterpartyModal({
             </select>
           </Field>
         </div>
+        {form.legal_type === "foreign" ? <ForeignRequisitesFields value={foreign} onChange={setForeign} /> : null}
         <Field label="ОГРН / ОГРНИП">
           <input className={inputCls} value={form.ogrn} onChange={(e) => setForm({ ...form, ogrn: e.target.value })} placeholder="1027700000000" />
         </Field>
