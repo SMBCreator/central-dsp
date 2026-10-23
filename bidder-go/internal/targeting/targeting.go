@@ -156,7 +156,7 @@ func Match(t *Targeting, r *RequestView) bool {
 		return true
 	}
 	// --- Geo ---
-	if len(t.GeoCountries) > 0 && !containsFold(t.GeoCountries, r.Country, strings.ToUpper) {
+	if len(t.GeoCountries) > 0 && !containsFold(t.GeoCountries, r.Country, NormalizeCountry) {
 		return false
 	}
 	if len(t.GeoRegions) > 0 && !containsFold(t.GeoRegions, r.Region, strings.ToLower) {

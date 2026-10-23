@@ -198,7 +198,7 @@ type Device struct {
 }
 
 type Geo struct {
-	Country string  `json:"country,omitempty"` // ISO-3166-1 alpha-3 в OpenRTB; Python нормализует к alpha-2
+	Country string  `json:"country,omitempty"` // ISO-3166-1 alpha-3 в OpenRTB; к alpha-2 приводится только при сравнении с таргетингом (targeting.NormalizeCountry)
 	Region  string  `json:"region,omitempty"`
 	City    string  `json:"city,omitempty"`
 	Lat     float64 `json:"lat,omitempty"`
