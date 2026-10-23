@@ -5,6 +5,7 @@ import { Field, inputCls } from "@/components/ui"
 import { MultiSelect } from "@/components/multi-select"
 import { TagInput } from "@/components/tag-input"
 import { GeoDrawer, countryLabel } from "@/components/geo-panel"
+import { GeoV2Picker, geoV2Summary, type GeoConfig } from "@/components/geo-v2-picker"
 import useSWR from "swr"
 import { fetcher } from "@/lib/api"
 import { DEVICE_MAKES, IAB_CATEGORIES, VIDEO_PLACEMENTS, VIDEO_PROTOCOLS, type Targeting } from "@/lib/types"
@@ -203,6 +204,8 @@ function geoSummary(t: Targeting): string {
   if (t.geo_countries?.length) parts.push(t.geo_countries.join(", "))
   if (t.geo_regions?.length) parts.push(`${t.geo_regions.length} регион(ов)`)
   if (t.geo_cities?.length) parts.push(`${t.geo_cities.length} город(ов)`)
+  const v2 = geoV2Summary(t)
+  if (v2) parts.push(v2)
   return parts.join(" · ") || "Весь мир"
 }
 
@@ -288,6 +291,10 @@ export function TargetingEditor({
   const ruSelected =
     (value.geo_countries || []).includes("RU") || !!value.geo_regions?.length || !!value.geo_cities?.length
   const otherCountries = (value.geo_countries || []).filter((c) => c !== "RU")
+  const { data: geoConfig } = useSWR<GeoConfig>("/geo/config", fetcher, { revalidateOnFocus: false })
+  const geoV2 = !!geoConfig?.v2_enabled && !!geoConfig.dataset_version
+  const hasLegacyGeo = !!value.geo_countries?.length || !!value.geo_regions?.length || !!value.geo_cities?.length
+  const hasV2Geo = !!value.geo_place_ids?.length || !!value.geo_exclude_place_ids?.length
 
   return (
     <div className="space-y-3">
@@ -296,8 +303,31 @@ export function TargetingEditor({
         title="География"
         summary={geoSummary(value)}
         defaultOpen
-        onReset={() => set({ geo_countries: undefined, geo_regions: undefined, geo_cities: undefined })}
+        onReset={() =>
+          set({
+            geo_countries: undefined,
+            geo_regions: undefined,
+            geo_cities: undefined,
+            geo_place_ids: undefined,
+            geo_exclude_place_ids: undefined,
+            geo_unknown: undefined,
+          })
+        }
       >
+        {geoV2 && geoConfig ? <GeoV2Picker value={value} onChange={set} config={geoConfig} /> : null}
+        {!geoV2 && hasV2Geo ? (
+          <div className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-xs leading-relaxed text-danger">
+            В группе выбраны места справочника, но GEO v2 сейчас выключен: такая группа не будет показываться,
+            пока его не включат. Сбросьте гео или дождитесь включения.
+          </div>
+        ) : null}
+        {geoV2 && hasLegacyGeo ? (
+          <p className="text-xs leading-relaxed text-muted">
+            Ниже — гео в старом формате (по названиям). Оно действует вместе с местами выше: показ только там, где
+            выполнены оба условия. Новые места добавляйте через поиск выше.
+          </p>
+        ) : null}
+        {geoV2 && !hasLegacyGeo ? null : (
         <Field label="Регионы и города показа" hint="Нажмите на поле — справа откроется список регионов и городов России. Пусто — показ без гео-ограничений">
           <button
             type="button"
@@ -386,6 +416,7 @@ export function TargetingEditor({
             </svg>
           </button>
         </Field>
+        )}
         <GeoDrawer
           open={geoOpen}
           onClose={() => setGeoOpen(false)}

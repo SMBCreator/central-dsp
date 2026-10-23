@@ -25,6 +25,7 @@ import (
 
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/feed"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/fx"
+	"github.com/SMBCreator/central-dsp/bidder-go/internal/geo"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/metrics"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/pctr"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/prefilter"
@@ -53,6 +54,9 @@ type Handler struct {
 	// idSyncEnabled — ID_SYNC_ENABLED (план predeploy A.6). false = прежняя
 	// идентификация deviceIDOf байт в байт, без Redis-вызова и новых метрик.
 	idSyncEnabled bool
+	// GEO v2 (docs/GEO.md): флаги сопоставления и топ несопоставленных значений SSP.
+	geoOpts      geo.Options
+	geoUnmatched *geo.Unmatched
 	// now — часы бюджетного гейта (бизнес-день, even pacing); nil = time.Now.
 	// Подменяются только в тестах.
 	now func() time.Time
@@ -154,6 +158,9 @@ func NewHandler(store *feed.Store, rc *redisx.Client) *Handler {
 		redis: rc,
 		base:  strings.TrimRight(base, "/"),
 		seat:  "central-dsp",
+		// Без main (тесты) — те же значения по умолчанию, что у geo_v2.py.
+		geoOpts:      geo.Options{RadiusKM: geo.DefaultLatLonRadiusKM},
+		geoUnmatched: geo.NewUnmatched(unmatchedGeoLimit),
 	}
 	if rc != nil {
 		h.shading = shading.NewStore(rc.Raw())
@@ -212,7 +219,7 @@ func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "feed stale", http.StatusServiceUnavailable)
 		return
 	}
-	// Паритет с Python (rtb.py): партнёр торгуется в статусах active и testing.
+	// ��аритет с Python (rtb.py): партнёр торгуется в статусах active и testing.
 	// testing = онбординг: реальные биды, чтобы SSP видел ответы; deny-статусы
 	// (draft/paused/blocked) фид не отдаёт вовсе (bidder_feed.py).
 	partner := snap.Partners[r.PathValue("endpointKey")]
@@ -330,13 +337,14 @@ func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 	}
 
 	view := buildRequestView(&req)
+	geoRes := h.resolveGeo(&req, partner, snap)
 	deviceID := h.identityOf(ctx, &req, partner)
 
 	var bids []Bid
 	var rubSum float64
 	for i := range req.Imp {
 		imp := &req.Imp[i]
-		if b, rub := h.bidOnImp(ctx, &req, imp, view, deviceID, partner, snap, auctionType, respCur); b != nil {
+		if b, rub := h.bidOnImp(ctx, &req, imp, view, geoRes, deviceID, partner, snap, auctionType, respCur); b != nil {
 			bids = append(bids, *b)
 			rubSum += rub
 		}
@@ -377,7 +385,7 @@ func partnerBiddable(status string) bool {
 // bidOnImp — кандидаты одного impression: фильтры + выбор лучшей цены.
 // bidOnImp возвращает бид (price уже в respCur) и его цену в RUB (для
 // метрик); nil, 0 — нет бида на этот imp.
-func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequest, imp *Imp, view *targeting.RequestView, deviceID string, partner *feed.Partner, snap *feed.Snapshot, auctionType int, respCur string) (*Bid, float64) {
+func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequest, imp *Imp, view *targeting.RequestView, geoRes *geo.Resolved, deviceID string, partner *feed.Partner, snap *feed.Snapshot, auctionType int, respCur string) (*Bid, float64) {
 	rctx, ok := ctx.(interface {
 		Done() <-chan struct{}
 		Err() error
@@ -422,6 +430,9 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 			continue
 		}
 		if !h.matchCandidate(c, req, view, partner, snap, adType) {
+			continue
+		}
+		if !matchGeoV2(c, snap, geoRes) {
 			continue
 		}
 		if c.T != nil && !targeting.MatchImp(feedImpTargeting(c.T), impView) {
@@ -561,7 +572,7 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 			if c.Pacing == "even" {
 				campBudget = redisx.EvenPacingBudget(campBudget, now)
 			}
-			// Audit M-05: одним Lua — дневные бюджеты кампании и группы, доступный
+			// Audit M-05: одним Lua — дневные бюджеты кампании и группы, доступ��ый
 			// баланс рекламодателя и остаток общего бюджета; бид попадает в
 			// pending:bids до win/loss/expire (M-06).
 			res, okRes, err := h.redis.Reserve(rctx, now, redisx.ReserveInput{

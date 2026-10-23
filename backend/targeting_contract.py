@@ -27,6 +27,10 @@ TARGETING_KEYS: dict[str, str] = {
     "geo_countries": STR_LIST,
     "geo_regions": STR_LIST,
     "geo_cities": STR_LIST,
+    # GEO v2 (docs/GEO.md): geonameid мест справочника geo_places.
+    "geo_place_ids": INT_LIST,
+    "geo_exclude_place_ids": INT_LIST,
+    "geo_unknown": STR,  # strict (по умолчанию) | lenient
     "device_types": STR_LIST,
     "device_makes": STR_LIST,
     "os": STR_LIST,
@@ -95,8 +99,14 @@ _ELEMENT_RANGES: dict[str, tuple[int, int]] = {
     "banner_positions": (0, 7),
     "video_placements": (1, 5),
     "video_protocols": (1, 14),
+    "geo_place_ids": (1, 2**53 - 1),
+    "geo_exclude_place_ids": (1, 2**53 - 1),
 }
 MAX_LIST_LEN = 5000
+# Лимит мест на группу (B.3 п.9): держит размер фида и UI в разумных рамках.
+# Дублирует geo_v2.MAX_GEO_PLACES, чтобы контракт не импортировал hot path.
+MAX_GEO_PLACES = 500
+GEO_UNKNOWN_MODES = ("strict", "lenient")
 
 
 def _is_int(v: Any) -> bool:
@@ -144,4 +154,19 @@ def validate_targeting(t: dict[str, Any]) -> dict[str, Any]:
         out[key] = value
     if "age_min" in out and "age_max" in out and out["age_min"] > out["age_max"]:
         raise ValueError("targeting.age_min не может быть больше age_max")
+    _validate_geo_v2(out)
     return out
+
+
+def _validate_geo_v2(t: dict[str, Any]) -> None:
+    for key in ("geo_place_ids", "geo_exclude_place_ids"):
+        ids = t.get(key) or []
+        if len(ids) > MAX_GEO_PLACES:
+            raise ValueError(f"targeting.{key}: не больше {MAX_GEO_PLACES} мест")
+        if len(set(ids)) != len(ids):
+            raise ValueError(f"targeting.{key}: места повторяются")
+    overlap = set(t.get("geo_place_ids") or []) & set(t.get("geo_exclude_place_ids") or [])
+    if overlap:
+        raise ValueError("targeting: одно место не может быть и в показах, и в исключениях")
+    if "geo_unknown" in t and t["geo_unknown"] not in GEO_UNKNOWN_MODES:
+        raise ValueError(f"targeting.geo_unknown: ожидается одно из {', '.join(GEO_UNKNOWN_MODES)}")

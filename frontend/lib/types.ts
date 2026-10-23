@@ -67,6 +67,12 @@ export interface Targeting {
   geo_countries?: string[]
   geo_regions?: string[]
   geo_cities?: string[]
+  /** GEO v2 (docs/GEO.md): id мест справочника geo_places. AND со старыми geo_*. */
+  geo_place_ids?: number[]
+  geo_exclude_place_ids?: number[]
+  /** Гео запроса не определено: "strict" (по умолчанию) — не показывать, "lenient" — показывать.
+   *  string, а не union: test_targeting_contract сверяет типы по примитивам. */
+  geo_unknown?: string
   device_types?: string[]
   os?: string[]
   browsers?: string[]
