@@ -369,6 +369,7 @@ async def _ord_export_locked(conn, period, kind, force, _json, external_creative
     # поэтому часы этого окна корректно остаются за старой версией.
     rows = await conn.fetch(
         """SELECT s.creative_id, oc.version, oc.erid,
+                  min(li.bid_type)   AS payment_type,
                   sum(s.impressions) AS impressions,
                   sum(s.clicks)      AS clicks,
                   sum(s.spend)       AS spend
@@ -381,6 +382,7 @@ async def _ord_export_locked(conn, period, kind, force, _json, external_creative
                  AND COALESCE(o.registered_at, o.created_at) < s.ts_hour + interval '1 hour'
                ORDER BY COALESCE(o.registered_at, o.created_at) DESC LIMIT 1
            ) oc ON true
+           LEFT JOIN line_items li ON li.id = s.line_item_id
            WHERE to_char(s.ts_hour, 'YYYY-MM') = $1
            GROUP BY s.creative_id, oc.version, oc.erid
            HAVING sum(s.impressions) > 0
@@ -397,6 +399,7 @@ async def _ord_export_locked(conn, period, kind, force, _json, external_creative
             "impressions": int(r["impressions"]),
             "clicks": int(r["clicks"]),
             "spend": str(r["spend"]),
+            "payment_type": r["payment_type"] or "cpm",
         }
         for r in rows
     ]
@@ -405,8 +408,9 @@ async def _ord_export_locked(conn, period, kind, force, _json, external_creative
     # viewsCountByFact остаётся фактом, viewsCountByInvoice/moneySpent — из акта.
     if stats:
         inv_rows = await conn.fetch(
-            """SELECT it.external_statistic_id, it.impressions, it.spend, it.unit_cost, it.period_start, it.period_end
-                 FROM ord_invoice_items it
+            """SELECT it.external_statistic_id, it.impressions, it.spend, it.unit_cost, it.period_start, it.period_end,
+                      it.payment_type, i.vat_rate, i.is_vat
+                 FROM ord_invoice_items it JOIN ord_invoices i ON i.id = it.invoice_id
                 WHERE it.status = 'accepted' AND it.external_statistic_id = ANY($1::text[])""",
             [s["external_statistic_id"] for s in stats],
         )
@@ -417,6 +421,9 @@ async def _ord_export_locked(conn, period, kind, force, _json, external_creative
                 s["invoice_impressions"] = int(it["impressions"])
                 s["invoice_spend"] = str(it["spend"])
                 s["unit_cost"] = str(it["unit_cost"])
+                s["payment_type"] = it["payment_type"]
+                s["with_vat"] = bool(it["is_vat"])
+                s["vat_rate"] = it["vat_rate"]
                 s["date_start"] = it["period_start"].isoformat()
                 s["date_end"] = it["period_end"].isoformat()
     # Показы были, а действовавшего erid нет — в ОРД такое отправить нельзя,

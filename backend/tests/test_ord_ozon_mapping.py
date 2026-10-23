@@ -45,15 +45,17 @@ def test_period_bounds_last_day():
     assert period_bounds("2026-12") == ("2026-12-01", "2026-12-31")
 
 
-def test_organisation_body_maps_legal_type_and_ogrn():
+def test_organisation_body_v6_name_address_legal_type():
+    """v6 (swagger): name обязателен, адрес — строка address, ОГРН/ОГРНИП не передаются."""
     body = organisation_body({"external_id": "cp-1", "name": "ООО Тест", "inn": "7700000001",
                               "legal_type": "ul", "ogrn": "1027700000001", "address": "Москва"})
     assert body["externalOrganisationId"] == "cp-1"
+    assert body["name"] == "ООО Тест" and body["address"] == "Москва"
     assert body["legalType"] == "LEGAL_TYPE_LEGAL"
-    assert body["ogrn"] == "1027700000001" and "ogrnip" not in body
+    assert not {"ogrn", "ogrnip", "fullOpf", "legalAddress", "postAddress"} & body.keys()
     ip = organisation_body({"external_id": "cp-2", "name": "ИП Иванов", "inn": "770000000001",
                             "legal_type": "ip", "ogrn": "3"})
-    assert ip["legalType"] == "LEGAL_TYPE_ENTREPRENEUR" and ip["ogrnip"] == "3"
+    assert ip["legalType"] == "LEGAL_TYPE_ENTREPRENEUR" and ip["name"] == "ИП Иванов" and "address" not in ip
 
 
 def test_organisation_body_marks_ors_and_publisher_flags():
@@ -92,7 +94,7 @@ def test_contract_body_requires_party_external_ids_and_parent():
     assert body["externalOrganisationPerformerId"] == "cp-ors"
     assert body["externalParentId"] == "ct-0"
     assert body["contractType"] == "CONTRACT_TYPE_INTERMEDIARY"
-    assert body["price"] == "1000" and body["withNds"] is True
+    assert body["price"] == "1000" and "withNds" not in body  # в v6 у договора нет withNds
     assert body["isCreativeReporter"] is True
     with pytest.raises(KeyError):
         contract_body({"external_id": "ct-1", "number": "x", "signed_at": "2026-01-01"})
@@ -107,15 +109,15 @@ def test_creative_body_is_per_version_and_carries_kktu_media_target():
     body = creative_body(payload)
     assert body["externalCreativeId"] == "cr-1:v2"
     assert body["externalContractIds"] == ["ct-1"]
-    assert body["okvedCodes"] == ["30.10"]
+    assert body["kktuCategory"] == ["30.10"]  # v4: ККТУ, не okvedCodes
     assert body["advObjectType"] == "ADV_OBJECT_TYPE_BANNER"
-    assert body["paymentType"] == "PAYMENT_TYPE_CPM"
+    assert "paymentType" not in body and "isNative" not in body  # нет в v4
     assert body["targetLink"] == "https://x/land"
-    assert body["mediaData"][0]["file"]["url"] == "https://cdn/a.png"
+    assert body["mediaData"][0]["file"]["originalUrl"] == "https://cdn/a.png"
+    assert "id" not in body["mediaData"][0]["file"]  # file.id — int64 ID файла в ОРД
     assert {"text": "Купи"} in body["mediaData"]
-    assert body["isNative"] is False
     native = creative_body({**payload, "type": "native"})
-    assert native["isNative"] is True and native["advObjectType"] == "ADV_OBJECT_TYPE_TEXT_GRAPHIC_BLOCK"
+    assert native["advObjectType"] == "ADV_OBJECT_TYPE_TEXT_GRAPHIC_BLOCK"
 
 
 def test_creative_erid_from_marker_or_top_level():
@@ -132,7 +134,8 @@ def test_statistic_body_unit_cost_per_1000_and_upsert_id():
     assert body["externalCreativeId"] == "cr:v1"
     assert body["externalPlatformId"] == "central-dsp"
     assert body["viewsCountByFact"] == "2000" and body["viewsCountByInvoice"] == "2000"
-    assert body["moneySpent"] == "30.00"
+    assert body["paymentType"] == "PAYMENT_TYPE_CPM"
+    assert body["price"] == {"amount": "30.00", "excludingAmount": "24.59", "vatRate": "22"}
     assert body["unitCost"] == "15.0000"  # 30 руб / 2000 показов * 1000
     assert body["dateStartFact"] == "2026-07-01" and body["dateEndFact"] == "2026-07-31"
 
@@ -172,7 +175,7 @@ def test_ozon_register_creative_uses_real_path_and_marker():
         "external_creative_id": "cr:v1", "contract_external_id": "ct", "type": "banner", "name": "n",
         "kktu": "30.10", "media_urls": [], "texts": [],
     }))
-    assert seen["path"] == "/api/external/creative"
+    assert seen["path"] == "/api/external/v4/creative"
     assert seen["auth"] == "Bearer k"
     assert seen["body"]["externalCreativeId"] == "cr:v1"
     assert out == {"external_id": "cr:v1", "erid": "2VtzqvERID"}
@@ -186,7 +189,7 @@ def test_ozon_submit_stats_isolates_rejected_row(monkeypatch):
         body = json.loads(req.content)
         ids = [s["externalStatisticId"] for s in body["statistics"]]
         calls.append(ids)
-        assert req.url.path == "/api/external/v2/statistic"
+        assert req.url.path == "/api/external/v6/statistic"
         assert all(s["externalPlatformId"] == "dsp-1" for s in body["statistics"])
         if "bad:v1:2026-07" in ids:
             return httpx.Response(400, json={"error": "creative not found"})
@@ -222,14 +225,14 @@ def test_ozon_submit_stats_5xx_fails_whole_export(monkeypatch):
 # --- акты (B13b) ---------------------------------------------------------------
 def test_statistic_body_invoice_fields_override_fact_only_where_intended():
     """Строка акта: факт остаётся в viewsCountByFact, значения акта — в
-    viewsCountByInvoice/moneySpent/unitCost, даты — срез месяца ∩ период акта."""
+    viewsCountByInvoice/price/unitCost, даты — срез месяца ∩ период акта."""
     row = {"external_statistic_id": "cr:v1:2026-09", "external_creative_id": "cr:v1",
            "impressions": 2000, "clicks": 5, "spend": "30.00",
            "invoice_impressions": 1900, "invoice_spend": "36.00", "unit_cost": "18.9474",
            "date_start": "2026-09-15", "date_end": "2026-09-30"}
     body = statistic_body("2026-09-01", "2026-09-30", row, "central-dsp")
     assert body["viewsCountByFact"] == "2000" and body["viewsCountByInvoice"] == "1900"
-    assert body["moneySpent"] == "36.00" and body["unitCost"] == "18.9474"
+    assert body["price"]["amount"] == "36.00" and body["unitCost"] == "18.9474"
     assert body["dateStartFact"] == "2026-09-15" and body["dateEndFact"] == "2026-09-30"
     assert body["dateStartPlan"] == "2026-09-15" and body["dateEndPlan"] == "2026-09-30"
 
@@ -243,9 +246,11 @@ def test_invoice_body_roles_single_contract_and_price():
     assert body["externalInvoiceId"] == "inv-1" and body["externalContractId"] == "ct-1"
     assert body["invoiceNumber"] == "А-7" and body["invoiceDate"] == "2026-10-20"
     assert body["startDate"] == "2026-09-15" and body["endDate"] == "2026-10-15"
-    assert body["price"] == "1234.50" and body["withNds"] is True
+    price = {"amount": "1234.50", "excludingAmount": "1011.89", "vatRate": "22"}  # v7: объект цены
+    assert body["servicePrice"] == price and "price" not in body and "withNds" not in body
+    assert body["invoiceType"] == "INVOICE_TYPE_INVOICE"
     assert body["clientRole"] == "ORGANISATION_ROLE_RA" and body["contractorRole"] == "ORGANISATION_ROLE_ORS"
-    assert body["contracts"] == [{"externalContractId": "ct-1", "price": "1234.50", "withNds": True}]
+    assert body["contracts"] == [{"externalContractId": "ct-1", "price": price}]
 
 
 def test_invoice_link_and_unlink_bodies():
@@ -276,7 +281,7 @@ def test_unit_cost_cpm_and_cpc():
     assert str(unit_cost("cpc", 100, 0, "30")) == "0.0000"
 
 
-def test_ozon_invoice_flow_uses_v2_invoice_and_v3_link_paths():
+def test_ozon_invoice_flow_uses_v7_invoice_and_v3_link_paths():
     calls: list[tuple[str, dict]] = []
 
     def handler(req: httpx.Request) -> httpx.Response:
@@ -295,7 +300,7 @@ def test_ozon_invoice_flow_uses_v2_invoice_and_v3_link_paths():
         {"external_invoice_id": "inv-1", "contract_external_id": "ct-1", "external_creative_ids": ["a:v1"]}
     ))
     paths = [p for p, _ in calls]
-    assert paths == ["/api/external/v2/invoice", "/api/external/v3/invoice/creative/unlink",
+    assert paths == ["/api/external/v7/invoice", "/api/external/v3/invoice/creative/unlink",
                      "/api/external/v3/invoice/creative/link"]
     assert calls[2][1]["items"][0]["externalCreativeIds"] == ["a:v1"]
 

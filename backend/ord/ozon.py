@@ -1,11 +1,11 @@
 """Клиент ОРД Ozon API.
 
-ВНИМАНИЕ: пути эндпоинтов заданы по публичной документации ОРД Ozon
-(api-ord.ozon.ru) и помечены для финальной сверки, когда пользователь
-передаст API-ключ и доступ к актуальной спецификации/песочнице.
+Пути и версии методов — по docs/ord/swagger_ord_ozon.json (сверка:
+docs/ord/DIFF.md). Sandbox: https://api-ord-sandbox.ozon.ru.
 
-Retry: 3 попытки с экспоненциальной задержкой на 5xx/сетевых ошибках;
-4xx не ретраятся (ошибка данных) и поднимают OrdError сразу.
+Retry: 3 попытки с экспоненциальной задержкой на 5xx/429/сетевых ошибках;
+остальные 4xx не ретраятся (ошибка данных) и поднимают OrdDataError сразу.
+Повтор POST безопасен: все upsert-методы идемпотентны по external*Id.
 """
 from __future__ import annotations
 
@@ -44,20 +44,23 @@ class OzonOrdClient:
             "Content-Type": "application/json",
         }
 
-    async def _request(self, method: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _request(
+        self, method: str, path: str, payload: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         last_err: Exception | None = None
         for attempt in range(_RETRIES):
             try:
                 async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
                     resp = await client.request(
-                        method, f"{self._base}{path}", json=payload, headers=self._headers
+                        method, f"{self._base}{path}", json=payload, params=params, headers=self._headers
                     )
-                if resp.status_code >= 500:
-                    raise OrdError(f"ОРД Ozon 5xx: {resp.status_code} {resp.text[:300]}")
+                if resp.status_code >= 500 or resp.status_code == 429:
+                    raise OrdError(f"ОРД Ozon {resp.status_code}: {resp.text[:300]}")
                 if resp.status_code >= 400:
                     # ошибка данных — не ретраим
                     raise OrdDataError(f"ОРД Ozon {resp.status_code}: {resp.text[:500]}") from None
-                return resp.json()
+                return resp.json() if resp.content else {}
             except OrdDataError:
                 raise
             except OrdError as e:
@@ -73,7 +76,7 @@ class OzonOrdClient:
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.post(
-                    f"{self._base}/api/external/organisation/list",
+                    f"{self._base}/api/external/v6/organisation/list",
                     json={"pageSize": 1},
                     headers=self._headers,
                 )
@@ -88,31 +91,32 @@ class OzonOrdClient:
     # -- Реальные пути API Ozon ОРД (см. ord/ozon_mapping.py, ord_spec.md [V]) --
 
     async def register_counterparty(self, data: dict[str, Any]) -> dict[str, Any]:
-        await self._request("POST", "/api/external/organisation", organisation_body(data))
+        await self._request("POST", "/api/external/v6/organisation", organisation_body(data))
         return {"external_id": data["external_id"]}
 
     async def register_contract(self, data: dict[str, Any]) -> dict[str, Any]:
-        await self._request("POST", "/api/external/contract", contract_body(data))
+        await self._request("POST", "/api/external/v6/contract", contract_body(data))
         return {"external_id": data["external_id"]}
 
     async def register_creative(self, data: dict[str, Any]) -> dict[str, Any]:
-        out = await self._request("POST", "/api/external/creative", creative_body(data))
+        out = await self._request("POST", "/api/external/v4/creative", creative_body(data))
         erid = creative_erid(out)
         if not erid:
             raise OrdError(f"ОРД Ozon: ответ без erid: {str(out)[:300]}")
         return {"external_id": data["external_creative_id"], "erid": erid}
 
     async def register_platform(self, data: dict[str, Any]) -> dict[str, Any]:
-        await self._request("POST", "/api/external/platform", platform_body(data))
+        await self._request("POST", "/api/external/v6/platform", platform_body(data))
         return {"external_id": data["external_id"]}
 
     async def list_error_notifications(self, gt_id: int = 0, page_size: int = 100) -> list[dict[str, Any]]:
-        """Ошибки ЕРИР: POST /api/external/notification/error_list
-        {pageSize, gtNotificationId} → {notification: [...]}; id монотонный,
-        поэтому клиент хранит последний id как курсор (B13g)."""
+        """Ошибки ЕРИР: GET /api/external/notification/error_list
+        ?pageSize&gtNotificationId → {notification: [...]}; id монотонный,
+        поэтому клиент хранит последний id как курсор (B13g). Swagger описывает
+        параметры как тело GET (артефакт grpc-gateway) — шлём query-параметрами."""
         out = await self._request(
-            "POST", "/api/external/notification/error_list",
-            {"pageSize": int(page_size), "gtNotificationId": int(gt_id)},
+            "GET", "/api/external/notification/error_list",
+            params={"pageSize": int(page_size), "gtNotificationId": str(int(gt_id))},
         )
         return [
             {
@@ -130,9 +134,9 @@ class OzonOrdClient:
         ]
 
     async def register_invoice(self, data: dict[str, Any]) -> dict[str, Any]:
-        """Акт: POST /api/external/v2/invoice — upsert по externalInvoiceId,
+        """Акт: POST /api/external/v7/invoice — upsert по externalInvoiceId,
         повторная отправка = редактирование акта."""
-        await self._request("POST", "/api/external/v2/invoice", invoice_body(data))
+        await self._request("POST", "/api/external/v7/invoice", invoice_body(data))
         return {"external_id": data["external_id"]}
 
     async def link_invoice_creatives(self, data: dict[str, Any]) -> None:
@@ -158,7 +162,7 @@ class OzonOrdClient:
 
         async def _send(batch: list[dict[str, Any]]) -> None:
             body = {"statistics": [statistic_body(start, end, r, platform_id) for r in batch]}
-            await self._request("POST", "/api/external/v2/statistic", body)
+            await self._request("POST", "/api/external/v6/statistic", body)
 
         for i in range(0, len(rows), _STATS_BATCH):
             batch = rows[i:i + _STATS_BATCH]
