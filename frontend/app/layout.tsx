@@ -10,8 +10,8 @@ const jetbrains = JetBrains_Mono({ subsets: ['latin', 'cyrillic'], variable: '--
 
 export const metadata: Metadata = {
   title: {
-    default: 'CentralDSP — Платформа программатик-рекламы',
-    template: '%s — CentralDSP',
+    default: 'Central ADV — Платформа программатик-рекламы',
+    template: '%s — Central ADV',
   },
   description:
     'DSP-платформа для рынка СНГ: RTB-закупка, баннеры, нативная и видеореклама, аналитика, автоправила и AI-инструменты.',

@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation"
 import { mutate } from "swr"
 import { api } from "@/lib/api"
 import { Button, Field, inputCls } from "@/components/ui"
+import { BrandLogo } from "@/components/brand-logo"
 
 export default function RegisterPage() {
   const router = useRouter()
@@ -36,14 +37,11 @@ export default function RegisterPage() {
   return (
     <main className="flex min-h-screen items-center justify-center bg-background px-4">
       <div className="w-full max-w-sm">
-        <div className="mb-8 flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-md bg-primary">
-            <span className="font-mono text-lg font-bold text-primary-foreground">C</span>
-          </div>
-          <div>
-            <h1 className="text-lg font-semibold text-foreground">CentralDSP</h1>
-            <p className="text-xs text-muted">Платформа программатик-рекламы</p>
-          </div>
+        <div className="mb-8 flex flex-col gap-2">
+          <h1>
+            <BrandLogo height={36} alt="Central ADV" />
+          </h1>
+          <p className="text-xs text-muted">Платформа программатик-рекламы</p>
         </div>
 
         <form onSubmit={submit} className="space-y-4 rounded-lg border border-border bg-card p-6">

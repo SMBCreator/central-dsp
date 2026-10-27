@@ -6,6 +6,7 @@ import { fetcher } from "@/lib/api"
 import { fmtMoney, fmtNum, fmtPct } from "@/lib/types"
 import { Card, CardHeader, KpiCard, Spinner, StatusBadge, Table } from "@/components/ui"
 import { TimeseriesChart } from "@/components/timeseries-chart"
+import { BrandLogo } from "@/components/brand-logo"
 
 interface MyScope {
   is_guest: boolean
@@ -166,7 +167,10 @@ export default function ViewerReportPage() {
         )}
       </Card>
 
-      <p className="pb-4 text-center text-xs text-muted">Отчёт сформирован автоматически · {brandName}</p>
+      <footer className="flex flex-col items-center gap-2 pb-4 text-xs text-muted">
+        <span>Отчёт сформирован автоматически · {brandName}</span>
+        <BrandLogo height={16} alt="Central ADV" />
+      </footer>
     </div>
   )
 }
