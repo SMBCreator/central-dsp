@@ -491,7 +491,7 @@ export default function NewCampaignPage() {
         <Card>
           <CardHeader title="Таргетинг" subtitle="Пустые поля — без ограничений. Всё применяется биддером к каждому bid request" />
           <div className="px-6 py-4">
-            <TargetingEditor value={targeting} onChange={setTargeting} foreignOnly={foreign} />
+            <TargetingEditor value={targeting} onChange={setTargeting} foreignOnly={foreign} isNew />
           </div>
         </Card>
       ) : null}

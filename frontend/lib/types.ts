@@ -102,6 +102,13 @@ export interface Targeting {
   publisher_block?: string[]
   keywords_allow?: string[]
   keywords_block?: string[]
+  /** Тематика не определена — проверка IAB пройдена. Только при context_mode "all" (в "any" игнорируется). */
+  iab_allow_unknown?: boolean
+  /** Как искать разрешающие слова: "substring" | "word_start" | "whole_word". Нет ключа — легаси (часть слова).
+   *  string, а не union: test_targeting_contract сверяет типы по примитивам. */
+  keywords_match?: string
+  /** Режим разрешающей части: "all" (по умолчанию) — тематика И слова, "any" — тематика ИЛИ слова. */
+  context_mode?: string
   ip_ranges?: string[]
   /* Slot-level */
   banner_positions?: number[] // 1 = above fold, 3 = below fold

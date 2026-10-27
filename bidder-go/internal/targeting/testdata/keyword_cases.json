@@ -1,0 +1,1870 @@
+{
+ "_doc": "Общие векторы слов для Go (keywords_test.go) и Python (tests/test_keywords_v2.py). haystack — [site/app.keywords, content.keywords, page, content.title]; mode — keywords_match, пусто = легаси-путь. expect_allow: True, если разрешающих слов после очистки нет либо одно совпало; expect_block: сработало стоп-слово.",
+ "cases": [
+  {
+   "name": "A1 подстрока внутри слова/substring",
+   "mode": "substring",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Полесье: отдых"
+   ],
+   "allow": [
+    "лес"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "A1 подстрока внутри слова/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Полесье: отдых"
+   ],
+   "allow": [
+    "лес"
+   ],
+   "block": [],
+   "expect_allow": false,
+   "expect_block": false
+  },
+  {
+   "name": "A1 подстрока внутри слова/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Полесье: отдых"
+   ],
+   "allow": [
+    "лес"
+   ],
+   "block": [],
+   "expect_allow": false,
+   "expect_block": false
+  },
+  {
+   "name": "A2 банкет/substring",
+   "mode": "substring",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Банкет в ресторане"
+   ],
+   "allow": [
+    "банк"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "A2 банкет/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Банкет в ресторане"
+   ],
+   "allow": [
+    "банк"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "A2 банкет/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Банкет в ресторане"
+   ],
+   "allow": [
+    "банк"
+   ],
+   "block": [],
+   "expect_allow": false,
+   "expect_block": false
+  },
+  {
+   "name": "A3 склонение/substring",
+   "mode": "substring",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Ипотеке под 5%"
+   ],
+   "allow": [
+    "ипотек"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "A3 склонение/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Ипотеке под 5%"
+   ],
+   "allow": [
+    "ипотек"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "A3 склонение/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Ипотеке под 5%"
+   ],
+   "allow": [
+    "ипотек"
+   ],
+   "block": [],
+   "expect_allow": false,
+   "expect_block": false
+  },
+  {
+   "name": "A4 дефис — разделитель/substring",
+   "mode": "substring",
+   "haystack": [
+    "",
+    "",
+    "/shop/iphone-15-pro",
+    ""
+   ],
+   "allow": [
+    "iphone 15"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "A4 дефис — разделитель/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "",
+    "",
+    "/shop/iphone-15-pro",
+    ""
+   ],
+   "allow": [
+    "iphone 15"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "A4 дефис — разделитель/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "",
+    "",
+    "/shop/iphone-15-pro",
+    ""
+   ],
+   "allow": [
+    "iphone 15"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "A5 ё = е/substring",
+   "mode": "substring",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Ёлка новогодняя"
+   ],
+   "allow": [
+    "елка"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "A5 ё = е/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Ёлка новогодняя"
+   ],
+   "allow": [
+    "елка"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "A5 ё = е/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Ёлка новогодняя"
+   ],
+   "allow": [
+    "елка"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "A6 фраза/substring",
+   "mode": "substring",
+   "haystack": [
+    "",
+    "",
+    "",
+    "купить квартиру в москве"
+   ],
+   "allow": [
+    "купить квартир"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "A6 фраза/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "",
+    "",
+    "",
+    "купить квартиру в москве"
+   ],
+   "allow": [
+    "купить квартир"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "A6 фраза/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "",
+    "",
+    "",
+    "купить квартиру в москве"
+   ],
+   "allow": [
+    "купить квартир"
+   ],
+   "block": [],
+   "expect_allow": false,
+   "expect_block": false
+  },
+  {
+   "name": "A7 декодирование URL/substring",
+   "mode": "substring",
+   "haystack": [
+    "",
+    "",
+    "https://site.ru/%D0%B8%D0%BF%D0%BE%D1%82%D0%B5%D0%BA%D0%B0",
+    ""
+   ],
+   "allow": [
+    "ипотека"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "A7 декодирование URL/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "",
+    "",
+    "https://site.ru/%D0%B8%D0%BF%D0%BE%D1%82%D0%B5%D0%BA%D0%B0",
+    ""
+   ],
+   "allow": [
+    "ипотека"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "A7 декодирование URL/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "",
+    "",
+    "https://site.ru/%D0%B8%D0%BF%D0%BE%D1%82%D0%B5%D0%BA%D0%B0",
+    ""
+   ],
+   "allow": [
+    "ипотека"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "A8 запятая — граница/substring",
+   "mode": "substring",
+   "haystack": [
+    "ипотека, кредит",
+    "",
+    "",
+    ""
+   ],
+   "allow": [
+    "ипотека кредит"
+   ],
+   "block": [],
+   "expect_allow": false,
+   "expect_block": false
+  },
+  {
+   "name": "A8 запятая — граница/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "ипотека, кредит",
+    "",
+    "",
+    ""
+   ],
+   "allow": [
+    "ипотека кредит"
+   ],
+   "block": [],
+   "expect_allow": false,
+   "expect_block": false
+  },
+  {
+   "name": "A8 запятая — граница/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "ипотека, кредит",
+    "",
+    "",
+    ""
+   ],
+   "allow": [
+    "ипотека кредит"
+   ],
+   "block": [],
+   "expect_allow": false,
+   "expect_block": false
+  },
+  {
+   "name": "A9 ложное срабатывание word_start/substring",
+   "mode": "substring",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Автор романа"
+   ],
+   "allow": [
+    "авто"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "A9 ложное срабатывание word_start/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Автор романа"
+   ],
+   "allow": [
+    "авто"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "A9 ложное срабатывание word_start/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Автор романа"
+   ],
+   "allow": [
+    "авто"
+   ],
+   "block": [],
+   "expect_allow": false,
+   "expect_block": false
+  },
+  {
+   "name": "A10 цифра внутри слова/substring",
+   "mode": "substring",
+   "haystack": [
+    "",
+    "",
+    "",
+    "iphone15"
+   ],
+   "allow": [
+    "15"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "A10 цифра внутри слова/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "",
+    "",
+    "",
+    "iphone15"
+   ],
+   "allow": [
+    "15"
+   ],
+   "block": [],
+   "expect_allow": false,
+   "expect_block": false
+  },
+  {
+   "name": "A10 цифра внутри слова/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "",
+    "",
+    "",
+    "iphone15"
+   ],
+   "allow": [
+    "15"
+   ],
+   "block": [],
+   "expect_allow": false,
+   "expect_block": false
+  },
+  {
+   "name": "A12 пустой текст/substring",
+   "mode": "substring",
+   "haystack": [
+    "",
+    "",
+    "",
+    ""
+   ],
+   "allow": [
+    "лес"
+   ],
+   "block": [],
+   "expect_allow": false,
+   "expect_block": false
+  },
+  {
+   "name": "A12 пустой текст/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "",
+    "",
+    "",
+    ""
+   ],
+   "allow": [
+    "лес"
+   ],
+   "block": [],
+   "expect_allow": false,
+   "expect_block": false
+  },
+  {
+   "name": "A12 пустой текст/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "",
+    "",
+    "",
+    ""
+   ],
+   "allow": [
+    "лес"
+   ],
+   "block": [],
+   "expect_allow": false,
+   "expect_block": false
+  },
+  {
+   "name": "X1 граница источников/substring",
+   "mode": "substring",
+   "haystack": [
+    "ипотека",
+    "кредит",
+    "",
+    ""
+   ],
+   "allow": [
+    "ипотека кредит"
+   ],
+   "block": [],
+   "expect_allow": false,
+   "expect_block": false
+  },
+  {
+   "name": "X1 граница источников/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "ипотека",
+    "кредит",
+    "",
+    ""
+   ],
+   "allow": [
+    "ипотека кредит"
+   ],
+   "block": [],
+   "expect_allow": false,
+   "expect_block": false
+  },
+  {
+   "name": "X1 граница источников/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "ипотека",
+    "кредит",
+    "",
+    ""
+   ],
+   "allow": [
+    "ипотека кредит"
+   ],
+   "block": [],
+   "expect_allow": false,
+   "expect_block": false
+  },
+  {
+   "name": "X2 граница ключевых слов и заголовка/substring",
+   "mode": "substring",
+   "haystack": [
+    "ипотека",
+    "",
+    "",
+    "кредит"
+   ],
+   "allow": [
+    "ипотека кредит"
+   ],
+   "block": [],
+   "expect_allow": false,
+   "expect_block": false
+  },
+  {
+   "name": "X2 граница ключевых слов и заголовка/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "ипотека",
+    "",
+    "",
+    "кредит"
+   ],
+   "allow": [
+    "ипотека кредит"
+   ],
+   "block": [],
+   "expect_allow": false,
+   "expect_block": false
+  },
+  {
+   "name": "X2 граница ключевых слов и заголовка/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "ипотека",
+    "",
+    "",
+    "кредит"
+   ],
+   "allow": [
+    "ипотека кредит"
+   ],
+   "block": [],
+   "expect_allow": false,
+   "expect_block": false
+  },
+  {
+   "name": "X3 фраза в одном источнике/substring",
+   "mode": "substring",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Ипотека, кредит под залог"
+   ],
+   "allow": [
+    "кредит под"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "X3 фраза в одном источнике/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Ипотека, кредит под залог"
+   ],
+   "allow": [
+    "кредит под"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "X3 фраза в одном источнике/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Ипотека, кредит под залог"
+   ],
+   "allow": [
+    "кредит под"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "X4 регистр ключа/substring",
+   "mode": "substring",
+   "haystack": [
+    "",
+    "",
+    "",
+    "лес"
+   ],
+   "allow": [
+    "ЛЕС"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "X4 регистр ключа/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "",
+    "",
+    "",
+    "лес"
+   ],
+   "allow": [
+    "ЛЕС"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "X4 регистр ключа/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "",
+    "",
+    "",
+    "лес"
+   ],
+   "allow": [
+    "ЛЕС"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "X5 ключ с ё/substring",
+   "mode": "substring",
+   "haystack": [
+    "",
+    "",
+    "",
+    "ёлка"
+   ],
+   "allow": [
+    "Ёлка"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "X5 ключ с ё/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "",
+    "",
+    "",
+    "ёлка"
+   ],
+   "allow": [
+    "Ёлка"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "X5 ключ с ё/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "",
+    "",
+    "",
+    "ёлка"
+   ],
+   "allow": [
+    "Ёлка"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "X6 плюс не пробел, но разделитель/substring",
+   "mode": "substring",
+   "haystack": [
+    "",
+    "",
+    "/a+b",
+    ""
+   ],
+   "allow": [
+    "a b"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "X6 плюс не пробел, но разделитель/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "",
+    "",
+    "/a+b",
+    ""
+   ],
+   "allow": [
+    "a b"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "X6 плюс не пробел, но разделитель/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "",
+    "",
+    "/a+b",
+    ""
+   ],
+   "allow": [
+    "a b"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "X7 битый процент — исходная строка/substring",
+   "mode": "substring",
+   "haystack": [
+    "",
+    "",
+    "/%ZZ%D0%B8%D0%BF",
+    ""
+   ],
+   "allow": [
+    "zz"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "X7 битый процент — исходная строка/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "",
+    "",
+    "/%ZZ%D0%B8%D0%BF",
+    ""
+   ],
+   "allow": [
+    "zz"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "X7 битый процент — исходная строка/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "",
+    "",
+    "/%ZZ%D0%B8%D0%BF",
+    ""
+   ],
+   "allow": [
+    "zz"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "X8 битый процент не декодируется/substring",
+   "mode": "substring",
+   "haystack": [
+    "",
+    "",
+    "/%ZZ%D0%B8%D0%BF",
+    ""
+   ],
+   "allow": [
+    "ип"
+   ],
+   "block": [],
+   "expect_allow": false,
+   "expect_block": false
+  },
+  {
+   "name": "X8 битый процент не декодируется/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "",
+    "",
+    "/%ZZ%D0%B8%D0%BF",
+    ""
+   ],
+   "allow": [
+    "ип"
+   ],
+   "block": [],
+   "expect_allow": false,
+   "expect_block": false
+  },
+  {
+   "name": "X8 битый процент не декодируется/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "",
+    "",
+    "/%ZZ%D0%B8%D0%BF",
+    ""
+   ],
+   "allow": [
+    "ип"
+   ],
+   "block": [],
+   "expect_allow": false,
+   "expect_block": false
+  },
+  {
+   "name": "X9 ключ — название источника content.keywords/substring",
+   "mode": "substring",
+   "haystack": [
+    "",
+    "кредиты, ипотека",
+    "",
+    ""
+   ],
+   "allow": [
+    "ипотек"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "X9 ключ — название источника content.keywords/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "",
+    "кредиты, ипотека",
+    "",
+    ""
+   ],
+   "allow": [
+    "ипотек"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "X9 ключ — название источника content.keywords/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "",
+    "кредиты, ипотека",
+    "",
+    ""
+   ],
+   "allow": [
+    "ипотек"
+   ],
+   "block": [],
+   "expect_allow": false,
+   "expect_block": false
+  },
+  {
+   "name": "X10 заголовок: целое слово/substring",
+   "mode": "substring",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Банк России"
+   ],
+   "allow": [
+    "банк"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "X10 заголовок: целое слово/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Банк России"
+   ],
+   "allow": [
+    "банк"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "X10 заголовок: целое слово/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Банк России"
+   ],
+   "allow": [
+    "банк"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "X11 цифры как слова/substring",
+   "mode": "substring",
+   "haystack": [
+    "",
+    "",
+    "/catalog/15",
+    ""
+   ],
+   "allow": [
+    "15"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "X11 цифры как слова/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "",
+    "",
+    "/catalog/15",
+    ""
+   ],
+   "allow": [
+    "15"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "X11 цифры как слова/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "",
+    "",
+    "/catalog/15",
+    ""
+   ],
+   "allow": [
+    "15"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "X12 комбинирующий знак — часть слова/substring",
+   "mode": "substring",
+   "haystack": [
+    "",
+    "",
+    "",
+    "café menu"
+   ],
+   "allow": [
+    "café"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "X12 комбинирующий знак — часть слова/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "",
+    "",
+    "",
+    "café menu"
+   ],
+   "allow": [
+    "café"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "X12 комбинирующий знак — часть слова/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "",
+    "",
+    "",
+    "café menu"
+   ],
+   "allow": [
+    "café"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "A11 пустой ключ/substring",
+   "mode": "substring",
+   "haystack": [
+    "",
+    "",
+    "",
+    "что угодно"
+   ],
+   "allow": [
+    "!!!"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "A11b пустой ключ и пустой текст/substring",
+   "mode": "substring",
+   "haystack": [
+    "",
+    "",
+    "",
+    ""
+   ],
+   "allow": [
+    "!!!"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "A11c пустой + реальный ключ/substring",
+   "mode": "substring",
+   "haystack": [
+    "",
+    "",
+    "",
+    "что угодно"
+   ],
+   "allow": [
+    "!!!",
+    "лес"
+   ],
+   "block": [],
+   "expect_allow": false,
+   "expect_block": false
+  },
+  {
+   "name": "A11 пустой ключ/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "",
+    "",
+    "",
+    "что угодно"
+   ],
+   "allow": [
+    "!!!"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "A11b пустой ключ и пустой текст/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "",
+    "",
+    "",
+    ""
+   ],
+   "allow": [
+    "!!!"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "A11c пустой + реальный ключ/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "",
+    "",
+    "",
+    "что угодно"
+   ],
+   "allow": [
+    "!!!",
+    "лес"
+   ],
+   "block": [],
+   "expect_allow": false,
+   "expect_block": false
+  },
+  {
+   "name": "A11 пустой ключ/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "",
+    "",
+    "",
+    "что угодно"
+   ],
+   "allow": [
+    "!!!"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "A11b пустой ключ и пустой текст/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "",
+    "",
+    "",
+    ""
+   ],
+   "allow": [
+    "!!!"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "A11c пустой + реальный ключ/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "",
+    "",
+    "",
+    "что угодно"
+   ],
+   "allow": [
+    "!!!",
+    "лес"
+   ],
+   "block": [],
+   "expect_allow": false,
+   "expect_block": false
+  },
+  {
+   "name": "B1 порно/substring",
+   "mode": "substring",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Порнография"
+   ],
+   "allow": [],
+   "block": [
+    "порно"
+   ],
+   "expect_allow": true,
+   "expect_block": true
+  },
+  {
+   "name": "B1 порно/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Порнография"
+   ],
+   "allow": [],
+   "block": [
+    "порно"
+   ],
+   "expect_allow": true,
+   "expect_block": true
+  },
+  {
+   "name": "B1 порно/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Порнография"
+   ],
+   "allow": [],
+   "block": [
+    "порно"
+   ],
+   "expect_allow": true,
+   "expect_block": true
+  },
+  {
+   "name": "B2 iphone 15/substring",
+   "mode": "substring",
+   "haystack": [
+    "",
+    "",
+    "/iphone-15",
+    ""
+   ],
+   "allow": [],
+   "block": [
+    "iphone 15"
+   ],
+   "expect_allow": true,
+   "expect_block": true
+  },
+  {
+   "name": "B2 iphone 15/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "",
+    "",
+    "/iphone-15",
+    ""
+   ],
+   "allow": [],
+   "block": [
+    "iphone 15"
+   ],
+   "expect_allow": true,
+   "expect_block": true
+  },
+  {
+   "name": "B2 iphone 15/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "",
+    "",
+    "/iphone-15",
+    ""
+   ],
+   "allow": [],
+   "block": [
+    "iphone 15"
+   ],
+   "expect_allow": true,
+   "expect_block": true
+  },
+  {
+   "name": "B3 регистр/substring",
+   "mode": "substring",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Лес"
+   ],
+   "allow": [],
+   "block": [
+    "ЛЕС"
+   ],
+   "expect_allow": true,
+   "expect_block": true
+  },
+  {
+   "name": "B3 регистр/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Лес"
+   ],
+   "allow": [],
+   "block": [
+    "ЛЕС"
+   ],
+   "expect_allow": true,
+   "expect_block": true
+  },
+  {
+   "name": "B3 регистр/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Лес"
+   ],
+   "allow": [],
+   "block": [
+    "ЛЕС"
+   ],
+   "expect_allow": true,
+   "expect_block": true
+  },
+  {
+   "name": "B4 пустой текст/substring",
+   "mode": "substring",
+   "haystack": [
+    "",
+    "",
+    "",
+    ""
+   ],
+   "allow": [],
+   "block": [
+    "порно"
+   ],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "B4 пустой текст/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "",
+    "",
+    "",
+    ""
+   ],
+   "allow": [],
+   "block": [
+    "порно"
+   ],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "B4 пустой текст/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "",
+    "",
+    "",
+    ""
+   ],
+   "allow": [],
+   "block": [
+    "порно"
+   ],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "B5 подстрока внутри слова/substring",
+   "mode": "substring",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Полесье"
+   ],
+   "allow": [],
+   "block": [
+    "лес"
+   ],
+   "expect_allow": true,
+   "expect_block": true
+  },
+  {
+   "name": "B5 подстрока внутри слова/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Полесье"
+   ],
+   "allow": [],
+   "block": [
+    "лес"
+   ],
+   "expect_allow": true,
+   "expect_block": true
+  },
+  {
+   "name": "B5 подстрока внутри слова/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Полесье"
+   ],
+   "allow": [],
+   "block": [
+    "лес"
+   ],
+   "expect_allow": true,
+   "expect_block": true
+  },
+  {
+   "name": "B6 граница источников/substring",
+   "mode": "substring",
+   "haystack": [
+    "ипотека",
+    "кредит",
+    "",
+    ""
+   ],
+   "allow": [],
+   "block": [
+    "ипотека кредит"
+   ],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "B6 граница источников/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "ипотека",
+    "кредит",
+    "",
+    ""
+   ],
+   "allow": [],
+   "block": [
+    "ипотека кредит"
+   ],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "B6 граница источников/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "ипотека",
+    "кредит",
+    "",
+    ""
+   ],
+   "allow": [],
+   "block": [
+    "ипотека кредит"
+   ],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "B7 запятая — граница/substring",
+   "mode": "substring",
+   "haystack": [
+    "ипотека, кредит",
+    "",
+    "",
+    ""
+   ],
+   "allow": [],
+   "block": [
+    "ипотека кредит"
+   ],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "B7 запятая — граница/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "ипотека, кредит",
+    "",
+    "",
+    ""
+   ],
+   "allow": [],
+   "block": [
+    "ипотека кредит"
+   ],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "B7 запятая — граница/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "ипотека, кредит",
+    "",
+    "",
+    ""
+   ],
+   "allow": [],
+   "block": [
+    "ипотека кредит"
+   ],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "B8 декодирование URL/substring",
+   "mode": "substring",
+   "haystack": [
+    "",
+    "",
+    "/%D0%BF%D0%BE%D1%80%D0%BD%D0%BE",
+    ""
+   ],
+   "allow": [],
+   "block": [
+    "порно"
+   ],
+   "expect_allow": true,
+   "expect_block": true
+  },
+  {
+   "name": "B8 декодирование URL/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "",
+    "",
+    "/%D0%BF%D0%BE%D1%80%D0%BD%D0%BE",
+    ""
+   ],
+   "allow": [],
+   "block": [
+    "порно"
+   ],
+   "expect_allow": true,
+   "expect_block": true
+  },
+  {
+   "name": "B8 декодирование URL/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "",
+    "",
+    "/%D0%BF%D0%BE%D1%80%D0%BD%D0%BE",
+    ""
+   ],
+   "allow": [],
+   "block": [
+    "порно"
+   ],
+   "expect_allow": true,
+   "expect_block": true
+  },
+  {
+   "name": "B9 пустой блок-ключ/substring",
+   "mode": "substring",
+   "haystack": [
+    "",
+    "",
+    "",
+    "что угодно"
+   ],
+   "allow": [],
+   "block": [
+    "!!!"
+   ],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "B9 пустой блок-ключ/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "",
+    "",
+    "",
+    "что угодно"
+   ],
+   "allow": [],
+   "block": [
+    "!!!"
+   ],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "B9 пустой блок-ключ/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "",
+    "",
+    "",
+    "что угодно"
+   ],
+   "allow": [],
+   "block": [
+    "!!!"
+   ],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "C1 allow и block вместе/substring",
+   "mode": "substring",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Купить ипотеку, порно"
+   ],
+   "allow": [
+    "ипотек"
+   ],
+   "block": [
+    "порно"
+   ],
+   "expect_allow": true,
+   "expect_block": true
+  },
+  {
+   "name": "C1 allow и block вместе/word_start",
+   "mode": "word_start",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Купить ипотеку, порно"
+   ],
+   "allow": [
+    "ипотек"
+   ],
+   "block": [
+    "порно"
+   ],
+   "expect_allow": true,
+   "expect_block": true
+  },
+  {
+   "name": "C1 allow и block вместе/whole_word",
+   "mode": "whole_word",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Купить ипотеку, порно"
+   ],
+   "allow": [
+    "ипотек"
+   ],
+   "block": [
+    "порно"
+   ],
+   "expect_allow": false,
+   "expect_block": true
+  },
+  {
+   "name": "L1 подстрока/legacy",
+   "mode": "",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Банкет"
+   ],
+   "allow": [
+    "банк"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "L2 дефис не разделитель/legacy",
+   "mode": "",
+   "haystack": [
+    "",
+    "",
+    "/shop/iphone-15-pro",
+    ""
+   ],
+   "allow": [
+    "iphone 15"
+   ],
+   "block": [],
+   "expect_allow": false,
+   "expect_block": false
+  },
+  {
+   "name": "L3 дефис без пробела/legacy",
+   "mode": "",
+   "haystack": [
+    "",
+    "",
+    "/shop/iphone-15-pro",
+    ""
+   ],
+   "allow": [
+    "iphone-15"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "L4 нет декодирования URL/legacy",
+   "mode": "",
+   "haystack": [
+    "",
+    "",
+    "https://site.ru/%D0%B8%D0%BF%D0%BE%D1%82%D0%B5%D0%BA%D0%B0",
+    ""
+   ],
+   "allow": [
+    "ипотека"
+   ],
+   "block": [],
+   "expect_allow": false,
+   "expect_block": false
+  },
+  {
+   "name": "L5 ё не заменяется/legacy",
+   "mode": "",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Ёлка"
+   ],
+   "allow": [
+    "елка"
+   ],
+   "block": [],
+   "expect_allow": false,
+   "expect_block": false
+  },
+  {
+   "name": "L6 ё совпадает с ё/legacy",
+   "mode": "",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Ёлка"
+   ],
+   "allow": [
+    "ёлка"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  },
+  {
+   "name": "L7 блок по подстроке/legacy",
+   "mode": "",
+   "haystack": [
+    "",
+    "",
+    "",
+    "Лес"
+   ],
+   "allow": [],
+   "block": [
+    "ЛЕС"
+   ],
+   "expect_allow": true,
+   "expect_block": true
+  },
+  {
+   "name": "L8 запятая склеивается через пробел/legacy",
+   "mode": "",
+   "haystack": [
+    "ипотека,",
+    "кредит",
+    "",
+    ""
+   ],
+   "allow": [
+    "ипотека, кредит"
+   ],
+   "block": [],
+   "expect_allow": true,
+   "expect_block": false
+  }
+ ]
+}

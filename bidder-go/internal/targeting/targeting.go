@@ -55,6 +55,13 @@ type Targeting struct {
 	SkipDNT         bool     `json:"skip_dnt,omitempty"`
 	DeviceMakes     []string `json:"device_makes,omitempty"`    // device.make без регистра (apple, samsung, xiaomi)
 	SChainRequired  bool     `json:"schain_required,omitempty"` // source.schain обязателен и complete=1
+
+	// --- Контекст v2 (Фаза 2): все ключи необязательны ---
+	IABAllowUnknown bool   `json:"iab_allow_unknown,omitempty"` // тематика не определена — проверка IAB считается пройденной (только context_mode=all)
+	KeywordsMatch   string `json:"keywords_match,omitempty"`    // "substring" | "word_start" | "whole_word"; пусто = легаси-слова
+	ContextMode     string `json:"context_mode,omitempty"`      // "all" (по умолчанию) | "any": тематика ИЛИ слова
+
+	kw *kwPrepared // слова v2, подготовленные PrepareKeywords при загрузке фида
 }
 
 // ImpTargeting — таргетинг уровня impression (порт _match_imp_targeting).
@@ -100,6 +107,9 @@ type RequestView struct {
 	Make       string   // device.make (lower)
 	SChainOK   bool     // source.schain (или source.ext.schain) есть, complete==1, nodes>0
 	Now        time.Time
+
+	KWSrc KWSources // сырые источники текста для слов v2 (keywords, content.keywords, page, title)
+	kwx   *kwText   // текст запроса для слов v2: строится лениво, один раз на запрос
 }
 
 // ImpView — плоское представление одного imp для MatchImp.
@@ -197,6 +207,19 @@ func MatchReason(t *Targeting, r *RequestView) Reason {
 	if t == nil {
 		return ReasonNone
 	}
+	// Контекст v2: слова v2 и режим «ИЛИ». Для line item без keywords_match и
+	// context_mode флаги остаются нулевыми и работает прежний путь (две проверки длины строк).
+	var kp *kwPrepared
+	var anyMode, combined bool
+	if t.KeywordsMatch != "" || t.ContextMode != "" {
+		if t.KeywordsMatch != "" {
+			kp = t.kwState()
+		}
+		anyMode = t.ContextMode == "any"
+		// combined: «тематика ИЛИ слова» — разрешающие части объединяются ниже,
+		// на месте проверки слов, после обоих стоп-условий.
+		combined = anyMode && len(t.IABCategories) > 0 && hasAllowWords(t, kp)
+	}
 	// --- Geo ---
 	if len(t.GeoCountries) > 0 && !containsFold(t.GeoCountries, r.Country, NormalizeCountry) {
 		return ReasonGeo
@@ -249,8 +272,12 @@ func MatchReason(t *Targeting, r *RequestView) Reason {
 		}
 	}
 	// --- Inventory ---
-	if len(t.IABCategories) > 0 && !IABIntersects(t.IABCategories, r.SiteCats) {
-		return ReasonInventoryIAB
+	if len(t.IABCategories) > 0 && !combined && !IABIntersects(t.IABCategories, r.SiteCats) {
+		// «Без тематики»: тематика запроса пуста и опция включена. В режиме any
+		// опция игнорируется.
+		if !(t.IABAllowUnknown && !anyMode && len(r.SiteCats) == 0) {
+			return ReasonInventoryIAB
+		}
 	}
 	if len(t.IABBlock) > 0 && IABIntersects(t.IABBlock, r.SiteCats) {
 		return ReasonInventoryIAB
@@ -331,11 +358,37 @@ func MatchReason(t *Targeting, r *RequestView) Reason {
 		return ReasonInventoryOther
 	}
 	// --- Contextual keywords: стоп-слова приоритетнее, подстрока без регистра ---
-	if len(t.KeywordsBlock) > 0 && anySubstring(t.KeywordsBlock, r.Keywords) {
+	// Стоп-слова — всегда первыми и всегда широко (v2: nk в N или T).
+	if kp != nil {
+		if len(kp.block) > 0 && kp.blockMatch(r.kwTextOnce()) {
+			return ReasonKeywords
+		}
+	} else if len(t.KeywordsBlock) > 0 && anySubstring(t.KeywordsBlock, r.Keywords) {
 		return ReasonKeywords
 	}
-	if len(t.KeywordsAllow) > 0 && !anySubstring(t.KeywordsAllow, r.Keywords) {
-		return ReasonKeywords
+	if combined {
+		// iabOK ИЛИ kwOK; слова считаем только если тематика не прошла.
+		if !IABIntersects(t.IABCategories, r.SiteCats) {
+			var kwOK bool
+			if kp != nil {
+				kwOK = kp.allowMatch(r.kwTextOnce())
+			} else {
+				kwOK = anySubstring(t.KeywordsAllow, r.Keywords)
+			}
+			if !kwOK {
+				return ReasonContext
+			}
+		}
+	} else if hasAllowWords(t, kp) {
+		var kwOK bool
+		if kp != nil {
+			kwOK = kp.allowMatch(r.kwTextOnce())
+		} else {
+			kwOK = anySubstring(t.KeywordsAllow, r.Keywords)
+		}
+		if !kwOK {
+			return ReasonKeywords
+		}
 	}
 	// --- IP prefix ranges ---
 	if len(t.IPRanges) > 0 {
@@ -603,4 +656,12 @@ func anySubstring(needles []string, haystack string) bool {
 		}
 	}
 	return false
+}
+
+// hasAllowWords: заданы разрешающие слова (v2 — после очистки пустых и лишних).
+func hasAllowWords(t *Targeting, kp *kwPrepared) bool {
+	if kp != nil {
+		return len(kp.allow) > 0
+	}
+	return len(t.KeywordsAllow) > 0
 }

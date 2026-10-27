@@ -154,6 +154,7 @@ def _match_targeting(
       age_min, age_max, genders                     - user.yob, user.gender (M/F/O)
       hours (0-23 UTC list), days (0=Mon..6=Sun)    - dayparting
       ssp_allowlist                                 - list of supply partner IDs (checked by caller)
+      iab_allow_unknown, keywords_match, context_mode - контекст v2 (docs/CONTRACTS.md §1.3–1.5)
     """
     from datetime import datetime, timezone
 
@@ -210,8 +211,21 @@ def _match_targeting(
     # код таргетинга «IAB7» покрывает подкатегорию запроса «IAB7-3» (ctx_match).
     req_cats = ctx_match.request_cats(req)
     iab_allow = targeting.get("iab_categories") or []
-    if iab_allow and not ctx_match.iab_intersects(iab_allow, req_cats):
-        return False
+    # Контекст v2: слова v2 (keywords_match) и режим «ИЛИ» (context_mode=any).
+    kw_mode = targeting.get("keywords_match") or ""
+    kw_v2 = kw_mode in ctx_match.KW_MODES
+    kw_allow = targeting.get("keywords_allow") or []
+    kw_block = targeting.get("keywords_block") or []
+    kw_allow_keys = ctx_match.prepare_kw_keys(kw_allow) if kw_v2 else []
+    kw_block_keys = ctx_match.prepare_kw_keys(kw_block) if kw_v2 else []
+    any_mode = targeting.get("context_mode") == "any"
+    has_kw = bool(kw_allow_keys) if kw_v2 else bool(kw_allow)
+    # combined: «тематика ИЛИ слова» объединяются ниже, после обоих стоп-условий.
+    combined = any_mode and bool(iab_allow) and has_kw
+    if iab_allow and not combined and not ctx_match.iab_intersects(iab_allow, req_cats):
+        # «Без тематики»: тематика запроса пуста и опция включена; в режиме any игнорируется.
+        if not (targeting.get("iab_allow_unknown") is True and not any_mode and not req_cats):
+            return False
     iab_block = targeting.get("iab_block") or []
     if iab_block and ctx_match.iab_intersects(iab_block, req_cats):
         return False
@@ -294,17 +308,34 @@ def _match_targeting(
         return False
 
     # --- Contextual keywords (site/app/content keywords + page URL) ---
+    content = site.get("content") or {}
     kw_haystack = " ".join([
         (site.get("keywords") or ""),
-        ((site.get("content") or {}).get("keywords") or ""),
+        (content.get("keywords") or ""),
         (site.get("page") or ""),
-        ((site.get("content") or {}).get("title") or ""),
+        (content.get("title") or ""),
     ]).lower()
-    kw_block = targeting.get("keywords_block") or []
-    if kw_block and any(k.lower() in kw_haystack for k in kw_block):
+    kw_text = None
+    if kw_v2:
+        kw_text = ctx_match.build_kw_text(
+            [site.get("keywords"), content.get("keywords"), site.get("page"), content.get("title")]
+        )
+
+    def _kw_allow_ok() -> bool:
+        if kw_v2:
+            return ctx_match.kw_allow_match(kw_mode, kw_allow_keys, kw_text)
+        return any(k.lower() in kw_haystack for k in kw_allow)
+
+    # Стоп-слова всегда первыми и всегда широко.
+    if kw_v2:
+        if kw_block_keys and ctx_match.kw_block_match(kw_block_keys, kw_text):
+            return False
+    elif kw_block and any(k.lower() in kw_haystack for k in kw_block):
         return False
-    kw_allow = targeting.get("keywords_allow") or []
-    if kw_allow and not any(k.lower() in kw_haystack for k in kw_allow):
+    if combined:
+        if not ctx_match.iab_intersects(iab_allow, req_cats) and not _kw_allow_ok():
+            return False
+    elif has_kw and not _kw_allow_ok():
         return False
 
     # --- IP prefix ranges (e.g. "192.168." or "2a00:") ---

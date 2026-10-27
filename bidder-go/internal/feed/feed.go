@@ -24,6 +24,7 @@ import (
 
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/geo"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/pctr"
+	"github.com/SMBCreator/central-dsp/bidder-go/internal/targeting"
 )
 
 // Candidate — строка кандидата, паритет с SQL-выборкой Python hot path
@@ -135,6 +136,9 @@ type Targeting struct {
 	PublisherAllow     []string `json:"publisher_allow"`
 	KeywordsBlock      []string `json:"keywords_block"`
 	KeywordsAllow      []string `json:"keywords_allow"`
+	KeywordsMatch      string   `json:"keywords_match"`
+	ContextMode        string   `json:"context_mode"`
+	IABAllowUnknown    bool     `json:"iab_allow_unknown"`
 	IPRanges           []string `json:"ip_ranges"`
 	BlockCOPPA         bool     `json:"block_coppa"`
 	BlockGDPR          bool     `json:"block_gdpr"`
@@ -143,6 +147,9 @@ type Targeting struct {
 	// обязательный source.schain (прозрачность цепочки поставки).
 	DeviceMakes    []string `json:"device_makes"`
 	SChainRequired bool     `json:"schain_required"`
+
+	// Keywords — слова v2, подготовленные при загрузке снапшота (не из JSON); nil — легаси-слова.
+	Keywords *targeting.PreparedKeywords `json:"-"`
 
 	BannerPositions     []int `json:"banner_positions"`
 	InterstitialOnly    bool  `json:"interstitial_only"`
@@ -506,6 +513,7 @@ func (s *Store) refresh(ctx context.Context) error {
 	for i := range camps.Candidates {
 		c := &camps.Candidates[i]
 		c.T = ParseTargeting(c.Targeting)
+		c.T.Keywords = targeting.NewPreparedKeywords(c.T.KeywordsMatch, c.T.KeywordsAllow, c.T.KeywordsBlock)
 		c.Geo = geo.NewSets(c.T.GeoPlaceIDs, c.T.GeoExcludePlaceIDs, c.T.GeoUnknown)
 		snap.HasGeoV2 = snap.HasGeoV2 || c.Geo != nil
 	}
