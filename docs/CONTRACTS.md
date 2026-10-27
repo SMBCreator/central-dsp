@@ -21,6 +21,44 @@
 
 Удалённые ключи: `ad_types` — формат задаётся креативом; API отвергает явно.
 
+### 1.1 Тематика площадки (`iab_categories`, `iab_block`)
+
+Python-эталон — `backend/ctx_match.py` + `routers/rtb.py::_match_targeting`, Go —
+`bidder-go/internal/targeting/iab.go` + `rtb/handler.go::requestCats`. Общие
+тест-векторы лежат в одном файле `bidder-go/internal/targeting/testdata/match_cases.json`
+(Go: `rtb/match_vectors_test.go`, Python: `tests/test_ctx_match.py`): меняя правило,
+меняй оба слоя и этот файл в одном PR.
+
+* **Категории запроса `C`** — объединение (верхний регистр, без пробелов, без
+  пустых и дубликатов) полей `cat`, `sectioncat`, `pagecat`, `content.cat`,
+  `publisher.cat` объектов `site` и `app`. Подчёркивание в кодах IAB терпимо:
+  `IAB7_3` → `IAB7-3`. Нечитаемые типы (число, объект) в новых полях игнорируются и не
+  ломают разбор запроса. Коды других таксономий (числовые) остаются как есть и не совпадут с `IABn`.
+* **Совпадение кода таргетинга `T` с кодом запроса `R`:** `R == T`; либо `T` — tier-1 код
+  без дефиса (`IAB7`), а `R` — его подкатегория (`IAB7-3`). Подкатегория в таргетинге
+  (`IAB7-3`) родителя запроса (`IAB7`) **не** покрывает.
+* `iab_categories` проходит, если есть хотя бы одна пара (T, R); `iab_block` отсекает,
+  если пара есть для любого кода блок-листа. `bcat` запроса использует то же правило
+  (`rtb/handler.go::iabBlocked` → `targeting.IABIntersects`).
+
+### 1.2 Диагностика отказов (метрики биддера)
+
+`no_bid_total{reason="no_candidates"}` не говорит, какой фильтр отсёк кандидатов. Две
+дополнительные серии (метки только из фиксированных наборов; счётчики копятся
+локально в `bidOnImp` и сбрасываются одним сложением на imp):
+
+* `bidder_candidate_reject_total{stage}` — `type`, `partner_type`, `ssp`, `targeting`,
+  `geo_v2`, `imp_targeting`, `floor`, `budget_gate`, `audience`, `fx`, `adm`. Кандидат
+  считается один раз, на первой стадии, где отброшен; `partner_type` считает imp (все
+  кандидаты отброшены сразу). Сумма стадий не равна `no_bid_total`: серия считает
+  кандидатов, а не запросы.
+* `bidder_targeting_reject_total{reason}` — какая группа проверок `targeting.Match`
+  отсекла кандидата: `geo`, `device`, `inventory_iab`, `inventory_domain`,
+  `inventory_other`, `audience`, `time`, `keywords`, `context`, `regulatory`, `other`.
+  Сумма по `reason` равна `stage="targeting"`. В `other` попадают `badv`/`bcat` запроса и
+  блоки оптимизатора; глобальные списки доменов, clean traffic и scoring-блоки — в
+  `inventory_domain`.
+
 ## 2. Redis: кто пишет, кто читает, TTL
 
 | Ключ | Тип | Пишет | Читает | TTL | Назначение |
