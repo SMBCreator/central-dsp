@@ -11,6 +11,7 @@ import time
 from fastapi import APIRouter, HTTPException, Request
 
 import conversion_attribution as attribution
+from ad_market import foreign_campaign_sql
 import obs_metrics
 from business_day import business_date
 from cache import avail_adv_key, avail_camp_key, clear_stale_daily_spend, get_redis, res_adv_key, res_camp_key
@@ -337,6 +338,11 @@ async def domain_quality_recompute(request: Request):
     return {"ok": True, **result}
 
 
+# ТЗ п.5: показы рекламодателей «за пределами РФ» не уходят в ОРД и не считаются
+# «рекламой без erid» (маркировка для них не требуется).
+_FOREIGN_STATS_SQL = foreign_campaign_sql("s.campaign_id")
+
+
 @router.get("/ord-export")
 @_cron_job("ord_export")
 async def ord_monthly_export(request: Request, period: str | None = None, force: bool = False):
@@ -408,6 +414,7 @@ async def _ord_export_locked(conn, period, kind, force, _json, external_creative
            ) oc ON true
            LEFT JOIN line_items li ON li.id = s.line_item_id
            WHERE to_char(s.ts_hour, 'YYYY-MM') = $1
+             AND NOT """ + _FOREIGN_STATS_SQL + """
            GROUP BY s.creative_id, oc.version, oc.erid
            HAVING sum(s.impressions) > 0
            ORDER BY s.creative_id, oc.version""",
@@ -456,6 +463,7 @@ async def _ord_export_locked(conn, period, kind, force, _json, external_creative
         """SELECT s.creative_id, s.campaign_id, sum(s.impressions) AS impressions
            FROM stats_hourly s
            WHERE to_char(s.ts_hour, 'YYYY-MM') = $1
+             AND NOT """ + _FOREIGN_STATS_SQL + """
              AND NOT EXISTS (
                SELECT 1 FROM ord_creatives o
                WHERE o.creative_id = s.creative_id

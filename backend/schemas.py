@@ -1,6 +1,6 @@
 """Pydantic request/response schemas for the management API."""
 import re
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr, Field, field_validator
 
@@ -113,6 +113,9 @@ class AdvertiserIn(BaseModel):
     currency: str = Field(default="RUB", pattern="^(USD|EUR|RUB|KZT|UZS)$")
     # C4b/N-03: адреса бизнес-уведомлений (пусто -> email владельца).
     notify_emails: list[str] = Field(default_factory=list, max_length=20)
+    # ТЗ п.5: где планируется реклама. UI требует явный выбор; для старых
+    # клиентов API по умолчанию 'ru' (поведение как до п.5).
+    ad_market: Literal["ru", "foreign"] = "ru"
 
     @field_validator("notify_emails")
     @classmethod
@@ -129,6 +132,8 @@ class AdvertiserPatch(BaseModel):
     status: str | None = Field(default=None, pattern="^(active|paused|archived)$")
     # C4b/N-03: адреса бизнес-уведомлений (пусто -> email владельца).
     notify_emails: list[str] | None = Field(default=None, max_length=20)
+    # ТЗ п.5: смена рынка — только superadmin, проверки в ad_market.change_ad_market
+    ad_market: Literal["ru", "foreign"] | None = None
 
     @field_validator("notify_emails")
     @classmethod

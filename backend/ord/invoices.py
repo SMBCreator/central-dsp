@@ -35,6 +35,8 @@ from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
+from ad_market import foreign_campaign_sql
+
 from .adapter import OrdError, get_ord_adapter
 from .platform import ensure_platform
 from .service import external_creative_id, external_statistic_id
@@ -197,6 +199,7 @@ _FACT_SQL = """
       LEFT JOIN campaigns cm ON cm.id = s.campaign_id
       LEFT JOIN line_items li ON li.id = s.line_item_id
      WHERE (cm.executive_contract_id = $1 OR oc.contract_id = $1)
+       AND NOT """ + foreign_campaign_sql("s.campaign_id") + """
        AND s.ts_hour >= $2::date AND s.ts_hour < ($3::date + interval '1 day')
        AND (cardinality($4::uuid[]) = 0 OR s.campaign_id = ANY($4::uuid[]))
      GROUP BY s.creative_id, oc.version, oc.erid, COALESCE(cm.initial_contract_id, oc.contract_id),
@@ -307,6 +310,7 @@ async def preview(pool, contract: dict, start: date, end: date, campaign_ids: li
              LEFT JOIN campaigns cm ON cm.id = c.campaign_id
             WHERE c.user_id = $1
               AND (cm.executive_contract_id = $2 OR cm.initial_contract_id = $2 OR c.contract_id = $2)
+              AND NOT """ + foreign_campaign_sql("s.campaign_id") + """
               AND s.ts_hour >= $3::date AND s.ts_hour < ($4::date + interval '1 day')
               AND (cardinality($5::uuid[]) = 0 OR s.campaign_id = ANY($5::uuid[]))
               AND NOT EXISTS (

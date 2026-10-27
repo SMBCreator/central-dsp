@@ -11,6 +11,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, model_validator
 
+from ad_market import assert_campaign_not_foreign, foreign_campaign_sql, foreign_counterparty_sql
 from auth import current_user
 from rbac import assert_in_scope, assert_owned_by, require_platform_write, scope_for
 from db import get_pool
@@ -122,8 +123,10 @@ async def list_counterparties(user: dict = Depends(current_user)):
     # исполнительского договора любого клиента (ord_spec §7 D3). Viewer (пустой
     # scope) не видит ничего.
     self_visible = scope.all or bool(scope.user_ids)
+    # ТЗ п.5: юрлица рекламодателей «за пределами РФ» в «Маркировке» не показываются.
     rows = await pool.fetch(
-        f"SELECT * FROM counterparties WHERE {scope.where('user_id', 1)} OR (is_self AND $3::bool) "
+        f"SELECT * FROM counterparties WHERE ({scope.where('user_id', 1)} OR (is_self AND $3::bool)) "
+        f"AND NOT {foreign_counterparty_sql('counterparties.id')} "
         "ORDER BY created_at DESC",
         *scope.params, self_visible,
     )
@@ -277,7 +280,9 @@ async def list_contracts(user: dict = Depends(current_user)):
            FROM ord_contracts c
            JOIN counterparties cl ON cl.id = c.client_id
            JOIN counterparties ct ON ct.id = c.contractor_id
-           WHERE {scope.where("c.user_id", 1)} ORDER BY c.created_at DESC""",
+           WHERE {scope.where("c.user_id", 1)}
+             AND NOT {foreign_counterparty_sql("c.client_id")}
+           ORDER BY c.created_at DESC""",
         *scope.params,
     )
     return [dict(r) for r in rows]
@@ -367,6 +372,7 @@ async def register_creative(creative_id: str, body: CreativeRegisterIn, user: di
     что авторегистрация при approve — ord.service.register_creative."""
     pool = await get_pool()
     cr = await assert_in_scope(pool, "creatives", creative_id, await scope_for(user), "Креатив не найден")
+    await assert_campaign_not_foreign(pool, cr["campaign_id"])
     if body.contract_id:
         # Договор — того же владельца, что и креатив (не текущего пользователя).
         await assert_owned_by(pool, "ord_contracts", body.contract_id, cr["user_id"], "Договор не найден")
@@ -389,6 +395,7 @@ async def list_ord_creatives(user: dict = Depends(current_user)):
                   (oc.superseded_at IS NULL) AS is_current
            FROM ord_creatives oc JOIN creatives c ON c.id = oc.creative_id
            WHERE {scope.where("c.user_id", 1)}
+             AND NOT {foreign_campaign_sql("c.campaign_id")}
            ORDER BY oc.creative_id, oc.version DESC, oc.created_at DESC""",
         *scope.params,
     )

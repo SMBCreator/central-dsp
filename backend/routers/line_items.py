@@ -2,6 +2,7 @@ import json
 
 from fastapi import APIRouter, Depends, HTTPException
 
+import ad_market
 from auth import current_user
 from business_day import normalize_spent_today
 from rbac import assert_in_scope, require_campaign_editor, scope_for
@@ -46,6 +47,7 @@ async def create_line_item(body: LineItemIn, user: dict = Depends(require_campai
     camp = await assert_in_scope(
         pool, "campaigns", body.campaign_id, await scope_for(user), "Кампания не найдена", columns="id, user_id"
     )
+    await ad_market.assert_targeting_allowed(pool, body.campaign_id, body.targeting)
     # Позиция принадлежит владельцу кампании (admin/agency создают клиенту).
     row = await pool.fetchrow(
         """
@@ -65,6 +67,19 @@ async def update_line_item(line_item_id: str, body: LineItemPatch, user: dict = 
         raise HTTPException(status_code=400, detail="Нет полей для обновления")
     pool = await get_pool()
     scope = await scope_for(user)
+    if "targeting" in updates or updates.get("status") == "active":
+        # ТЗ п.5: таргетинг (новый или текущий при активации) для «за пределами РФ» — без РФ.
+        current = await pool.fetchrow(
+            f"SELECT campaign_id, targeting FROM line_items WHERE id = $1 AND {scope.where('user_id', 2)}",
+            line_item_id, *scope.params,
+        )
+        if not current:
+            raise HTTPException(status_code=404, detail="Позиция не найдена")
+        targeting = updates.get("targeting")
+        if targeting is None:
+            raw = current["targeting"]
+            targeting = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        await ad_market.assert_targeting_allowed(pool, str(current["campaign_id"]), targeting)
     sets, values = [], []
     for i, (k, v) in enumerate(updates.items(), start=4):
         if k == "targeting":
