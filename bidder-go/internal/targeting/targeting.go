@@ -207,21 +207,19 @@ func MatchReason(t *Targeting, r *RequestView) Reason {
 	if t == nil {
 		return ReasonNone
 	}
-	// Контекст v2: слова v2 и режим «ИЛИ». Для line item без новых ключей
-	// остаются nil/false и работает прежний путь.
+	// Контекст v2: слова v2 и режим «ИЛИ». Для line item без keywords_match и
+	// context_mode флаги остаются нулевыми и работает прежний путь (две проверки длины строк).
 	var kp *kwPrepared
-	if t.KeywordsMatch != "" {
-		kp = t.kwState()
+	var anyMode, combined bool
+	if t.KeywordsMatch != "" || t.ContextMode != "" {
+		if t.KeywordsMatch != "" {
+			kp = t.kwState()
+		}
+		anyMode = t.ContextMode == "any"
+		// combined: «тематика ИЛИ слова» — разрешающие части объединяются ниже,
+		// на месте проверки слов, после обоих стоп-условий.
+		combined = anyMode && len(t.IABCategories) > 0 && hasAllowWords(t, kp)
 	}
-	anyMode := t.ContextMode == "any"
-	hasIAB := len(t.IABCategories) > 0
-	hasKW := len(t.KeywordsAllow) > 0
-	if kp != nil {
-		hasKW = len(kp.allow) > 0
-	}
-	// combined: «тематика ИЛИ слова» — разрешающие части объединяются ниже,
-	// на месте проверки слов, после обоих стоп-условий.
-	combined := anyMode && hasIAB && hasKW
 	// --- Geo ---
 	if len(t.GeoCountries) > 0 && !containsFold(t.GeoCountries, r.Country, NormalizeCountry) {
 		return ReasonGeo
@@ -274,7 +272,7 @@ func MatchReason(t *Targeting, r *RequestView) Reason {
 		}
 	}
 	// --- Inventory ---
-	if hasIAB && !combined && !IABIntersects(t.IABCategories, r.SiteCats) {
+	if len(t.IABCategories) > 0 && !combined && !IABIntersects(t.IABCategories, r.SiteCats) {
 		// «Без тематики»: тематика запроса пуста и опция включена. В режиме any
 		// опция игнорируется.
 		if !(t.IABAllowUnknown && !anyMode && len(r.SiteCats) == 0) {
@@ -381,7 +379,7 @@ func MatchReason(t *Targeting, r *RequestView) Reason {
 				return ReasonContext
 			}
 		}
-	} else if hasKW {
+	} else if hasAllowWords(t, kp) {
 		var kwOK bool
 		if kp != nil {
 			kwOK = kp.allowMatch(r.kwTextOnce())
@@ -658,4 +656,12 @@ func anySubstring(needles []string, haystack string) bool {
 		}
 	}
 	return false
+}
+
+// hasAllowWords: заданы разрешающие слова (v2 — после очистки пустых и лишних).
+func hasAllowWords(t *Targeting, kp *kwPrepared) bool {
+	if kp != nil {
+		return len(kp.allow) > 0
+	}
+	return len(t.KeywordsAllow) > 0
 }

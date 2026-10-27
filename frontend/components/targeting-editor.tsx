@@ -10,6 +10,17 @@ import { targetingOutsideRu } from "@/lib/ad-market"
 import useSWR from "swr"
 import { fetcher } from "@/lib/api"
 import { DEVICE_MAKES, IAB_CATEGORIES, VIDEO_PLACEMENTS, VIDEO_PROTOCOLS, type Targeting } from "@/lib/types"
+import {
+  CONTEXT_MODE_OPTIONS,
+  KEYWORDS_MATCH_OPTIONS,
+  LEGACY_KEYWORDS_LABEL,
+  inventoryResetPatch,
+  inventorySummary,
+  keywordsAllowPatch,
+  keywordsMatchValue,
+  showAllowUnknown,
+  showContextMode,
+} from "@/lib/targeting-context"
 
 export const COUNTRIES = ["RU", "KZ", "BY", "UZ", "KG", "AM", "AZ", "GE", "MD", "TJ", "TM", "UA"]
 export const DEVICES = [
@@ -223,18 +234,6 @@ function deviceEnvSummary(t: Targeting): string {
   return parts.join(" · ") || "Все устройства и среды"
 }
 
-function inventorySummary(t: Targeting): string {
-  const parts: string[] = []
-  if (t.ssp_allowlist?.length) parts.push(`SSP: ${t.ssp_allowlist.length}`)
-  if (t.iab_categories?.length) parts.push(`IAB: ${t.iab_categories.length}`)
-  if (t.iab_block?.length) parts.push(`IAB−${t.iab_block.length}`)
-  if (t.traffic_types?.length) parts.push(t.traffic_types.includes("app") ? "Приложения" : "Web")
-  if (t.domain_allowlist?.length) parts.push(`allow×${t.domain_allowlist.length}`)
-  if (t.domain_blocklist?.length) parts.push(`block×${t.domain_blocklist.length}`)
-  if (t.keywords_allow?.length) parts.push(`слова×${t.keywords_allow.length}`)
-  return parts.join(" · ") || "Весь инвентарь"
-}
-
 function audienceSummary(t: Targeting): string {
   const parts: string[] = []
   if (t.audience_include?.length) parts.push(`вкл: ${t.audience_include.length}`)
@@ -282,9 +281,12 @@ export function TargetingEditor({
   value,
   onChange,
   foreignOnly = false,
+  isNew = false,
 }: {
   value: Targeting
   onChange: (t: Targeting) => void
+  /** Мастер новой кампании: при первом слове без keywords_match пишем "word_start". В карточке существующей кампании ключ автоматически не пишется. */
+  isNew?: boolean
   /** ТЗ п.5: рекламодатель «за пределами РФ» — российские гео скрыты (сервер их отклонит). */
   foreignOnly?: boolean
 }) {
@@ -551,15 +553,7 @@ export function TargetingEditor({
       <TargetSection
         title="Инвентарь"
         summary={inventorySummary(value)}
-        onReset={() =>
-          set({
-            ssp_allowlist: undefined, iab_categories: undefined, iab_block: undefined, traffic_types: undefined,
-            domain_allowlist: undefined, domain_blocklist: undefined,
-            app_bundles_allow: undefined, app_bundles_block: undefined,
-            publisher_allow: undefined, publisher_block: undefined,
-            keywords_allow: undefined, keywords_block: undefined,
-          })
-        }
+        onReset={() => set(inventoryResetPatch())}
       >
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Field label="SSP-источники" hint="Пусто — все подключённые SSP">
@@ -573,7 +567,10 @@ export function TargetingEditor({
               />
             )}
           </Field>
-          <Field label="Тематика площадок (IAB)" hint="Пусто — все категории">
+          <Field
+            label="Тематика площадок (IAB)"
+            hint="Пусто — все категории. Если выбрано, а площадка тематику не передала — показ пропускается (если не включена опция ниже)"
+          >
             <MultiSelect
               options={Object.entries(IAB_CATEGORIES).map(([code, label]) => ({ value: code, label: `${code} · ${label}` }))}
               selected={value.iab_categories || []}
@@ -588,6 +585,22 @@ export function TargetingEditor({
             />
           </Field>
         </div>
+        {showAllowUnknown(value) ? (
+          <label className="flex cursor-pointer items-start gap-2.5 text-sm text-foreground">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 shrink-0 accent-primary"
+              checked={!!value.iab_allow_unknown}
+              onChange={(e) => set({ iab_allow_unknown: e.target.checked || undefined })}
+            />
+            <span>
+              Показывать, если площадка не передала тематику
+              <span className="block text-xs text-muted">
+                Тематика определяется по полям cat, sectioncat, pagecat и content.cat запроса. Если ни одно не заполнено, проверка тематики считается пройденной.
+              </span>
+            </span>
+          </label>
+        ) : null}
         <Field label="Тип инвентаря" hint="Пусто — web и приложения">
           <div className="flex flex-wrap gap-1.5">
             {[
@@ -657,19 +670,19 @@ export function TargetingEditor({
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Field
             label="Ключевые слова (контекст)"
-            hint="Показывать на страницах, где SSP передаёт хотя бы одно из этих слов (site.keywords / content.keywords). Матчинг по подстроке без учёта регистра."
+            hint="Показывать на страницах, где в данных площадки есть хотя бы одно из этих слов. Источники: ключевые слова сайта или страницы, content.keywords, адрес страницы и заголовок. Если площадка не передаёт эти данные, показ по словам невозможен."
           >
             <TagInput
               value={value.keywords_allow || []}
-              onChange={(next) => set({ keywords_allow: norm(next) })}
-              placeholder="Любой контекст — например: ипотека, новостройки"
+              onChange={(next) => set(keywordsAllowPatch(value, next, isNew))}
+              placeholder="Любой контекст — например: ипотек, новостройк"
               ariaLabel="Ключевые слова"
               lowercase
             />
           </Field>
           <Field
             label="Стоп-слова"
-            hint="Не показывать, если в keywords страницы есть любое из этих слов. Стоп-слово приоритетнее ключевого."
+            hint="Не показывать, если слово найдено в данных площадки. Стоп-слова приоритетнее ключевых и ищутся широко: как часть слова, в любых формах."
           >
             <TagInput
               value={value.keywords_block || []}
@@ -680,6 +693,43 @@ export function TargetingEditor({
             />
           </Field>
         </div>
+        {value.keywords_allow?.length ? (
+          <Field label="Как искать слова">
+            <select
+              className={inputCls}
+              value={keywordsMatchValue(value)}
+              onChange={(e) => set({ keywords_match: e.target.value === "legacy" ? undefined : e.target.value })}
+              aria-label="Как искать слова"
+            >
+              {keywordsMatchValue(value) === "legacy" ? <option value="legacy">{LEGACY_KEYWORDS_LABEL}</option> : null}
+              {KEYWORDS_MATCH_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+            {keywordsMatchValue(value) === "word_start" ? (
+              <p className="mt-1.5 text-xs text-muted">
+                Вводите основу слова («ипотек»), чтобы находить все его формы: ипотека, ипотеке, ипотечный.
+              </p>
+            ) : null}
+          </Field>
+        ) : null}
+        {showContextMode(value) ? (
+          <Field label="Совпадать должно" hint="Как объединять тематику площадки и ключевые слова. Стоп-условия работают в обоих режимах.">
+            <div className="flex flex-wrap gap-1.5">
+              {CONTEXT_MODE_OPTIONS.map((o) => (
+                <Chip
+                  key={o.value}
+                  active={(value.context_mode || "all") === o.value}
+                  onClick={() => set({ context_mode: o.value })}
+                >
+                  {o.label}
+                </Chip>
+              ))}
+            </div>
+          </Field>
+        ) : null}
       </TargetSection>
 
       {/* --- Аудитории и демография --- */}
