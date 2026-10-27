@@ -318,6 +318,51 @@ class CreativeIn(BaseModel):
         return sorted(set(v))
 
 
+# Пакетное создание баннеров (POST /creatives/batch): общие поля задаются один
+# раз, по файлу — название, своя ссылка перехода, файл и размер.
+CREATIVE_BATCH_MAX = 30
+
+
+class CreativeBatchCommon(BaseModel):
+    subtype: str | None = Field(default=None, pattern="^(static|gif|html5)$")
+    click_url: CreativeUrl = None
+    imp_tracker_url: CreativeUrl = None
+    click_tracker_url: CreativeUrl = None
+    counterparty_id: str | None = None
+    contract_id: str | None = None
+    kktu_code: str | None = Field(default=None, max_length=20)
+    kktu_label: str | None = Field(default=None, max_length=300)
+    iab_categories: list[str] = Field(default_factory=list, max_length=10)
+    attrs: list[int] = Field(default_factory=list, max_length=17)
+
+    _iab_codes = field_validator("iab_categories")(CreativeIn._iab_codes.__func__)
+    _attr_codes = field_validator("attrs")(CreativeIn._attr_codes.__func__)
+
+
+class CreativeBatchItem(BaseModel):
+    client_id: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=200)
+    click_url: str | None = None
+    asset_url: str = Field(min_length=1, max_length=2048)
+    width: int = Field(ge=1, le=4096)
+    height: int = Field(ge=1, le=4096)
+
+
+class CreativeBatchIn(BaseModel):
+    campaign_id: str
+    line_item_id: str | None = None
+    common: CreativeBatchCommon = Field(default_factory=CreativeBatchCommon)
+    items: list[CreativeBatchItem] = Field(min_length=1, max_length=CREATIVE_BATCH_MAX)
+
+    @field_validator("items")
+    @classmethod
+    def _unique_client_ids(cls, v: list[CreativeBatchItem]) -> list[CreativeBatchItem]:
+        ids = [i.client_id for i in v]
+        if len(ids) != len(set(ids)):
+            raise ValueError("client_id элементов пакета должны быть уникальны")
+        return v
+
+
 class CreativePatch(BaseModel):
     name: str | None = None
     counterparty_id: str | None = None
