@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react"
 import useSWR from "swr"
 import { api, fetcher } from "@/lib/api"
+import { useSubmitGuard } from "@/lib/use-submit-guard"
 import { Button, Card, CardHeader, Field, Modal, EmptyState, Spinner, inputCls } from "@/components/ui"
 
 interface PlatformUser {
@@ -80,6 +81,7 @@ export default function UsersPage() {
   const [createOpen, setCreateOpen] = useState(false)
   const [editUser, setEditUser] = useState<PlatformUser | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const { submitting, guard } = useSubmitGuard()
 
   // create form
   const [cEmail, setCEmail] = useState("")
@@ -287,7 +289,7 @@ export default function UsersPage() {
           {error && <p className="text-sm text-destructive">{error}</p>}
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setCreateOpen(false)}>Отмена</Button>
-            <Button onClick={createUser} disabled={!cEmail || !cName || cPassword.length < 8}>Создать</Button>
+            <Button onClick={guard(createUser)} disabled={!cEmail || !cName || cPassword.length < 8 || submitting}>Создать</Button>
           </div>
         </div>
       </Modal>
@@ -320,7 +322,7 @@ export default function UsersPage() {
           {error && <p className="text-sm text-destructive">{error}</p>}
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setEditUser(null)}>Отмена</Button>
-            <Button onClick={saveEdit}>Сохранить</Button>
+            <Button onClick={guard(saveEdit)} disabled={submitting}>Сохранить</Button>
           </div>
         </div>
       </Modal>

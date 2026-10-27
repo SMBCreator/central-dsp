@@ -1108,7 +1108,7 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
 
           {/* G9: привязка креативов к строке закупки */}
           <div className="rounded-md border border-border bg-surface p-3">
-            <p className="text-xs font-medium text-foreground">Креативы этой строки</p>
+            <p className="text-xs font-medium text-foreground">Креативы этой группы</p>
             <p className="mb-2 mt-0.5 text-[11px] text-muted">
               Если ничего не выбрано — крутятся все креативы кампании. Выберите конкретные, чтобы ограничить.
             </p>

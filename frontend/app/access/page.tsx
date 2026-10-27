@@ -3,6 +3,7 @@
 import { useState } from "react"
 import useSWR from "swr"
 import { api, fetcher } from "@/lib/api"
+import { useSubmitGuard } from "@/lib/use-submit-guard"
 import { useMe } from "@/lib/use-me"
 import { useAdvertisers } from "@/lib/advertisers"
 import { canAddShareMarkup } from "@/lib/roles"
@@ -90,6 +91,7 @@ export default function AccessPage() {
   const [guestModal, setGuestModal] = useState(false)
   const [copied, setCopied] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const { submitting, guard } = useSubmitGuard()
 
   // Share link form
   const [lName, setLName] = useState("")
@@ -341,7 +343,7 @@ export default function AccessPage() {
             <Button variant="secondary" onClick={() => setLinkModal(false)}>
               Отмена
             </Button>
-            <Button onClick={createLink} disabled={!lName.trim()}>
+            <Button onClick={guard(createLink)} disabled={!lName.trim() || submitting}>
               Создать
             </Button>
           </div>
@@ -401,7 +403,7 @@ export default function AccessPage() {
             <Button variant="secondary" onClick={() => setGuestModal(false)}>
               Отмена
             </Button>
-            <Button onClick={createGuest} disabled={!gName.trim() || !gEmail.trim() || gPassword.length < 8}>
+            <Button onClick={guard(createGuest)} disabled={!gName.trim() || !gEmail.trim() || gPassword.length < 8 || submitting}>
               Создать
             </Button>
           </div>

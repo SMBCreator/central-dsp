@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
-import useSWR from "swr"
+import useSWR, { mutate } from "swr"
 import { api, fetcher } from "@/lib/api"
 import { Button, Card, CardHeader, Field, HelpTip, inputCls } from "@/components/ui"
 import { CreativeBuilder, type CreativeDraft, FORMAT_LABELS } from "@/components/creative-builder"
@@ -12,6 +12,7 @@ import { EMPTY_CHAIN, OrdChainEditor, OrdChainSummaryView, type OrdChainSummary,
 import { kktuShortLabel } from "@/lib/kktu"
 import type { Advertiser, Counterparty, Targeting } from "@/lib/types"
 import { advertiserOptionLabel, useAdvertisers } from "@/lib/advertisers"
+import { useSubmitGuard } from "@/lib/use-submit-guard"
 import { AD_MARKET_LABELS, advertiserMarket, isForeignAdvertiser, stripRuGeo, targetingOutsideRu } from "@/lib/ad-market"
 
 type Group = { id: string; name: string }
@@ -83,6 +84,7 @@ export default function NewCampaignPage() {
   const { data: counterparties } = useSWR<Counterparty[]>(step === 5 && !foreign ? "/ord/counterparties" : null, fetcher)
   const selectedCp = useMemo(() => (counterparties || []).find((cp) => cp.id === chain.counterparty_id) || null, [counterparties, chain.counterparty_id])
   const [saving, setSaving] = useState(false)
+  const { guard } = useSubmitGuard()
   const [error, setError] = useState("")
 
   const canNext = useMemo(() => {
@@ -131,6 +133,7 @@ export default function NewCampaignPage() {
       if (!gid && newGroupName.trim()) {
         const g = await api<Group>("/groups", { method: "POST", body: { name: newGroupName.trim() } })
         gid = g.id
+        void mutate("/groups")
       }
       const camp = await api<{ id: string }>("/campaigns", {
         method: "POST",
@@ -197,6 +200,7 @@ export default function NewCampaignPage() {
         })
       }
       await api(`/campaigns/${camp.id}`, { method: "PATCH", body: { status: "active" } })
+      void mutate("/campaigns")
       router.push(`/campaigns/${camp.id}`)
     } catch (e) {
       setError(e instanceof Error ? e.message : "Ошибка запуска")
@@ -620,7 +624,7 @@ export default function NewCampaignPage() {
                   Далее
                 </Button>
               ) : (
-                <Button className="flex-1" onClick={launch} disabled={!canNext || saving}>
+                <Button className="flex-1" onClick={guard(launch)} disabled={!canNext || saving}>
                   {saving ? "Запуск…" : `Запустить (креативов: ${creatives.length})`}
                 </Button>
               )}

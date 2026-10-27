@@ -12,7 +12,8 @@ import { AD_MARKET_LABELS, AD_MARKET_OPTIONS, advertiserMarket, type AdMarket } 
 import { useMe } from "@/lib/use-me"
 
 export default function AdvertisersPage() {
-  const { data: advertisers } = useAdvertisers()
+  const { data: advertisers, error: loadError } = useAdvertisers()
+  const [pageError, setPageError] = useState<string | null>(null)
   const { me } = useMe()
   const isSuperadmin = me?.role === "superadmin"
   const [open, setOpen] = useState(false)
@@ -86,11 +87,16 @@ export default function AdvertisersPage() {
   }
 
   const toggleStatus = async (a: Advertiser) => {
-    await api(`/advertisers/${a.id}`, {
-      method: "PATCH",
-      body: { status: a.status === "active" ? "paused" : "active" },
-    })
-    await refreshAdvertisers()
+    setPageError(null)
+    try {
+      await api(`/advertisers/${a.id}`, {
+        method: "PATCH",
+        body: { status: a.status === "active" ? "paused" : "active" },
+      })
+      await refreshAdvertisers()
+    } catch (err) {
+      setPageError(err instanceof Error ? err.message : "Не удалось изменить статус")
+    }
   }
 
   return (
@@ -102,6 +108,12 @@ export default function AdvertisersPage() {
         </div>
         <Button onClick={openCreate}>Добавить рекламодателя</Button>
       </div>
+
+      {pageError ? (
+        <p role="alert" className="rounded-lg border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger">
+          {pageError}
+        </p>
+      ) : null}
 
       <Card>
         <CardHeader title="Список рекламодателей" subtitle={advertisers ? `Всего: ${advertisers.length}` : undefined} />
@@ -139,6 +151,11 @@ export default function AdvertisersPage() {
               action={<Button onClick={openCreate}>Добавить</Button>}
             />
           )
+        ) : loadError ? (
+          <EmptyState
+            title="Не удалось загрузить рекламодателей"
+            description={loadError instanceof Error ? loadError.message : "Попробуйте обновить страницу."}
+          />
         ) : (
           <Spinner />
         )}
