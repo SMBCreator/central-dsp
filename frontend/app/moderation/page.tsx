@@ -231,7 +231,7 @@ export default function ModerationPage() {
                   />
                 </div>
               </div>
-              <div className="flex flex-col gap-4 lg:flex-row">
+              <div className="flex flex-col gap-4 px-6 pb-6 pt-2 lg:flex-row">
                 <div className="shrink-0">
                   <CreativePreview
                     type={item.type}

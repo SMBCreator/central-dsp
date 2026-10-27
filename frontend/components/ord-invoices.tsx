@@ -224,7 +224,7 @@ export function OrdInvoicesTab({
             </div>
           }
         />
-        {bulk.text ? <p role="status" className="mb-3 text-sm text-muted">{bulk.text}</p> : null}
+        {bulk.text ? <p role="status" className="mb-3 px-6 text-sm text-muted">{bulk.text}</p> : null}
         {!contracts || !counterparties || !invoices ? (
           <Spinner />
         ) : executive.length === 0 ? (

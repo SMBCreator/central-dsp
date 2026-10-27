@@ -219,7 +219,7 @@ export default function NewCampaignPage() {
         <Card>
           <CardHeader title="Рекламодатель" subtitle="Аккаунт, с баланса которого оплачиваются показы" />
           <AdvertiserPicker advertisers={advertisers} value={advertiserId} onChange={selectAdvertiser} />
-          <p className="px-4 py-3 text-sm leading-relaxed text-muted">
+          <p className="px-6 py-3 text-sm leading-relaxed text-muted">
             Реклама только за пределами РФ — маркировка (ОРД, договоры, ККТУ, erid) не требуется. На шаге
             «Таргетинг» доступны только зарубежные страны и места.
           </p>
@@ -237,7 +237,7 @@ export default function NewCampaignPage() {
           {chainReview && chainPreview ? (
             <>
               <OrdChainSummaryView summary={chainPreview} />
-              <div className="flex justify-end gap-2 border-t border-border px-4 py-3">
+              <div className="flex justify-end gap-2 border-t border-border px-6 py-3">
                 <Button type="button" variant="secondary" onClick={() => { setChainReview(false); setChainConfirmed(false) }}>Изменить</Button>
                 <Button type="button" disabled={!chainPreview.ready} onClick={() => { setChainConfirmed(true); setStep(1) }}>
                   Всё верно
@@ -252,7 +252,7 @@ export default function NewCampaignPage() {
                 onChange={selectAdvertiser}
               />
               <OrdChainEditor advertiserId={advertiserId || null} value={chain} onChange={(v) => { setChain(v); setChainConfirmed(false) }} />
-              <div className="flex justify-end gap-2 border-t border-border px-4 py-3">
+              <div className="flex justify-end gap-2 border-t border-border px-6 py-3">
                 <Button type="button" disabled={!advertiserId || !chain.ord_mode || !chain.counterparty_id || chainBusy} onClick={previewChain}>
                   {chainBusy ? "Проверка…" : "Проверить данные →"}
                 </Button>
@@ -265,7 +265,7 @@ export default function NewCampaignPage() {
       {step === 1 ? (
         <Card>
           <CardHeader title="Выберите формат" subtitle="Формат определяет, какие креативы вы загрузите на последнем шаге" />
-          <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-3 px-6 py-4 sm:grid-cols-2">
             {FORMATS.map((f) => (
               <button
                 key={f.key}
@@ -289,7 +289,7 @@ export default function NewCampaignPage() {
           <CardHeader title="Основные настройки" subtitle={`Формат: ${FORMAT_LABELS[format] || format}`} />
           <div className="divide-y divide-border">
             {/* Секция 1: о кампании */}
-            <section className="space-y-4 p-4">
+            <section className="space-y-4 px-6 py-4">
               <h3 className="text-xs font-semibold uppercase tracking-wide text-muted">О кампании</h3>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <Field label="Название кампании">
@@ -342,7 +342,7 @@ export default function NewCampaignPage() {
             </section>
 
             {/* Секция 2: период и темп — даты в одной строке */}
-            <section className="space-y-4 p-4">
+            <section className="space-y-4 px-6 py-4">
               <h3 className="text-xs font-semibold uppercase tracking-wide text-muted">Период и темп открутки</h3>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 <div className="grid grid-cols-2 gap-3 sm:col-span-2">
@@ -363,7 +363,7 @@ export default function NewCampaignPage() {
             </section>
 
             {/* Секция 3: ограничения показов */}
-            <section className="space-y-4 p-4">
+            <section className="space-y-4 px-6 py-4">
               <h3 className="text-xs font-semibold uppercase tracking-wide text-muted">Ограничения показов</h3>
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
@@ -436,7 +436,7 @@ export default function NewCampaignPage() {
         <div className="space-y-4">
           <Card>
             <CardHeader title="Бюджет и ставка" subtitle="Ставка используется биддером в RTB-аукционе" />
-            <div className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="grid grid-cols-1 gap-4 px-6 py-4 sm:grid-cols-2 lg:grid-cols-3">
               <Field label="Дневной бюджет, ₽">
                 <input type="number" min="1" step="1" value={dailyBudget} onChange={(e) => setDailyBudget(e.target.value)} className={inputCls} placeholder="100" />
               </Field>
@@ -459,7 +459,7 @@ export default function NewCampaignPage() {
           </Card>
           <Card>
             <CardHeader title="Автооптимизация" subtitle="Оптимизатор блокирует источники, не укладывающиеся в целевые метрики" />
-            <div className="space-y-4 p-4">
+            <div className="space-y-4 px-6 py-4">
               <label className="flex items-center gap-2 text-sm text-foreground">
                 <input type="checkbox" checked={autoOptimize} onChange={(e) => setAutoOptimize(e.target.checked)} className="h-4 w-4 rounded border-border" />
                 Включить автооптимизацию закупки
@@ -486,7 +486,7 @@ export default function NewCampaignPage() {
       {step === 4 ? (
         <Card>
           <CardHeader title="Таргетинг" subtitle="Пустые поля — без ограничений. Всё применяется биддером к каждому bid request" />
-          <div className="p-4">
+          <div className="px-6 py-4">
             <TargetingEditor value={targeting} onChange={setTargeting} foreignOnly={foreign} />
           </div>
         </Card>
@@ -496,7 +496,7 @@ export default function NewCampaignPage() {
         <div className="space-y-4">
           <Card>
             <CardHeader title="Сводка" subtitle="Проверьте настройки перед запуском" />
-            <dl className="grid grid-cols-1 gap-x-6 gap-y-2 p-4 text-sm sm:grid-cols-2">
+            <dl className="grid grid-cols-1 gap-x-6 gap-y-2 px-6 py-4 text-sm sm:grid-cols-2">
               <div className="flex justify-between gap-3"><dt className="text-muted">Реклама</dt><dd className="text-foreground">{AD_MARKET_LABELS[advertiserMarket((advertisers || []).find((a) => a.id === advertiserId))]}</dd></div>
               <div className="flex justify-between gap-3"><dt className="text-muted">Формат</dt><dd className="text-foreground">{FORMAT_LABELS[format] || format}</dd></div>
               <div className="flex justify-between gap-3"><dt className="text-muted">Цель</dt><dd className="text-foreground">{OBJECTIVES.find((o) => o.key === objective)?.label}</dd></div>
@@ -513,7 +513,7 @@ export default function NewCampaignPage() {
               title="Маркировка (ОРД)"
               subtitle="Применяется ко всем креативам кампании. По 38-ФЗ данные рекламодателя показываются в инфо-значке на креативе и уходят в ОРД при регистрации erid."
             />
-            <div className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2">
+            <div className="grid grid-cols-1 gap-4 px-6 py-4 sm:grid-cols-2">
               <Field label="Рекламодатель (из данных ОРД)" hint="Задан на шаге «Данные ОРД» и наследуется всеми креативами кампании">
                 <input className={inputCls} disabled value={selectedCp ? `${selectedCp.name}${selectedCp.inn ? ` · ИНН ${selectedCp.inn}` : ""}` : "—"} />
               </Field>
@@ -650,7 +650,7 @@ function AdvertiserPicker({
   onChange: (id: string) => void
 }) {
   return (
-    <div className="border-b border-border p-4">
+    <div className="border-b border-border px-6 py-4">
       <Field label="Рекламодатель" hint="Аккаунт из раздела «Рекламодатели», с баланса которого оплачиваются показы">
         <select value={value} onChange={(e) => onChange(e.target.value)} className={inputCls} required>
           <option value="">Выберите…</option>

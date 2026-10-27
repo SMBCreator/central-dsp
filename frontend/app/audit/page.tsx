@@ -161,7 +161,7 @@ export default function AuditPage() {
       <Card>
         <CardHeader title="Фильтры" subtitle="Период — по локальному времени браузера; в CSV время в UTC" />
         <form
-          className="grid grid-cols-1 gap-4 px-4 pb-4 sm:grid-cols-2 lg:grid-cols-4"
+          className="grid grid-cols-1 gap-4 px-6 pb-4 sm:grid-cols-2 lg:grid-cols-4"
           onSubmit={(e) => {
             e.preventDefault()
             apply()
@@ -243,7 +243,7 @@ export default function AuditPage() {
           }
         />
         {error ? (
-          <div className="px-4 pb-4 text-sm text-danger">
+          <div className="px-6 pb-4 text-sm text-danger">
             Не удалось загрузить журнал: {error instanceof Error ? error.message : "ошибка запроса"}
           </div>
         ) : isLoading && !data ? (

@@ -135,7 +135,7 @@ export default function ViewerReportPage() {
 
       <Card>
         <CardHeader title="Показы по часам" />
-        <div className="px-4 pb-4">
+        <div className="px-6 pb-4">
           {series && series.length > 0 ? (
             <TimeseriesChart data={series} metrics={["impressions"]} granularity="hour" />
           ) : (

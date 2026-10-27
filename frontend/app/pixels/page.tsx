@@ -302,13 +302,13 @@ function SetupGuide() {
             <button
               type="button"
               onClick={() => setOpenStep(openStep === i ? null : i)}
-              className="flex w-full items-center justify-between p-4 text-left transition-colors hover:bg-surface"
+              className="flex w-full items-center justify-between px-6 py-4 text-left transition-colors hover:bg-surface"
               aria-expanded={openStep === i}
             >
               <span className="text-sm font-medium text-foreground">{s.title}</span>
               <span className="font-mono text-xs text-muted">{openStep === i ? "−" : "+"}</span>
             </button>
-            {openStep === i ? <div className="px-4 pb-4">{s.body}</div> : null}
+            {openStep === i ? <div className="px-6 pb-4">{s.body}</div> : null}
           </div>
         ))}
       </div>

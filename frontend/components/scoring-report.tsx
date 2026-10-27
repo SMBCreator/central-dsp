@@ -200,7 +200,7 @@ export function ScoringReportCard({ profileId }: { profileId: string | null }) {
         }
       />
 
-      <div className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-3">
+      <div className="flex flex-wrap items-center gap-3 border-b border-border px-6 py-3">
         <input
           type="search"
           value={search}

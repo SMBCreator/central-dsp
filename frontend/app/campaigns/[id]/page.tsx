@@ -132,7 +132,7 @@ function SettingsCard({ campaign }: { campaign: CampaignExt }) {
   return (
     <Card>
       <CardHeader title="Основные настройки" subtitle="Название, бюджеты, сроки, частотные капы" />
-      <div className="space-y-4 p-4">
+      <div className="space-y-4 px-6 py-4">
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <Field label="Название кампании">
             <input value={name} onChange={(e) => setName(e.target.value)} className={inputCls} />
@@ -376,7 +376,7 @@ function OptimizationCard({ campaign }: { campaign: Campaign }) {
         title="Оптимизация закупки"
         subtitle="Пиксель, цель и автоматическая отсечка слабых источников"
       />
-      <div className="space-y-4 p-4">
+      <div className="space-y-4 px-6 py-4">
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <Field label="Пиксель" hint={pixels && pixels.length === 0 ? "Создайте пиксель на странице «Пиксель и цели»" : "Куда придут конверсии"}>
             <select value={pixelId} onChange={(e) => { setPixelId(e.target.value); setGoalId("") }} className={inputCls}>
@@ -1012,7 +1012,7 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
           />
           {campaignCreatives ? (
             campaignCreatives.length > 0 ? (
-              <div className="grid gap-3 px-4 pb-4 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="grid gap-3 px-6 pb-4 sm:grid-cols-2 lg:grid-cols-3">
                 {campaignCreatives.map((c) => {
                   const group = lineItems?.find((li) => li.id === c.line_item_id)
                   return (

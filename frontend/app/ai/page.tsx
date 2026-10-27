@@ -95,7 +95,7 @@ export default function AiToolsPage() {
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <Card>
           <CardHeader title="Генератор текстов объявлений" subtitle="3 варианта заголовков и описаний" />
-          <form onSubmit={generate} className="space-y-4 p-5">
+          <form onSubmit={generate} className="space-y-4 px-6 py-5">
             <Field label="Продукт или услуга">
               <input
                 required
@@ -143,7 +143,7 @@ export default function AiToolsPage() {
 
         <Card>
           <CardHeader title="AI-оптимизатор" subtitle="Анализ показателей за 7 дней и рекомендации" />
-          <div className="p-5">
+          <div className="px-6 py-5">
             <Button onClick={analyze} disabled={insLoading || !summary} className="w-full">
               {insLoading ? "Анализ…" : "Проанализировать аккаунт"}
             </Button>

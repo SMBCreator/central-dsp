@@ -113,7 +113,7 @@ export default function PublicReportPage({ params }: { params: Promise<{ token: 
 
         <Card>
           <CardHeader title="Показы по часам" />
-          <div className="px-4 pb-4">
+          <div className="px-6 pb-4">
             <TimeseriesChart data={data.series} metrics={["impressions"]} granularity="hour" />
           </div>
         </Card>

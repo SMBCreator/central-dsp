@@ -373,7 +373,7 @@ export function OrdChainEditor({
   if (!counterparties || !contracts) return <Spinner />
 
   return (
-    <fieldset disabled={disabled} className="space-y-6 p-4">
+    <fieldset disabled={disabled} className="space-y-6 px-6 py-4">
       <div>
         <p className="text-sm font-semibold text-foreground">Кого вы рекламируете?</p>
         <p className="mt-0.5 text-xs text-muted">От ответа зависит, какие договоры уйдут в ОРД вместе с креативами (38-ФЗ).</p>
@@ -550,7 +550,7 @@ function ContractLine({ c }: { c: ContractView | null }) {
 
 export function OrdChainSummaryView({ summary }: { summary: OrdChainSummary }) {
   return (
-    <div className="p-4">
+    <div className="px-6 py-4">
       <dl className="divide-y divide-border">
         <ChainRow label="Кого рекламируете">{summary.mode_label || <span className="text-muted">не выбрано</span>}</ChainRow>
         <ChainRow label="Рекламодатель">
@@ -610,13 +610,13 @@ export function OrdChainCampaignCard({
     }
   }
 
-  if (!summary) return <div className="p-4"><Spinner /></div>
+  if (!summary) return <div className="px-6 py-4"><Spinner /></div>
 
   if (summary.confirmed) {
     return (
       <div>
         <OrdChainSummaryView summary={summary} />
-        <p className="border-t border-border px-4 py-3 text-xs text-muted">
+        <p className="border-t border-border px-6 py-3 text-xs text-muted">
           Данные ОРД подтверждены {summary.confirmed_at ? new Date(summary.confirmed_at).toLocaleString("ru-RU") : ""} и заморожены: на них регистрируются erid креативов.
         </p>
       </div>
@@ -628,7 +628,7 @@ export function OrdChainCampaignCard({
       {review ? (
         <>
           <OrdChainSummaryView summary={summary} />
-          <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border px-4 py-3">
+          <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border px-6 py-3">
             {error ? <p role="alert" className="mr-auto text-sm text-red-600">{error}</p> : null}
             <Button type="button" variant="secondary" onClick={() => setReview(false)}>Изменить</Button>
             <Button type="button" onClick={confirm} disabled={!summary.ready || confirming}>
@@ -646,7 +646,7 @@ export function OrdChainCampaignCard({
               await refresh()
             }}
           />
-          <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border px-4 py-3">
+          <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border px-6 py-3">
             {summary.problem_labels.length && values.ord_mode ? (
               <p className="mr-auto text-xs text-muted">{summary.problem_labels[0]}{summary.problem_labels.length > 1 ? ` (+${summary.problem_labels.length - 1})` : ""}</p>
             ) : null}

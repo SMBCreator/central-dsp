@@ -212,7 +212,7 @@ function OrdCard() {
         title="ОРД Озон (маркировка рекламы)"
         subtitle="API-ключ из кабинета ОРД Озон → Настройки → API. С ключом креативы регистрируются по-настоящему и erid виден в вашем кабинете ОРД. Без ключа в production регистрация недоступна и показы в РФ заблокированы; mock-режим с фиктивными erid работает только на dev-стендах."
       />
-      <div className="space-y-4 p-4 pt-0">
+      <div className="space-y-4 px-6 pb-4">
         {ord ? (
           ord.blocking ? (
             <div
@@ -361,7 +361,7 @@ export default function SettingsPage() {
       <Card>
         <CardHeader title="Валюта и курс" subtitle="Кабинет ведётся в рублях; закупка в $ конвертируется по курсу ЦБ РФ с наценкой" />
         {settings && fx ? (
-          <div className="grid grid-cols-1 gap-4 p-4 pt-0 sm:grid-cols-3">
+          <div className="grid grid-cols-1 gap-4 px-6 pb-4 sm:grid-cols-3">
             <Field label="Валюта кабинета">
               <input className={inputCls} value={settings.currency} disabled />
             </Field>
@@ -402,7 +402,7 @@ export default function SettingsPage() {
           subtitle="Применяются ко всем кампаниям на этапе бида. Чёрный список — домен никогда не выкупается; белый — если он не пуст, выкупаются только домены из него."
           action={<PillTabs value={listType} onChange={setListType} options={LIST_TABS} />}
         />
-        <div className="flex gap-2 px-4 pb-3">
+        <div className="flex gap-2 px-6 pb-3">
           <input
             className={inputCls}
             value={newDomain}

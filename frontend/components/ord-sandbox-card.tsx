@@ -7,6 +7,7 @@ import { compareKktu, type OrdKktuItem } from "@/lib/kktu-compare";
 import {
   Button,
   Card,
+  CardBody,
   CardHeader,
   Field,
   HelpTip,
@@ -252,7 +253,7 @@ export function OrdSandboxCard({ savedSandbox }: { savedSandbox: boolean }) {
         title="Тест в песочнице ОРД"
         subtitle="Сквозной прогон цепочки на api-ord-sandbox.ozon.ru: организации, договор, креатив с erid, статистика, акт. Данные кабинета не меняются."
       />
-      <div className="flex flex-col gap-4">
+      <CardBody className="flex flex-col gap-4">
         <div className="grid gap-3 md:grid-cols-2">
           <Field
             label="API-ключ песочницы"
@@ -373,7 +374,7 @@ export function OrdSandboxCard({ savedSandbox }: { savedSandbox: boolean }) {
             {kktuItems ? <KktuReport items={kktuItems} /> : null}
           </div>
         ) : null}
-      </div>
+      </CardBody>
     </Card>
   );
 }
