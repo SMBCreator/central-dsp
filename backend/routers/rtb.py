@@ -26,6 +26,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 
 logger = logging.getLogger("rtb")
 
+import ctx_match
 import obs_metrics
 import ssp_check
 import ssp_tokens
@@ -146,8 +147,9 @@ def _match_targeting(
       device_types                                  - mobile / desktop / ctv / tablet
       os, browsers, languages                       - device.os, device.ua match, device.language
       connection_types                              - wifi / cellular / ethernet
-      iab_categories                                - site.cat / app.cat IAB-1..26 allow list
-      iab_block                                     - IAB category block list
+      iab_categories                                - IAB allow list; matches cat/sectioncat/pagecat/content.cat/
+                                                      publisher.cat of site and app (parent code covers subcategory)
+      iab_block                                     - IAB category block list (same matching rule)
       domain_allowlist, domain_blocklist            - site.domain / app.bundle
       age_min, age_max, genders                     - user.yob, user.gender (M/F/O)
       hours (0-23 UTC list), days (0=Mon..6=Sun)    - dayparting
@@ -204,12 +206,14 @@ def _match_targeting(
             return False
 
     # --- Inventory ---
-    site_cats = [c.upper() for c in (site.get("cat") or [])]
+    # Категории площадки: cat/sectioncat/pagecat/content.cat/publisher.cat site и app;
+    # код таргетинга «IAB7» покрывает подкатегорию запроса «IAB7-3» (ctx_match).
+    req_cats = ctx_match.request_cats(req)
     iab_allow = targeting.get("iab_categories") or []
-    if iab_allow and not any(c.upper() in site_cats for c in iab_allow):
+    if iab_allow and not ctx_match.iab_intersects(iab_allow, req_cats):
         return False
     iab_block = targeting.get("iab_block") or []
-    if iab_block and any(c.upper() in site_cats for c in iab_block):
+    if iab_block and ctx_match.iab_intersects(iab_block, req_cats):
         return False
 
     domain = (site.get("domain") or site.get("bundle") or "").lower()
