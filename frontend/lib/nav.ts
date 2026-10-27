@@ -28,6 +28,7 @@ export const NAV_SECTIONS: NavSection[] = [
     title: "Трафик",
     items: [
       { href: "/supply", label: "SSP-партнёры", icon: "M4 4h7v7H4V4zm9 0h7v7h-7V4zM4 13h7v7H4v-7zm9 0h7v7h-7v-7z" },
+      { href: "/domains", label: "Справочник доменов", icon: "M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18M12 3a9 9 0 100 18 9 9 0 000-18z" },
       { href: "/rtb-test", label: "RTB-тестер", icon: "M13 2L4 14h6l-1 8 9-12h-6l1-8z" },
     ],
   },

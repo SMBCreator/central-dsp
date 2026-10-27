@@ -440,6 +440,15 @@ type feedError struct {
 
 func (e *feedError) Error() string { return "feed " + e.path + " bad status" }
 
+// GetJSON — GET к backend с токеном фида (для отдельных справочников, не
+// входящих в основной снапшот: domcat).
+func (s *Store) GetJSON(ctx context.Context, path string, out any) error {
+	if s.cfg.FeedToken == "" {
+		return ErrNoToken
+	}
+	return s.get(ctx, path, out)
+}
+
 func (s *Store) get(ctx context.Context, path string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.cfg.BackendURL+path, nil)
 	if err != nil {

@@ -136,6 +136,22 @@ Python-эталон — `backend/ctx_match.py` + `routers/rtb.py::_match_targeti
   `frontend/lib/targeting-context.ts` (`inventorySummary`: «IAB: N (+без тематики)»,
   «слова: N (режим)», «или» между ними при `any`).
 
+### 1.6 Справочник «домен → тематика» (Фаза 3)
+
+Назначение: когда SSP не прислала категории (`C` пусто), биддер берёт тематику по домену.
+
+| Что | Где | Контракт |
+|---|---|---|
+| Таблица | `domain_categories` (миграция 062) | `domain` PK (нижний регистр, без `www.`), `iab_codes text[]`, `source` = `manual` \| `learned`, `hits`, `updated_at` |
+| Фид | `GET /rtb-feed/domain-categories` | Тот же Bearer `RTB_API_TOKEN`. `{count, truncated, domains: {domain: [IAB…]}}`: `manual` целиком + `learned` с `hits >= DOMCAT_FEED_MIN_HITS` (3), не больше `DOMCAT_FEED_MAX_ROWS` (200000) |
+| Загрузка | bidder-go `internal/domcat` | Раз в 5 минут, отдельно от снапшота; ошибка оставляет прежнюю карту |
+| Подстановка | `Handler.applyDomainCats` после `buildRequestView` | `C` пусто и домен в карте → `SiteCats` = карта, `CatSource=domain_map`; иначе `request`. Метрика `bidder_cat_source_total{source}`. Категории из карты «определённые» для `iab_allow_unknown` |
+| Обучение | Go → Redis `domcat:learn` (TTL 30 дней) | Только при непустом `C` из запроса и домене сайта; не чаще раза в час на домен (LRU-гейт 100k); запись асинхронная, ошибки наружу не идут. Поля хэша: `<domain>` — число наблюдений, `<domain>\|<IAB>` — число раз категория |
+| Перенос | `/cron/domcat-learn` (джоб `domcat_learn`, `*/10 * * * *`) | `RENAME` → `HSCAN` → upsert `source=learned`, `hits += наблюдения`, максимум 5 кодов на домен (свежая частота, затем прежние). `manual` не перезаписывается. Обученные записи с `hits < порога` старше 90 дней удаляются |
+| Кабинет | `/domain-categories` (admin/superadmin), страница `/domains` | список/поиск, `PUT` (правка делает запись `manual`), `DELETE`, `POST /import` (`apply=false` — предпросмотр, `apply=true` — всё или ничего, до 5000 строк) |
+
+Выключатель биддера: `DOMCAT_ENABLED=0` — карта не грузится, обучение не пишет, `cat_source` не ставится.
+
 ## 2. Redis: кто пишет, кто читает, TTL
 
 | Ключ | Тип | Пишет | Читает | TTL | Назначение |

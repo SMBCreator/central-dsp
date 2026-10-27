@@ -14,6 +14,7 @@ import os
 
 from fastapi import APIRouter, Header, HTTPException
 
+import domain_categories
 import fx
 import geo_v2
 from db import get_pool
@@ -200,6 +201,14 @@ async def geo_feed(authorization: str | None = Header(default=None)):
     if not geo_v2.geo_v2_enabled():
         raise HTTPException(404, "GEO_V2_ENABLED is off")
     return await geo_v2.feed_payload(await get_pool())
+
+
+@router.get("/domain-categories")
+async def domain_categories_feed(authorization: str | None = Header(default=None)):
+    """Справочник «домен → тематика IAB» для Go: ручные записи и обученные
+    с hits >= DOMCAT_FEED_MIN_HITS; размер ограничен DOMCAT_FEED_MAX_ROWS."""
+    _check(authorization)
+    return await domain_categories.feed_payload(await get_pool())
 
 
 async def _load_pctr_model(pool) -> dict | None:

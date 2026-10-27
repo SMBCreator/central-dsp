@@ -89,6 +89,7 @@ type Registry struct {
 	// GEO v2: уровень сопоставления гео запроса (city/region/country/unknown).
 	// Кардинальность фиксирована — четыре значения.
 	geoResolve sync.Map // level -> *atomic.Int64
+	catSource  sync.Map // source -> *atomic.Int64 (request | domain_map)
 
 	// Per-partner (endpoint_key): запросы и биды. Кардинальность = число SSP
 	// (единицы-десятки), поэтому безопасно для Prometheus.
@@ -217,6 +218,18 @@ func (r *Registry) IncGeoResolve(level string) {
 	switch level {
 	case "city", "region", "country", "unknown":
 		incMap(&r.geoResolve, level, 1)
+	}
+}
+
+// IncCatSource — откуда взяты категории площадки запроса: request (прислала
+// SSP) или domain_map (справочник «домен → тематика»).
+func (r *Registry) IncCatSource(source string) {
+	if r == nil {
+		return
+	}
+	switch source {
+	case "request", "domain_map":
+		incMap(&r.catSource, source, 1)
 	}
 }
 
@@ -388,6 +401,7 @@ func (r *Registry) write(w http.ResponseWriter) {
 
 	writeLabeled(w, &r.partnerRequests, "bidder_partner_requests_total", "Bid requests by SSP endpoint_key.")
 	writeLabeled(w, &r.partnerBids, "bidder_partner_bids_total", "Bids submitted by SSP endpoint_key.")
+	writeLabeledBy(w, &r.catSource, "bidder_cat_source_total", "Bid requests by origin of site/app IAB categories (request = from SSP, domain_map = domain reference).", "source")
 	writeLabeledBy(w, &r.geoResolve, "bidder_geo_resolve_total", "GEO v2: bid requests by geo resolution level (only when a campaign uses v2 geo).", "level")
 
 	// ID sync (A.7). Доля анонимных = bidder_identity_source_total{source="anonymous"} / sum.

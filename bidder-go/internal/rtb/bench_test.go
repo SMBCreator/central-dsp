@@ -7,7 +7,9 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/SMBCreator/central-dsp/bidder-go/internal/domcat"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/feed"
 )
 
@@ -72,5 +74,33 @@ func BenchmarkBidManyCandidates(b *testing.B) {
 		if rec.Code != http.StatusOK && rec.Code != http.StatusNoContent {
 			b.Fatalf("unexpected status %d: %s", rec.Code, strings.TrimSpace(rec.Body.String()))
 		}
+	}
+}
+
+// BenchmarkBuildRequestViewDomcat — тот же запрос + applyDomainCats: с
+// категориями от SSP (путь обучения: гейт «раз в час» отсекает повторы) и без
+// них (поиск в справочнике). Сравнивать с BenchmarkBuildRequestView.
+func BenchmarkBuildRequestViewDomcat(b *testing.B) {
+	for _, tc := range []struct {
+		name string
+		mut  func(*BidRequest)
+	}{
+		{"request_cats", func(*BidRequest) {}},
+		{"domain_map", func(r *BidRequest) { r.Site.Cat = nil }},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			var req BidRequest
+			if err := json.Unmarshal([]byte(benchViewRequest), &req); err != nil {
+				b.Fatal(err)
+			}
+			tc.mut(&req)
+			h := domcatHandler(map[string][]string{"news.example.ru": {"IAB1"}},
+				domcat.NewLearner(recWriter{ch: make(chan string, 8)}, time.Hour, 1000))
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				v := buildRequestView(&req)
+				h.applyDomainCats(v)
+			}
+		})
 	}
 }

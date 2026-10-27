@@ -39,6 +39,7 @@ from routers.simulator import router as simulator_router
 from routers.stats import router as stats_router
 from routers.supply_partners import router as supply_partners_router
 from routers.id_sync import router as id_sync_router
+from routers.domain_categories import router as domain_categories_router
 
 import validation_i18n
 from audit import AuditMiddleware
@@ -166,6 +167,7 @@ app.include_router(alerts_router)
 app.include_router(moderation_router)
 app.include_router(audit_router)
 app.include_router(id_sync_router)
+app.include_router(domain_categories_router)
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")

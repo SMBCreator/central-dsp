@@ -97,6 +97,9 @@ DEFAULT_JOBS: tuple[dict, ...] = (
      "description": "ID sync: удалить просроченные соответствия id_sync_map (Redis истекает по TTL)."},
     {"name": "rebuild_idsync", "path": "/cron/rebuild-idsync", "schedule": "20 * * * *", "timeout_seconds": 1800,
      "description": "ID sync: досев idsync:* в Redis из id_sync_map (самовосстановление после потери Redis)."},
+    # Справочник «домен → тематика» (Фаза 3 контекстного таргетинга).
+    {"name": "domcat_learn", "path": "/cron/domcat-learn", "schedule": "*/10 * * * *", "timeout_seconds": 300,
+     "description": "Справочник доменов: перенос обученных тематик из Redis (domcat:learn) в domain_categories."},
     # «Часть B»: выключены по умолчанию — включает админ, когда фича используется.
     {"name": "fx_refresh", "path": "/cron/fx-refresh", "schedule": "10 0 * * *", "timeout_seconds": 120, "enabled": False,
      "description": "Курс ЦБ РФ (нужен только при RTB_CURRENCY != RUB)."},
