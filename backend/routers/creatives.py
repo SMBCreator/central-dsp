@@ -6,6 +6,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 
+from ad_sizes import AD_SIZES
 from auth import current_user
 from rbac import assert_in_scope, assert_owned_by, assert_refs_owned, is_admin, require_creative_manager, scope_for
 from notify import notify_admins
@@ -79,6 +80,12 @@ def _validate_type_fields(body: CreativeIn) -> None:
         missing.append("video_duration")
     if missing:
         raise HTTPException(status_code=422, detail=f"Для типа {body.type} обязательны поля: {', '.join(missing)}")
+
+
+@router.get("/sizes")
+async def list_ad_sizes(_user: dict = Depends(current_user)):
+    """Справочник допустимых размеров баннеров (единый источник для UI)."""
+    return AD_SIZES
 
 
 @router.get("")

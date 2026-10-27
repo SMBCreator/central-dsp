@@ -2,6 +2,7 @@
 
 import { useState } from "react"
 import { assetUrl } from "@/lib/api"
+import { FALLBACK_AD_SIZES, useAdSizes } from "@/lib/ad-sizes"
 import { Button, Field, inputCls, Panel } from "@/components/ui"
 import { ImageCropper } from "@/components/image-cropper"
 
@@ -30,7 +31,7 @@ export const FORMAT_META: Record<AdFormat, { label: string; description: string;
   banner: {
     label: "Баннер",
     description: "Статика, GIF или HTML5. Стандартные IAB-размеры.",
-    specs: "Топ-размеры: 300x250, 728x90, 320x50, 320x100, 300x600, 336x280, 970x250, 160x600, 240x400",
+    specs: `Допустимые размеры: ${FALLBACK_AD_SIZES.map((s) => s.size).join(", ")}`,
   },
   native: {
     label: "Нативный",
@@ -52,8 +53,6 @@ export const FORMAT_META: Record<AdFormat, { label: string; description: string;
 export const FORMAT_LABELS: Record<string, string> = Object.fromEntries(
   Object.entries(FORMAT_META).map(([k, v]) => [k, v.label]),
 )
-
-const BANNER_SIZES = ["300x250", "728x90", "320x50", "320x100", "300x600", "336x280", "970x250", "160x600", "240x400"]
 
 export function emptyDraft(type: AdFormat): CreativeDraft {
   return {
@@ -145,6 +144,7 @@ export function CreativePreview({ d }: { d: CreativeDraft }) {
 /** Per-format creative editing form. Emits the finished draft via onAdd. */
 export function CreativeForm({ format, onAdd }: { format: AdFormat; onAdd: (d: CreativeDraft) => void }) {
   const [d, setD] = useState<CreativeDraft>(() => emptyDraft(format))
+  const adSizes = useAdSizes()
   const [err, setErr] = useState<string | null>(null)
   const set = (patch: Partial<CreativeDraft>) => setD((prev) => ({ ...prev, ...patch }))
 
@@ -201,8 +201,8 @@ export function CreativeForm({ format, onAdd }: { format: AdFormat; onAdd: (d: C
                   }}
                   className={inputCls}
                 >
-                  {BANNER_SIZES.map((s) => (
-                    <option key={s} value={s}>{s}</option>
+                  {adSizes.map((s) => (
+                    <option key={s.size} value={s.size}>{s.size} · {s.label}</option>
                   ))}
                 </select>
               </Field>

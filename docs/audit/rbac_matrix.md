@@ -49,6 +49,7 @@
 | GET | `/campaigns/{campaign_id}/shading` | session | любая роль (scope внутри хендлера) |
 | GET | `/creatives` | session | любая роль (scope внутри хендлера) |
 | **POST** | `/creatives` | roles+flag | admin, advertiser, agency, manager, superadmin + client[can_manage_creatives] |
+| GET | `/creatives/sizes` | session | любая роль (scope внутри хендлера) |
 | **POST** | `/creatives/upload` | roles+flag | admin, advertiser, agency, manager, superadmin + client[can_manage_creatives] |
 | **DELETE** | `/creatives/upload/{name}` | roles+flag | admin, advertiser, agency, manager, superadmin + client[can_manage_creatives] |
 | **DELETE** | `/creatives/{creative_id}` | roles+flag | admin, advertiser, agency, manager, superadmin + client[can_manage_creatives] |

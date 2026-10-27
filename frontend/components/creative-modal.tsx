@@ -11,6 +11,7 @@ import { MultiSelect } from "@/components/multi-select"
 import { CreativePreview } from "@/components/creative-preview"
 import { useAdvertisers } from "@/lib/advertisers"
 import { isForeignAdvertiser } from "@/lib/ad-market"
+import { useAdSizes } from "@/lib/ad-sizes"
 
 type AdType = "banner" | "native" | "video" | "push"
 type StepKey = "type" | "content" | "tracking" | "ord"
@@ -22,7 +23,6 @@ const STEPS: { key: StepKey; label: string }[] = [
   { key: "ord", label: "Маркировка" },
 ]
 
-const SIZES = ["300x250", "728x90", "320x50", "160x600", "300x600", "970x250"]
 const IMAGE_ACCEPT = "image/png,image/jpeg,image/gif,image/webp"
 const VIDEO_ACCEPT = "video/mp4,video/webm"
 const IMAGE_MAX = 2 * 1024 * 1024
@@ -168,6 +168,7 @@ export function CreativeModal({
   onOrdResult?: (r: CreativeOrdResult) => void
 }) {
   const [step, setStep] = useState<StepKey>("type")
+  const adSizes = useAdSizes()
   const [type, setType] = useState<AdType>("banner")
   const [form, setForm] = useState<FormState>(() => emptyForm(defaultCampaignId || campaigns[0]?.id || ""))
   // ТЗ п.5: кампания рекламодателя «за пределами РФ» — без маркировки (контрагент, договор, ККТУ).
@@ -592,9 +593,9 @@ export function CreativeModal({
                       <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
                         <Field label="Размер">
                           <select value={form.size} onChange={(e) => patch({ size: e.target.value })} className={inputCls}>
-                            {SIZES.map((s) => (
-                              <option key={s} value={s}>
-                                {s}
+                            {adSizes.map((s) => (
+                              <option key={s.size} value={s.size}>
+                                {s.size} · {s.label}
                               </option>
                             ))}
                           </select>
@@ -674,9 +675,9 @@ export function CreativeModal({
               {type === "banner" && bannerAssets.length === 0 ? (
                 <Field label="Размер">
                   <select value={form.size} onChange={(e) => patch({ size: e.target.value })} className={inputCls}>
-                    {SIZES.map((s) => (
-                      <option key={s} value={s}>
-                        {s}
+                    {adSizes.map((s) => (
+                      <option key={s.size} value={s.size}>
+                        {s.size} · {s.label}
                       </option>
                     ))}
                   </select>

@@ -7,6 +7,7 @@
  */
 
 import type { ScoringProfile } from "@/lib/types"
+import { FALLBACK_AD_SIZES } from "@/lib/ad-sizes-catalog"
 
 const now = Date.now()
 const iso = (msAgo: number) => new Date(now - msAgo).toISOString()
@@ -907,6 +908,7 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
   })
   if (liCrud !== undefined) return liCrud
 
+  if (path === "/creatives/sizes" && method === "GET") return FALLBACK_AD_SIZES
   if (path === "/creatives" && method === "GET") {
     const cid = search.get("campaign_id")
     return cid ? mockCreatives.filter((c) => c.campaign_id === cid) : mockCreatives
