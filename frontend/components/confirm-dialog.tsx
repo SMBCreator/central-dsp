@@ -26,16 +26,22 @@ export function ConfirmDialog({
   onClose: () => void
 }) {
   const confirmRef = useRef<HTMLButtonElement>(null)
+  // Инлайн-onClose у родителя меняется каждый рендер; в зависимостях эффекта он
+  // перезапускал бы эффект и заново ставил фокус на «Подтвердить» (ТЗ п.4, sweep).
+  const onCloseRef = useRef(onClose)
+  useEffect(() => {
+    onCloseRef.current = onClose
+  })
 
   useEffect(() => {
     if (!open) return
     confirmRef.current?.focus()
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose()
+      if (e.key === "Escape") onCloseRef.current()
     }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
-  }, [open, onClose])
+  }, [open])
 
   if (!open) return null
 
