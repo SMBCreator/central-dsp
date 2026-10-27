@@ -83,6 +83,10 @@ export default function NewCampaignPage() {
   const steps = foreign ? FOREIGN_STEPS : STEPS
   const { data: counterparties } = useSWR<Counterparty[]>(step === 5 && !foreign ? "/ord/counterparties" : null, fetcher)
   const selectedCp = useMemo(() => (counterparties || []).find((cp) => cp.id === chain.counterparty_id) || null, [counterparties, chain.counterparty_id])
+  const advertiser = useMemo(
+    () => ({ name: selectedCp?.name ?? null, inn: selectedCp?.inn ?? null, ogrn: selectedCp?.ogrn ?? null, address: selectedCp?.address ?? null, erid: null }),
+    [selectedCp],
+  )
   const [saving, setSaving] = useState(false)
   const { guard } = useSubmitGuard()
   const [error, setError] = useState("")
@@ -509,7 +513,7 @@ export default function NewCampaignPage() {
               <div className="flex justify-between gap-3 sm:col-span-2"><dt className="text-muted">Таргетинг</dt><dd className="text-right text-foreground">{targetingSummary(targeting)}</dd></div>
             </dl>
           </Card>
-          <CreativeBuilder format={format} creatives={creatives} onChange={setCreatives} />
+          <CreativeBuilder format={format} creatives={creatives} onChange={setCreatives} advertiser={advertiser} />
 
           {foreign ? null : (
           <Card>

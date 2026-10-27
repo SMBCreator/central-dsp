@@ -180,6 +180,16 @@ export function CreativeModal({
     () => (counterparties || []).find((cp) => cp.id === form.counterparty_id) || null,
     [counterparties, form.counterparty_id],
   )
+  const advertiser = useMemo(
+    () => ({
+      name: selectedCp?.name ?? null,
+      inn: selectedCp?.inn ?? null,
+      ogrn: selectedCp?.ogrn ?? null,
+      address: selectedCp?.address ?? null,
+      erid: null,
+    }),
+    [selectedCp],
+  )
   // Договоры, по которым можно получить erid: зарегистрированы в ОРД и заказчик — выбранный контрагент.
   // Если такой ровно один — бэкенд подберёт его сам при approve; при нескольких выбор обязателен.
   const eligibleContracts = useMemo(
@@ -538,7 +548,7 @@ export function CreativeModal({
 
               {type === "banner" ? (
                 <div className="space-y-3">
-                  <CreativeBatchPanel batch={batch} defaultClickUrl={form.click_url.trim()} />
+                  <CreativeBatchPanel batch={batch} defaultClickUrl={form.click_url.trim()} advertiser={advertiser} />
                   {batch.items.length === 0 ? (
                     <details className="rounded-lg border border-border bg-surface px-3 py-2">
                       <summary className="cursor-pointer text-xs text-muted">Или указать URL изображения вручную</summary>

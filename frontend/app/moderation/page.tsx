@@ -2,10 +2,11 @@
 
 import { useState } from "react"
 import useSWR, { mutate } from "swr"
-import { api, assetUrl, fetcher } from "@/lib/api"
+import { api, fetcher } from "@/lib/api"
 import { AD_TYPE_LABELS } from "@/lib/types"
 import { Button, Card, CardHeader, EmptyState, Modal, Spinner, inputCls } from "@/components/ui"
-import { CreativePreview } from "@/components/creative-preview"
+import { CreativeThumb } from "@/components/creative-thumb"
+import { CreativePreviewModal } from "@/components/creative-preview-modal"
 
 interface QueueItem {
   id: string
@@ -42,6 +43,7 @@ export default function ModerationPage() {
   const [tab, setTab] = useState<"pending" | "approved" | "rejected">("pending")
   const { data: items, isLoading } = useSWR<QueueItem[]>(`/moderation/queue?status=${tab}`, fetcher)
   const [rejecting, setRejecting] = useState<QueueItem | null>(null)
+  const [previewing, setPreviewing] = useState<QueueItem | null>(null)
   const [comment, setComment] = useState("")
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -233,24 +235,7 @@ export default function ModerationPage() {
               </div>
               <div className="flex flex-col gap-4 px-6 pb-6 pt-2 lg:flex-row">
                 <div className="shrink-0">
-                  <CreativePreview
-                    type={item.type}
-                    assetUrl={assetUrl(item.asset_url)}
-                    width={item.width}
-                    height={item.height}
-                    nativeTitle={item.native_title}
-                    nativeDescription={item.native_description}
-                    nativeCta={item.native_cta}
-                    nativeIconUrl={assetUrl(item.native_icon_url)}
-                    videoUrl={assetUrl(item.video_url)}
-                    advertiser={{
-                      name: item.counterparty_name,
-                      inn: item.counterparty_inn,
-                      ogrn: item.counterparty_ogrn,
-                      address: item.counterparty_address,
-                      erid: item.erid,
-                    }}
-                  />
+                  <CreativeThumb creative={item} onOpen={() => setPreviewing(item)} />
                 </div>
                 <div className="min-w-0 flex-1 space-y-2 text-sm">
                   <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 sm:grid-cols-2">
@@ -326,6 +311,38 @@ export default function ModerationPage() {
           description={tab === "pending" ? "Новые креативы клиентов появятся здесь автоматически." : ""}
         />
       )}
+
+      <CreativePreviewModal
+        creative={previewing}
+        campaignName={previewing?.campaign_name}
+        onClose={() => setPreviewing(null)}
+        footer={
+          previewing && tab === "pending" ? (
+            <>
+              <Button
+                variant="secondary"
+                disabled={!!busy}
+                onClick={() => {
+                  setRejecting(previewing)
+                  setComment("")
+                  setPreviewing(null)
+                }}
+              >
+                Отклонить
+              </Button>
+              <Button
+                disabled={!!busy}
+                onClick={async () => {
+                  await approve(previewing)
+                  setPreviewing(null)
+                }}
+              >
+                {busy === previewing.id ? "Обработка…" : "Одобрить"}
+              </Button>
+            </>
+          ) : null
+        }
+      />
 
       <Modal open={!!rejecting} onClose={() => setRejecting(null)} title={`Отклонить «${rejecting?.name || ""}»`}>
         <form onSubmit={reject} className="space-y-4">

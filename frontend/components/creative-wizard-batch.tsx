@@ -5,6 +5,7 @@ import { apiDeleteUpload } from "@/lib/api"
 import { useAdSizes } from "@/lib/ad-sizes"
 import { Button, Field, inputCls } from "@/components/ui"
 import { CreativeBatchPanel, useCreativeBatch } from "@/components/creative-batch-panel"
+import type { AdvertiserInfo } from "@/lib/creative-badge"
 import type { CreativeDraft } from "@/components/creative-builder"
 import type { BatchResultItem } from "@/lib/creative-batch"
 import { itemToBannerDraft, planWizardBatch } from "@/lib/creative-wizard"
@@ -18,9 +19,11 @@ import { itemToBannerDraft, planWizardBatch } from "@/lib/creative-wizard"
 export function WizardBannerBatch({
   creatives,
   onChange,
+  advertiser,
 }: {
   creatives: CreativeDraft[]
   onChange: (list: CreativeDraft[]) => void
+  advertiser?: AdvertiserInfo
 }) {
   const adSizes = useAdSizes()
   const orphanPaths = useRef<Set<string>>(new Set())
@@ -66,7 +69,7 @@ export function WizardBannerBatch({
         />
       </Field>
 
-      <CreativeBatchPanel batch={batch} defaultClickUrl={clickUrl.trim()} />
+      <CreativeBatchPanel batch={batch} defaultClickUrl={clickUrl.trim()} advertiser={advertiser} />
 
       {plan.needLink.length > 0 ? (
         <p role="status" className="text-xs text-warning">

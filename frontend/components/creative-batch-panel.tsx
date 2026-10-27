@@ -3,6 +3,8 @@
 import { memo, useCallback, useEffect, useReducer, useRef, useState, type MutableRefObject } from "react"
 import { apiDeleteUpload, apiUpload, assetUrl, type UploadResult } from "@/lib/api"
 import { formatSize, type AdSize } from "@/lib/ad-sizes-catalog"
+import { AdInfoBadge, CreativePreview } from "@/components/creative-preview"
+import type { AdvertiserInfo } from "@/lib/creative-badge"
 import {
   BATCH_MAX_FILES,
   IMAGE_ACCEPT,
@@ -235,8 +237,12 @@ function phaseLabel(i: BatchItem): string | null {
 const smallInputCls =
   "w-full rounded-md border border-input bg-card px-2.5 py-1 text-sm text-foreground placeholder:text-muted focus:border-ring focus:ring-2 focus:ring-ring/40 focus:outline-none"
 
+const NO_ADVERTISER: AdvertiserInfo = {}
+
 interface CardProps {
   item: BatchItem
+  /** Стабильная ссылка (useMemo у владельца): карточка обёрнута в memo, пакет до 30 файлов. */
+  advertiser?: AdvertiserInfo
   defaultClickUrl: string
   onRename: (id: string, name: string) => void
   onClickUrl: (id: string, url: string) => void
@@ -244,7 +250,7 @@ interface CardProps {
   onRetry: (id: string) => void
 }
 
-export const BatchItemCard = memo(function BatchItemCard({ item, defaultClickUrl, onRename, onClickUrl, onRemove, onRetry }: CardProps) {
+export const BatchItemCard = memo(function BatchItemCard({ item, advertiser = NO_ADVERTISER, defaultClickUrl, onRename, onClickUrl, onRemove, onRetry }: CardProps) {
   const [expanded, setExpanded] = useState(false)
   const meta = STATUS_META[item.submitError ? "error" : item.status]
   const phase = phaseLabel(item)
@@ -266,7 +272,10 @@ export const BatchItemCard = memo(function BatchItemCard({ item, defaultClickUrl
         >
           {src ? (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={src || "/placeholder.svg"} alt="" className="max-h-full max-w-full rounded-sm object-contain" />
+            <span className="relative inline-block max-h-full max-w-full overflow-hidden rounded-sm">
+              <img src={src || "/placeholder.svg"} alt="" className="block max-h-[7.5rem] max-w-full object-contain" />
+              <AdInfoBadge advertiser={advertiser} compact interactive={false} />
+            </span>
           ) : (
             <span className="text-[11px] text-muted">Нет превью</span>
           )}
@@ -359,20 +368,19 @@ export const BatchItemCard = memo(function BatchItemCard({ item, defaultClickUrl
 
       {expanded && src ? (
         <div className="mt-3 overflow-auto rounded-md border border-border bg-panel p-2">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={src || "/placeholder.svg"}
-            alt={`Баннер ${dims}`}
-            className="mx-auto max-w-full"
-            style={item.width ? { width: item.width } : undefined}
-          />
+          {item.width && item.height ? (
+            <CreativePreview fit="contain" type="banner" assetUrl={src} width={item.width} height={item.height} advertiser={advertiser} />
+          ) : (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={src || "/placeholder.svg"} alt={`Баннер ${dims}`} className="mx-auto max-w-full" />
+          )}
         </div>
       ) : null}
     </li>
   )
 })
 
-export function BatchItemList({ batch, defaultClickUrl }: { batch: CreativeBatch; defaultClickUrl: string }) {
+export function BatchItemList({ batch, defaultClickUrl, advertiser }: { batch: CreativeBatch; defaultClickUrl: string; advertiser?: AdvertiserInfo }) {
   if (batch.items.length === 0) return null
   return (
     <ul className="space-y-2" aria-label="Файлы пакета">
@@ -380,6 +388,7 @@ export function BatchItemList({ batch, defaultClickUrl }: { batch: CreativeBatch
         <BatchItemCard
           key={item.id}
           item={item}
+          advertiser={advertiser}
           defaultClickUrl={defaultClickUrl}
           onRename={batch.rename}
           onClickUrl={batch.setClickUrl}
@@ -399,7 +408,7 @@ function UploadIcon() {
   )
 }
 
-export function CreativeBatchPanel({ batch, defaultClickUrl }: { batch: CreativeBatch; defaultClickUrl: string }) {
+export function CreativeBatchPanel({ batch, defaultClickUrl, advertiser }: { batch: CreativeBatch; defaultClickUrl: string; advertiser?: AdvertiserInfo }) {
   const [dragOver, setDragOver] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
   const folderInput = useRef<HTMLInputElement>(null)
@@ -520,7 +529,7 @@ export function CreativeBatchPanel({ batch, defaultClickUrl }: { batch: Creative
         </div>
       ) : null}
 
-      <BatchItemList batch={batch} defaultClickUrl={defaultClickUrl} />
+      <BatchItemList batch={batch} defaultClickUrl={defaultClickUrl} advertiser={advertiser} />
 
       {s.total > 0 ? (
         <p className="text-xs text-muted" aria-live="polite">

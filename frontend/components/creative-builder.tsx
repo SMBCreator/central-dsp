@@ -6,6 +6,7 @@ import { FALLBACK_AD_SIZES, useAdSizes } from "@/lib/ad-sizes"
 import { Button, Field, inputCls, Panel } from "@/components/ui"
 import { ImageCropper } from "@/components/image-cropper"
 import { WizardBannerBatch } from "@/components/creative-wizard-batch"
+import type { AdvertiserInfo } from "@/lib/creative-badge"
 
 export type AdFormat = "banner" | "native" | "video" | "push"
 
@@ -296,10 +297,12 @@ export function CreativeBuilder({
   format,
   creatives,
   onChange,
+  advertiser,
 }: {
   format: string
   creatives: CreativeDraft[]
   onChange: (list: CreativeDraft[]) => void
+  advertiser?: AdvertiserInfo
 }) {
   const f = format as AdFormat
 
@@ -320,7 +323,7 @@ export function CreativeBuilder({
       <Panel className="p-4">
         {f === "banner" ? (
           <div className="space-y-4">
-            <WizardBannerBatch creatives={creatives} onChange={onChange} />
+            <WizardBannerBatch creatives={creatives} onChange={onChange} advertiser={advertiser} />
             <details className="rounded-lg border border-border bg-surface px-3 py-2">
               <summary className="cursor-pointer text-xs text-muted">Добавить вручную (HTML5, изображение по ссылке)</summary>
               <div className="mt-3">
