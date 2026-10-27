@@ -21,18 +21,19 @@ import {
 const SIZES = FALLBACK_AD_SIZES
 
 describe("справочник", () => {
-  it("21 уникальный размер, есть 120x600 и 970x250, нет 20x600", () => {
+  it("24 уникальных размера, есть 120x600, 240x600, 300x500, 970x90, 970x250, нет 20x600", () => {
     const keys = SIZES.map((s) => s.size)
-    expect(keys).toHaveLength(21)
-    expect(new Set(keys).size).toBe(21)
-    expect(keys).toContain("120x600")
-    expect(keys).toContain("970x250")
+    expect(keys).toHaveLength(24)
+    expect(new Set(keys).size).toBe(24)
+    for (const want of ["120x600", "240x600", "300x500", "320x50", "320x100", "970x90", "970x250"]) {
+      expect(keys).toContain(want)
+    }
     expect(keys).not.toContain("20x600")
   })
 })
 
 describe("matchSize", () => {
-  it("все 21 размер сопоставляются точно", () => {
+  it("все 24 размера сопоставляются точно", () => {
     for (const s of SIZES) {
       const m = matchSize(s.width, s.height, SIZES)
       expect(m.match?.size).toBe(s.size)

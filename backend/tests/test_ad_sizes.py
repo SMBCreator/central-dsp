@@ -20,11 +20,12 @@ from routers.simulator import SIM_BANNER_SIZES  # noqa: E402
 FRONTEND_COPY = Path(__file__).resolve().parents[2] / "frontend" / "lib" / "ad-sizes-catalog.ts"
 
 
-def test_catalog_has_21_unique_sizes():
+def test_catalog_has_24_unique_sizes():
     keys = [s["size"] for s in ad_sizes.AD_SIZES]
-    assert len(keys) == 21
-    assert len(set(keys)) == 21
-    assert "120x600" in keys and "970x250" in keys
+    assert len(keys) == 24
+    assert len(set(keys)) == 24
+    for want in ("120x600", "240x600", "300x500", "320x50", "320x100", "970x90", "970x250"):
+        assert want in keys
     assert "20x600" not in keys
 
 
@@ -102,7 +103,7 @@ def test_sizes_endpoint_returns_catalog():
             r = await c.get("/creatives/sizes")
             assert r.status_code == 200
             data = r.json()
-            assert len(data) == 21
+            assert len(data) == 24
             assert {"size", "width", "height", "label", "category", "max_bytes"} <= set(data[0])
             assert [d["size"] for d in data] == [s["size"] for s in ad_sizes.AD_SIZES]
 
