@@ -1320,6 +1320,7 @@ func buildRequestView(req *BidRequest) *targeting.RequestView {
 		cKw, cTitle = content.Keywords, content.Title
 	}
 	v.Keywords = targeting.KeywordHaystack(kw, cKw, page, cTitle)
+	v.KWSrc = targeting.KWSources{kw, cKw, page, cTitle}
 	if u := req.User; u != nil {
 		v.Gender = strings.ToUpper(strings.TrimSpace(u.Gender))
 		v.YOB = u.YOB
@@ -1584,7 +1585,7 @@ func typeMatches(c *feed.Candidate, adType string, imp *Imp) bool {
 // покрывать ВСЕ ключи, которые редактирует кабинет (frontend/components/targeting-editor.tsx):
 // поле, не переданное сюда, молча игнорируется биддером.
 func feedTargetingToMatch(t *feed.Targeting) *targeting.Targeting {
-	return &targeting.Targeting{
+	m := &targeting.Targeting{
 		GeoCountries: t.GeoCountries, GeoRegions: t.GeoRegions, GeoCities: t.GeoCities,
 		DeviceTypes: t.DeviceTypes, OS: t.OS, Browsers: t.Browsers, Languages: t.Languages,
 		ConnectionTypes: t.ConnectionTypes, IABCategories: t.IABCategories, IABBlock: t.IABBlock,
@@ -1598,7 +1599,10 @@ func feedTargetingToMatch(t *feed.Targeting) *targeting.Targeting {
 		IPRanges:   t.IPRanges,
 		BlockCOPPA: t.BlockCOPPA, BlockGDPR: t.BlockGDPR, SkipDNT: t.SkipDNT,
 		DeviceMakes: t.DeviceMakes, SChainRequired: t.SChainRequired,
+		IABAllowUnknown: t.IABAllowUnknown, KeywordsMatch: t.KeywordsMatch, ContextMode: t.ContextMode,
 	}
+	m.UsePreparedKeywords(t.Keywords)
+	return m
 }
 
 // feedImpTargeting — imp-level часть таргетинга line item.
