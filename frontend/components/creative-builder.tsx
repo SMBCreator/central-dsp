@@ -1,10 +1,11 @@
 "use client"
 
 import { useState } from "react"
-import { assetUrl } from "@/lib/api"
+import { apiDeleteUpload, assetUrl } from "@/lib/api"
 import { FALLBACK_AD_SIZES, useAdSizes } from "@/lib/ad-sizes"
 import { Button, Field, inputCls, Panel } from "@/components/ui"
 import { ImageCropper } from "@/components/image-cropper"
+import { WizardBannerBatch } from "@/components/creative-wizard-batch"
 
 export type AdFormat = "banner" | "native" | "video" | "push"
 
@@ -301,6 +302,14 @@ export function CreativeBuilder({
   onChange: (list: CreativeDraft[]) => void
 }) {
   const f = format as AdFormat
+
+  const removeAt = (idx: number) => {
+    const c = creatives[idx]
+    // Файл, загруженный пакетным загрузчиком, больше не нужен (внешние URL игнорируются).
+    if (c && c.type === "banner") void apiDeleteUpload(c.asset_url)
+    onChange(creatives.filter((_, j) => j !== idx))
+  }
+
   return (
     <div className="space-y-4">
       <Panel className="p-4">
@@ -309,7 +318,19 @@ export function CreativeBuilder({
       </Panel>
 
       <Panel className="p-4">
-        <CreativeForm format={f} onAdd={(d) => onChange([...creatives, d])} />
+        {f === "banner" ? (
+          <div className="space-y-4">
+            <WizardBannerBatch creatives={creatives} onChange={onChange} />
+            <details className="rounded-lg border border-border bg-surface px-3 py-2">
+              <summary className="cursor-pointer text-xs text-muted">Добавить вручную (HTML5, изображение по ссылке)</summary>
+              <div className="mt-3">
+                <CreativeForm format={f} onAdd={(d) => onChange([...creatives, d])} />
+              </div>
+            </details>
+          </div>
+        ) : (
+          <CreativeForm format={f} onAdd={(d) => onChange([...creatives, d])} />
+        )}
       </Panel>
 
       {creatives.length > 0 ? (
@@ -334,7 +355,7 @@ export function CreativeBuilder({
                     </p>
                   </div>
                 </div>
-                <Button variant="ghost" onClick={() => onChange(creatives.filter((_, j) => j !== i))}>
+                <Button variant="ghost" onClick={() => removeAt(i)}>
                   Убрать
                 </Button>
               </li>
