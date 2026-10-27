@@ -54,6 +54,7 @@ from cache import (
 )
 import fx
 import rtb_compat
+import url_macros
 from db import get_pool
 from money import clamp_clearing_price, cpm_to_cost
 from ord.service import feed_gate_sql
@@ -524,7 +525,17 @@ def _view_script(wrap_id: str, view_url: str, click_beacon: str = "") -> str:
     )
 
 
-def _build_adm(creative: dict, base: str, bid_id: str) -> str:
+def _expand_pixel(raw: str, macro_ctx: dict) -> str:
+    """Пиксель с макросами ${CDSP_*}: развёрнутый и перепроверенный safe_url
+    (схема, длина <= 2048, без кавычек/пробелов); непригодный — "" (пикселя нет,
+    ставка идёт). Без макросов — как есть. Зеркало Go rtb.expandPixel."""
+    if not url_macros.find_macros(raw):
+        return raw
+    out = url_macros.expand(raw, macro_ctx)
+    return out if rtb_compat.safe_url(out) else ""
+
+
+def _build_adm(creative: dict, base: str, bid_id: str, macro_ctx: dict | None = None) -> str:
     """Разметка креатива (banner HTML / native JSON / VAST XML) — эталон для
     bidder-go/internal/rtb/adm.go.
 
@@ -539,11 +550,14 @@ def _build_adm(creative: dict, base: str, bid_id: str) -> str:
     # Сторонние трекеры (аудит): пиксель на показ добавляется в разметку,
     # клик-трекер дёргается из клиентского onclick / clicktrackers / VAST.
     third_imp = creative.get("imp_tracker_url") or ""
+    third_click = creative.get("click_tracker_url") or ""
+    if macro_ctx is not None:
+        third_imp = _expand_pixel(third_imp, macro_ctx)
+        third_click = _expand_pixel(third_click, macro_ctx)
     third_imp_px = (
         f'<img src="{_html_escape(third_imp)}" width="1" height="1" style="display:none" alt=""/>'
         if third_imp else ""
     )
-    third_click = creative.get("click_tracker_url") or ""
     erid = creative.get("erid") or ""
     erid_label = _build_ad_info_badge(creative)
     # Токен — [0-9a-zA-Z._-], base — наш конфиг: эти URL не нуждаются в
@@ -1328,7 +1342,21 @@ async def process_bid_request(
         nurl = f"{base}/api/rtb/win?bid={event_token}&price=${{AUCTION_PRICE}}"
         # burl (OpenRTB 2.5 §4.3.3, R-07): billable-событие; тот же токен, что и nurl.
         burl = f"{base}/api/rtb/burl?bid={event_token}&price=${{AUCTION_PRICE}}"
-        adm = _build_adm(c, base, event_token)
+        # Макросы ${CDSP_*} — только у креативов, где они есть; остальные идут
+        # прежним путём. Зеркало Go rtb.expandCreativeURLs.
+        macro_ctx = None
+        click_link = ""
+        if url_macros.has_macros(c.get("click_url"), c.get("imp_tracker_url"), c.get("click_tracker_url")):
+            macro_ctx = url_macros.build_context(
+                req=req, imp=imp, creative=c, partner_id=partner["id"], bid_id=bid_id,
+                device_type=DEVICE_TYPES.get(device.get("devicetype", 0), "unknown"),
+                os_name=req_os, browser=req_browser,
+            )
+            if url_macros.find_macros(c.get("click_url")):
+                _link = url_macros.expand(c["click_url"], macro_ctx)
+                if rtb_compat.safe_url(_link):
+                    click_link = _link
+        adm = _build_adm(c, base, event_token, macro_ctx)
 
         # Synchronously cache bid metadata in Redis (sub-ms) so win/imp/click
         # handlers can resolve the bid immediately; the Postgres insert below
@@ -1363,6 +1391,7 @@ async def process_bid_request(
                 "cur": resp_cur,
                 "fx_rate": c["_fx_rate"],
                 **reserve_meta,
+                **({"click_url": click_link} if click_link else {}),
             }),
             ex=3600,
         )
@@ -1941,8 +1970,10 @@ async def click(bid: str, beacon: int = 0):
                     obs_metrics.inc("rtb_clicks_total")
     if beacon:
         return Response(content=_PIXEL, media_type="image/gif")
-    target = ""
-    if row and row["creative_id"]:
+    # Креатив с макросами ${CDSP_*}: биддер кладёт развёрнутую ссылку в bidmeta.click_url;
+    # нет поля (креатив без макросов, bidmeta истёк, PG-fallback) — click_url из БД.
+    target = _row_get(row, "click_url") or ""
+    if not target and row and row["creative_id"]:
         target = await pool.fetchval("SELECT click_url FROM creatives WHERE id = $1", row["creative_id"]) or ""
     if rtb_compat.safe_url(target):
         return Response(status_code=302, headers={"Location": _with_clid(target, bid)})

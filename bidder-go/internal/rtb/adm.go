@@ -97,12 +97,18 @@ func BuildAdm(c *feed.Candidate, base, eventToken string) string {
 // BuildAdmAssets — как BuildAdm, но native assets заданы по imp.native.request
 // (buildNativeAssets, audit R-04); nil = legacy фиксированный набор.
 func BuildAdmAssets(c *feed.Candidate, base, eventToken string, nativeAssets []map[string]any) string {
-	thirdImp := c.ImpTrackerURL
+	return buildAdmURLs(c, base, eventToken, nativeAssets, c.ImpTrackerURL, c.ClickTrackerURL)
+}
+
+// buildAdmURLs — BuildAdmAssets с явными URL сторонних пикселей: для
+// креативов с макросами это уже развёрнутые и перепроверенные строки
+// (expandPixel), для остальных — c.ImpTrackerURL / c.ClickTrackerURL как есть.
+// Пустая строка — пикселя нет.
+func buildAdmURLs(c *feed.Candidate, base, eventToken string, nativeAssets []map[string]any, thirdImp, thirdClick string) string {
 	thirdImpPx := ""
 	if thirdImp != "" {
 		thirdImpPx = fmt.Sprintf(`<img src="%s" width="1" height="1" style="display:none" alt=""/>`, htmlEscape(thirdImp))
 	}
-	thirdClick := c.ClickTrackerURL
 	erid := c.Erid
 	eridLabel := buildAdInfoBadge(c)
 	// Токен — [0-9a-zA-Z._-], base — наш конфиг: URL ниже не нуждаются в

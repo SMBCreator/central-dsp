@@ -5,6 +5,7 @@ from typing import Annotated, Literal
 from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 import rtb_compat
+import url_macros
 from targeting_contract import validate_targeting
 
 # IAB Content Taxonomy 1.0: "IAB1" (tier-1) или "IAB1-1" (tier-2).
@@ -49,7 +50,18 @@ def validate_vast_xml(value: str | None) -> str | None:
     return value
 
 
+def validate_creative_macros(value: str | None) -> str | None:
+    """Неизвестный ${CDSP_…} (опечатка) — 422 с подсказкой. Макросы SSP и
+    ${CLICK_URL…} не проверяются; для уже сохранённых креативов не запускается."""
+    err = url_macros.validate_macros(value)
+    if err:
+        raise ValueError(err)
+    return value
+
+
 CreativeUrl = Annotated[str | None, AfterValidator(validate_creative_url)]
+# Ссылка перехода и пиксели: дополнительно проверяем макросы каталога.
+CreativeMacroUrl = Annotated[str | None, AfterValidator(validate_creative_url), AfterValidator(validate_creative_macros)]
 VastXml = Annotated[str | None, AfterValidator(validate_vast_xml)]
 
 
@@ -272,7 +284,7 @@ class CreativeIn(BaseModel):
     width: int | None = Field(default=None, ge=1, le=4096)
     height: int | None = Field(default=None, ge=1, le=4096)
     asset_url: CreativeUrl = None
-    click_url: CreativeUrl = None
+    click_url: CreativeMacroUrl = None
     html_snippet: str | None = Field(default=None, max_length=MAX_HTML_SNIPPET_LEN)
     native_title: str | None = Field(default=None, max_length=90)
     native_description: str | None = Field(default=None, max_length=200)
@@ -283,8 +295,8 @@ class CreativeIn(BaseModel):
     vast_xml: VastXml = None
     crop: dict | None = None
     # Сторонние трекеры (показ и клик) — пиксели аудита
-    imp_tracker_url: CreativeUrl = None
-    click_tracker_url: CreativeUrl = None
+    imp_tracker_url: CreativeMacroUrl = None
+    click_tracker_url: CreativeMacroUrl = None
     # Информация о рекламодателе (контрагент из ОРД): ОГРН, наименование, адрес
     counterparty_id: str | None = None
     # Договор ОРД для получения erid (миграция 036). Пусто — подбирается по контрагенту.
@@ -325,9 +337,9 @@ CREATIVE_BATCH_MAX = 30
 
 class CreativeBatchCommon(BaseModel):
     subtype: str | None = Field(default=None, pattern="^(static|gif|html5)$")
-    click_url: CreativeUrl = None
-    imp_tracker_url: CreativeUrl = None
-    click_tracker_url: CreativeUrl = None
+    click_url: CreativeMacroUrl = None
+    imp_tracker_url: CreativeMacroUrl = None
+    click_tracker_url: CreativeMacroUrl = None
     counterparty_id: str | None = None
     contract_id: str | None = None
     kktu_code: str | None = Field(default=None, max_length=20)
@@ -381,14 +393,14 @@ class CreativePatch(BaseModel):
     @classmethod
     def _attr_codes(cls, v):
         return None if v is None else CreativeIn._attr_codes(v)
-    imp_tracker_url: CreativeUrl = None
-    click_tracker_url: CreativeUrl = None
+    imp_tracker_url: CreativeMacroUrl = None
+    click_tracker_url: CreativeMacroUrl = None
     # Владелец может только отправить на модерацию или архивировать.
     # approved/rejected ставит исключительно /moderation (админ) — иначе
     # обход модерации и показ непроверенного креатива.
     status: str | None = Field(default=None, pattern="^(pending|archived)$")
     asset_url: CreativeUrl = None
-    click_url: CreativeUrl = None
+    click_url: CreativeMacroUrl = None
     html_snippet: str | None = Field(default=None, max_length=MAX_HTML_SNIPPET_LEN)
     native_title: str | None = Field(default=None, max_length=90)
     native_description: str | None = Field(default=None, max_length=200)
