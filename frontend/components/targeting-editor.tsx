@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react"
 import { Field, inputCls } from "@/components/ui"
 import { MultiSelect } from "@/components/multi-select"
 import { TagInput } from "@/components/tag-input"
+import { Disclosure } from "@/components/disclosure"
 import { GeoDrawer, countryLabel } from "@/components/geo-panel"
 import { GeoV2Picker, geoV2Summary, type GeoConfig } from "@/components/geo-v2-picker"
 import { targetingOutsideRu } from "@/lib/ad-market"
@@ -21,6 +22,14 @@ import {
   showAllowUnknown,
   showContextMode,
 } from "@/lib/targeting-context"
+import {
+  advancedInventorySummary,
+  hasAdvancedInventory,
+  hasRegulatorySettings,
+  hasSlotSettings,
+  regulatorySummary,
+  slotSummary,
+} from "@/lib/targeting-summary"
 
 export const COUNTRIES = ["RU", "KZ", "BY", "UZ", "KG", "AM", "AZ", "GE", "MD", "TJ", "TM", "UA"]
 export const DEVICES = [
@@ -173,36 +182,50 @@ function norm(next: string[]): string[] | undefined {
   return next.length ? next : undefined
 }
 
-/* ---------- Секция таргетинга: плоская, всегда раскрыта (структура как на Авито) ---------- */
+/* ---------- Секция таргетинга: плоская; collapsible — сворачиваемая (содержимое не размонтируется) ---------- */
 
 function TargetSection({
   title,
   summary,
   onReset,
-  defaultOpen: _defaultOpen = false,
+  collapsible = false,
+  accent = false,
   children,
 }: {
   title: string
   summary: string
   onReset: () => void
-  defaultOpen?: boolean
+  /** Свёрнута по умолчанию; в заголовке видна сводка. */
+  collapsible?: boolean
+  /** Свёрнутая секция содержит ненулевые настройки: сводка выделяется. */
+  accent?: boolean
   children: ReactNode
 }) {
   const isDefault = /^(Весь мир|Все устройства и среды|Весь инвентарь|Все пользователи|Круглосуточно|Любой слот|Без ограничений)$/.test(summary)
+  const resetButton = !isDefault ? (
+    <button
+      type="button"
+      onClick={onReset}
+      className="shrink-0 rounded px-2 py-1 text-xs font-medium text-muted transition-colors hover:text-danger"
+      title="Сбросить все поля секции"
+    >
+      Сбросить
+    </button>
+  ) : null
+  if (collapsible) {
+    return (
+      <section className="rounded-xl border border-border bg-card p-5">
+        <Disclosure title={title} summary={summary} accent={accent} actions={resetButton}>
+          {children}
+        </Disclosure>
+      </section>
+    )
+  }
   return (
     <section className="rounded-xl border border-border bg-card p-5">
       <div className="mb-4 flex items-center justify-between gap-3">
         <h3 className="text-base font-bold text-foreground">{title}</h3>
-        {!isDefault ? (
-          <button
-            type="button"
-            onClick={onReset}
-            className="shrink-0 rounded px-2 py-1 text-xs font-medium text-muted transition-colors hover:text-danger"
-            title="Сбросить все поля секции"
-          >
-            Сбросить
-          </button>
-        ) : null}
+        {resetButton}
       </div>
       <div className="space-y-4">{children}</div>
     </section>
@@ -250,30 +273,6 @@ function timeSummary(t: Targeting): string {
   return parts.join(" · ") || "Круглосуточно"
 }
 
-function slotSummary(t: Targeting): string {
-  const parts: string[] = []
-  if (t.banner_positions?.length) parts.push("позиция")
-  if (t.interstitial_only) parts.push("interstitial")
-  if (t.exclude_interstitial) parts.push("без interstitial")
-  if (t.rewarded_only) parts.push("rewarded")
-  if (t.secure_only) parts.push("HTTPS")
-  if (t.video_skippable_only) parts.push("skippable")
-  if (t.video_placements?.length) parts.push(`plcmt×${t.video_placements.length}`)
-  if (t.video_protocols?.length) parts.push(`VAST×${t.video_protocols.length}`)
-  if (t.viewability_min) parts.push(`viewability ≥${t.viewability_min}%`)
-  if (t.deal_ids?.length) parts.push(`PMP×${t.deal_ids.length}`)
-  return parts.join(" · ") || "Любой слот"
-}
-
-function regulatorySummary(t: Targeting): string {
-  const parts: string[] = []
-  if (t.block_coppa) parts.push("без COPPA")
-  if (t.block_gdpr) parts.push("без GDPR")
-  if (t.skip_dnt) parts.push("без DNT")
-  if (t.schain_required) parts.push("только с schain")
-  return parts.join(" · ") || "Без ограничений"
-}
-
 /** Full DSP-grade targeting editor. Value maps 1:1 to the backend targeting JSONB.
  *  C2: секции-аккордеоны со сводками; C1: MultiSelect для множественного выбора.
  *  Все переменные таргетинга сохранены — изменилось только представление. */
@@ -308,7 +307,6 @@ export function TargetingEditor({
       <TargetSection
         title="География"
         summary={geoSummary(value)}
-        defaultOpen
         onReset={() =>
           set({
             geo_countries: undefined,
@@ -613,59 +611,74 @@ export function TargetingEditor({
             ))}
           </div>
         </Field>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Field label="Белый список доменов" hint="Через запятую; пусто — все площадки">
-            <input
-              className={inputCls}
-              defaultValue={(value.domain_allowlist || []).join(", ")}
-              onBlur={(e) => set({ domain_allowlist: csv(e.target.value) })}
-              placeholder="site1.ru, site2.kz"
-            />
-          </Field>
-          <Field label="Чёрный список доменов">
-            <input
-              className={inputCls}
-              defaultValue={(value.domain_blocklist || []).join(", ")}
-              onBlur={(e) => set({ domain_blocklist: csv(e.target.value) })}
-              placeholder="badsite.ru"
-            />
-          </Field>
-        </div>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Field label="App-бандлы (белый список)" hint="com.app.one, id123456">
-            <input
-              className={inputCls}
-              defaultValue={(value.app_bundles_allow || []).join(", ")}
-              onBlur={(e) => set({ app_bundles_allow: csv(e.target.value) })}
-              placeholder="Все приложения"
-            />
-          </Field>
-          <Field label="App-бандлы (чёрный список)">
-            <input
-              className={inputCls}
-              defaultValue={(value.app_bundles_block || []).join(", ")}
-              onBlur={(e) => set({ app_bundles_block: csv(e.target.value) })}
-              placeholder="—"
-            />
-          </Field>
-        </div>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Field label="Паблишеры (белый список)" hint="ID паблишеров из bid request">
-            <input
-              className={inputCls}
-              defaultValue={(value.publisher_allow || []).join(", ")}
-              onBlur={(e) => set({ publisher_allow: csv(e.target.value) })}
-              placeholder="Все паблишеры"
-            />
-          </Field>
-          <Field label="Паблишеры (чёрный список)">
-            <input
-              className={inputCls}
-              defaultValue={(value.publisher_block || []).join(", ")}
-              onBlur={(e) => set({ publisher_block: csv(e.target.value) })}
-              placeholder="—"
-            />
-          </Field>
+        <div className="rounded-lg border border-border bg-surface/40 p-3">
+          <Disclosure
+            title="Дополнительно"
+            summary={advancedInventorySummary(value)}
+            accent={hasAdvancedInventory(value)}
+            titleClassName="text-sm font-semibold text-foreground"
+          >
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label="Белый список доменов" hint="Через запятую; пусто — все площадки">
+              <input
+                key={(value.domain_allowlist || []).join(",")}
+                className={inputCls}
+                defaultValue={(value.domain_allowlist || []).join(", ")}
+                onBlur={(e) => set({ domain_allowlist: csv(e.target.value) })}
+                placeholder="site1.ru, site2.kz"
+              />
+            </Field>
+            <Field label="Чёрный список доменов">
+              <input
+                key={(value.domain_blocklist || []).join(",")}
+                className={inputCls}
+                defaultValue={(value.domain_blocklist || []).join(", ")}
+                onBlur={(e) => set({ domain_blocklist: csv(e.target.value) })}
+                placeholder="badsite.ru"
+              />
+            </Field>
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label="App-бандлы (белый список)" hint="com.app.one, id123456">
+              <input
+                key={(value.app_bundles_allow || []).join(",")}
+                className={inputCls}
+                defaultValue={(value.app_bundles_allow || []).join(", ")}
+                onBlur={(e) => set({ app_bundles_allow: csv(e.target.value) })}
+                placeholder="Все приложения"
+              />
+            </Field>
+            <Field label="App-бандлы (чёрный список)">
+              <input
+                key={(value.app_bundles_block || []).join(",")}
+                className={inputCls}
+                defaultValue={(value.app_bundles_block || []).join(", ")}
+                onBlur={(e) => set({ app_bundles_block: csv(e.target.value) })}
+                placeholder="—"
+              />
+            </Field>
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label="Паблишеры (белый список)" hint="ID паблишеров из bid request">
+              <input
+                key={(value.publisher_allow || []).join(",")}
+                className={inputCls}
+                defaultValue={(value.publisher_allow || []).join(", ")}
+                onBlur={(e) => set({ publisher_allow: csv(e.target.value) })}
+                placeholder="Все паблишеры"
+              />
+            </Field>
+            <Field label="Паблишеры (чёрный список)">
+              <input
+                key={(value.publisher_block || []).join(",")}
+                className={inputCls}
+                defaultValue={(value.publisher_block || []).join(", ")}
+                onBlur={(e) => set({ publisher_block: csv(e.target.value) })}
+                placeholder="—"
+              />
+            </Field>
+          </div>
+          </Disclosure>
         </div>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Field
@@ -850,6 +863,8 @@ export function TargetingEditor({
       <TargetSection
         title="Рекламный слот"
         summary={slotSummary(value)}
+        collapsible
+        accent={hasSlotSettings(value)}
         onReset={() =>
           set({
             banner_positions: undefined, interstitial_only: undefined, exclude_interstitial: undefined,
@@ -891,6 +906,7 @@ export function TargetingEditor({
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Field label="Мин. длительность видео-слота, сек" hint="Для видео-кампаний">
             <input
+              key={value.video_min_duration ?? ""}
               type="number"
               min={0}
               className={inputCls}
@@ -901,6 +917,7 @@ export function TargetingEditor({
           </Field>
           <Field label="PMP-сделки (Deal ID)" hint="Ставки только по этим приватным сделкам">
             <input
+              key={(value.deal_ids || []).join(",")}
               className={inputCls}
               defaultValue={(value.deal_ids || []).join(", ")}
               onBlur={(e) => set({ deal_ids: csv(e.target.value) })}
@@ -929,6 +946,7 @@ export function TargetingEditor({
           hint="По imp.metric type=viewability от SSP. Слоты без метрики отсеиваются, если задано"
         >
           <input
+            key={value.viewability_min ?? ""}
             type="number"
             min={0}
             max={100}
@@ -947,6 +965,8 @@ export function TargetingEditor({
       <TargetSection
         title="Регуляторика и приватность"
         summary={regulatorySummary(value)}
+        collapsible
+        accent={hasRegulatorySettings(value)}
         onReset={() => set({ block_coppa: undefined, block_gdpr: undefined, skip_dnt: undefined, schain_required: undefined })}
       >
         <div className="flex flex-wrap gap-1.5">
