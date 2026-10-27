@@ -82,7 +82,17 @@ function PlaceChip({ place, id, excluded, onRemove }: { place?: Place; id: numbe
   )
 }
 
-function PlaceSearch({ onInclude, onExclude, disabled }: { onInclude: (p: Place) => void; onExclude: (p: Place) => void; disabled: boolean }) {
+function PlaceSearch({
+  onInclude,
+  onExclude,
+  disabled,
+  foreignOnly,
+}: {
+  onInclude: (p: Place) => void
+  onExclude: (p: Place) => void
+  disabled: boolean
+  foreignOnly: boolean
+}) {
   const [q, setQ] = useState("")
   const [open, setOpen] = useState(false)
   const query = useDebounced(q.trim(), 200)
@@ -91,7 +101,9 @@ function PlaceSearch({ onInclude, onExclude, disabled }: { onInclude: (p: Place)
     fetcher,
     { keepPreviousData: true },
   )
-  const items = query.length >= 2 ? data?.items || [] : []
+  const found = query.length >= 2 ? data?.items || [] : []
+  // ТЗ п.5: для рекламодателя «за пределами РФ» российские места не предлагаются.
+  const items = foreignOnly ? found.filter((p) => p.country_iso !== "RU") : found
 
   const pick = (fn: (p: Place) => void, p: Place) => {
     fn(p)
@@ -111,7 +123,13 @@ function PlaceSearch({ onInclude, onExclude, disabled }: { onInclude: (p: Place)
         }}
         onFocus={() => setOpen(true)}
         onBlur={() => setTimeout(() => setOpen(false), 150)}
-        placeholder={disabled ? "Достигнут лимит мест" : "Страна, регион или город: Краснодар, Подмосковье, Almaty…"}
+        placeholder={
+          disabled
+            ? "Достигнут лимит мест"
+            : foreignOnly
+              ? "Страна или город: Казахстан, Almaty, Ташкент…"
+              : "Страна, регион или город: Краснодар, Подмосковье, Almaty…"
+        }
         aria-label="Поиск места по справочнику"
         role="combobox"
         aria-expanded={open && items.length > 0}
@@ -163,10 +181,10 @@ function PlaceSearch({ onInclude, onExclude, disabled }: { onInclude: (p: Place)
   )
 }
 
-function BulkAdd({ onAdd }: { onAdd: (places: Place[]) => void }) {
+function BulkAdd({ onAdd, foreignOnly }: { onAdd: (places: Place[]) => void; foreignOnly: boolean }) {
   const [open, setOpen] = useState(false)
   const [text, setText] = useState("")
-  const [country, setCountry] = useState("RU")
+  const [country, setCountry] = useState(foreignOnly ? "KZ" : "RU")
   const [rows, setRows] = useState<ResolveRow[] | null>(null)
   const [choice, setChoice] = useState<Record<number, number>>({})
   const [busy, setBusy] = useState(false)
@@ -179,7 +197,14 @@ function BulkAdd({ onAdd }: { onAdd: (places: Place[]) => void }) {
     setErr(null)
     try {
       const res = await api<ResolveRow[]>("/geo/places/resolve", { method: "POST", body: { lines, country } })
-      setRows(res)
+      setRows(
+        foreignOnly
+          ? res.map((r) => {
+              const candidates = r.candidates.filter((c) => c.country_iso !== "RU")
+              return { ...r, candidates, status: candidates.length ? r.status : "not_found" }
+            })
+          : res,
+      )
       setChoice({})
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Не удалось проверить список")
@@ -295,7 +320,18 @@ function BulkAdd({ onAdd }: { onAdd: (places: Place[]) => void }) {
 
 /** GEO v2: выбор мест справочника geo_places (включить/исключить) и режим
  *  для запросов с неопределённым гео. Значения — id мест, как в targeting JSONB. */
-export function GeoV2Picker({ value, onChange, config }: { value: Targeting; onChange: (patch: Partial<Targeting>) => void; config: GeoConfig }) {
+export function GeoV2Picker({
+  value,
+  onChange,
+  config,
+  foreignOnly = false,
+}: {
+  value: Targeting
+  onChange: (patch: Partial<Targeting>) => void
+  config: GeoConfig
+  /** ТЗ п.5: рекламодатель «за пределами РФ» — без российских мест и без режима «показывать без гео». */
+  foreignOnly?: boolean
+}) {
   const include = value.geo_place_ids || []
   const exclude = value.geo_exclude_place_ids || []
   const total = include.length + exclude.length
@@ -339,12 +375,16 @@ export function GeoV2Picker({ value, onChange, config }: { value: Targeting; onC
     <div className="space-y-3">
       <Field
         label="Места показа"
-        hint="Регион включает свои города; исключение важнее включения. Пусто — без ограничения по справочнику"
+        hint={
+          foreignOnly
+            ? "Регион включает свои города; исключение важнее включения. Российские места недоступны"
+            : "Регион включает свои города; исключение важнее включения. Пусто — без ограничения по справочнику"
+        }
       >
-        <PlaceSearch onInclude={includePlace} onExclude={excludePlace} disabled={full} />
+        <PlaceSearch onInclude={includePlace} onExclude={excludePlace} disabled={full} foreignOnly={foreignOnly} />
       </Field>
       <div className="flex items-center justify-between gap-2">
-        <BulkAdd onAdd={addMany} />
+        <BulkAdd onAdd={addMany} foreignOnly={foreignOnly} />
         <span className={`font-mono text-xs ${full ? "text-danger" : "text-muted"}`}>
           {total} / {config.max_places}
         </span>
@@ -380,6 +420,7 @@ export function GeoV2Picker({ value, onChange, config }: { value: Targeting; onC
               Не показывать <span className="text-muted">— точнее, но меньше охват</span>
             </span>
           </label>
+{foreignOnly && !lenient ? null : (
           <label className="flex items-start gap-2 text-sm text-foreground">
             <input
               type="radio"
@@ -395,6 +436,7 @@ export function GeoV2Picker({ value, onChange, config }: { value: Targeting; onC
               </span>
             </span>
           </label>
+          )}
         </fieldset>
       ) : null}
     </div>

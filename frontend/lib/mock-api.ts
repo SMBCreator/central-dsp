@@ -889,6 +889,7 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
       status: "active",
       balance: 0,
       currency: "RUB",
+      ad_market: "ru",
     }),
   })
   if (advCrud !== undefined) return advCrud

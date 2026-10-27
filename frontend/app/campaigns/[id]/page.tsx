@@ -22,6 +22,8 @@ import {
 import { Button, Card, CardHeader, EmptyState, Field, HelpTip, inputCls, KpiCard, Modal, Spinner, StatusBadge, Table } from "@/components/ui"
 import { DEVICES, TargetingEditor } from "@/components/targeting-editor"
 import { OrdChainCampaignCard, type OrdChainValues } from "@/components/ord-chain-setup"
+import { useAdvertisers } from "@/lib/advertisers"
+import { isForeignAdvertiser } from "@/lib/ad-market"
 
 type PixelRow = { id: string; name: string; domain: string }
 type GoalRow = { id: string; name: string; goal_type: string; match_value: string }
@@ -486,6 +488,7 @@ const CHECK_TAB: Record<string, TabKey> = {
   creatives: "creatives",
   ord_marking: "creatives",
   ord_chain: "settings",
+  ad_market_geo: "groups",
   schedule: "settings",
   balance: "settings",
   daily_budget: "settings",
@@ -689,6 +692,9 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
   const { data: lineItems } = useSWR<LineItem[]>(`/line-items?campaign_id=${id}`, fetcher)
   const { data: stats } = useSWR<StatsSummary>(`/stats/summary?hours=168&campaign_id=${id}`, fetcher)
   const { data: campaignCreatives } = useSWR<Creative[]>(`/creatives?campaign_id=${id}`, fetcher)
+  // ТЗ п.5: кампании рекламодателя «за пределами РФ» — без ОРД и без российских гео.
+  const { data: advertisers } = useAdvertisers()
+  const foreign = isForeignAdvertiser(advertisers, campaign?.advertiser_id)
 
   const [open, setOpen] = useState(false)
   const [editingLi, setEditingLi] = useState<LineItem | null>(null)
@@ -915,6 +921,7 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
 
       {tab === "settings" ? (
         <>
+          {foreign ? null : (
           <Card>
             <CardHeader
               title="Данные ОРД"
@@ -935,6 +942,7 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
               }}
             />
           </Card>
+          )}
           <SettingsCard campaign={campaign} />
         </>
       ) : null}
@@ -1096,7 +1104,7 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
             </Field>
           </div>
 
-          <TargetingEditor value={targeting} onChange={setTargeting} />
+          <TargetingEditor value={targeting} onChange={setTargeting} foreignOnly={foreign} />
 
           {/* G9: привязка креативов к строке закупки */}
           <div className="rounded-md border border-border bg-surface p-3">

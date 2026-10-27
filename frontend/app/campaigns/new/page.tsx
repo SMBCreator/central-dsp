@@ -12,6 +12,7 @@ import { EMPTY_CHAIN, OrdChainEditor, OrdChainSummaryView, type OrdChainSummary,
 import { kktuShortLabel } from "@/lib/kktu"
 import type { Advertiser, Counterparty, Targeting } from "@/lib/types"
 import { advertiserOptionLabel, useAdvertisers } from "@/lib/advertisers"
+import { AD_MARKET_LABELS, advertiserMarket, isForeignAdvertiser, stripRuGeo, targetingOutsideRu } from "@/lib/ad-market"
 
 type Group = { id: string; name: string }
 
@@ -29,6 +30,8 @@ const OBJECTIVES = [
 ]
 
 const STEPS = ["Рекламодатель и ОРД", "Формат", "Основное", "Бюджет и ставка", "Таргетинг", "Креативы"]
+// ТЗ п.5: для рекламодателя «за пределами РФ» шаг 0 — только выбор рекламодателя, без ОРД.
+const FOREIGN_STEPS = ["Рекламодатель", ...STEPS.slice(1)]
 
 
 export default function NewCampaignPage() {
@@ -75,19 +78,33 @@ export default function NewCampaignPage() {
   const [creatives, setCreatives] = useState<CreativeDraft[]>([])
   const [kktuCode, setKktuCode] = useState("")
   const [kktuLabel, setKktuLabel] = useState("")
-  const { data: counterparties } = useSWR<Counterparty[]>(step === 5 ? "/ord/counterparties" : null, fetcher)
+  const foreign = isForeignAdvertiser(advertisers, advertiserId)
+  const steps = foreign ? FOREIGN_STEPS : STEPS
+  const { data: counterparties } = useSWR<Counterparty[]>(step === 5 && !foreign ? "/ord/counterparties" : null, fetcher)
   const selectedCp = useMemo(() => (counterparties || []).find((cp) => cp.id === chain.counterparty_id) || null, [counterparties, chain.counterparty_id])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState("")
 
   const canNext = useMemo(() => {
-    if (step === 0) return chainConfirmed
+    if (step === 0) return foreign ? !!advertiserId : chainConfirmed
     if (step === 1) return !!format
     if (step === 2) return !!name.trim() && !!advertiserId
     if (step === 3) return Number(dailyBudget) > 0 && Number(bidPrice) > 0
-    if (step === 4) return true // targeting is optional (empty = no restrictions)
-    return creatives.length > 0 && !!kktuCode
-  }, [step, chainConfirmed, format, name, advertiserId, dailyBudget, bidPrice, creatives, kktuCode])
+    // Таргетинг необязателен (пусто = без ограничений), но для «за пределами РФ» пустое гео включает РФ.
+    if (step === 4) return foreign ? targetingOutsideRu(targeting) : true
+    return creatives.length > 0 && (foreign || !!kktuCode)
+  }, [step, foreign, chainConfirmed, format, name, advertiserId, dailyBudget, bidPrice, targeting, creatives, kktuCode])
+
+  const selectAdvertiser = (id: string) => {
+    setAdvertiserId(id)
+    setChainConfirmed(false)
+    if (isForeignAdvertiser(advertisers, id)) {
+      setChain(EMPTY_CHAIN)
+      setChainReview(false)
+      setChainPreview(null)
+      setTargeting((t) => stripRuGeo(t))
+    }
+  }
 
   // Превью цепочки считает бэкенд (тот же валидатор, что и подтверждение).
   // п.3: рекламодатель (аккаунт) выбирается первым на шаге 0 — из общего списка.
@@ -119,7 +136,7 @@ export default function NewCampaignPage() {
         method: "POST",
         body: {
           advertiser_id: advertiserId,
-          ...chain,
+          ...(foreign ? {} : chain),
           name: name.trim(),
           objective,
           daily_budget: Number(dailyBudget),
@@ -138,7 +155,7 @@ export default function NewCampaignPage() {
         },
       })
       // Цепочка ОРД подтверждена на шаге 0 — фиксируем на созданной кампании.
-      await api(`/campaigns/${camp.id}/ord-chain/confirm`, { method: "POST" })
+      if (!foreign) await api(`/campaigns/${camp.id}/ord-chain/confirm`, { method: "POST" })
       // Optimizer targets + auto-optimize
       if (targetCpa || targetCpc || targetCpm || targetCpv || autoOptimize) {
         await api(`/campaigns/${camp.id}`, {
@@ -173,9 +190,9 @@ export default function NewCampaignPage() {
             ...cr,
             campaign_id: camp.id,
             line_item_id: li.id,
-            counterparty_id: chain.counterparty_id,
-            kktu_code: kktuCode || null,
-            kktu_label: kktuLabel || null,
+            ...(foreign
+              ? {}
+              : { counterparty_id: chain.counterparty_id, kktu_code: kktuCode || null, kktu_label: kktuLabel || null }),
           },
         })
       }
@@ -192,13 +209,24 @@ export default function NewCampaignPage() {
       <header className="mb-6">
         <h1 className="text-xl font-semibold text-foreground">Новая кампания</h1>
         <p className="mt-0.5 text-sm text-muted">
-          Шаг {step + 1} из {STEPS.length}: {STEPS[step]}
+          Шаг {step + 1} из {steps.length}: {steps[step]}
         </p>
       </header>
       <div className="flex flex-col gap-6 lg:flex-row">
         <div className="min-w-0 flex-1 space-y-6">
 
-      {step === 0 ? (
+      {step === 0 && foreign ? (
+        <Card>
+          <CardHeader title="Рекламодатель" subtitle="Аккаунт, с баланса которого оплачиваются показы" />
+          <AdvertiserPicker advertisers={advertisers} value={advertiserId} onChange={selectAdvertiser} />
+          <p className="px-4 py-3 text-sm leading-relaxed text-muted">
+            Реклама только за пределами РФ — маркировка (ОРД, договоры, ККТУ, erid) не требуется. На шаге
+            «Таргетинг» доступны только зарубежные страны и места.
+          </p>
+        </Card>
+      ) : null}
+
+      {step === 0 && !foreign ? (
         <Card>
           <CardHeader
             title={chainReview ? "Проверьте данные для ОРД" : "Данные для ОРД"}
@@ -221,7 +249,7 @@ export default function NewCampaignPage() {
               <AdvertiserPicker
                 advertisers={advertisers}
                 value={advertiserId}
-                onChange={(id) => { setAdvertiserId(id); setChainConfirmed(false) }}
+                onChange={selectAdvertiser}
               />
               <OrdChainEditor advertiserId={advertiserId || null} value={chain} onChange={(v) => { setChain(v); setChainConfirmed(false) }} />
               <div className="flex justify-end gap-2 border-t border-border px-4 py-3">
@@ -459,7 +487,7 @@ export default function NewCampaignPage() {
         <Card>
           <CardHeader title="Таргетинг" subtitle="Пустые поля — без ограничений. Всё применяется биддером к каждому bid request" />
           <div className="p-4">
-            <TargetingEditor value={targeting} onChange={setTargeting} />
+            <TargetingEditor value={targeting} onChange={setTargeting} foreignOnly={foreign} />
           </div>
         </Card>
       ) : null}
@@ -469,6 +497,7 @@ export default function NewCampaignPage() {
           <Card>
             <CardHeader title="Сводка" subtitle="Проверьте настройки перед запуском" />
             <dl className="grid grid-cols-1 gap-x-6 gap-y-2 p-4 text-sm sm:grid-cols-2">
+              <div className="flex justify-between gap-3"><dt className="text-muted">Реклама</dt><dd className="text-foreground">{AD_MARKET_LABELS[advertiserMarket((advertisers || []).find((a) => a.id === advertiserId))]}</dd></div>
               <div className="flex justify-between gap-3"><dt className="text-muted">Формат</dt><dd className="text-foreground">{FORMAT_LABELS[format] || format}</dd></div>
               <div className="flex justify-between gap-3"><dt className="text-muted">Цель</dt><dd className="text-foreground">{OBJECTIVES.find((o) => o.key === objective)?.label}</dd></div>
               <div className="flex justify-between gap-3"><dt className="text-muted">Бюджет/день</dt><dd className="text-foreground">{dailyBudget} ₽</dd></div>
@@ -478,6 +507,7 @@ export default function NewCampaignPage() {
           </Card>
           <CreativeBuilder format={format} creatives={creatives} onChange={setCreatives} />
 
+          {foreign ? null : (
           <Card>
             <CardHeader
               title="Маркировка (ОРД)"
@@ -527,6 +557,7 @@ export default function NewCampaignPage() {
               </div>
             </div>
           </Card>
+          )}
         </div>
       ) : null}
 
@@ -544,11 +575,11 @@ export default function NewCampaignPage() {
                 Шаги настройки
               </p>
               <ol className="space-y-1" aria-label="Шаги мастера">
-                {STEPS.map((s, i) => {
+                {steps.map((s, i) => {
                   const done = i < step
                   const current = i === step
                   return (
-                    <li key={s}>
+                    <li key={i}>
                       <button
                         type="button"
                         onClick={() => (done ? setStep(i) : undefined)}
@@ -584,7 +615,7 @@ export default function NewCampaignPage() {
               <Button variant="ghost" onClick={() => (step === 0 ? router.push("/campaigns") : setStep(step - 1))}>
                 {step === 0 ? "Отмена" : "Назад"}
               </Button>
-              {step < STEPS.length - 1 ? (
+              {step < steps.length - 1 ? (
                 <Button className="flex-1" onClick={() => setStep(step + 1)} disabled={!canNext}>
                   Далее
                 </Button>
@@ -598,6 +629,9 @@ export default function NewCampaignPage() {
               <p className="text-[11px] leading-relaxed text-muted">
                 {creatives.length === 0 ? "Добавьте хотя бы один креатив." : "Выберите классификатор ККТУ в блоке «Маркировка (ОРД)»."}
               </p>
+            ) : null}
+            {step === 4 && !canNext ? (
+              <p className="text-[11px] leading-relaxed text-muted">Выберите хотя бы одну зарубежную страну или место.</p>
             ) : null}
           </div>
         </aside>

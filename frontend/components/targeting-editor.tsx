@@ -6,6 +6,7 @@ import { MultiSelect } from "@/components/multi-select"
 import { TagInput } from "@/components/tag-input"
 import { GeoDrawer, countryLabel } from "@/components/geo-panel"
 import { GeoV2Picker, geoV2Summary, type GeoConfig } from "@/components/geo-v2-picker"
+import { targetingOutsideRu } from "@/lib/ad-market"
 import useSWR from "swr"
 import { fetcher } from "@/lib/api"
 import { DEVICE_MAKES, IAB_CATEGORIES, VIDEO_PLACEMENTS, VIDEO_PROTOCOLS, type Targeting } from "@/lib/types"
@@ -280,9 +281,12 @@ function regulatorySummary(t: Targeting): string {
 export function TargetingEditor({
   value,
   onChange,
+  foreignOnly = false,
 }: {
   value: Targeting
   onChange: (t: Targeting) => void
+  /** ТЗ п.5: рекламодатель «за пределами РФ» — российские гео скрыты (сервер их отклонит). */
+  foreignOnly?: boolean
 }) {
   const set = (patch: Partial<Targeting>) => onChange({ ...value, ...patch })
   const [geoOpen, setGeoOpen] = useState(false)
@@ -314,7 +318,7 @@ export function TargetingEditor({
           })
         }
       >
-        {geoV2 && geoConfig ? <GeoV2Picker value={value} onChange={set} config={geoConfig} /> : null}
+        {geoV2 && geoConfig ? <GeoV2Picker value={value} onChange={set} config={geoConfig} foreignOnly={foreignOnly} /> : null}
         {!geoV2 && hasV2Geo ? (
           <div className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-xs leading-relaxed text-danger">
             В группе выбраны места справочника, но GEO v2 сейчас выключен: такая группа не будет показываться,
@@ -328,7 +332,14 @@ export function TargetingEditor({
           </p>
         ) : null}
         {geoV2 && !hasLegacyGeo ? null : (
-        <Field label="Регионы и города показа" hint="Нажмите на поле — справа откроется список регионов и городов России. Пусто — показ без гео-ограничений">
+        <Field
+          label={foreignOnly ? "Страны показа" : "Регионы и города показа"}
+          hint={
+            foreignOnly
+              ? "Нажмите на поле — справа откроется список стран"
+              : "Нажмите на поле — справа откроется список регионов и городов России. Пусто — показ без гео-ограничений"
+          }
+        >
           <button
             type="button"
             onClick={() => setGeoOpen(true)}
@@ -338,7 +349,7 @@ export function TargetingEditor({
             <span className="flex min-w-0 flex-wrap items-center gap-1.5">
               {!value.geo_regions?.length && !value.geo_cities?.length && !otherCountries.length ? (
                 <span className="rounded-md bg-panel px-2.5 py-1 text-sm font-medium text-foreground">
-                  Все регионы и города
+                  {foreignOnly ? "Выберите страны" : "Все регионы и города"}
                 </span>
               ) : (
                 <>
@@ -423,6 +434,7 @@ export function TargetingEditor({
           regions={value.geo_regions || []}
           cities={value.geo_cities || []}
           countries={otherCountries}
+          foreignOnly={foreignOnly}
           onApply={({ regions, cities, countries }) => {
             // страны: выбранные «другие» + Россия, если заданы её регионы/города
             const ru = regions.length || cities.length ? ["RU"] : []
@@ -434,7 +446,12 @@ export function TargetingEditor({
             })
           }}
         />
-        {ruSelected ? (
+        {foreignOnly && !targetingOutsideRu(value) ? (
+          <p className="text-xs leading-relaxed text-muted">
+            Рекламодатель работает только за пределами РФ: выберите хотя бы одну зарубежную страну или место.
+          </p>
+        ) : null}
+        {ruSelected && !foreignOnly ? (
           <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-400">
             Выбрана Россия: по закону о рекламе перед запуском потребуется маркировка — заполните
             данные рекламодателя (наименование, ИНН, адрес), договор и получите erid в разделе

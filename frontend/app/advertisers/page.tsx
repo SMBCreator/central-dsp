@@ -8,25 +8,41 @@ import { fmtMoney, type Advertiser } from "@/lib/types"
 import { Button, Card, CardHeader, EmptyState, Field, inputCls, Modal, Spinner, StatusBadge, Table } from "@/components/ui"
 import { NotifyEmailsField } from "@/components/notify-emails-field"
 import { emailsError, formatEmails, parseEmails } from "@/lib/notify-emails"
+import { AD_MARKET_LABELS, AD_MARKET_OPTIONS, advertiserMarket, type AdMarket } from "@/lib/ad-market"
+import { useMe } from "@/lib/use-me"
 
 export default function AdvertisersPage() {
   const { data: advertisers } = useAdvertisers()
+  const { me } = useMe()
+  const isSuperadmin = me?.role === "superadmin"
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<Advertiser | null>(null)
-  const [form, setForm] = useState({ name: "", domain: "", category: "", notify_emails: "" })
+  const [form, setForm] = useState<{ name: string; domain: string; category: string; notify_emails: string; ad_market: AdMarket | "" }>({
+    name: "",
+    domain: "",
+    category: "",
+    notify_emails: "",
+    ad_market: "",
+  })
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
   const openCreate = () => {
     setEditing(null)
-    setForm({ name: "", domain: "", category: "", notify_emails: "" })
+    setForm({ name: "", domain: "", category: "", notify_emails: "", ad_market: "" })
     setError(null)
     setOpen(true)
   }
 
   const openEdit = (a: Advertiser) => {
     setEditing(a)
-    setForm({ name: a.name, domain: a.domain || "", category: a.category || "", notify_emails: formatEmails(a.notify_emails) })
+    setForm({
+      name: a.name,
+      domain: a.domain || "",
+      category: a.category || "",
+      notify_emails: formatEmails(a.notify_emails),
+      ad_market: advertiserMarket(a),
+    })
     setError(null)
     setOpen(true)
   }
@@ -39,15 +55,22 @@ export default function AdvertisersPage() {
       setError(emailsProblem)
       return
     }
+    if (!form.ad_market) {
+      setError("Укажите, где планируется реклама")
+      return
+    }
     setSaving(true)
     setError(null)
     try {
-      const body = {
+      const body: Record<string, unknown> = {
         name: form.name,
         domain: form.domain || null,
         category: form.category || null,
         notify_emails: parsedEmails.emails,
       }
+      // Режим задаётся при создании; позже его меняет только superadmin (сервер проверяет права и ОРД).
+      if (!editing) body.ad_market = form.ad_market
+      else if (form.ad_market !== advertiserMarket(editing)) body.ad_market = form.ad_market
       if (editing) {
         await api(`/advertisers/${editing.id}`, { method: "PATCH", body })
       } else {
@@ -84,13 +107,14 @@ export default function AdvertisersPage() {
         <CardHeader title="Список рекламодателей" subtitle={advertisers ? `Всего: ${advertisers.length}` : undefined} />
         {advertisers ? (
           advertisers.length > 0 ? (
-            <Table headers={["ID", "Название", "Домен", "Категория", "Баланс", "Статус", ""]}>
+            <Table headers={["ID", "Название", "Домен", "Категория", "Реклама", "Баланс", "Статус", ""]}>
               {advertisers.map((a) => (
                 <tr key={a.id} className="hover:bg-surface">
                   <td className="px-4 py-3 font-mono text-xs text-muted">{a.display_id}</td>
                   <td className="px-4 py-3 font-medium text-foreground">{a.name}</td>
                   <td className="px-4 py-3 text-muted">{a.domain || "—"}</td>
                   <td className="px-4 py-3 text-muted">{a.category || "—"}</td>
+                  <td className="whitespace-nowrap px-4 py-3 text-muted">{AD_MARKET_LABELS[advertiserMarket(a)]}</td>
                   <td className="px-4 py-3 font-mono text-xs">{fmtMoney(a.balance, a.currency)}</td>
                   <td className="px-4 py-3">
                     <StatusBadge status={a.status} />
@@ -131,6 +155,12 @@ export default function AdvertisersPage() {
           <Field label="Категория">
             <input value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} className={inputCls} placeholder="E-commerce" />
           </Field>
+          <AdMarketField
+            value={form.ad_market}
+            onChange={(v) => setForm({ ...form, ad_market: v })}
+            locked={!!editing && !isSuperadmin}
+            editing={!!editing}
+          />
           <NotifyEmailsField
             value={form.notify_emails}
             onChange={(v) => setForm({ ...form, notify_emails: v })}
@@ -155,5 +185,56 @@ export default function AdvertisersPage() {
         </form>
       </Modal>
     </div>
+  )
+}
+
+function AdMarketField({
+  value,
+  onChange,
+  locked,
+  editing,
+}: {
+  value: AdMarket | ""
+  onChange: (v: AdMarket) => void
+  locked: boolean
+  editing: boolean
+}) {
+  return (
+    <fieldset className="space-y-2" disabled={locked}>
+      <legend className="mb-1 text-sm font-medium text-foreground">
+        Где планируется реклама <span className="text-danger">*</span>
+      </legend>
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        {AD_MARKET_OPTIONS.map((o) => (
+          <label
+            key={o.value}
+            className={`flex cursor-pointer items-start gap-2 rounded-lg border p-3 text-sm transition-colors ${
+              value === o.value ? "border-foreground bg-panel" : "border-border hover:bg-panel"
+            } ${locked ? "cursor-not-allowed opacity-60" : ""}`}
+          >
+            <input
+              type="radio"
+              name="ad_market"
+              value={o.value}
+              checked={value === o.value}
+              onChange={() => onChange(o.value)}
+              required={!editing}
+              className="mt-0.5"
+            />
+            <span>
+              <span className="block font-medium text-foreground">{o.label}</span>
+              <span className="block text-xs text-muted">{o.hint}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+      <p className="text-xs text-muted">
+        {locked
+          ? "Изменить режим может только суперадминистратор."
+          : editing
+            ? "Смена режима возможна, пока у рекламодателя нет данных, отправленных в ОРД."
+            : "Обязательное поле. Для рекламы только за пределами РФ маркировка не запрашивается, российские гео недоступны."}
+      </p>
+    </fieldset>
   )
 }

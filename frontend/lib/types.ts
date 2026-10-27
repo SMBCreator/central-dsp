@@ -16,6 +16,8 @@ export interface Advertiser {
   currency: string
   /** C4b/N-03: адреса бизнес-уведомлений; пусто -> email владельца. */
   notify_emails?: string[]
+  /** ТЗ п.5: 'ru' — реклама в РФ (маркировка), 'foreign' — только за пределами РФ. */
+  ad_market?: "ru" | "foreign"
   created_at: string
 }
 

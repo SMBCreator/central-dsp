@@ -9,6 +9,8 @@ import { AD_TYPE_LABELS, CREATIVE_ATTRS, IAB_CATEGORIES, type Campaign, type Cou
 import { Button, Field, inputCls, Modal } from "@/components/ui"
 import { MultiSelect } from "@/components/multi-select"
 import { CreativePreview } from "@/components/creative-preview"
+import { useAdvertisers } from "@/lib/advertisers"
+import { isForeignAdvertiser } from "@/lib/ad-market"
 
 type AdType = "banner" | "native" | "video" | "push"
 type StepKey = "type" | "content" | "tracking" | "ord"
@@ -165,12 +167,14 @@ export function CreativeModal({
   defaultCampaignId?: string
   onOrdResult?: (r: CreativeOrdResult) => void
 }) {
-  const { data: counterparties } = useSWR<Counterparty[]>(open ? "/ord/counterparties" : null, fetcher)
-  const { data: contracts } = useSWR<OrdContract[]>(open ? "/ord/contracts" : null, fetcher)
-
   const [step, setStep] = useState<StepKey>("type")
   const [type, setType] = useState<AdType>("banner")
   const [form, setForm] = useState<FormState>(() => emptyForm(defaultCampaignId || campaigns[0]?.id || ""))
+  // ТЗ п.5: кампания рекламодателя «за пределами РФ» — без маркировки (контрагент, договор, ККТУ).
+  const { data: advertisers } = useAdvertisers()
+  const foreign = isForeignAdvertiser(advertisers, campaigns.find((c) => c.id === form.campaign_id)?.advertiser_id)
+  const { data: counterparties } = useSWR<Counterparty[]>(open && !foreign ? "/ord/counterparties" : null, fetcher)
+  const { data: contracts } = useSWR<OrdContract[]>(open && !foreign ? "/ord/contracts" : null, fetcher)
   const [bannerAssets, setBannerAssets] = useState<BannerAsset[]>([])
   const [uploads, setUploads] = useState<Record<string, UploadState>>({})
   const [error, setError] = useState<string | null>(null)
@@ -315,11 +319,12 @@ export function CreativeModal({
     if (form.imp_tracker_url && !isHttpUrl(form.imp_tracker_url)) e.tracking = "Трекер показа: некорректный URL"
     else if (form.click_tracker_url && !isHttpUrl(form.click_tracker_url)) e.tracking = "Трекер клика: некорректный URL"
 
+    if (foreign) return e
     if (!form.kktu_code) e.ord = "Выберите классификатор ККТУ"
     else if (form.counterparty_id && eligibleContracts.length > 1 && !form.contract_id)
       e.ord = "У контрагента несколько договоров в ОРД — выберите, по какому регистрировать erid"
     return e
-  }, [form, type, bannerAssets.length, eligibleContracts.length])
+  }, [form, type, bannerAssets.length, eligibleContracts.length, foreign])
 
   const canSubmit = Object.keys(stepErrors).length === 0 && !uploading && !saving
   const stepIdx = STEPS.findIndex((s) => s.key === step)
@@ -352,10 +357,10 @@ export function CreativeModal({
         campaign_id: form.campaign_id,
         name: form.name.trim(),
         type,
-        counterparty_id: form.counterparty_id || null,
-        contract_id: form.contract_id || null,
-        kktu_code: form.kktu_code || null,
-        kktu_label: form.kktu_label || null,
+        counterparty_id: foreign ? null : form.counterparty_id || null,
+        contract_id: foreign ? null : form.contract_id || null,
+        kktu_code: foreign ? null : form.kktu_code || null,
+        kktu_label: foreign ? null : form.kktu_label || null,
         iab_categories: form.iab_categories,
         attrs: form.attrs,
         click_url: form.click_url.trim(),
@@ -514,7 +519,7 @@ export function CreativeModal({
                   >
                     {invalid ? i + 1 : "✓"}
                   </span>
-                  {s.label}
+                  {foreign && s.key === "ord" ? "Сигналы площадок" : s.label}
                 </button>
               )
             })}
@@ -698,6 +703,12 @@ export function CreativeModal({
 
           {step === "ord" ? (
             <div className="space-y-4">
+              {foreign ? (
+                <p className="text-xs leading-relaxed text-muted">
+                  Рекламодатель работает только за пределами РФ — маркировка (контрагент, договор, ККТУ, erid) не требуется.
+                </p>
+              ) : (
+              <>
               <p className="text-xs leading-relaxed text-muted">
                 По 38-ФЗ наименование, ИНН/ОГРН и адрес рекламодателя показываются в инфо-значке на креативе и уходят в ОРД.
                 erid присваивается автоматически после одобрения модератором — по договору с контрагентом.
@@ -770,6 +781,8 @@ export function CreativeModal({
                   "Обязательное поле: категория товара/услуги уходит в ОРД вместе с erid."
                 )}
               </p>
+              </>
+              )}
 
               <div className="flex flex-col gap-3 border-t border-border pt-4">
                 <div>
@@ -863,8 +876,12 @@ export function CreativeModal({
               <dd className="truncate text-foreground">{campaigns.find((c) => c.id === form.campaign_id)?.name || "—"}</dd>
               <dt className="text-muted">Переход</dt>
               <dd className="truncate text-foreground">{form.click_url || "—"}</dd>
-              <dt className="text-muted">ККТУ</dt>
-              <dd className={form.kktu_code ? "text-foreground" : "text-warning"}>{form.kktu_code || "не задан"}</dd>
+              {foreign ? null : (
+                <>
+                  <dt className="text-muted">ККТУ</dt>
+                  <dd className={form.kktu_code ? "text-foreground" : "text-warning"}>{form.kktu_code || "не задан"}</dd>
+                </>
+              )}
               <dt className="text-muted">Модерация</dt>
               <dd className="text-foreground">после создания — «На модерации»</dd>
             </dl>
