@@ -326,6 +326,17 @@ async def ml_train(request: Request):
     return {"ok": True, **result}
 
 
+@router.get("/domcat-learn")
+@_cron_job("domcat_learn")
+async def domcat_learn(request: Request):
+    """Перенос обученных «домен → тематика» из Redis (domcat:learn) в БД."""
+    _check_secret(request)
+    import domain_categories
+
+    result = await domain_categories.flush_learned(await get_pool(), get_redis())
+    return {"ok": True, **result}
+
+
 @router.get("/domain-quality")
 @_cron_job("domain_quality")
 async def domain_quality_recompute(request: Request):

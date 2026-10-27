@@ -162,6 +162,7 @@ CRON_JOBS = (
     "shading",
     "ml_train",
     "domain_quality",
+    "domcat_learn",
     "ord_export",
     "retention",
     "reconcile_reserves",

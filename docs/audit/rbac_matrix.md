@@ -57,6 +57,7 @@
 | **PATCH** | `/creatives/{creative_id}` | roles+flag | admin, advertiser, agency, manager, superadmin + client[can_manage_creatives] |
 | GET | `/cron/audience-sync` | none | Bearer CRON_SECRET |
 | GET | `/cron/domain-quality` | none | Bearer CRON_SECRET |
+| GET | `/cron/domcat-learn` | none | Bearer CRON_SECRET |
 | GET | `/cron/fx-refresh` | none | Bearer CRON_SECRET |
 | GET | `/cron/id-sync-purge` | none | Bearer CRON_SECRET |
 | GET | `/cron/ml-train` | none | Bearer CRON_SECRET |
@@ -72,6 +73,10 @@
 | GET | `/cron/rules` | none | Bearer CRON_SECRET |
 | GET | `/cron/shading` | none | Bearer CRON_SECRET |
 | GET | `/cron/sweep-burl` | none | Bearer CRON_SECRET |
+| GET | `/domain-categories` | roles | admin, superadmin |
+| **PUT** | `/domain-categories` | roles | admin, superadmin |
+| **POST** | `/domain-categories/import` | roles | admin, superadmin |
+| **DELETE** | `/domain-categories/{domain}` | roles | admin, superadmin |
 | GET | `/geo/config` | session | любая роль (scope внутри хендлера) |
 | GET | `/geo/places` | session | любая роль (scope внутри хендлера) |
 | **POST** | `/geo/places/resolve` | session | любая роль (scope внутри хендлера) — чтение через POST (тело = список названий до 500 строк): поиск по общему справочнику geo_places, без записи |
@@ -128,6 +133,7 @@
 | GET | `/pixels/{pixel_id}/stats` | session | любая роль (scope внутри хендлера) |
 | GET | `/ready` | none | публично (readiness: deploy gate, Prometheus); статусы без секретов |
 | GET | `/rtb-feed/campaigns` | none | Bearer RTB_API_TOKEN |
+| GET | `/rtb-feed/domain-categories` | none | Bearer RTB_API_TOKEN |
 | GET | `/rtb-feed/geo` | none | Bearer RTB_API_TOKEN |
 | GET | `/rtb-feed/partners` | none | Bearer RTB_API_TOKEN |
 | GET | `/rtb/burl` | none | endpoint_key / event-токен (HMAC) |

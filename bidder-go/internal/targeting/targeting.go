@@ -94,6 +94,7 @@ type RequestView struct {
 	Carrier    string   // device.carrier (lower)
 	IP         string   // device.ip, иначе device.ipv6
 	DNT        bool     // device.dnt == 1 || device.lmt == 1
+	CatSource  string   // "request" | "domain_map" | "" (категорий нет): откуда SiteCats
 	SiteCats   []string // объединение cat/sectioncat/pagecat/content.cat/publisher.cat site и app (CollectCats: upper, без дублей)
 	Domain     string   // site.domain | app.bundle (lower)
 	Env        string   // "app" если есть req.app, иначе "site"

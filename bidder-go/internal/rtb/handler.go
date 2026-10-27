@@ -23,6 +23,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/SMBCreator/central-dsp/bidder-go/internal/domcat"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/feed"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/fx"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/geo"
@@ -57,6 +58,9 @@ type Handler struct {
 	// GEO v2 (docs/GEO.md): флаги сопоставления и топ несопоставленных значений SSP.
 	geoOpts      geo.Options
 	geoUnmatched *geo.Unmatched
+	// Справочник «домен → тематика» и самообучение (Фаза 3 ТЗ). nil = выключено.
+	domMap     *domcat.Map
+	domLearner *domcat.Learner
 	// now — часы бюджетного гейта (бизнес-день, even pacing); nil = time.Now.
 	// Подменяются только в тестах.
 	now func() time.Time
@@ -74,6 +78,11 @@ func (h *Handler) SetMetrics(r *metrics.Registry) { h.metrics = r }
 
 // SetPrefilter подключает предфильтр (см. internal/prefilter).
 func (h *Handler) SetPrefilter(f *prefilter.Filter) { h.prefilter = f }
+
+// SetDomainCats подключает справочник «домен → тематика» и (опционально) учителя.
+func (h *Handler) SetDomainCats(m *domcat.Map, l *domcat.Learner) {
+	h.domMap, h.domLearner = m, l
+}
 
 // SetIDSync включает resolveIdentity (ID_SYNC_ENABLED).
 func (h *Handler) SetIDSync(enabled bool) { h.idSyncEnabled = enabled }
@@ -337,6 +346,7 @@ func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 	}
 
 	view := buildRequestView(&req)
+	h.applyDomainCats(view)
 	geoRes := h.resolveGeo(&req, partner, snap)
 	deviceID := h.identityOf(ctx, &req, partner)
 
@@ -1263,6 +1273,37 @@ func deviceTypeName(dt int) string {
 		return name
 	}
 	return "unknown"
+}
+
+// applyDomainCats определяет источник категорий площадки. Есть категории в
+// запросе — они главные, справочник не используется, а по домену идёт обучение.
+// Нет — берём категории из справочника «домен → тематика»; для iab_allow_unknown
+// они считаются определёнными (SiteCats непуст). Без справочника поведение
+// прежнее, метка источника не ставится.
+func (h *Handler) applyDomainCats(v *targeting.RequestView) {
+	if h.domMap == nil && h.domLearner == nil {
+		return
+	}
+	if len(v.SiteCats) > 0 {
+		v.CatSource = "request"
+		h.metrics.IncCatSource("request")
+		if h.domLearner != nil && v.Env == "site" {
+			if d := domcat.Normalize(v.Domain); d != "" {
+				h.domLearner.Observe(d, v.SiteCats)
+			}
+		}
+		return
+	}
+	if h.domMap == nil {
+		return
+	}
+	if d := domcat.Normalize(v.Domain); d != "" {
+		if cats := h.domMap.Lookup(d); len(cats) > 0 {
+			v.SiteCats = cats
+			v.CatSource = "domain_map"
+			h.metrics.IncCatSource("domain_map")
+		}
+	}
 }
 
 func buildRequestView(req *BidRequest) *targeting.RequestView {
