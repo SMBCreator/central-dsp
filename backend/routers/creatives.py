@@ -10,6 +10,7 @@ import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from pydantic import ValidationError
 
+import url_macros
 from ad_sizes import AD_SIZES, is_allowed, nearest_sizes, size_key, size_strict
 from auth import current_user
 from rbac import assert_in_scope, assert_owned_by, assert_refs_owned, is_admin, require_creative_manager, scope_for
@@ -90,6 +91,13 @@ def _validate_type_fields(body: CreativeIn) -> None:
 async def list_ad_sizes(_user: dict = Depends(current_user)):
     """Справочник допустимых размеров баннеров (единый источник для UI)."""
     return AD_SIZES
+
+
+@router.get("/macros")
+async def list_url_macros(_user: dict = Depends(current_user)):
+    """Каталог макросов ${CDSP_*} для ссылки перехода и пикселей (единый источник
+    для UI; подстановка — на бидере в момент ставки)."""
+    return url_macros.CATALOG
 
 
 @router.get("")

@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/geo"
+	"github.com/SMBCreator/central-dsp/bidder-go/internal/macros"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/pctr"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/targeting"
 )
@@ -98,6 +99,26 @@ type Candidate struct {
 	T *Targeting `json:"-"`
 	// Geo — GEO v2 include/exclude как множества (nil = нет v2-гео).
 	Geo *geo.Sets `json:"-"`
+
+	// Макросы ${CDSP_*} в ссылке перехода и пикселях: разбираются один раз при
+	// рефреше (PrepareMacros). nil — в строке нет макросов, ставка идёт прежним
+	// путём без подстановки.
+	ClickTpl        *macros.Template `json:"-"`
+	ImpTpl          *macros.Template `json:"-"`
+	ClickTrackerTpl *macros.Template `json:"-"`
+}
+
+// PrepareMacros разбирает макросы трёх URL креатива. Вызывается при загрузке
+// фида; кандидаты, созданные в обход рефреша (тесты), остаются без шаблонов.
+func (c *Candidate) PrepareMacros() {
+	c.ClickTpl = macros.Parse(c.ClickURL)
+	c.ImpTpl = macros.Parse(c.ImpTrackerURL)
+	c.ClickTrackerTpl = macros.Parse(c.ClickTrackerURL)
+}
+
+// HasMacros — хотя бы в одном из трёх URL есть макрос каталога.
+func (c *Candidate) HasMacros() bool {
+	return c.ClickTpl != nil || c.ImpTpl != nil || c.ClickTrackerTpl != nil
 }
 
 // Targeting — распарсенный targeting JSON line item.
@@ -525,6 +546,7 @@ func (s *Store) refresh(ctx context.Context) error {
 		c.T.Keywords = targeting.NewPreparedKeywords(c.T.KeywordsMatch, c.T.KeywordsAllow, c.T.KeywordsBlock)
 		c.Geo = geo.NewSets(c.T.GeoPlaceIDs, c.T.GeoExcludePlaceIDs, c.T.GeoUnknown)
 		snap.HasGeoV2 = snap.HasGeoV2 || c.Geo != nil
+		c.PrepareMacros()
 	}
 	snap.Candidates = camps.Candidates
 	if camps.GeoVersion != nil {

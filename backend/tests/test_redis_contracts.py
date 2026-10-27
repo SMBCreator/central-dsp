@@ -44,7 +44,7 @@ def _go_map_literal_keys(anchor: str) -> set[str]:
 
 GO_BID_EVENT = _go_map_literal_keys("ev := map[string]any")
 GO_LOSS_EVENT = _go_map_literal_keys('h.redis.EmitEvent(ctx, map[string]any{\n\t\t\t\t\t"type": "loss"')
-GO_BIDMETA = _go_map_literal_keys("meta, _ := json.Marshal(map[string]any")
+GO_BIDMETA = _go_map_literal_keys("metaMap := map[string]any") | set(re.findall(r'metaMap\["([a-z_]+)"\] = ', GO_HANDLER))
 
 CONSUMER_READS = set(re.findall(r'fields\.get\("([a-z_]+)"', PY_CONSUMER)) | {"campaign_id", "line_item_id", "creative_id", "supply_partner_id"}
 STREAM_META = {"type", "ts"}

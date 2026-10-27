@@ -50,6 +50,7 @@
 | GET | `/creatives` | session | любая роль (scope внутри хендлера) |
 | **POST** | `/creatives` | roles+flag | admin, advertiser, agency, manager, superadmin + client[can_manage_creatives] |
 | **POST** | `/creatives/batch` | roles+flag | admin, advertiser, agency, manager, superadmin + client[can_manage_creatives] |
+| GET | `/creatives/macros` | session | любая роль (scope внутри хендлера) |
 | GET | `/creatives/sizes` | session | любая роль (scope внутри хендлера) |
 | **POST** | `/creatives/upload` | roles+flag | admin, advertiser, agency, manager, superadmin + client[can_manage_creatives] |
 | **DELETE** | `/creatives/upload/{name}` | roles+flag | admin, advertiser, agency, manager, superadmin + client[can_manage_creatives] |

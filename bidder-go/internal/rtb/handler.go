@@ -636,7 +636,13 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 		// adm собираем до bookkeeping: пустая разметка (admIncompat пропустил,
 		// но VAST не собрался) — резерв назад, bidmeta не пишем, кандидат
 		// пропущен; иначе SSP получил бы бид без трекеров.
-		adm := BuildAdmAssets(c, h.base, token, sc.nativeAssets)
+		// Макросы ${CDSP_*}: только у кандидатов, где они есть (шаблоны разобраны
+		// при загрузке фида). Остальные идут прежним путём — adm и bidmeta те же.
+		impURL, clickTrackerURL, clickLink := c.ImpTrackerURL, c.ClickTrackerURL, ""
+		if c.HasMacros() {
+			impURL, clickTrackerURL, clickLink = h.expandCreativeURLs(c, buildMacroContext(req, imp, view, c, partner, bidID))
+		}
+		adm := buildAdmURLs(c, h.base, token, sc.nativeAssets, impURL, clickTrackerURL)
 		if adm == "" {
 			slog.Warn("adm build failed; candidate skipped", "creative_id", c.CreativeID)
 			h.incIncompat(IncompatAdmVAST)
@@ -648,7 +654,7 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 		// backend не опознает win/imp/click (rtb.py:_find_bid) — платный показ
 		// пройдёт без списания и без учёта. Не удалось записать — резерв
 		// возвращаем и бид не отдаём.
-		if err := h.persistBidMeta(rctx, bidID, imp, c, partner, sc.price, sc.pctr, sc.bidCPC, respCur, sc.fxRate, view, adType, deviceID, req.Test == 1, reservation); err != nil {
+		if err := h.persistBidMeta(rctx, bidID, imp, c, partner, sc.price, sc.pctr, sc.bidCPC, respCur, sc.fxRate, view, adType, deviceID, req.Test == 1, reservation, clickLink); err != nil {
 			slog.Error("bid bookkeeping failed; no-bid", "bid_id", bidID, "err", err)
 			if h.metrics != nil {
 				h.metrics.IncBookkeepingError()
@@ -814,7 +820,7 @@ func (h *Handler) persistBidMeta(ctx interface {
 	Err() error
 	Deadline() (time.Time, bool)
 	Value(any) any
-}, bidID string, imp *Imp, c *feed.Candidate, partner *feed.Partner, price, pctrUsed, bidCPC float64, respCur string, fxRate float64, view *targeting.RequestView, adType, deviceID string, isTest bool, res redisx.BidReservation) error {
+}, bidID string, imp *Imp, c *feed.Candidate, partner *feed.Partner, price, pctrUsed, bidCPC float64, respCur string, fxRate float64, view *targeting.RequestView, adType, deviceID string, isTest bool, res redisx.BidReservation, clickLink string) error {
 	if h.redis == nil {
 		// Без Redis биддер в degraded-режиме (только dev): bookkeeping невозможен,
 		// но и резервов нет — бид уходит как раньше.
@@ -845,7 +851,7 @@ func (h *Handler) persistBidMeta(ctx interface {
 	// были зарезервированы. Inventory-измерения (bundle/publisher/tagid/
 	// region/city) — audit E-01: win/imp/click/loss наследуют их от бида,
 	// иначе в группировках «по площадкам» они попадают в «—».
-	meta, _ := json.Marshal(map[string]any{
+	metaMap := map[string]any{
 		"bid_id": bidID, "imp_id": imp.ID,
 		"campaign_id": c.CampaignID, "line_item_id": c.LiID,
 		"creative_id": c.CreativeID, "supply_partner_id": partner.ID,
@@ -872,7 +878,13 @@ func (h *Handler) persistBidMeta(ctx interface {
 		"fdev":  deviceID,
 		"fcaps": res.Caps,
 		"fwin":  b01int(partner.FreqCapOnWin),
-	})
+	}
+	// Ссылка перехода с развёрнутыми макросами: клик-редирект (rtb.py click)
+	// берёт её отсюда; без поля — прежний click_url креатива из БД.
+	if clickLink != "" {
+		metaMap["click_url"] = clickLink
+	}
+	meta, _ := json.Marshal(metaMap)
 	if err := rdb.Set(ctx, "bidmeta:"+bidID, meta, time.Hour).Err(); err != nil {
 		return fmt.Errorf("set bidmeta: %w", err)
 	}

@@ -82,6 +82,10 @@ type Registry struct {
 	// Audit R-02: bidmeta/XADD не записались -> бид отменён, резерв возвращён.
 	// Каждая единица — упущенный показ из-за Redis, а не потерянные деньги.
 	bookkeepingErrors atomic.Int64
+	// Макросы ${CDSP_*} в URL креатива: развёрнуто по полям и отброшено пикселей
+	// (поле x причина). Кардинальность фиксирована.
+	macroExpanded [3]atomic.Int64    // click | imp | click_tracker
+	macroDropped  [2][2]atomic.Int64 // imp|click_tracker x unsafe|too_long
 	// Audit R-03: кандидат пропущен — нет курса ЦБ для валюты floor/ответа
 	// (= rtb_nobid_fx_rate_missing_total в Python). Не no-bid запроса целиком.
 	fxRateMissing atomic.Int64
@@ -206,6 +210,40 @@ func (r *Registry) IncEventEmitError() { r.eventEmitErrors.Add(1) }
 
 // IncBookkeepingError — бид отменён: bidmeta или событие bid не записались (R-02).
 func (r *Registry) IncBookkeepingError() { r.bookkeepingErrors.Add(1) }
+
+// Поля URL креатива для метрик макросов.
+const (
+	MacroFieldClick        = 0
+	MacroFieldImp          = 1
+	MacroFieldClickTracker = 2
+)
+
+// MacroFieldNames — значения метки field в порядке констант MacroField*.
+var MacroFieldNames = [3]string{"click", "imp", "click_tracker"}
+
+// MacroDropReasons — значения метки reason отброшенного пикселя.
+var MacroDropReasons = [2]string{"unsafe", "too_long"}
+
+// IncMacroExpanded — в URL креатива подставлены макросы (field: MacroField*).
+func (r *Registry) IncMacroExpanded(field int) {
+	if field >= 0 && field < len(r.macroExpanded) {
+		r.macroExpanded[field].Add(1)
+	}
+}
+
+// IncMacroDropped — развёрнутый пиксель не прошёл проверку и не вставлен в adm
+// (field: MacroFieldImp | MacroFieldClickTracker; tooLong — иначе unsafe).
+func (r *Registry) IncMacroDropped(field int, tooLong bool) {
+	f := field - MacroFieldImp
+	if f < 0 || f >= len(r.macroDropped) {
+		return
+	}
+	i := 0
+	if tooLong {
+		i = 1
+	}
+	r.macroDropped[f][i].Add(1)
+}
 
 // IncFXRateMissing — кандидат пропущен: нет курса для валюты floor/ответа (R-03).
 func (r *Registry) IncFXRateMissing() { r.fxRateMissing.Add(1) }
@@ -396,6 +434,16 @@ func (r *Registry) write(w http.ResponseWriter) {
 	c("bidder_reserve_orphans_total", "pending:bids entries whose bidmeta was already gone.", r.reserveOrphans.Load())
 	c("bidder_event_emit_errors_total", "Bid events that failed to be written to the rtb:events Redis stream.", r.eventEmitErrors.Load())
 	c("bidder_bookkeeping_errors_total", "Bids withdrawn because bidmeta/bid event could not be written to Redis (reservation released).", r.bookkeepingErrors.Load())
+	fmt.Fprintf(w, "# HELP bidder_macro_expanded_total Creative URLs (click link, impression pixel, click pixel) with CDSP macros expanded at bid time.\n# TYPE bidder_macro_expanded_total counter\n")
+	for i, field := range MacroFieldNames {
+		fmt.Fprintf(w, "bidder_macro_expanded_total{field=%q} %d\n", field, r.macroExpanded[i].Load())
+	}
+	fmt.Fprintf(w, "# HELP bidder_macro_dropped_total Tracking pixels omitted from adm because the expanded URL failed validation (bid is still placed).\n# TYPE bidder_macro_dropped_total counter\n")
+	for f := range r.macroDropped {
+		for i, reason := range MacroDropReasons {
+			fmt.Fprintf(w, "bidder_macro_dropped_total{field=%q,reason=%q} %d\n", MacroFieldNames[f+MacroFieldImp], reason, r.macroDropped[f][i].Load())
+		}
+	}
 	c("bidder_nobid_fx_rate_missing_total", "Candidates skipped: no CBR rate for the floor/response currency (R-03).", r.fxRateMissing.Load())
 	c("bidder_panics_total", "Handler panics recovered by the HTTP middleware (process kept alive).", r.panics.Load())
 
