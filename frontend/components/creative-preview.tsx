@@ -198,7 +198,7 @@ export function CreativePreview({ type, assetUrl, width, height, nativeTitle, na
   }
 
   if (type === "push") {
-    // Имит��ция системного push-уведомления: иконка + заголовок + текст,
+    // Имитация системного push-уведомления: иконка + заголовок + текст,
     // ниже — большая картинка (big image), как в push-сетях.
     return (
       <div className="relative w-80 max-w-full overflow-hidden rounded-lg border border-border bg-white shadow-sm">

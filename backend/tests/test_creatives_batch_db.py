@@ -411,8 +411,9 @@ def test_list_creatives_has_counterparty_fields(env):
                 r2 = await c.get("/creatives", params={"campaign_id": t.ids["camp"]})
                 assert r2.status_code == 200 and len(r2.json()) == 2
         finally:
-            await conn.execute("DELETE FROM counterparties WHERE user_id = $1", uuid.UUID(t.ids["user"]))
+            # Сначала teardown (удаляет креативы), иначе FK creatives_counterparty_id_fkey не даст удалить контрагента.
             await t.teardown(conn)
+            await conn.execute("DELETE FROM counterparties WHERE user_id = $1", uuid.UUID(t.ids["user"]))
             await conn.close()
 
     _run(scenario())
