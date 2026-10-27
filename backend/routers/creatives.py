@@ -96,15 +96,17 @@ async def list_ad_sizes(_user: dict = Depends(current_user)):
 async def list_creatives(campaign_id: str | None = None, user: dict = Depends(current_user)):
     pool = await get_pool()
     scope = await scope_for(user)
+    # Реквизиты контрагента нужны плашке «Реклама ⓘ» в превью; один LEFT JOIN, без N+1.
+    base = f"""
+        SELECT c.*, cp.name AS counterparty_name, cp.inn AS counterparty_inn,
+               cp.ogrn AS counterparty_ogrn, cp.address AS counterparty_address
+        FROM creatives c
+        LEFT JOIN counterparties cp ON cp.id = c.counterparty_id
+        WHERE {scope.where('c.user_id', 1)}"""
     if campaign_id:
-        rows = await pool.fetch(
-            f"SELECT * FROM creatives WHERE {scope.where('user_id', 1)} AND campaign_id = $3 ORDER BY created_at DESC",
-            *scope.params, campaign_id,
-        )
+        rows = await pool.fetch(f"{base} AND c.campaign_id = $3 ORDER BY c.created_at DESC", *scope.params, campaign_id)
     else:
-        rows = await pool.fetch(
-            f"SELECT * FROM creatives WHERE {scope.where('user_id', 1)} ORDER BY created_at DESC", *scope.params
-        )
+        rows = await pool.fetch(f"{base} ORDER BY c.created_at DESC", *scope.params)
     return [_serialize(r) for r in rows]
 
 

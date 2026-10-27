@@ -375,3 +375,44 @@ def test_batch_ru_admin_reports_ord_status_per_item(env):
             await conn.close()
 
     _run(scenario())
+
+
+# ------------------------------------------------------------- GET /creatives (превью)
+
+
+def test_list_creatives_has_counterparty_fields(env):
+    """PR-5: список отдаёт реквизиты контрагента для плашки «Реклама ⓘ» одним JOIN;
+    креатив без контрагента — поля null, а не ошибка."""
+    async def scenario():
+        conn = await asyncpg.connect(DATABASE_URL)
+        t = await _Tenant().setup(conn)
+        try:
+            cp = await conn.fetchval(
+                """INSERT INTO counterparties (user_id, name, inn, ogrn, address)
+                   VALUES ($1, 'ООО Плашка', '7701234567', '1027700000000', 'Москва, ул. Тестовая, 1') RETURNING id""",
+                uuid.UUID(t.ids["user"]),
+            )
+            async with _client(t.user()) as c:
+                with_cp = await c.post("/creatives", json=_banner(t, name="with-cp", counterparty_id=str(cp)))
+                assert with_cp.status_code == 201, with_cp.text
+                no_cp = await c.post("/creatives", json=_banner(t, name="no-cp"))
+                assert no_cp.status_code == 201, no_cp.text
+                r = await c.get("/creatives")
+                assert r.status_code == 200
+                rows = {x["name"]: x for x in r.json()}
+                a = rows["with-cp"]
+                assert a["counterparty_name"] == "ООО Плашка"
+                assert a["counterparty_inn"] == "7701234567"
+                assert a["counterparty_ogrn"] == "1027700000000"
+                assert a["counterparty_address"] == "Москва, ул. Тестовая, 1"
+                b = rows["no-cp"]
+                for k in ("counterparty_name", "counterparty_inn", "counterparty_ogrn", "counterparty_address"):
+                    assert k in b and b[k] is None
+                r2 = await c.get("/creatives", params={"campaign_id": t.ids["camp"]})
+                assert r2.status_code == 200 and len(r2.json()) == 2
+        finally:
+            await conn.execute("DELETE FROM counterparties WHERE user_id = $1", uuid.UUID(t.ids["user"]))
+            await t.teardown(conn)
+            await conn.close()
+
+    _run(scenario())

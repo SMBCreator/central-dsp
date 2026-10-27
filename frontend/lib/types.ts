@@ -231,6 +231,11 @@ export interface Creative {
   iab_categories?: string[]
   attrs?: number[]
   erid: string | null
+  /** Реквизиты контрагента для плашки «Реклама ⓘ» (GET /creatives, LEFT JOIN). */
+  counterparty_name?: string | null
+  counterparty_inn?: string | null
+  counterparty_ogrn?: string | null
+  counterparty_address?: string | null
   moderation_comment: string | null
   created_at: string
 }

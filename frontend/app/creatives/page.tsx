@@ -2,11 +2,13 @@
 
 import { useState } from "react"
 import useSWR, { mutate } from "swr"
-import { api, assetUrl, fetcher, describeApiError } from "@/lib/api"
+import { api, fetcher, describeApiError } from "@/lib/api"
 import { kktuShortLabel } from "@/lib/kktu"
 import { AD_TYPE_LABELS, type Campaign, type Creative } from "@/lib/types"
 import { Button, Card, CardHeader, EmptyState, Spinner, StatusBadge, Table } from "@/components/ui"
 import { CreativeModal } from "@/components/creative-modal"
+import { CreativeThumb } from "@/components/creative-thumb"
+import { CreativePreviewModal } from "@/components/creative-preview-modal"
 import { canWrite, isAdminRole } from "@/lib/roles"
 import { useMe } from "@/lib/use-me"
 
@@ -21,6 +23,7 @@ export default function CreativesPage() {
   const admin = isAdminRole(me?.role)
 
   const [open, setOpen] = useState(false)
+  const [previewing, setPreviewing] = useState<Creative | null>(null)
   const [notice, setNotice] = useState<{ kind: "ok" | "warn"; text: string } | null>(null)
 
   const approve = async (c: Creative) => {
@@ -80,11 +83,14 @@ export default function CreativesPage() {
         <CardHeader title="Все креативы" subtitle={creatives ? `Всего: ${creatives.length}` : undefined} />
         {creatives ? (
           creatives.length > 0 ? (
-            <Table headers={["ID", "Название", "Тип", "Классификатор", "Размер", "Статус", "erid", "Кампания", ""]}>
+            <Table headers={["Превью", "ID", "Название", "Тип", "Классификатор", "Размер", "Статус", "erid", "Кампания", ""]}>
               {creatives.map((c) => {
                 const camp = campaigns?.find((x) => x.id === c.campaign_id)
                 return (
                   <tr key={c.id} className="hover:bg-surface">
+                    <td className="px-4 py-3">
+                      <CreativeThumb creative={c} onOpen={() => setPreviewing(c)} />
+                    </td>
                     <td className="px-4 py-3 font-mono text-xs text-muted">{c.display_id}</td>
                     <td className="px-4 py-3 font-medium text-foreground">{c.name}</td>
                     <td className="px-4 py-3 text-muted">{AD_TYPE_LABELS[c.type] || c.type}</td>
@@ -121,21 +127,14 @@ export default function CreativesPage() {
                     <td className="px-4 py-3 text-muted">{camp?.name || "—"}</td>
                     <td className="px-4 py-3">
                       <div className="flex justify-end gap-2">
-                        {/* H10: открыть креатив в реальном размере в новой вкладке */}
-                        {c.asset_url || c.video_url ? (
-                          <a
-                            href={assetUrl(c.asset_url || c.video_url || "") || "#"}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center rounded-md px-2 py-1 text-xs font-medium text-muted transition-colors hover:text-foreground"
-                            title="Открыть в реальном размере в новой вкладке"
-                          >
-                            Открыть
-                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" aria-hidden="true" className="ml-1">
-                              <path d="M7 17L17 7M17 7H8M17 7v9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                            </svg>
-                          </a>
-                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => setPreviewing(c)}
+                          className="inline-flex items-center rounded-md px-2 py-1 text-xs font-medium text-muted transition-colors hover:text-foreground"
+                          title="Открыть креатив в полном размере"
+                        >
+                          Открыть
+                        </button>
                         {admin && c.status === "pending" ? (
                           <>
                             <Button variant="ghost" onClick={() => approve(c)}>
@@ -166,6 +165,12 @@ export default function CreativesPage() {
           <Spinner />
         )}
       </Card>
+
+      <CreativePreviewModal
+        creative={previewing}
+        campaignName={campaigns?.find((x) => x.id === previewing?.campaign_id)?.name}
+        onClose={() => setPreviewing(null)}
+      />
 
       <CreativeModal
         open={open}
