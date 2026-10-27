@@ -713,7 +713,7 @@ export function TargetingEditor({
             />
           </Field>
         </div>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
           <Field label="Возраст от">
             <input
               type="number"
@@ -736,12 +736,13 @@ export function TargetingEditor({
               placeholder="99"
             />
           </Field>
+          <div className="col-span-2 min-w-0">
           <Field label="Пол">
-            <div className="grid grid-cols-3 gap-1.5">
+            <div className="flex flex-wrap gap-1.5">
               <button
                 type="button"
                 onClick={() => set({ genders: undefined })}
-                className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
+                className={`min-w-0 flex-1 basis-24 whitespace-nowrap rounded-lg border px-2 py-1.5 text-sm font-medium transition-colors ${
                   !value.genders?.length
                     ? "border-foreground bg-card text-foreground"
                     : "border-border bg-panel text-muted hover:text-foreground"
@@ -754,7 +755,7 @@ export function TargetingEditor({
                   key={g.value}
                   type="button"
                   onClick={() => set({ genders: toggle(value.genders, g.value) })}
-                  className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
+                  className={`min-w-0 flex-1 basis-24 whitespace-nowrap rounded-lg border px-2 py-1.5 text-sm font-medium transition-colors ${
                     (value.genders || []).includes(g.value)
                       ? "border-foreground bg-card text-foreground"
                       : "border-border bg-panel text-muted hover:text-foreground"
@@ -765,6 +766,7 @@ export function TargetingEditor({
               ))}
             </div>
           </Field>
+          </div>
         </div>
       </TargetSection>
 
