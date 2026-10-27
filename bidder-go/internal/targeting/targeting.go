@@ -87,7 +87,7 @@ type RequestView struct {
 	Carrier    string   // device.carrier (lower)
 	IP         string   // device.ip, иначе device.ipv6
 	DNT        bool     // device.dnt == 1 || device.lmt == 1
-	SiteCats   []string // site.cat | app.cat (upper)
+	SiteCats   []string // объединение cat/sectioncat/pagecat/content.cat/publisher.cat site и app (CollectCats: upper, без дублей)
 	Domain     string   // site.domain | app.bundle (lower)
 	Env        string   // "app" если есть req.app, иначе "site"
 	Bundle     string   // app.bundle (lower); пусто для web
@@ -150,20 +150,62 @@ func DeviceBrowser(ua string) string {
 	return "unknown"
 }
 
+// Reason — причина отказа Match: какая группа проверок отсекла кандидата.
+// Значения (кроме ReasonNone) идут в метку reason метрики
+// bidder_targeting_reject_total; порядок и имена зафиксированы тестом против
+// metrics.TargetingRejectReasons.
+type Reason uint8
+
+const (
+	ReasonNone            Reason = iota // кандидат прошёл
+	ReasonGeo                           // страна / регион / город
+	ReasonDevice                        // тип устройства, ОС, браузер, язык, соединение, оператор, версия ОС, производитель, IP
+	ReasonInventoryIAB                  // тематика площадки (IAB allow / block)
+	ReasonInventoryDomain               // белый/чёрный список доменов
+	ReasonInventoryOther                // среда site/app, бандлы, паблишеры, schain
+	ReasonAudience                      // пол и возраст
+	ReasonTime                          // часы и дни недели
+	ReasonKeywords                      // контекстные слова
+	ReasonContext                       // режим «ИЛИ»: не сработали ни тематика, ни слова
+	ReasonRegulatory                    // COPPA / GDPR / DNT
+	ReasonOther                         // не классифицировано
+	ReasonCount
+)
+
+var reasonNames = [ReasonCount]string{
+	"", "geo", "device", "inventory_iab", "inventory_domain", "inventory_other",
+	"audience", "time", "keywords", "context", "regulatory", "other",
+}
+
+// String — значение метки reason (пусто для ReasonNone).
+func (r Reason) String() string {
+	if r >= ReasonCount {
+		return ""
+	}
+	return reasonNames[r]
+}
+
 // Match — порт _match_targeting. Все ключи опциональны; пусто = нет ограничения.
+// Обёртка над MatchReason: результат всегда совпадает (reason == ReasonNone).
 func Match(t *Targeting, r *RequestView) bool {
+	return MatchReason(t, r) == ReasonNone
+}
+
+// MatchReason — то же, что Match, но возвращает причину первого отказа.
+// Порядок проверок совпадает с Python-эталоном; ReasonNone — кандидат проходит.
+func MatchReason(t *Targeting, r *RequestView) Reason {
 	if t == nil {
-		return true
+		return ReasonNone
 	}
 	// --- Geo ---
 	if len(t.GeoCountries) > 0 && !containsFold(t.GeoCountries, r.Country, NormalizeCountry) {
-		return false
+		return ReasonGeo
 	}
 	if len(t.GeoRegions) > 0 && !containsFold(t.GeoRegions, r.Region, strings.ToLower) {
-		return false
+		return ReasonGeo
 	}
 	if len(t.GeoCities) > 0 && !containsFold(t.GeoCities, r.City, strings.ToLower) {
-		return false
+		return ReasonGeo
 	}
 	// --- Device ---
 	if len(t.DeviceTypes) > 0 {
@@ -176,11 +218,11 @@ func Match(t *Targeting, r *RequestView) bool {
 			normalized = "mobile"
 		}
 		if !contains(t.DeviceTypes, normalized) && !contains(t.DeviceTypes, dt) {
-			return false
+			return ReasonDevice
 		}
 	}
 	if len(t.OS) > 0 && !containsFold(t.OS, r.OS, strings.ToLower) {
-		return false
+		return ReasonDevice
 	}
 	if len(t.Browsers) > 0 {
 		found := false
@@ -191,11 +233,11 @@ func Match(t *Targeting, r *RequestView) bool {
 			}
 		}
 		if !found {
-			return false
+			return ReasonDevice
 		}
 	}
 	if len(t.Languages) > 0 && !containsFold(t.Languages, r.Language, strings.ToLower) {
-		return false
+		return ReasonDevice
 	}
 	if len(t.ConnectionTypes) > 0 {
 		ct, ok := ConnectionTypes[r.ConnType]
@@ -203,55 +245,55 @@ func Match(t *Targeting, r *RequestView) bool {
 			ct = "unknown"
 		}
 		if !contains(t.ConnectionTypes, ct) {
-			return false
+			return ReasonDevice
 		}
 	}
 	// --- Inventory ---
-	if len(t.IABCategories) > 0 && !intersectsUpper(t.IABCategories, r.SiteCats) {
-		return false
+	if len(t.IABCategories) > 0 && !IABIntersects(t.IABCategories, r.SiteCats) {
+		return ReasonInventoryIAB
 	}
-	if len(t.IABBlock) > 0 && intersectsUpper(t.IABBlock, r.SiteCats) {
-		return false
+	if len(t.IABBlock) > 0 && IABIntersects(t.IABBlock, r.SiteCats) {
+		return ReasonInventoryIAB
 	}
 	if r.Domain != "" && len(t.DomainBlocklist) > 0 && containsFold(t.DomainBlocklist, r.Domain, strings.ToLower) {
-		return false
+		return ReasonInventoryDomain
 	}
 	if len(t.DomainAllowlist) > 0 && !containsFold(t.DomainAllowlist, r.Domain, strings.ToLower) {
-		return false
+		return ReasonInventoryDomain
 	}
 	// --- Audience ---
 	if len(t.Genders) > 0 && !containsFold(t.Genders, r.Gender, strings.ToUpper) {
-		return false
+		return ReasonAudience
 	}
 	if (t.AgeMin > 0 || t.AgeMax > 0) && r.YOB > 0 {
 		age := r.Now.UTC().Year() - r.YOB
 		if t.AgeMin > 0 && age < t.AgeMin {
-			return false
+			return ReasonAudience
 		}
 		if t.AgeMax > 0 && age > t.AgeMax {
-			return false
+			return ReasonAudience
 		}
 	}
 	// --- Dayparting (UTC) ---
 	now := r.Now.UTC()
 	if len(t.Hours) > 0 && !containsInt(t.Hours, now.Hour()) {
-		return false
+		return ReasonTime
 	}
 	if len(t.Days) > 0 {
 		// Python weekday(): 0=Mon..6=Sun; Go Weekday(): 0=Sun..6=Sat.
 		pyWeekday := (int(now.Weekday()) + 6) % 7
 		if !containsInt(t.Days, pyWeekday) {
-			return false
+			return ReasonTime
 		}
 	}
 	// --- Inventory environment: site (web) vs app ---
 	if len(t.TrafficTypes) > 0 && !contains(t.TrafficTypes, r.Env) {
-		return false
+		return ReasonInventoryOther
 	}
 	// --- Carrier / ISP: подстрока в любую сторону, пустой carrier = мимо ---
 	if len(t.Carriers) > 0 {
 		if r.Carrier == "" {
-			return false
+			return ReasonDevice
 		}
 		found := false
 		for _, c := range t.Carriers {
@@ -265,35 +307,35 @@ func Match(t *Targeting, r *RequestView) bool {
 			}
 		}
 		if !found {
-			return false
+			return ReasonDevice
 		}
 	}
 	// --- Minimum OS version (major.minor, семантика кортежей Python) ---
 	if t.OSVersionMin != "" {
 		if r.OSV == "" || compareVersion(r.OSV, t.OSVersionMin) < 0 {
-			return false
+			return ReasonDevice
 		}
 	}
 	// --- App bundle allow/block (отдельно от web-доменов) ---
 	if r.Bundle != "" && len(t.AppBundlesBlock) > 0 && containsFold(t.AppBundlesBlock, r.Bundle, strings.ToLower) {
-		return false
+		return ReasonInventoryOther
 	}
 	if len(t.AppBundlesAllow) > 0 && !containsFold(t.AppBundlesAllow, r.Bundle, strings.ToLower) {
-		return false
+		return ReasonInventoryOther
 	}
 	// --- Publisher allow/block: точное сравнение id ---
 	if r.PubID != "" && len(t.PublisherBlock) > 0 && contains(t.PublisherBlock, r.PubID) {
-		return false
+		return ReasonInventoryOther
 	}
 	if len(t.PublisherAllow) > 0 && !contains(t.PublisherAllow, r.PubID) {
-		return false
+		return ReasonInventoryOther
 	}
 	// --- Contextual keywords: стоп-слова приоритетнее, подстрока без регистра ---
 	if len(t.KeywordsBlock) > 0 && anySubstring(t.KeywordsBlock, r.Keywords) {
-		return false
+		return ReasonKeywords
 	}
 	if len(t.KeywordsAllow) > 0 && !anySubstring(t.KeywordsAllow, r.Keywords) {
-		return false
+		return ReasonKeywords
 	}
 	// --- IP prefix ranges ---
 	if len(t.IPRanges) > 0 {
@@ -305,30 +347,30 @@ func Match(t *Targeting, r *RequestView) bool {
 			}
 		}
 		if !found {
-			return false
+			return ReasonDevice
 		}
 	}
 	// --- Regulatory ---
 	if t.BlockCOPPA && r.COPPA {
-		return false
+		return ReasonRegulatory
 	}
 	if t.BlockGDPR && r.GDPR {
-		return false
+		return ReasonRegulatory
 	}
 	if t.SkipDNT && r.DNT {
-		return false
+		return ReasonRegulatory
 	}
 	// --- Device make: без регистра, пустой make у SSP = мимо (как carriers) ---
 	if len(t.DeviceMakes) > 0 {
 		if r.Make == "" || !containsFold(t.DeviceMakes, r.Make, strings.ToLower) {
-			return false
+			return ReasonDevice
 		}
 	}
 	// --- Supply chain: только запросы с полной schain ---
 	if t.SChainRequired && !r.SChainOK {
-		return false
+		return ReasonInventoryOther
 	}
-	return true
+	return ReasonNone
 }
 
 // MatchImp — порт _match_imp_targeting: позиция, interstitial, rewarded,
@@ -558,18 +600,6 @@ func anySubstring(needles []string, haystack string) bool {
 		ln := strings.ToLower(strings.TrimSpace(n))
 		if ln != "" && strings.Contains(haystack, ln) {
 			return true
-		}
-	}
-	return false
-}
-
-func intersectsUpper(a, b []string) bool {
-	for _, x := range a {
-		ux := strings.ToUpper(x)
-		for _, y := range b {
-			if strings.ToUpper(y) == ux {
-				return true
-			}
 		}
 	}
 	return false
