@@ -97,5 +97,9 @@ export function inventorySummary(t: Targeting): string {
   if (t.traffic_types?.length) parts.push(t.traffic_types.includes("app") ? "Приложения" : "Web")
   if (t.domain_allowlist?.length) parts.push(`allow×${t.domain_allowlist.length}`)
   if (t.domain_blocklist?.length) parts.push(`block×${t.domain_blocklist.length}`)
+  const bundles = (t.app_bundles_allow?.length ?? 0) + (t.app_bundles_block?.length ?? 0)
+  if (bundles) parts.push(`бандлы×${bundles}`)
+  const publishers = (t.publisher_allow?.length ?? 0) + (t.publisher_block?.length ?? 0)
+  if (publishers) parts.push(`паблишеры×${publishers}`)
   return parts.join(" · ") || "Весь инвентарь"
 }
