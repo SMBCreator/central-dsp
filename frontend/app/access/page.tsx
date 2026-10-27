@@ -4,6 +4,7 @@ import { useState } from "react"
 import useSWR from "swr"
 import { api, fetcher } from "@/lib/api"
 import { useMe } from "@/lib/use-me"
+import { useAdvertisers } from "@/lib/advertisers"
 import { canAddShareMarkup } from "@/lib/roles"
 import { Button, Card, CardHeader, Field, Modal, EmptyState, Spinner, inputCls } from "@/components/ui"
 
@@ -83,7 +84,7 @@ export default function AccessPage() {
   const canMarkup = canAddShareMarkup(me?.role)
   const { data: links, mutate: mutateLinks } = useSWR<ShareLink[]>("/share/links", fetcher)
   const { data: guests, mutate: mutateGuests } = useSWR<Guest[]>("/share/guests", fetcher)
-  const { data: advertisers } = useSWR<Advertiser[]>("/advertisers", fetcher)
+  const { data: advertisers } = useAdvertisers()
 
   const [linkModal, setLinkModal] = useState(false)
   const [guestModal, setGuestModal] = useState(false)

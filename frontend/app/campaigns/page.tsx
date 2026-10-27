@@ -10,6 +10,7 @@ import { ConfirmDialog } from "@/components/confirm-dialog"
 import { ColumnsButton, ColumnsModal, useTableColumns } from "@/components/table-columns"
 import { canWrite } from "@/lib/roles"
 import { useMe } from "@/lib/use-me"
+import { useAdvertisers } from "@/lib/advertisers"
 
 const OBJECTIVES = [
   { value: "awareness", label: "Охват" },
@@ -330,7 +331,7 @@ function GroupsTab({
 
 export default function CampaignsPage() {
   const { data: campaigns, error: campaignsError } = useSWR<CampaignExt[]>("/campaigns", fetcher)
-  const { data: advertisers } = useSWR<Advertiser[]>("/advertisers", fetcher)
+  const { data: advertisers } = useAdvertisers()
   // analyst и client без can_edit_campaigns видят раздел read-only (сервер тоже вернёт 403)
   const { me } = useMe()
   const writable = !me || canWrite(me.role, "campaigns", me.permissions)

@@ -94,8 +94,12 @@ function StatusDot({ status }: { status: string | undefined }) {
 // ---------------------------------------------------------------- forms ---
 
 function CounterpartyModal({
-  open, onClose, onCreated, role, title,
-}: { open: boolean; onClose: () => void; onCreated: (cp: Counterparty) => void; role: "advertiser" | "agency"; title: string }) {
+  open, onClose, onCreated, role, title, advertiserId,
+}: {
+  open: boolean; onClose: () => void; onCreated: (cp: Counterparty) => void; role: "advertiser" | "agency"; title: string
+  /** п.3: новое юрлицо рекламодателя сразу привязывается к выбранному аккаунту */
+  advertiserId?: string | null
+}) {
   const [form, setForm] = useState({ name: "", inn: "", ogrn: "", legal_type: "ul", address: "" })
   const [foreign, setForeign] = useState(EMPTY_FOREIGN)
   const [saving, setSaving] = useState(false)
@@ -113,7 +117,7 @@ function CounterpartyModal({
     try {
       const cp = await api<Counterparty>("/ord/counterparties", {
         method: "POST",
-        body: { ...form, ...foreignPayload(form.legal_type, foreign), role },
+        body: { ...form, ...foreignPayload(form.legal_type, foreign), role, ...(advertiserId ? { advertiser_id: advertiserId } : {}) },
       })
       await mutate("/ord/counterparties")
       setForm({ name: "", inn: "", ogrn: "", legal_type: "ul", address: "" })
@@ -306,14 +310,26 @@ function ContractPicker({
 }
 
 export function OrdChainEditor({
-  value, onChange, disabled,
-}: { value: OrdChainValues; onChange: (v: OrdChainValues) => void; disabled?: boolean }) {
+  value, onChange, disabled, advertiserId,
+}: {
+  value: OrdChainValues; onChange: (v: OrdChainValues) => void; disabled?: boolean
+  /** п.3: аккаунт рекламодателя DSP — его юрлица ОРД показываются первыми */
+  advertiserId?: string | null
+}) {
   const { data: counterparties } = useSWR<Counterparty[]>("/ord/counterparties", fetcher)
   const { data: contracts } = useSWR<OrdContract[]>("/ord/contracts", fetcher)
 
   const selfOrg = useMemo(() => (counterparties || []).find((cp) => cp.is_self) || null, [counterparties])
   const parties = useMemo(() => (counterparties || []).filter((cp) => !cp.is_self), [counterparties])
   const advertiser = parties.find((cp) => cp.id === value.counterparty_id) || null
+  const linkedParties = useMemo(
+    () => (advertiserId ? parties.filter((cp) => cp.advertiser_id === advertiserId) : []),
+    [parties, advertiserId],
+  )
+  const otherParties = useMemo(
+    () => parties.filter((cp) => !linkedParties.includes(cp)),
+    [parties, linkedParties],
+  )
   const initial = (contracts || []).find((c) => c.id === value.initial_contract_id) || null
 
   const initialOptions = useMemo(
@@ -345,7 +361,14 @@ export function OrdChainEditor({
   const [agencyForInitial, setAgencyForInitial] = useState<Counterparty | null>(null)
 
   const setMode = (m: OrdMode) =>
-    onChange({ ...value, ord_mode: m, initial_contract_id: m === "self" ? null : value.initial_contract_id, executive_contract_id: null })
+    onChange({
+      ...value,
+      ord_mode: m,
+      // единственное юрлицо, привязанное к рекламодателю, подставляем сразу
+      counterparty_id: value.counterparty_id ?? (linkedParties.length === 1 ? linkedParties[0].id : null),
+      initial_contract_id: m === "self" ? null : value.initial_contract_id,
+      executive_contract_id: null,
+    })
 
   if (!counterparties || !contracts) return <Spinner />
 
@@ -382,11 +405,33 @@ export function OrdChainEditor({
               onChange={(e) => onChange({ ...value, counterparty_id: e.target.value || null, initial_contract_id: null, executive_contract_id: null })}
             >
               <option value="">— выбрать рекламодателя —</option>
-              {parties.map((cp) => (
-                <option key={cp.id} value={cp.id}>{partyLabel(cp)}</option>
-              ))}
+              {linkedParties.length ? (
+                <>
+                  <optgroup label="Юрлица этого рекламодателя">
+                    {linkedParties.map((cp) => (
+                      <option key={cp.id} value={cp.id}>{partyLabel(cp)}</option>
+                    ))}
+                  </optgroup>
+                  {otherParties.length ? (
+                    <optgroup label="Другие юрлица">
+                      {otherParties.map((cp) => (
+                        <option key={cp.id} value={cp.id}>{partyLabel(cp)}</option>
+                      ))}
+                    </optgroup>
+                  ) : null}
+                </>
+              ) : (
+                parties.map((cp) => (
+                  <option key={cp.id} value={cp.id}>{partyLabel(cp)}</option>
+                ))
+              )}
             </select>
           </Field>
+          {advertiserId && !linkedParties.length ? (
+            <p className="text-xs text-muted">
+              У выбранного рекламодателя пока нет юрлица для ОРД. Выберите из списка или добавьте новое — оно привяжется к рекламодателю.
+            </p>
+          ) : null}
           <div className="flex items-center justify-between gap-3">
             {advertiser ? <StatusDot status={advertiser.ord_status} /> : <span />}
             <button type="button" onClick={() => setCpModal("advertiser")} className="text-xs font-medium text-accent underline-offset-2 hover:underline">
@@ -441,6 +486,7 @@ export function OrdChainEditor({
         onClose={() => setCpModal(null)}
         role="advertiser"
         title="Новый рекламодатель"
+        advertiserId={advertiserId}
         onCreated={(cp) => onChange({ ...value, counterparty_id: cp.id, initial_contract_id: null, executive_contract_id: null })}
       />
       <CounterpartyModal

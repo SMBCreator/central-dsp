@@ -2,15 +2,15 @@
 
 import { useState } from "react"
 import Link from "next/link"
-import useSWR, { mutate } from "swr"
-import { api, fetcher } from "@/lib/api"
+import { api } from "@/lib/api"
+import { refreshAdvertisers, useAdvertisers } from "@/lib/advertisers"
 import { fmtMoney, type Advertiser } from "@/lib/types"
 import { Button, Card, CardHeader, EmptyState, Field, inputCls, Modal, Spinner, StatusBadge, Table } from "@/components/ui"
 import { NotifyEmailsField } from "@/components/notify-emails-field"
 import { emailsError, formatEmails, parseEmails } from "@/lib/notify-emails"
 
 export default function AdvertisersPage() {
-  const { data: advertisers } = useSWR<Advertiser[]>("/advertisers", fetcher)
+  const { data: advertisers } = useAdvertisers()
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<Advertiser | null>(null)
   const [form, setForm] = useState({ name: "", domain: "", category: "", notify_emails: "" })
@@ -53,7 +53,7 @@ export default function AdvertisersPage() {
       } else {
         await api("/advertisers", { method: "POST", body })
       }
-      await mutate("/advertisers")
+      await refreshAdvertisers()
       setOpen(false)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Ошибка сохранения")
@@ -67,7 +67,7 @@ export default function AdvertisersPage() {
       method: "PATCH",
       body: { status: a.status === "active" ? "paused" : "active" },
     })
-    await mutate("/advertisers")
+    await refreshAdvertisers()
   }
 
   return (

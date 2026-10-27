@@ -10,9 +10,9 @@ import { TargetingEditor, targetingSummary } from "@/components/targeting-editor
 import { KktuSelect } from "@/components/kktu-select"
 import { EMPTY_CHAIN, OrdChainEditor, OrdChainSummaryView, type OrdChainSummary, type OrdChainValues } from "@/components/ord-chain-setup"
 import { kktuShortLabel } from "@/lib/kktu"
-import type { Counterparty, Targeting } from "@/lib/types"
+import type { Advertiser, Counterparty, Targeting } from "@/lib/types"
+import { advertiserOptionLabel, useAdvertisers } from "@/lib/advertisers"
 
-type Advertiser = { id: string; name: string }
 type Group = { id: string; name: string }
 
 const FORMATS: { key: string; title: string; desc: string }[] = [
@@ -28,12 +28,12 @@ const OBJECTIVES = [
   { key: "conversions", label: "Конверсии (CPA)" },
 ]
 
-const STEPS = ["Данные ОРД", "Формат", "Основное", "Бюджет и ставка", "Таргетинг", "Креативы"]
+const STEPS = ["Рекламодатель и ОРД", "Формат", "Основное", "Бюджет и ставка", "Таргетинг", "Креативы"]
 
 
 export default function NewCampaignPage() {
   const router = useRouter()
-  const { data: advertisers } = useSWR<Advertiser[]>("/advertisers", fetcher)
+  const { data: advertisers } = useAdvertisers()
   const { data: groups } = useSWR<Group[]>("/groups", fetcher)
 
   const [step, setStep] = useState(0)
@@ -90,15 +90,13 @@ export default function NewCampaignPage() {
   }, [step, chainConfirmed, format, name, advertiserId, dailyBudget, bidPrice, creatives, kktuCode])
 
   // Превью цепочки считает бэкенд (тот же валидатор, что и подтверждение).
-  // Рекламодатель (аккаунт) ещё не выбран на шаге 0 — берём первого доступного:
-  // владелец всех справочников ОРД один и тот же для текущего пользователя.
+  // п.3: рекламодатель (аккаунт) выбирается первым на шаге 0 — из общего списка.
   const previewChain = async () => {
     setChainBusy(true)
     setError("")
     try {
-      const advId = advertiserId || advertisers?.[0]?.id
-      if (!advId) throw new Error("Сначала создайте рекламодателя (аккаунт) в разделе «Рекламодатели»")
-      const s = await api<OrdChainSummary>("/campaigns/ord-chain/preview", { method: "POST", body: { advertiser_id: advId, ...chain } })
+      if (!advertiserId) throw new Error("Выберите рекламодателя")
+      const s = await api<OrdChainSummary>("/campaigns/ord-chain/preview", { method: "POST", body: { advertiser_id: advertiserId, ...chain } })
       setChainPreview(s)
       setChainReview(true)
     } catch (e) {
@@ -220,9 +218,14 @@ export default function NewCampaignPage() {
             </>
           ) : (
             <>
-              <OrdChainEditor value={chain} onChange={(v) => { setChain(v); setChainConfirmed(false) }} />
+              <AdvertiserPicker
+                advertisers={advertisers}
+                value={advertiserId}
+                onChange={(id) => { setAdvertiserId(id); setChainConfirmed(false) }}
+              />
+              <OrdChainEditor advertiserId={advertiserId || null} value={chain} onChange={(v) => { setChain(v); setChainConfirmed(false) }} />
               <div className="flex justify-end gap-2 border-t border-border px-4 py-3">
-                <Button type="button" disabled={!chain.ord_mode || !chain.counterparty_id || chainBusy} onClick={previewChain}>
+                <Button type="button" disabled={!advertiserId || !chain.ord_mode || !chain.counterparty_id || chainBusy} onClick={previewChain}>
                   {chainBusy ? "Проверка…" : "Проверить данные →"}
                 </Button>
               </div>
@@ -264,16 +267,25 @@ export default function NewCampaignPage() {
                 <Field label="Название кампании">
                   <input value={name} onChange={(e) => setName(e.target.value)} className={inputCls} placeholder="Осенняя распродажа" />
                 </Field>
-                <Field label="Рекламодатель">
-                  <select value={advertiserId} onChange={(e) => setAdvertiserId(e.target.value)} className={inputCls}>
-                    <option value="">Выберите…</option>
-                    {(advertisers || []).map((a) => (
-                      <option key={a.id} value={a.id}>
-                        {a.name}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
+                <div>
+                  <span className="mb-1.5 block text-xs font-medium text-foreground">Рекламодатель</span>
+                  <div className="flex items-center justify-between gap-2 rounded-lg border border-input bg-panel px-3 py-1.5 text-sm text-foreground">
+                    <span className="truncate">
+                      {(() => {
+                        const a = (advertisers || []).find((x) => x.id === advertiserId)
+                        return a ? advertiserOptionLabel(a) : "—"
+                      })()}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => { setChainReview(false); setStep(0) }}
+                      className="shrink-0 text-xs font-medium text-accent underline-offset-2 hover:underline"
+                    >
+                      Изменить
+                    </button>
+                  </div>
+                  <span className="mt-1 block text-xs text-muted">Выбран на первом шаге вместе с данными ОРД</span>
+                </div>
                 <Field label="Цель">
                   <select value={objective} onChange={(e) => setObjective(e.target.value)} className={inputCls}>
                     {OBJECTIVES.map((o) => (
@@ -590,6 +602,37 @@ export default function NewCampaignPage() {
           </div>
         </aside>
       </div>
+    </div>
+  )
+}
+
+function AdvertiserPicker({
+  advertisers,
+  value,
+  onChange,
+}: {
+  advertisers: Advertiser[] | undefined
+  value: string
+  onChange: (id: string) => void
+}) {
+  return (
+    <div className="border-b border-border p-4">
+      <Field label="Рекламодатель" hint="Аккаунт из раздела «Рекламодатели», с баланса которого оплачиваются показы">
+        <select value={value} onChange={(e) => onChange(e.target.value)} className={inputCls} required>
+          <option value="">Выберите…</option>
+          {(advertisers || []).map((a) => (
+            <option key={a.id} value={a.id}>
+              {advertiserOptionLabel(a)}
+            </option>
+          ))}
+        </select>
+      </Field>
+      {advertisers && advertisers.length === 0 ? (
+        <p className="mt-2 text-xs text-muted">
+          Рекламодателей пока нет — создайте его в разделе{" "}
+          <a href="/advertisers" className="font-medium text-accent underline-offset-2 hover:underline">«Рекламодатели»</a>.
+        </p>
+      ) : null}
     </div>
   )
 }
