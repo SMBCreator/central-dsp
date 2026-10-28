@@ -99,7 +99,9 @@ def test_every_contract_key_is_consumed_by_go_matcher():
     m = re.search(r"type Targeting struct \{(.*?)\n\}", go_src, re.DOTALL)
     assert m
     go_names = dict(re.findall(r"\s*([A-Za-z]+)\s+\S+\s+`json:\"([a-z_]+)", m.group(1)))
-    handler = GO_HANDLER.read_text(encoding="utf-8")
+    # GEO v2-ключи превращаются в множества при рефреше (feed.go, geo.NewSets),
+    # а не в handler.go: hot path читает уже готовый Candidate.Geo.
+    handler = GO_HANDLER.read_text(encoding="utf-8") + go_src[m.end():]
     unused = [json for go_name, json in go_names.items() if not re.search(rf"\.{go_name}\b", handler)]
     assert not unused, f"targeting keys parsed by Go but never read in handler.go: {unused}"
 

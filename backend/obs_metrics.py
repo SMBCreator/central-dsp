@@ -43,6 +43,9 @@ _COUNTER_HELP = {
     "rtb_events_claimed_total": "Stale pending events taken over from other consumers via XAUTOCLAIM (E-03).",
     "rtb_test_wins_total": "Win notices for OpenRTB test=1 bids (recorded, not billed).",
     "ord_export_failures_total": "Monthly ORD stats exports that ended with status=failed.",
+    # ID sync (план predeploy A.7): ручки /sync/*, только при ID_SYNC_ENABLED.
+    "id_sync_redirect_rejected_total": "ID sync redirects refused: callback host not in the partner allowlist, bad/replayed /out signature.",
+    "id_sync_consent_denied_total": "ID sync calls that did not create a mapping because consent was missing or refused.",
     # Reservation lifecycle (audit M-05/M-06): исход перевода резерва в clearing на win.
     "rtb_win_settle_converted_total": "Wins whose bid-time reservation was converted to the clearing price.",
     "rtb_win_settle_recharged_total": "Late wins re-charged after the reservation had been released (loss/expire).",
@@ -140,6 +143,12 @@ _GAUGE_HELP = {
 # единичный win без burl. Label partner = supply_partners.id (bounded: партнёров
 # десятки); outcome — фиксированный список.
 BURL_OUTCOMES = ("won", "billed", "late", "expired")
+# Исходы ручек /sync/* (A.7). partner — UUID известного партнёра или "unknown":
+# кардинальность ограничена числом SSP.
+ID_SYNC_STATUSES = (
+    "mapped", "refreshed", "consent_denied", "invalid", "rate_limited",
+    "unknown_partner", "optout", "out_redirect", "out_rejected",
+)
 
 # Фиксированный список cron-задач (routers/cron.py) — bounded label `cron_job`.
 # Не `job`: Prometheus вешает job="backend" на каждую серию скрейпа, и
@@ -153,6 +162,7 @@ CRON_JOBS = (
     "shading",
     "ml_train",
     "domain_quality",
+    "domcat_learn",
     "ord_export",
     "retention",
     "reconcile_reserves",
@@ -161,6 +171,8 @@ CRON_JOBS = (
     "ord_notifications",
     "notify_dispatch",
     "notify_business_checks",
+    "id_sync_purge",
+    "rebuild_idsync",
 )
 _CRON_RESULTS = ("ok", "error")
 
@@ -210,6 +222,8 @@ _http: dict[str, int] = {c: 0 for c in HTTP_CLASSES}
 _conv_unattributed: dict[str, int] = {s: 0 for s in UNATTRIBUTED_STATUSES}
 _coverage: dict[str, float | None] = {d: None for d in COVERAGE_DIMENSIONS}
 _burl_outcomes: dict[tuple[str, str], int] = {}
+_id_sync_requests: dict[tuple[str, str], int] = {}
+_id_sync_created: dict[str, int] = {}
 
 
 def inc(name: str, value: float = 1.0) -> None:
@@ -269,6 +283,20 @@ def inc_burl_outcome(partner_id: str | None, outcome: str) -> None:
     key = (str(partner_id or "unknown"), outcome)
     with _lock:
         _burl_outcomes[key] = _burl_outcomes.get(key, 0) + 1
+
+
+def inc_id_sync_request(partner_id: str | None, status: str) -> None:
+    """Исход вызова /sync/* (A.7). Неизвестный статус — KeyError."""
+    if status not in ID_SYNC_STATUSES:
+        raise KeyError(f"unknown id sync status: {status}")
+    key = (str(partner_id or "unknown"), status)
+    with _lock:
+        _id_sync_requests[key] = _id_sync_requests.get(key, 0) + 1
+
+
+def inc_id_sync_created(partner_id: str) -> None:
+    with _lock:
+        _id_sync_created[partner_id] = _id_sync_created.get(partner_id, 0) + 1
 
 
 def set_coverage(dimension: str, ratio: float | None) -> None:
@@ -374,6 +402,15 @@ def render_prometheus() -> str:
         for (partner, outcome) in sorted(_burl_outcomes):
             lines.append(f'rtb_burl_outcomes_total{{partner="{partner}",outcome="{outcome}"}} {_burl_outcomes[(partner, outcome)]}')
 
+        lines.append("# HELP id_sync_requests_total ID sync endpoint calls by partner and outcome (A.7).")
+        lines.append("# TYPE id_sync_requests_total counter")
+        for (partner, status) in sorted(_id_sync_requests):
+            lines.append(f'id_sync_requests_total{{partner="{partner}",status="{status}"}} {_id_sync_requests[(partner, status)]}')
+        lines.append("# HELP id_sync_mappings_created_total New SSP uid -> dsp_uid mappings by partner (A.7).")
+        lines.append("# TYPE id_sync_mappings_created_total counter")
+        for partner in sorted(_id_sync_created):
+            lines.append(f'id_sync_mappings_created_total{{partner="{partner}"}} {_id_sync_created[partner]}')
+
         lines.append("# HELP simulator_engine_latency_seconds Per-request latency of simulator bid calls by engine.")
         lines.append("# TYPE simulator_engine_latency_seconds summary")
         for engine in SIMULATOR_ENGINES:
@@ -445,3 +482,5 @@ def reset_for_tests() -> None:
         for d in _coverage:
             _coverage[d] = None
         _burl_outcomes.clear()
+        _id_sync_requests.clear()
+        _id_sync_created.clear()

@@ -94,12 +94,16 @@ def resolve_engine(requested: Engine):
     return python_reference, "python_reference"
 
 
+# Ходовые размеры для симуляции; обязаны входить в ad_sizes.AD_SIZES (tests/test_ad_sizes.py).
+SIM_BANNER_SIZES = [(300, 250), (728, 90), (320, 50), (300, 600)]
+
+
 def _make_bid_request(ad_type: str, geo: str | None, device: str | None) -> dict:
     if ad_type == "mixed":
         ad_type = random.choice(["banner", "native", "video"])
     imp: dict = {"id": "1", "bidfloor": round(random.uniform(0.1, 1.5), 2)}
     if ad_type == "banner":
-        w, h = random.choice([(300, 250), (728, 90), (320, 50), (300, 600)])
+        w, h = random.choice(SIM_BANNER_SIZES)
         imp["banner"] = {"w": w, "h": h, "format": [{"w": w, "h": h}]}
     elif ad_type == "native":
         imp["native"] = {"request": "{\"ver\":\"1.2\"}"}

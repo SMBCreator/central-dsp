@@ -22,7 +22,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/SMBCreator/central-dsp/bidder-go/internal/geo"
+	"github.com/SMBCreator/central-dsp/bidder-go/internal/macros"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/pctr"
+	"github.com/SMBCreator/central-dsp/bidder-go/internal/targeting"
 )
 
 // Candidate — строка кандидата, паритет с SQL-выборкой Python hot path
@@ -94,47 +97,80 @@ type Candidate struct {
 
 	// разобранный targeting (заполняется при рефреше, не в hot path)
 	T *Targeting `json:"-"`
+	// Geo — GEO v2 include/exclude как множества (nil = нет v2-гео).
+	Geo *geo.Sets `json:"-"`
+
+	// Макросы ${CDSP_*} в ссылке перехода и пикселях: разбираются один раз при
+	// рефреше (PrepareMacros). nil — в строке нет макросов, ставка идёт прежним
+	// путём без подстановки.
+	ClickTpl        *macros.Template `json:"-"`
+	ImpTpl          *macros.Template `json:"-"`
+	ClickTrackerTpl *macros.Template `json:"-"`
+}
+
+// PrepareMacros разбирает макросы трёх URL креатива. Вызывается при загрузке
+// фида; кандидаты, созданные в обход рефреша (тесты), остаются без шаблонов.
+func (c *Candidate) PrepareMacros() {
+	c.ClickTpl = macros.Parse(c.ClickURL)
+	c.ImpTpl = macros.Parse(c.ImpTrackerURL)
+	c.ClickTrackerTpl = macros.Parse(c.ClickTrackerURL)
+}
+
+// HasMacros — хотя бы в одном из трёх URL есть макрос каталога.
+func (c *Candidate) HasMacros() bool {
+	return c.ClickTpl != nil || c.ImpTpl != nil || c.ClickTrackerTpl != nil
 }
 
 // Targeting — распарсенный targeting JSON line item.
 // Все поля опциональны; пустое значение = нет ограничения.
 // Семантика — паритет с _match_targeting/_match_imp_targeting (rtb.py).
 type Targeting struct {
-	GeoCountries    []string `json:"geo_countries"`
-	GeoRegions      []string `json:"geo_regions"`
-	GeoCities       []string `json:"geo_cities"`
-	DeviceTypes     []string `json:"device_types"`
-	OS              []string `json:"os"`
-	Browsers        []string `json:"browsers"`
-	Languages       []string `json:"languages"`
-	ConnectionTypes []string `json:"connection_types"`
-	IABCategories   []string `json:"iab_categories"`
-	IABBlock        []string `json:"iab_block"`
-	DomainAllowlist []string `json:"domain_allowlist"`
-	DomainBlocklist []string `json:"domain_blocklist"`
-	AgeMin          int      `json:"age_min"`
-	AgeMax          int      `json:"age_max"`
-	Genders         []string `json:"genders"`
-	Hours           []int    `json:"hours"`
-	Days            []int    `json:"days"`
-	SSPAllowlist    []string `json:"ssp_allowlist"`
-	TrafficTypes    []string `json:"traffic_types"`
-	Carriers        []string `json:"carriers"`
-	OSVersionMin    string   `json:"os_version_min"`
-	AppBundlesBlock []string `json:"app_bundles_block"`
-	AppBundlesAllow []string `json:"app_bundles_allow"`
-	PublisherBlock  []string `json:"publisher_block"`
-	PublisherAllow  []string `json:"publisher_allow"`
-	KeywordsBlock   []string `json:"keywords_block"`
-	KeywordsAllow   []string `json:"keywords_allow"`
-	IPRanges        []string `json:"ip_ranges"`
-	BlockCOPPA      bool     `json:"block_coppa"`
-	BlockGDPR       bool     `json:"block_gdpr"`
-	SkipDNT         bool     `json:"skip_dnt"`
+	GeoCountries []string `json:"geo_countries"`
+	GeoRegions   []string `json:"geo_regions"`
+	GeoCities    []string `json:"geo_cities"`
+	// GEO v2 (docs/GEO.md): geonameid мест справочника; проверяются через
+	// Candidate.Geo, собранный при рефреше (geo.NewSets).
+	GeoPlaceIDs        []int    `json:"geo_place_ids"`
+	GeoExcludePlaceIDs []int    `json:"geo_exclude_place_ids"`
+	GeoUnknown         string   `json:"geo_unknown"` // strict (по умолчанию) | lenient
+	DeviceTypes        []string `json:"device_types"`
+	OS                 []string `json:"os"`
+	Browsers           []string `json:"browsers"`
+	Languages          []string `json:"languages"`
+	ConnectionTypes    []string `json:"connection_types"`
+	IABCategories      []string `json:"iab_categories"`
+	IABBlock           []string `json:"iab_block"`
+	DomainAllowlist    []string `json:"domain_allowlist"`
+	DomainBlocklist    []string `json:"domain_blocklist"`
+	AgeMin             int      `json:"age_min"`
+	AgeMax             int      `json:"age_max"`
+	Genders            []string `json:"genders"`
+	Hours              []int    `json:"hours"`
+	Days               []int    `json:"days"`
+	SSPAllowlist       []string `json:"ssp_allowlist"`
+	TrafficTypes       []string `json:"traffic_types"`
+	Carriers           []string `json:"carriers"`
+	OSVersionMin       string   `json:"os_version_min"`
+	AppBundlesBlock    []string `json:"app_bundles_block"`
+	AppBundlesAllow    []string `json:"app_bundles_allow"`
+	PublisherBlock     []string `json:"publisher_block"`
+	PublisherAllow     []string `json:"publisher_allow"`
+	KeywordsBlock      []string `json:"keywords_block"`
+	KeywordsAllow      []string `json:"keywords_allow"`
+	KeywordsMatch      string   `json:"keywords_match"`
+	ContextMode        string   `json:"context_mode"`
+	IABAllowUnknown    bool     `json:"iab_allow_unknown"`
+	IPRanges           []string `json:"ip_ranges"`
+	BlockCOPPA         bool     `json:"block_coppa"`
+	BlockGDPR          bool     `json:"block_gdpr"`
+	SkipDNT            bool     `json:"skip_dnt"`
 	// SSP-сигналы (session 04.09): производитель устройства (device.make),
 	// обязательный source.schain (прозрачность цепочки поставки).
 	DeviceMakes    []string `json:"device_makes"`
 	SChainRequired bool     `json:"schain_required"`
+
+	// Keywords — слова v2, подготовленные при загрузке снапшота (не из JSON); nil — легаси-слова.
+	Keywords *targeting.PreparedKeywords `json:"-"`
 
 	BannerPositions     []int `json:"banner_positions"`
 	InterstitialOnly    bool  `json:"interstitial_only"`
@@ -183,12 +219,24 @@ type Partner struct {
 	TokenPrevHash       string     `json:"token_prev_hash"`
 	TokenPrevValidUntil *time.Time `json:"token_prev_valid_until"`
 
+	// ID sync (миграция 058, docs/ID_SYNC.md). Читаются только при
+	// ID_SYNC_ENABLED; nil/"" = sync для партнёра не настроен.
+	Identity   *PartnerIdentity `json:"identity"`
+	IDSyncSalt string           `json:"id_sync_salt"`
+
 	AllowedTypes map[string]bool `json:"-"`
 	IPNets       []*net.IPNet    `json:"-"` // распарсенный IPWhitelist
 	// WhitelistInvalid — ip_whitelist не разобрался целиком. Fail-closed: такой
 	// партнёр не биддится (метрика bidder_no_bid_total{reason="whitelist_invalid"}),
 	// а не торгуется с любым IP, как было бы при молчаливом пропуске мусора.
 	WhitelistInvalid bool `json:"-"`
+}
+
+// PartnerIdentity — часть supply_partners.identity, нужная биддеру (A.5/A.6).
+// Остальные поля конфига (callback, allowlist, consent) использует только backend.
+type PartnerIdentity struct {
+	SyncEnabled bool   `json:"sync_enabled"`
+	IDSource    string `json:"id_source"` // buyeruid | user_id | ifa | eids:<source>
 }
 
 // ParseIPWhitelist разбирает JSON-массив строк IP или CIDR (объект/строка с
@@ -273,8 +321,14 @@ type Snapshot struct {
 	PCTR *pctr.Model
 	// FXRates — курсы ЦБ RUB за единицу валюты без наценки (fx_rates.rate),
 	// из /rtb-feed/partners. Пусто = биддим только в RUB.
-	FXRates  map[string]float64
-	LoadedAt time.Time
+	FXRates map[string]float64
+	// GEO v2: справочник мест (nil = флаг backend выключен или справочник не
+	// загружен) и признак, что хотя бы у одного кандидата есть v2-гео —
+	// без него гео запроса не сопоставляется вовсе.
+	Geo        *geo.Index
+	GeoVersion string
+	HasGeoV2   bool
+	LoadedAt   time.Time
 }
 
 // Blocked — есть ли у кампании блок оптимизатора (block_type, block_value).
@@ -407,6 +461,15 @@ type feedError struct {
 
 func (e *feedError) Error() string { return "feed " + e.path + " bad status" }
 
+// GetJSON — GET к backend с токеном фида (для отдельных справочников, не
+// входящих в основной снапшот: domcat).
+func (s *Store) GetJSON(ctx context.Context, path string, out any) error {
+	if s.cfg.FeedToken == "" {
+		return ErrNoToken
+	}
+	return s.get(ctx, path, out)
+}
+
 func (s *Store) get(ctx context.Context, path string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.cfg.BackendURL+path, nil)
 	if err != nil {
@@ -438,6 +501,7 @@ func (s *Store) refresh(ctx context.Context) error {
 		ScoringBlocks []ScoringBlock   `json:"scoring_blocks"`
 		DirtyDomains  []string         `json:"dirty_domains"`
 		PCTRModel     *pctr.FeedModel  `json:"pctr_model"`
+		GeoVersion    *string          `json:"geo_version"`
 	}
 	if err := s.get(ctx, "/rtb-feed/campaigns", &camps); err != nil {
 		slog.Error("feed campaigns refresh failed", "err", err)
@@ -479,8 +543,18 @@ func (s *Store) refresh(ctx context.Context) error {
 	for i := range camps.Candidates {
 		c := &camps.Candidates[i]
 		c.T = ParseTargeting(c.Targeting)
+		c.T.Keywords = targeting.NewPreparedKeywords(c.T.KeywordsMatch, c.T.KeywordsAllow, c.T.KeywordsBlock)
+		c.Geo = geo.NewSets(c.T.GeoPlaceIDs, c.T.GeoExcludePlaceIDs, c.T.GeoUnknown)
+		snap.HasGeoV2 = snap.HasGeoV2 || c.Geo != nil
+		c.PrepareMacros()
 	}
 	snap.Candidates = camps.Candidates
+	if camps.GeoVersion != nil {
+		snap.Geo, snap.GeoVersion = s.geoIndex(ctx, *camps.GeoVersion)
+		for i := range snap.Candidates {
+			snap.Candidates[i].Geo.Bind(snap.Geo)
+		}
+	}
 	for _, dl := range camps.DomainLists {
 		m := snap.GWhite
 		if dl.ListType == "black" {
@@ -524,6 +598,25 @@ func (s *Store) refresh(ctx context.Context) error {
 	s.mu.Unlock()
 	slog.Info("feed refreshed", "candidates", len(snap.Candidates), "partners", len(snap.Partners))
 	return nil
+}
+
+// geoIndex — справочник GEO v2 для версии из фида. Тот же номер версии =
+// индекс из прошлого снапшота (справочник не гоняется каждые 30 с). Ошибка
+// загрузки не валит рефреш: остаётся прежний индекс и прежняя версия, чтобы
+// следующий рефреш повторил попытку; без индекса v2-группы видят unknown.
+func (s *Store) geoIndex(ctx context.Context, version string) (*geo.Index, string) {
+	prev := s.Snapshot()
+	if prev.Geo != nil && prev.GeoVersion == version {
+		return prev.Geo, version
+	}
+	var p geo.Payload
+	if err := s.get(ctx, "/rtb-feed/geo", &p); err != nil {
+		slog.Error("feed geo refresh failed; keeping previous geo index", "err", err, "version", version)
+		return prev.Geo, prev.GeoVersion
+	}
+	idx := geo.NewIndex(&p)
+	slog.Info("feed geo index loaded", "version", p.Version, "places", idx.Len(), "aliases", len(p.Aliases))
+	return idx, version
 }
 
 // ParseTargeting разбирает targeting JSONB (объект или строку с объектом).

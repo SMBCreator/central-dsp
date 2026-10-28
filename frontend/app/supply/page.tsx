@@ -5,6 +5,7 @@ import useSWR, { mutate } from "swr"
 import { api, ApiError, fetcher } from "@/lib/api"
 import { AD_TYPE_LABELS, type PublicSettings, type SspCheckResult, type SupplyPartner } from "@/lib/types"
 import { SspPartnerStats } from "@/components/ssp-partner-stats"
+import { SspIdSync } from "@/components/ssp-id-sync"
 import {
   Button,
   Card,
@@ -126,6 +127,7 @@ export default function SupplyPage() {
   const [actionError, setActionError] = useState<string | null>(null)
   const [checkingId, setCheckingId] = useState<string | null>(null)
   const [statsId, setStatsId] = useState<string | null>(null)
+  const [syncId, setSyncId] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [copied, setCopied] = useState<string | null>(null)
 
@@ -400,6 +402,7 @@ export default function SupplyPage() {
                       {p.seat_id ? ` · seat ${p.seat_id}` : ""}
                       {` · расход по ${p.billing_event === "burl" ? "burl" : "nurl"}`}
                       {p.freq_cap_on_win ? " · cap по win" : ""}
+                      {p.identity?.sync_enabled ? " · ID sync" : ""}
                       {p.has_auth_token ? ` · токен ${p.auth_token_hint || "задан"}` : " · токен не выдан"}
                     </p>
                   </div>
@@ -442,6 +445,13 @@ export default function SupplyPage() {
                       aria-expanded={statsId === p.id}
                     >
                       Статистика
+                    </Button>
+                    <Button
+                      variant={syncId === p.id ? "secondary" : "ghost"}
+                      onClick={() => setSyncId(syncId === p.id ? null : p.id)}
+                      aria-expanded={syncId === p.id}
+                    >
+                      ID sync
                     </Button>
                     <Button variant="ghost" onClick={() => openEdit(p)}>
                       Изменить
@@ -499,6 +509,7 @@ export default function SupplyPage() {
                 ) : null}
 
                 {statsId === p.id ? <SspPartnerStats partner={p} /> : null}
+                {syncId === p.id ? <SspIdSync partner={p} /> : null}
               </Card>
             )
           })}

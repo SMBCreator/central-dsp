@@ -236,6 +236,8 @@ services:
       EVENT_BASE_URL: ${PUBLIC_BASE_URL:?set PUBLIC_BASE_URL in .env}
       APP_ENV: ${APP_ENV:-production}
       INTERNAL_FEED_TOKEN: ${INTERNAL_FEED_TOKEN:-}
+      # ID sync (docs/ID_SYNC.md): должен совпадать с флагом backend.
+      ID_SYNC_ENABLED: ${ID_SYNC_ENABLED:-0}
       # Audit S-06: X-Forwarded-For принимается только от этих сетей (реверс-
       # прокси). Дефолт в бинаре — loopback + приватные сети; за внешним LB
       # перечислите его адреса. Пусто = XFF игнорируется всегда.
@@ -249,7 +251,10 @@ services:
       # Audit R-03: предфильтр (боты / чужое гео / без device id / datacenter-IP)
       # — те же переменные и тот же Redis SET prefilter:dc_subnets, что у backend.
       THROTTLE_ENABLED: ${THROTTLE_ENABLED:-1}
-      THROTTLE_COUNTRIES: ${THROTTLE_COUNTRIES:-ru,rus}
+      # Пусто (по умолчанию) — гео-предфильтр выключен: запросы из любых стран
+      # доходят до таргетинга групп. «ru,rus» — отсекать всё, кроме РФ, ещё до
+      # таргетинга (экономия CPU, когда все кампании только на РФ).
+      THROTTLE_COUNTRIES: ${THROTTLE_COUNTRIES-}
       THROTTLE_REQUIRE_DEVICE_ID: ${THROTTLE_REQUIRE_DEVICE_ID:-1}
     depends_on:
       redis:

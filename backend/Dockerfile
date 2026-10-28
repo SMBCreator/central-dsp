@@ -41,4 +41,4 @@ EXPOSE 8000
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
 # Apply SQL migrations, then start the API. exec — uvicorn становится PID 1 и сам
 # обрабатывает SIGTERM; --timeout-graceful-shutdown < stop_grace_period compose.
-CMD ["sh", "-c", "python migrate.py && exec uvicorn main:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 20"]
+CMD ["sh", "-c", "python migrate.py && python geo_seed.py && exec uvicorn main:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 20"]

@@ -7,6 +7,8 @@ import { ORD_NOTIFICATIONS_KEY, OrdNotificationsPanel } from "@/components/ord-n
 import { isAdminRole } from "@/lib/roles"
 import { useMe } from "@/lib/use-me"
 import { Button, Card, CardHeader, EmptyState, Field, inputCls, Modal, PillTabs, Spinner, StatusBadge, Table } from "@/components/ui"
+import { ForeignRequisitesFields } from "@/components/foreign-requisites-fields"
+import { EMPTY_FOREIGN, foreignPayload, foreignRequisitesError } from "@/lib/oksm"
 import { OrdInvoicesTab } from "@/components/ord-invoices"
 
 interface Counterparty {
@@ -104,6 +106,7 @@ export default function OrdPage() {
   const [cpOpen, setCpOpen] = useState(false)
   const [cpSaving, setCpSaving] = useState(false)
   const [cpForm, setCpForm] = useState({ name: "", inn: "", ogrn: "", legal_type: "ul", role: "advertiser", address: "", is_self: false, rs_url: "" })
+  const [cpForeign, setCpForeign] = useState(EMPTY_FOREIGN)
 
   // --- модалка договора
   const [ctOpen, setCtOpen] = useState(false)
@@ -124,16 +127,27 @@ export default function OrdPage() {
 
   const saveCp = async (e: React.FormEvent) => {
     e.preventDefault()
+    const foreignError = cpForm.legal_type === "foreign" ? foreignRequisitesError(cpForeign) : null
+    if (foreignError) {
+      setError(foreignError)
+      return
+    }
     setCpSaving(true)
     setError(null)
     try {
       await api("/ord/counterparties", {
         method: "POST",
-        body: { ...cpForm, rs_url: cpForm.rs_url.trim() || null, role: cpForm.is_self ? "ors" : cpForm.role },
+        body: {
+          ...cpForm,
+          ...foreignPayload(cpForm.legal_type, cpForeign),
+          rs_url: cpForm.rs_url.trim() || null,
+          role: cpForm.is_self ? "ors" : cpForm.role,
+        },
       })
       await mutate("/ord/counterparties")
       setCpOpen(false)
       setCpForm({ name: "", inn: "", ogrn: "", legal_type: "ul", role: "advertiser", address: "", is_self: false, rs_url: "" })
+      setCpForeign(EMPTY_FOREIGN)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Ошибка сохранения")
     } finally {
@@ -473,6 +487,7 @@ export default function OrdPage() {
               </select>
             </Field>
           </div>
+          {cpForm.legal_type === "foreign" ? <ForeignRequisitesFields value={cpForeign} onChange={setCpForeign} /> : null}
           {isAdminRole(me?.role) && me?.role !== "manager" ? (
             <div className="space-y-3 rounded-xl border border-border bg-surface px-3 py-3">
               <label className="flex items-start gap-2 text-sm">
@@ -502,6 +517,7 @@ export default function OrdPage() {
               ) : null}
             </div>
           ) : null}
+          {error && cpOpen ? <p role="alert" className="text-sm text-red-600">{error}</p> : null}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="secondary" onClick={() => setCpOpen(false)}>Отмена</Button>
             <Button type="submit" disabled={cpSaving}>{cpSaving ? "Сохранение…" : "Сохранить"}</Button>

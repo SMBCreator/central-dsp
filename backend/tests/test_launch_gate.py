@@ -32,6 +32,8 @@ class FakePool:
 
     async def fetchval(self, sql, *args):
         s = " ".join(sql.split())
+        if s.startswith("SELECT a.ad_market FROM campaigns"):
+            return self.adv.get("ad_market", "ru")
         if "FROM line_items" in s and "bool_or" in s:
             return self.targets_ru
         if "FROM line_items" in s and "status = 'active'" in s:

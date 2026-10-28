@@ -23,8 +23,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/SMBCreator/central-dsp/bidder-go/internal/domcat"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/feed"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/fx"
+	"github.com/SMBCreator/central-dsp/bidder-go/internal/geo"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/metrics"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/pctr"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/prefilter"
@@ -50,6 +52,15 @@ type Handler struct {
 	// prefilter — O(1)-отсев ботов/чужого гео/datacenter-IP до таргетинга
 	// (audit R-03, порт backend/prefilter.py). nil = выключен.
 	prefilter *prefilter.Filter
+	// idSyncEnabled — ID_SYNC_ENABLED (план predeploy A.6). false = прежняя
+	// идентификация deviceIDOf байт в байт, без Redis-вызова и новых метрик.
+	idSyncEnabled bool
+	// GEO v2 (docs/GEO.md): флаги сопоставления и топ несопоставленных значений SSP.
+	geoOpts      geo.Options
+	geoUnmatched *geo.Unmatched
+	// Справочник «домен → тематика» и самообучение (Фаза 3 ТЗ). nil = выключено.
+	domMap     *domcat.Map
+	domLearner *domcat.Learner
 	// now — часы бюджетного гейта (бизнес-день, even pacing); nil = time.Now.
 	// Подменяются только в тестах.
 	now func() time.Time
@@ -67,6 +78,17 @@ func (h *Handler) SetMetrics(r *metrics.Registry) { h.metrics = r }
 
 // SetPrefilter подключает предфильтр (см. internal/prefilter).
 func (h *Handler) SetPrefilter(f *prefilter.Filter) { h.prefilter = f }
+
+// SetDomainCats подключает справочник «домен → тематика» и (опционально) учителя.
+func (h *Handler) SetDomainCats(m *domcat.Map, l *domcat.Learner) {
+	h.domMap, h.domLearner = m, l
+}
+
+// SetIDSync включает resolveIdentity (ID_SYNC_ENABLED).
+func (h *Handler) SetIDSync(enabled bool) { h.idSyncEnabled = enabled }
+
+// IDSyncEnabled — для лога старта.
+func (h *Handler) IDSyncEnabled() bool { return h.idSyncEnabled }
 
 // SetInternalToken задаёт секрет для заголовка internalCheckHeader.
 func (h *Handler) SetInternalToken(t string) { h.internalToken = t }
@@ -145,6 +167,9 @@ func NewHandler(store *feed.Store, rc *redisx.Client) *Handler {
 		redis: rc,
 		base:  strings.TrimRight(base, "/"),
 		seat:  "central-dsp",
+		// Без main (тесты) — те же значения по умолчанию, что у geo_v2.py.
+		geoOpts:      geo.Options{RadiusKM: geo.DefaultLatLonRadiusKM},
+		geoUnmatched: geo.NewUnmatched(unmatchedGeoLimit),
 	}
 	if rc != nil {
 		h.shading = shading.NewStore(rc.Raw())
@@ -321,13 +346,15 @@ func (h *Handler) Bid(w http.ResponseWriter, r *http.Request) {
 	}
 
 	view := buildRequestView(&req)
-	deviceID := deviceIDOf(&req)
+	h.applyDomainCats(view)
+	geoRes := h.resolveGeo(&req, partner, snap)
+	deviceID := h.identityOf(ctx, &req, partner)
 
 	var bids []Bid
 	var rubSum float64
 	for i := range req.Imp {
 		imp := &req.Imp[i]
-		if b, rub := h.bidOnImp(ctx, &req, imp, view, deviceID, partner, snap, auctionType, respCur); b != nil {
+		if b, rub := h.bidOnImp(ctx, &req, imp, view, geoRes, deviceID, partner, snap, auctionType, respCur); b != nil {
 			bids = append(bids, *b)
 			rubSum += rub
 		}
@@ -368,7 +395,7 @@ func partnerBiddable(status string) bool {
 // bidOnImp — кандидаты одного impression: фильтры + выбор лучшей цены.
 // bidOnImp возвращает бид (price уже в respCur) и его цену в RUB (для
 // метрик); nil, 0 — нет бида на этот imp.
-func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequest, imp *Imp, view *targeting.RequestView, deviceID string, partner *feed.Partner, snap *feed.Snapshot, auctionType int, respCur string) (*Bid, float64) {
+func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequest, imp *Imp, view *targeting.RequestView, geoRes *geo.Resolved, deviceID string, partner *feed.Partner, snap *feed.Snapshot, auctionType int, respCur string) (*Bid, float64) {
 	rctx, ok := ctx.(interface {
 		Done() <-chan struct{}
 		Err() error
@@ -383,7 +410,13 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 	if adType == "" {
 		return nil, 0
 	}
+	// Диагностика отказов (metrics/rejects.go): локальные счётчики, один сброс на imp.
+	var tally metrics.RejectTally
+	if h.metrics != nil {
+		defer h.metrics.AddRejects(&tally)
+	}
 	if partner.AllowedTypes != nil && len(partner.AllowedTypes) > 0 && !partner.AllowedTypes[adType] {
+		tally.Stage(metrics.StagePartnerType)
 		return nil, 0
 	}
 
@@ -399,6 +432,7 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 	nativeReq, err := parseNativeRequest(imp.Native)
 	if err != nil {
 		h.incIncompat(IncompatNativeMalformed)
+		tally.Stage(metrics.StageAdm)
 		return nil, 0
 	}
 	// private_auction=1: SSP принимает только ставки по сделкам (§3.2.11).
@@ -410,12 +444,18 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 	for i := range snap.Candidates {
 		c := &snap.Candidates[i]
 		if !typeMatches(c, adType, imp) {
+			tally.Stage(metrics.StageType)
 			continue
 		}
-		if !h.matchCandidate(c, req, view, partner, snap, adType) {
+		if !h.matchCandidate(c, req, view, partner, snap, adType, &tally) {
+			continue
+		}
+		if !matchGeoV2(c, snap, geoRes) {
+			tally.Stage(metrics.StageGeoV2)
 			continue
 		}
 		if c.T != nil && !targeting.MatchImp(feedImpTargeting(c.T), impView) {
+			tally.Stage(metrics.StageImpTargeting)
 			continue
 		}
 		var deal *Deal
@@ -424,11 +464,13 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 		}
 		if privateOnly && deal == nil {
 			h.incIncompat(IncompatPrivateAuction)
+			tally.Stage(metrics.StageImpTargeting)
 			continue
 		}
 		if adType == "video" {
 			if reason := videoIncompat(imp.Video, c); reason != "" {
 				h.incIncompat(reason)
+				tally.Stage(metrics.StageType)
 				continue
 			}
 		}
@@ -436,6 +478,7 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 		// разбирается — кандидат не торгуется, а не уходит в SSP с дырой.
 		if reason := admIncompat(c); reason != "" {
 			h.incIncompat(reason)
+			tally.Stage(metrics.StageAdm)
 			continue
 		}
 		var nativeAssets []map[string]any
@@ -443,13 +486,15 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 			assets, ok := buildNativeAssets(nativeReq, c)
 			if !ok {
 				h.incIncompat(IncompatNativeAsset)
+				tally.Stage(metrics.StageAdm)
 				continue
 			}
 			nativeAssets = assets
 		}
 		// Ретаргетинг-сегменты — единственный Redis-вызов среди фильтров, поэтому
 		// после всех in-memory проверок; у большинства line items сегментов нет.
-		if c.T != nil && !h.audienceOK(rctx, c.T.AudienceInclude, c.T.AudienceExclude, deviceID) {
+		if c.T != nil && !h.audienceChecked(rctx, c.T.AudienceInclude, c.T.AudienceExclude, deviceID, partner) {
+			tally.Stage(metrics.StageAudience)
 			continue
 		}
 		// Курсы с наценкой владельца: floor -> RUB, цена RUB -> валюта ответа.
@@ -473,6 +518,7 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 			if h.metrics != nil {
 				h.metrics.IncFXRateMissing()
 			}
+			tally.Stage(metrics.StageFX)
 			continue
 		}
 		floor := math.Max(impFloor*rateFloor, partner.BidFloor*ratePFloor)
@@ -498,6 +544,7 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 		// Python отсекает price < floor до pCTR и shading: множитель не может
 		// «спасти» ставку ниже пола.
 		if raw < floor {
+			tally.Stage(metrics.StageFloor)
 			continue
 		}
 		price := raw
@@ -522,6 +569,7 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 			price = shading.Apply(price, factor, floor)
 		}
 		if price < floor || price <= 0 {
+			tally.Stage(metrics.StageFloor)
 			continue
 		}
 		scored = append(scored, scoredCandidate{c: c, price: price, raw: raw, pctr: pctrUsed, bidCPC: bidCPC, fxRate: rateResp, deal: deal, nativeAssets: nativeAssets})
@@ -566,12 +614,14 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 					h.metrics.IncGateError()
 				}
 				slog.Error("gate_and_reserve", "err", err)
+				tally.Stage(metrics.StageBudgetGate)
 				continue
 			}
 			if !okRes {
 				if h.metrics != nil {
 					h.metrics.IncGateReject()
 				}
+				tally.Stage(metrics.StageBudgetGate)
 				continue
 			}
 			reservation = res
@@ -586,10 +636,17 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 		// adm собираем до bookkeeping: пустая разметка (admIncompat пропустил,
 		// но VAST не собрался) — резерв назад, bidmeta не пишем, кандидат
 		// пропущен; иначе SSP получил бы бид без трекеров.
-		adm := BuildAdmAssets(c, h.base, token, sc.nativeAssets)
+		// Макросы ${CDSP_*}: только у кандидатов, где они есть (шаблоны разобраны
+		// при загрузке фида). Остальные идут прежним путём — adm и bidmeta те же.
+		impURL, clickTrackerURL, clickLink := c.ImpTrackerURL, c.ClickTrackerURL, ""
+		if c.HasMacros() {
+			impURL, clickTrackerURL, clickLink = h.expandCreativeURLs(c, buildMacroContext(req, imp, view, c, partner, bidID))
+		}
+		adm := buildAdmURLs(c, h.base, token, sc.nativeAssets, impURL, clickTrackerURL)
 		if adm == "" {
 			slog.Warn("adm build failed; candidate skipped", "creative_id", c.CreativeID)
 			h.incIncompat(IncompatAdmVAST)
+			tally.Stage(metrics.StageAdm)
 			h.abortReservation(rctx, reservation)
 			continue
 		}
@@ -597,7 +654,7 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 		// backend не опознает win/imp/click (rtb.py:_find_bid) — платный показ
 		// пройдёт без списания и без учёта. Не удалось записать — резерв
 		// возвращаем и бид не отдаём.
-		if err := h.persistBidMeta(rctx, bidID, imp, c, partner, sc.price, sc.pctr, sc.bidCPC, respCur, sc.fxRate, view, adType, deviceID, req.Test == 1, reservation); err != nil {
+		if err := h.persistBidMeta(rctx, bidID, imp, c, partner, sc.price, sc.pctr, sc.bidCPC, respCur, sc.fxRate, view, adType, deviceID, req.Test == 1, reservation, clickLink); err != nil {
 			slog.Error("bid bookkeeping failed; no-bid", "bid_id", bidID, "err", err)
 			if h.metrics != nil {
 				h.metrics.IncBookkeepingError()
@@ -640,11 +697,12 @@ func (h *Handler) bidOnImp(ctx interface{ Done() <-chan struct{} }, req *BidRequ
 
 // matchCandidate — таргетинг line item + SSP allowlist + глобальные домен-листы
 // + решения оптимизатора / clean traffic / scoring-профиля (audit R-03).
-func (h *Handler) matchCandidate(c *feed.Candidate, req *BidRequest, view *targeting.RequestView, partner *feed.Partner, snap *feed.Snapshot, adType string) bool {
+func (h *Handler) matchCandidate(c *feed.Candidate, req *BidRequest, view *targeting.RequestView, partner *feed.Partner, snap *feed.Snapshot, adType string, tally *metrics.RejectTally) bool {
 	// badv: домен рекламодателя не должен быть заблокирован SSP.
 	if len(req.BAdv) > 0 && c.AdvDomain != "" {
 		for _, b := range req.BAdv {
 			if strings.EqualFold(strings.TrimPrefix(b, "www."), strings.TrimPrefix(c.AdvDomain, "www.")) {
+				tally.Targeting(reasonIdx(targeting.ReasonOther))
 				return false
 			}
 		}
@@ -653,6 +711,7 @@ func (h *Handler) matchCandidate(c *feed.Candidate, req *BidRequest, view *targe
 	// tier-1 родителю (bcat "IAB7" блокирует креатив "IAB7-3"). Креатив без
 	// заявленных категорий пропускаем — иначе весь инвентарь с bcat отвалится.
 	if len(req.BCat) > 0 && len(c.IABCategories) > 0 && iabBlocked(req.BCat, c.IABCategories) {
+		tally.Targeting(reasonIdx(targeting.ReasonOther))
 		return false
 	}
 	// Блоки оптимизатора (optimizer_blocks): любое наблюдаемое измерение — те же
@@ -668,6 +727,7 @@ func (h *Handler) matchCandidate(c *feed.Candidate, req *BidRequest, view *targe
 			snap.Blocked(c.CampaignID, "creative", c.CreativeID) ||
 			snap.Blocked(c.CampaignID, "line_item", c.LiID) ||
 			snap.Blocked(c.CampaignID, "hour", strconv.Itoa(view.Now.UTC().Hour())) {
+			tally.Targeting(reasonIdx(targeting.ReasonOther))
 			return false
 		}
 	}
@@ -675,18 +735,22 @@ func (h *Handler) matchCandidate(c *feed.Candidate, req *BidRequest, view *targe
 	owner := c.OwnerID
 	if view.Domain != "" {
 		if bl := snap.GBlack[owner]; bl != nil && bl[view.Domain] {
+			tally.Targeting(reasonIdx(targeting.ReasonInventoryDomain))
 			return false
 		}
 		if wl := snap.GWhite[owner]; len(wl) > 0 && !wl[view.Domain] {
+			tally.Targeting(reasonIdx(targeting.ReasonInventoryDomain))
 			return false
 		}
 		// Clean traffic (тумблер кампании): домен с низким quality score.
 		// Только opt-in и только известные домены — fail-open, как в Python.
 		if c.CleanTrafficOnly && snap.DirtyDomains[view.Domain] {
+			tally.Targeting(reasonIdx(targeting.ReasonInventoryDomain))
 			return false
 		}
 		// Scoring-профиль кампании в режиме enforce: домен ниже порога.
 		if sb := snap.ScoringBlocks[c.CampaignID]; sb != nil && sb[view.Domain] {
+			tally.Targeting(reasonIdx(targeting.ReasonInventoryDomain))
 			return false
 		}
 	}
@@ -704,11 +768,20 @@ func (h *Handler) matchCandidate(c *feed.Candidate, req *BidRequest, view *targe
 			}
 		}
 		if !allowed {
+			tally.Stage(metrics.StageSSP)
 			return false
 		}
 	}
-	return targeting.Match(feedTargetingToMatch(t), view)
+	if reason := targeting.MatchReason(feedTargetingToMatch(t), view); reason != targeting.ReasonNone {
+		tally.Targeting(reasonIdx(reason))
+		return false
+	}
+	return true
 }
+
+// reasonIdx — индекс причины отказа таргетинга в metrics.TargetingRejectReasons
+// (targeting.Reason идёт с единицы).
+func reasonIdx(r targeting.Reason) int { return int(r) - 1 }
 
 // parseCaps — порт _parse_freq_caps: JSONB frequency_caps (объекты
 // {impressions, period_hours}) с фолбэком на легаси-поля кампании.
@@ -747,7 +820,7 @@ func (h *Handler) persistBidMeta(ctx interface {
 	Err() error
 	Deadline() (time.Time, bool)
 	Value(any) any
-}, bidID string, imp *Imp, c *feed.Candidate, partner *feed.Partner, price, pctrUsed, bidCPC float64, respCur string, fxRate float64, view *targeting.RequestView, adType, deviceID string, isTest bool, res redisx.BidReservation) error {
+}, bidID string, imp *Imp, c *feed.Candidate, partner *feed.Partner, price, pctrUsed, bidCPC float64, respCur string, fxRate float64, view *targeting.RequestView, adType, deviceID string, isTest bool, res redisx.BidReservation, clickLink string) error {
 	if h.redis == nil {
 		// Без Redis биддер в degraded-режиме (только dev): bookkeeping невозможен,
 		// но и резервов нет — бид уходит как раньше.
@@ -778,7 +851,7 @@ func (h *Handler) persistBidMeta(ctx interface {
 	// были зарезервированы. Inventory-измерения (bundle/publisher/tagid/
 	// region/city) — audit E-01: win/imp/click/loss наследуют их от бида,
 	// иначе в группировках «по площадкам» они попадают в «—».
-	meta, _ := json.Marshal(map[string]any{
+	metaMap := map[string]any{
 		"bid_id": bidID, "imp_id": imp.ID,
 		"campaign_id": c.CampaignID, "line_item_id": c.LiID,
 		"creative_id": c.CreativeID, "supply_partner_id": partner.ID,
@@ -805,7 +878,13 @@ func (h *Handler) persistBidMeta(ctx interface {
 		"fdev":  deviceID,
 		"fcaps": res.Caps,
 		"fwin":  b01int(partner.FreqCapOnWin),
-	})
+	}
+	// Ссылка перехода с развёрнутыми макросами: клик-редирект (rtb.py click)
+	// берёт её отсюда; без поля — прежний click_url креатива из БД.
+	if clickLink != "" {
+		metaMap["click_url"] = clickLink
+	}
+	meta, _ := json.Marshal(metaMap)
 	if err := rdb.Set(ctx, "bidmeta:"+bidID, meta, time.Hour).Err(); err != nil {
 		return fmt.Errorf("set bidmeta: %w", err)
 	}
@@ -1208,6 +1287,37 @@ func deviceTypeName(dt int) string {
 	return "unknown"
 }
 
+// applyDomainCats определяет источник категорий площадки. Есть категории в
+// запросе — они главные, справочник не используется, а по домену идёт обучение.
+// Нет — берём категории из справочника «домен → тематика»; для iab_allow_unknown
+// они считаются определёнными (SiteCats непуст). Без справочника поведение
+// прежнее, метка источника не ставится.
+func (h *Handler) applyDomainCats(v *targeting.RequestView) {
+	if h.domMap == nil && h.domLearner == nil {
+		return
+	}
+	if len(v.SiteCats) > 0 {
+		v.CatSource = "request"
+		h.metrics.IncCatSource("request")
+		if h.domLearner != nil && v.Env == "site" {
+			if d := domcat.Normalize(v.Domain); d != "" {
+				h.domLearner.Observe(d, v.SiteCats)
+			}
+		}
+		return
+	}
+	if h.domMap == nil {
+		return
+	}
+	if d := domcat.Normalize(v.Domain); d != "" {
+		if cats := h.domMap.Lookup(d); len(cats) > 0 {
+			v.SiteCats = cats
+			v.CatSource = "domain_map"
+			h.metrics.IncCatSource("domain_map")
+		}
+	}
+}
+
 func buildRequestView(req *BidRequest) *targeting.RequestView {
 	v := &targeting.RequestView{Now: time.Now(), Env: "site"}
 	if d := req.Device; d != nil {
@@ -1238,7 +1348,6 @@ func buildRequestView(req *BidRequest) *targeting.RequestView {
 	case req.Site != nil:
 		s := req.Site
 		v.Domain = strings.ToLower(s.Domain)
-		v.SiteCats = s.Cat
 		pub, content, kw, page = s.Publisher, s.Content, s.Keywords, s.Page
 		if req.App != nil {
 			v.Env = "app"
@@ -1253,9 +1362,9 @@ func buildRequestView(req *BidRequest) *targeting.RequestView {
 		if v.Domain == "" {
 			v.Domain = v.Bundle
 		}
-		v.SiteCats = a.Cat
 		pub, content, kw = a.Publisher, a.Content, a.Keywords
 	}
+	v.SiteCats = requestCats(req)
 	if pub != nil {
 		v.PubID = strings.TrimSpace(pub.ID)
 	}
@@ -1264,6 +1373,7 @@ func buildRequestView(req *BidRequest) *targeting.RequestView {
 		cKw, cTitle = content.Keywords, content.Title
 	}
 	v.Keywords = targeting.KeywordHaystack(kw, cKw, page, cTitle)
+	v.KWSrc = targeting.KWSources{kw, cKw, page, cTitle}
 	if u := req.User; u != nil {
 		v.Gender = strings.ToUpper(strings.TrimSpace(u.Gender))
 		v.YOB = u.YOB
@@ -1355,27 +1465,76 @@ func buildImpView(imp *Imp) *targeting.ImpView {
 	return v
 }
 
-func deviceIDOf(req *BidRequest) string {
-	if req.Device != nil && req.Device.IFA != "" {
+// identityOf — ключ пользователя для аудиторий и frequency cap. Флаг ID sync
+// выключен — прежний deviceIDOf; включён — resolveIdentity (A.6) + метрика источника.
+func (h *Handler) identityOf(ctx context.Context, req *BidRequest, partner *feed.Partner) string {
+	if !h.idSyncEnabled {
+		return deviceIDOf(req, partner.ID)
+	}
+	key, source := h.resolveIdentity(ctx, req, partner)
+	if h.metrics != nil {
+		h.metrics.IncIdentitySource(partner.ID, source)
+	}
+	return key
+}
+
+// audienceChecked — audienceOK + метрика bidder_audience_match_total при ID sync.
+func (h *Handler) audienceChecked(ctx context.Context, include, exclude []string, deviceID string, partner *feed.Partner) bool {
+	ok := h.audienceOK(ctx, include, exclude, deviceID)
+	if h.idSyncEnabled && h.metrics != nil && (len(include) > 0 || len(exclude) > 0) {
+		result := "nomatch"
+		switch {
+		case deviceID == "":
+			result = "no_identity"
+		case ok:
+			result = "match"
+		}
+		h.metrics.IncAudienceMatch(partner.ID, result)
+	}
+	return ok
+}
+
+// deviceIDOf — ключ пользователя для freq caps, audiences и clidmap.
+//
+// F-A1:
+//   - Нулевой IFA (LAT/ATT: "00000000-0000-0000-0000-000000000000") — не
+//     идентификатор: иначе все такие устройства схлопываются в одного
+//     пользователя и разом упираются в freq cap.
+//   - user.id — ID в пространстве конкретного SSP; без префикса партнёра
+//     одинаковые строки разных SSP смешивались в одном счётчике/сегменте.
+//     IFA, eids (UID2/ID5) и buyeruid (наш ID после cookie sync) глобальны
+//     и остаются без префикса.
+func deviceIDOf(req *BidRequest, partnerID string) string {
+	if req.Device != nil && !isZeroID(req.Device.IFA) {
 		return req.Device.IFA
 	}
 	if req.User != nil {
 		// user.eids (UID2/ID5) — приоритетнее анонимного user.id.
 		for _, eid := range req.User.EIDs {
 			for _, uid := range eid.UIDs {
-				if uid.ID != "" {
+				if !isZeroID(uid.ID) {
 					return uid.ID
 				}
 			}
 		}
 		if req.User.ID != "" {
-			return req.User.ID
+			return "p:" + partnerID + ":" + req.User.ID
 		}
 		if req.User.BuyerUID != "" {
 			return req.User.BuyerUID
 		}
 	}
 	return ""
+}
+
+// isZeroID: пусто или только нули/дефисы (обнулённый рекламный ID).
+func isZeroID(id string) bool {
+	for _, r := range id {
+		if r != '0' && r != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func impAdType(imp *Imp) string {
@@ -1392,22 +1551,48 @@ func impAdType(imp *Imp) string {
 	return targeting.ImpAdType(imp.Banner != nil, imp.Native != nil, imp.Video != nil, extPush)
 }
 
-// iabBlocked — есть ли среди категорий креатива запрещённая bcat (точно или
-// по tier-1 родителю: bcat "IAB7" покрывает "IAB7-3"; "IAB7-3" не покрывает "IAB7").
-func iabBlocked(bcat, creativeCats []string) bool {
-	for _, b := range bcat {
-		b = strings.ToUpper(strings.TrimSpace(b))
-		if b == "" {
-			continue
-		}
-		for _, cc := range creativeCats {
-			cc = strings.ToUpper(strings.TrimSpace(cc))
-			if cc == b || strings.HasPrefix(cc, b+"-") {
-				return true
-			}
+// requestCats — категории площадки запроса: объединение cat, sectioncat, pagecat,
+// content.cat и publisher.cat объектов site и app (OpenRTB 2.5), нормализованное
+// и без дублей (targeting.CollectCats). Пусто — площадка тематику не передала.
+func requestCats(req *BidRequest) []string {
+	var lists [10][]string
+	n := 0
+	add := func(l []string) {
+		if len(l) > 0 {
+			lists[n] = l
+			n++
 		}
 	}
-	return false
+	if s := req.Site; s != nil {
+		add(s.Cat)
+		add(s.SectionCat)
+		add(s.PageCat)
+		if s.Content != nil {
+			add(s.Content.Cat)
+		}
+		if s.Publisher != nil {
+			add(s.Publisher.Cat)
+		}
+	}
+	if a := req.App; a != nil {
+		add(a.Cat)
+		add(a.SectionCat)
+		add(a.PageCat)
+		if a.Content != nil {
+			add(a.Content.Cat)
+		}
+		if a.Publisher != nil {
+			add(a.Publisher.Cat)
+		}
+	}
+	return targeting.CollectCats(lists[:n]...)
+}
+
+// iabBlocked — есть ли среди категорий креатива запрещённая bcat (точно или
+// по tier-1 родителю: bcat "IAB7" покрывает "IAB7-3"; "IAB7-3" не покрывает "IAB7").
+// То же правило, что у таргетинга площадки (targeting.IABMatch).
+func iabBlocked(bcat, creativeCats []string) bool {
+	return targeting.IABIntersects(bcat, creativeCats)
 }
 
 // battrBlocked — креатив имеет атрибут, запрещённый в imp.banner|video.battr.
@@ -1453,7 +1638,7 @@ func typeMatches(c *feed.Candidate, adType string, imp *Imp) bool {
 // покрывать ВСЕ ключи, которые редактирует кабинет (frontend/components/targeting-editor.tsx):
 // поле, не переданное сюда, молча игнорируется биддером.
 func feedTargetingToMatch(t *feed.Targeting) *targeting.Targeting {
-	return &targeting.Targeting{
+	m := &targeting.Targeting{
 		GeoCountries: t.GeoCountries, GeoRegions: t.GeoRegions, GeoCities: t.GeoCities,
 		DeviceTypes: t.DeviceTypes, OS: t.OS, Browsers: t.Browsers, Languages: t.Languages,
 		ConnectionTypes: t.ConnectionTypes, IABCategories: t.IABCategories, IABBlock: t.IABBlock,
@@ -1467,7 +1652,10 @@ func feedTargetingToMatch(t *feed.Targeting) *targeting.Targeting {
 		IPRanges:   t.IPRanges,
 		BlockCOPPA: t.BlockCOPPA, BlockGDPR: t.BlockGDPR, SkipDNT: t.SkipDNT,
 		DeviceMakes: t.DeviceMakes, SChainRequired: t.SChainRequired,
+		IABAllowUnknown: t.IABAllowUnknown, KeywordsMatch: t.KeywordsMatch, ContextMode: t.ContextMode,
 	}
+	m.UsePreparedKeywords(t.Keywords)
+	return m
 }
 
 // feedImpTargeting — imp-level часть таргетинга line item.

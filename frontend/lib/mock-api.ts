@@ -7,6 +7,7 @@
  */
 
 import type { ScoringProfile } from "@/lib/types"
+import { FALLBACK_AD_SIZES } from "@/lib/ad-sizes-catalog"
 
 const now = Date.now()
 const iso = (msAgo: number) => new Date(now - msAgo).toISOString()
@@ -889,6 +890,7 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
       status: "active",
       balance: 0,
       currency: "RUB",
+      ad_market: "ru",
     }),
   })
   if (advCrud !== undefined) return advCrud
@@ -906,6 +908,34 @@ export function resolveMock(method: string, path: string, search: URLSearchParam
   })
   if (liCrud !== undefined) return liCrud
 
+  if (path === "/creatives/sizes" && method === "GET") return FALLBACK_AD_SIZES
+  if (path === "/creatives/batch" && method === "POST") {
+    type Item = { client_id: string; name: string; click_url?: string | null; asset_url: string; width: number; height: number }
+    const b = (body || {}) as { campaign_id?: string; common?: { click_url?: string | null }; items?: Item[] }
+    return (b.items || []).map((it, idx) => {
+      const allowed = FALLBACK_AD_SIZES.some((s) => s.width === it.width && s.height === it.height)
+      if (!allowed) {
+        return { client_id: it.client_id, status: "error", error: { code: "size_not_allowed", message: `Размер ${it.width}×${it.height} не входит в справочник` } }
+      }
+      const created = {
+        ...(mockCreatives[0] || {}),
+        id: `cr-${Date.now().toString(36)}${idx}`,
+        campaign_id: b.campaign_id,
+        name: it.name,
+        type: "banner",
+        width: it.width,
+        height: it.height,
+        asset_url: it.asset_url,
+        click_url: it.click_url || b.common?.click_url || null,
+        status: "pending",
+        erid: null,
+        moderation_comment: null,
+        created_at: new Date().toISOString(),
+      }
+      ;(mockCreatives as MockRow[]).unshift(created as MockRow)
+      return { client_id: it.client_id, status: "created", duplicate: false, creative: created }
+    })
+  }
   if (path === "/creatives" && method === "GET") {
     const cid = search.get("campaign_id")
     return cid ? mockCreatives.filter((c) => c.campaign_id === cid) : mockCreatives

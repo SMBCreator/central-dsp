@@ -19,6 +19,32 @@ rule_files:
 evaluation_interval: 1m
 
 tests:
+  # ---- IdentifiedShareDrop (ID sync A.7): 7 дней 80 % идентифицированных, затем 20 % ----
+  - interval: 10m
+    input_series:
+      - series: 'bidder_identity_source_total{job="bidder-go",instance="bidder-go:8090",partner="p1",source="anonymous"}'
+        values: '0+1200x1000 1200000+4800x20'
+      - series: 'bidder_identity_source_total{job="bidder-go",instance="bidder-go:8090",partner="p1",source="idsync"}'
+        values: '0+4800x1000 4800000+1200x20'
+    promql_expr_test:
+      - expr: ALERTS{alertname="IdentifiedShareDrop",alertstate="firing"}
+        eval_time: 10200m
+        exp_samples:
+          - labels: '{__name__="ALERTS", alertname="IdentifiedShareDrop", alertstate="firing", severity="warning", partner="p1"}'
+            value: 1
+
+  - interval: 10m
+    input_series:
+      # Доля стабильна — не алертить.
+      - series: 'bidder_identity_source_total{job="bidder-go",instance="bidder-go:8090",partner="p1",source="anonymous"}'
+        values: '0+1200x1020'
+      - series: 'bidder_identity_source_total{job="bidder-go",instance="bidder-go:8090",partner="p1",source="idsync"}'
+        values: '0+4800x1020'
+    promql_expr_test:
+      - expr: ALERTS{alertname="IdentifiedShareDrop",alertstate="firing"}
+        eval_time: 10200m
+        exp_samples: []
+
   # ---- CronRetentionStale: label экспозиции cron_job, не job -----------------
   - interval: 1m
     input_series:

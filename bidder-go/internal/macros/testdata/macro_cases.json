@@ -1,0 +1,788 @@
+[
+ {
+  "name": "BID_ID: значение кодируется",
+  "template": "https://t.example/?x=${CDSP_BID_ID}",
+  "values": {
+   "BID_ID": "A b&c"
+  },
+  "want": "https://t.example/?x=A%20b%26c"
+ },
+ {
+  "name": "BID_ID: пустое значение",
+  "template": "https://t.example/?x=${CDSP_BID_ID}&y=1",
+  "values": {
+   "BID_ID": ""
+  },
+  "want": "https://t.example/?x=&y=1"
+ },
+ {
+  "name": "AUCTION_ID: значение кодируется",
+  "template": "https://t.example/?x=${CDSP_AUCTION_ID}",
+  "values": {
+   "AUCTION_ID": "A b&c"
+  },
+  "want": "https://t.example/?x=A%20b%26c"
+ },
+ {
+  "name": "AUCTION_ID: пустое значение",
+  "template": "https://t.example/?x=${CDSP_AUCTION_ID}&y=1",
+  "values": {
+   "AUCTION_ID": ""
+  },
+  "want": "https://t.example/?x=&y=1"
+ },
+ {
+  "name": "IMP_ID: значение кодируется",
+  "template": "https://t.example/?x=${CDSP_IMP_ID}",
+  "values": {
+   "IMP_ID": "A b&c"
+  },
+  "want": "https://t.example/?x=A%20b%26c"
+ },
+ {
+  "name": "IMP_ID: пустое значение",
+  "template": "https://t.example/?x=${CDSP_IMP_ID}&y=1",
+  "values": {
+   "IMP_ID": ""
+  },
+  "want": "https://t.example/?x=&y=1"
+ },
+ {
+  "name": "CAMPAIGN_ID: значение кодируется",
+  "template": "https://t.example/?x=${CDSP_CAMPAIGN_ID}",
+  "values": {
+   "CAMPAIGN_ID": "A b&c"
+  },
+  "want": "https://t.example/?x=A%20b%26c"
+ },
+ {
+  "name": "CAMPAIGN_ID: пустое значение",
+  "template": "https://t.example/?x=${CDSP_CAMPAIGN_ID}&y=1",
+  "values": {
+   "CAMPAIGN_ID": ""
+  },
+  "want": "https://t.example/?x=&y=1"
+ },
+ {
+  "name": "GROUP_ID: значение кодируется",
+  "template": "https://t.example/?x=${CDSP_GROUP_ID}",
+  "values": {
+   "GROUP_ID": "A b&c"
+  },
+  "want": "https://t.example/?x=A%20b%26c"
+ },
+ {
+  "name": "GROUP_ID: пустое значение",
+  "template": "https://t.example/?x=${CDSP_GROUP_ID}&y=1",
+  "values": {
+   "GROUP_ID": ""
+  },
+  "want": "https://t.example/?x=&y=1"
+ },
+ {
+  "name": "CREATIVE_ID: значение кодируется",
+  "template": "https://t.example/?x=${CDSP_CREATIVE_ID}",
+  "values": {
+   "CREATIVE_ID": "A b&c"
+  },
+  "want": "https://t.example/?x=A%20b%26c"
+ },
+ {
+  "name": "CREATIVE_ID: пустое значение",
+  "template": "https://t.example/?x=${CDSP_CREATIVE_ID}&y=1",
+  "values": {
+   "CREATIVE_ID": ""
+  },
+  "want": "https://t.example/?x=&y=1"
+ },
+ {
+  "name": "SITE_ID: значение кодируется",
+  "template": "https://t.example/?x=${CDSP_SITE_ID}",
+  "values": {
+   "SITE_ID": "A b&c"
+  },
+  "want": "https://t.example/?x=A%20b%26c"
+ },
+ {
+  "name": "SITE_ID: пустое значение",
+  "template": "https://t.example/?x=${CDSP_SITE_ID}&y=1",
+  "values": {
+   "SITE_ID": ""
+  },
+  "want": "https://t.example/?x=&y=1"
+ },
+ {
+  "name": "PUBLISHER_ID: значение кодируется",
+  "template": "https://t.example/?x=${CDSP_PUBLISHER_ID}",
+  "values": {
+   "PUBLISHER_ID": "A b&c"
+  },
+  "want": "https://t.example/?x=A%20b%26c"
+ },
+ {
+  "name": "PUBLISHER_ID: пустое значение",
+  "template": "https://t.example/?x=${CDSP_PUBLISHER_ID}&y=1",
+  "values": {
+   "PUBLISHER_ID": ""
+  },
+  "want": "https://t.example/?x=&y=1"
+ },
+ {
+  "name": "PLACEMENT_ID: значение кодируется",
+  "template": "https://t.example/?x=${CDSP_PLACEMENT_ID}",
+  "values": {
+   "PLACEMENT_ID": "A b&c"
+  },
+  "want": "https://t.example/?x=A%20b%26c"
+ },
+ {
+  "name": "PLACEMENT_ID: пустое значение",
+  "template": "https://t.example/?x=${CDSP_PLACEMENT_ID}&y=1",
+  "values": {
+   "PLACEMENT_ID": ""
+  },
+  "want": "https://t.example/?x=&y=1"
+ },
+ {
+  "name": "DOMAIN: значение кодируется",
+  "template": "https://t.example/?x=${CDSP_DOMAIN}",
+  "values": {
+   "DOMAIN": "A b&c"
+  },
+  "want": "https://t.example/?x=A%20b%26c"
+ },
+ {
+  "name": "DOMAIN: пустое значение",
+  "template": "https://t.example/?x=${CDSP_DOMAIN}&y=1",
+  "values": {
+   "DOMAIN": ""
+  },
+  "want": "https://t.example/?x=&y=1"
+ },
+ {
+  "name": "BUNDLE: значение кодируется",
+  "template": "https://t.example/?x=${CDSP_BUNDLE}",
+  "values": {
+   "BUNDLE": "A b&c"
+  },
+  "want": "https://t.example/?x=A%20b%26c"
+ },
+ {
+  "name": "BUNDLE: пустое значение",
+  "template": "https://t.example/?x=${CDSP_BUNDLE}&y=1",
+  "values": {
+   "BUNDLE": ""
+  },
+  "want": "https://t.example/?x=&y=1"
+ },
+ {
+  "name": "SSP_ID: значение кодируется",
+  "template": "https://t.example/?x=${CDSP_SSP_ID}",
+  "values": {
+   "SSP_ID": "A b&c"
+  },
+  "want": "https://t.example/?x=A%20b%26c"
+ },
+ {
+  "name": "SSP_ID: пустое значение",
+  "template": "https://t.example/?x=${CDSP_SSP_ID}&y=1",
+  "values": {
+   "SSP_ID": ""
+  },
+  "want": "https://t.example/?x=&y=1"
+ },
+ {
+  "name": "COUNTRY: значение кодируется",
+  "template": "https://t.example/?x=${CDSP_COUNTRY}",
+  "values": {
+   "COUNTRY": "A b&c"
+  },
+  "want": "https://t.example/?x=A%20b%26c"
+ },
+ {
+  "name": "COUNTRY: пустое значение",
+  "template": "https://t.example/?x=${CDSP_COUNTRY}&y=1",
+  "values": {
+   "COUNTRY": ""
+  },
+  "want": "https://t.example/?x=&y=1"
+ },
+ {
+  "name": "REGION: значение кодируется",
+  "template": "https://t.example/?x=${CDSP_REGION}",
+  "values": {
+   "REGION": "A b&c"
+  },
+  "want": "https://t.example/?x=A%20b%26c"
+ },
+ {
+  "name": "REGION: пустое значение",
+  "template": "https://t.example/?x=${CDSP_REGION}&y=1",
+  "values": {
+   "REGION": ""
+  },
+  "want": "https://t.example/?x=&y=1"
+ },
+ {
+  "name": "CITY: значение кодируется",
+  "template": "https://t.example/?x=${CDSP_CITY}",
+  "values": {
+   "CITY": "A b&c"
+  },
+  "want": "https://t.example/?x=A%20b%26c"
+ },
+ {
+  "name": "CITY: пустое значение",
+  "template": "https://t.example/?x=${CDSP_CITY}&y=1",
+  "values": {
+   "CITY": ""
+  },
+  "want": "https://t.example/?x=&y=1"
+ },
+ {
+  "name": "DEVICE_TYPE: значение кодируется",
+  "template": "https://t.example/?x=${CDSP_DEVICE_TYPE}",
+  "values": {
+   "DEVICE_TYPE": "A b&c"
+  },
+  "want": "https://t.example/?x=A%20b%26c"
+ },
+ {
+  "name": "DEVICE_TYPE: пустое значение",
+  "template": "https://t.example/?x=${CDSP_DEVICE_TYPE}&y=1",
+  "values": {
+   "DEVICE_TYPE": ""
+  },
+  "want": "https://t.example/?x=&y=1"
+ },
+ {
+  "name": "OS: значение кодируется",
+  "template": "https://t.example/?x=${CDSP_OS}",
+  "values": {
+   "OS": "A b&c"
+  },
+  "want": "https://t.example/?x=A%20b%26c"
+ },
+ {
+  "name": "OS: пустое значение",
+  "template": "https://t.example/?x=${CDSP_OS}&y=1",
+  "values": {
+   "OS": ""
+  },
+  "want": "https://t.example/?x=&y=1"
+ },
+ {
+  "name": "OS_VERSION: значение кодируется",
+  "template": "https://t.example/?x=${CDSP_OS_VERSION}",
+  "values": {
+   "OS_VERSION": "A b&c"
+  },
+  "want": "https://t.example/?x=A%20b%26c"
+ },
+ {
+  "name": "OS_VERSION: пустое значение",
+  "template": "https://t.example/?x=${CDSP_OS_VERSION}&y=1",
+  "values": {
+   "OS_VERSION": ""
+  },
+  "want": "https://t.example/?x=&y=1"
+ },
+ {
+  "name": "BROWSER: значение кодируется",
+  "template": "https://t.example/?x=${CDSP_BROWSER}",
+  "values": {
+   "BROWSER": "A b&c"
+  },
+  "want": "https://t.example/?x=A%20b%26c"
+ },
+ {
+  "name": "BROWSER: пустое значение",
+  "template": "https://t.example/?x=${CDSP_BROWSER}&y=1",
+  "values": {
+   "BROWSER": ""
+  },
+  "want": "https://t.example/?x=&y=1"
+ },
+ {
+  "name": "DEVICE_MAKE: значение кодируется",
+  "template": "https://t.example/?x=${CDSP_DEVICE_MAKE}",
+  "values": {
+   "DEVICE_MAKE": "A b&c"
+  },
+  "want": "https://t.example/?x=A%20b%26c"
+ },
+ {
+  "name": "DEVICE_MAKE: пустое значение",
+  "template": "https://t.example/?x=${CDSP_DEVICE_MAKE}&y=1",
+  "values": {
+   "DEVICE_MAKE": ""
+  },
+  "want": "https://t.example/?x=&y=1"
+ },
+ {
+  "name": "DEVICE_MODEL: значение кодируется",
+  "template": "https://t.example/?x=${CDSP_DEVICE_MODEL}",
+  "values": {
+   "DEVICE_MODEL": "A b&c"
+  },
+  "want": "https://t.example/?x=A%20b%26c"
+ },
+ {
+  "name": "DEVICE_MODEL: пустое значение",
+  "template": "https://t.example/?x=${CDSP_DEVICE_MODEL}&y=1",
+  "values": {
+   "DEVICE_MODEL": ""
+  },
+  "want": "https://t.example/?x=&y=1"
+ },
+ {
+  "name": "CARRIER: значение кодируется",
+  "template": "https://t.example/?x=${CDSP_CARRIER}",
+  "values": {
+   "CARRIER": "A b&c"
+  },
+  "want": "https://t.example/?x=A%20b%26c"
+ },
+ {
+  "name": "CARRIER: пустое значение",
+  "template": "https://t.example/?x=${CDSP_CARRIER}&y=1",
+  "values": {
+   "CARRIER": ""
+  },
+  "want": "https://t.example/?x=&y=1"
+ },
+ {
+  "name": "CONNECTION: значение кодируется",
+  "template": "https://t.example/?x=${CDSP_CONNECTION}",
+  "values": {
+   "CONNECTION": "A b&c"
+  },
+  "want": "https://t.example/?x=A%20b%26c"
+ },
+ {
+  "name": "CONNECTION: пустое значение",
+  "template": "https://t.example/?x=${CDSP_CONNECTION}&y=1",
+  "values": {
+   "CONNECTION": ""
+  },
+  "want": "https://t.example/?x=&y=1"
+ },
+ {
+  "name": "LANGUAGE: значение кодируется",
+  "template": "https://t.example/?x=${CDSP_LANGUAGE}",
+  "values": {
+   "LANGUAGE": "A b&c"
+  },
+  "want": "https://t.example/?x=A%20b%26c"
+ },
+ {
+  "name": "LANGUAGE: пустое значение",
+  "template": "https://t.example/?x=${CDSP_LANGUAGE}&y=1",
+  "values": {
+   "LANGUAGE": ""
+  },
+  "want": "https://t.example/?x=&y=1"
+ },
+ {
+  "name": "AD_FORMAT: значение кодируется",
+  "template": "https://t.example/?x=${CDSP_AD_FORMAT}",
+  "values": {
+   "AD_FORMAT": "A b&c"
+  },
+  "want": "https://t.example/?x=A%20b%26c"
+ },
+ {
+  "name": "AD_FORMAT: пустое значение",
+  "template": "https://t.example/?x=${CDSP_AD_FORMAT}&y=1",
+  "values": {
+   "AD_FORMAT": ""
+  },
+  "want": "https://t.example/?x=&y=1"
+ },
+ {
+  "name": "SIZE: значение кодируется",
+  "template": "https://t.example/?x=${CDSP_SIZE}",
+  "values": {
+   "SIZE": "A b&c"
+  },
+  "want": "https://t.example/?x=A%20b%26c"
+ },
+ {
+  "name": "SIZE: пустое значение",
+  "template": "https://t.example/?x=${CDSP_SIZE}&y=1",
+  "values": {
+   "SIZE": ""
+  },
+  "want": "https://t.example/?x=&y=1"
+ },
+ {
+  "name": "WIDTH: значение кодируется",
+  "template": "https://t.example/?x=${CDSP_WIDTH}",
+  "values": {
+   "WIDTH": "A b&c"
+  },
+  "want": "https://t.example/?x=A%20b%26c"
+ },
+ {
+  "name": "WIDTH: пустое значение",
+  "template": "https://t.example/?x=${CDSP_WIDTH}&y=1",
+  "values": {
+   "WIDTH": ""
+  },
+  "want": "https://t.example/?x=&y=1"
+ },
+ {
+  "name": "HEIGHT: значение кодируется",
+  "template": "https://t.example/?x=${CDSP_HEIGHT}",
+  "values": {
+   "HEIGHT": "A b&c"
+  },
+  "want": "https://t.example/?x=A%20b%26c"
+ },
+ {
+  "name": "HEIGHT: пустое значение",
+  "template": "https://t.example/?x=${CDSP_HEIGHT}&y=1",
+  "values": {
+   "HEIGHT": ""
+  },
+  "want": "https://t.example/?x=&y=1"
+ },
+ {
+  "name": "TIMESTAMP: значение кодируется",
+  "template": "https://t.example/?x=${CDSP_TIMESTAMP}",
+  "values": {
+   "TIMESTAMP": "A b&c"
+  },
+  "want": "https://t.example/?x=A%20b%26c"
+ },
+ {
+  "name": "TIMESTAMP: пустое значение",
+  "template": "https://t.example/?x=${CDSP_TIMESTAMP}&y=1",
+  "values": {
+   "TIMESTAMP": ""
+  },
+  "want": "https://t.example/?x=&y=1"
+ },
+ {
+  "name": "CACHEBUSTER: значение кодируется",
+  "template": "https://t.example/?x=${CDSP_CACHEBUSTER}",
+  "values": {
+   "CACHEBUSTER": "A b&c"
+  },
+  "want": "https://t.example/?x=A%20b%26c"
+ },
+ {
+  "name": "CACHEBUSTER: пустое значение",
+  "template": "https://t.example/?x=${CDSP_CACHEBUSTER}&y=1",
+  "values": {
+   "CACHEBUSTER": ""
+  },
+  "want": "https://t.example/?x=&y=1"
+ },
+ {
+  "name": "без макросов: строка не меняется",
+  "template": "https://a.example/?q=1&r=2",
+  "values": {},
+  "want": "https://a.example/?q=1&r=2"
+ },
+ {
+  "name": "пустая строка",
+  "template": "",
+  "values": {
+   "COUNTRY": "KZ"
+  },
+  "want": ""
+ },
+ {
+  "name": "значение не задано вовсе",
+  "template": "https://a.example/?c=${CDSP_COUNTRY}",
+  "values": {},
+  "want": "https://a.example/?c="
+ },
+ {
+  "name": "кириллица",
+  "template": "https://l.example/?city=${CDSP_CITY}",
+  "values": {
+   "CITY": "Алматы"
+  },
+  "want": "https://l.example/?city=%D0%90%D0%BB%D0%BC%D0%B0%D1%82%D1%8B"
+ },
+ {
+  "name": "эмодзи",
+  "template": "https://l.example/?x=${CDSP_CITY}",
+  "values": {
+   "CITY": "😀"
+  },
+  "want": "https://l.example/?x=%F0%9F%98%80"
+ },
+ {
+  "name": "пробел это %20 а не плюс",
+  "template": "https://l.example/?x=${CDSP_CITY}",
+  "values": {
+   "CITY": "New York"
+  },
+  "want": "https://l.example/?x=New%20York"
+ },
+ {
+  "name": "плюс кодируется",
+  "template": "https://l.example/?x=${CDSP_CITY}",
+  "values": {
+   "CITY": "a+b"
+  },
+  "want": "https://l.example/?x=a%2Bb"
+ },
+ {
+  "name": "спецсимволы",
+  "template": "https://l.example/?x=${CDSP_CITY}",
+  "values": {
+   "CITY": "a&b=c#d%e/f?g"
+  },
+  "want": "https://l.example/?x=a%26b%3Dc%23d%25e%2Ff%3Fg"
+ },
+ {
+  "name": "доллар и фигурные скобки в значении",
+  "template": "https://l.example/?x=${CDSP_CITY}",
+  "values": {
+   "CITY": "${x}"
+  },
+  "want": "https://l.example/?x=%24%7Bx%7D"
+ },
+ {
+  "name": "неприкосновенные символы",
+  "template": "https://l.example/?x=${CDSP_CITY}",
+  "values": {
+   "CITY": "a-b_c.d~e9"
+  },
+  "want": "https://l.example/?x=a-b_c.d~e9"
+ },
+ {
+  "name": "табуляция и перевод строки",
+  "template": "https://l.example/?x=${CDSP_CITY}",
+  "values": {
+   "CITY": "a\tb\nc"
+  },
+  "want": "https://l.example/?x=a%09b%0Ac"
+ },
+ {
+  "name": "нулевой символ",
+  "template": "https://l.example/?x=${CDSP_CITY}",
+  "values": {
+   "CITY": "a\u0000b"
+  },
+  "want": "https://l.example/?x=a%00b"
+ },
+ {
+  "name": "макрос внутри значения не разворачивается повторно",
+  "template": "https://l.example/?x=${CDSP_CITY}",
+  "values": {
+   "CITY": "${CDSP_COUNTRY}",
+   "COUNTRY": "KZ"
+  },
+  "want": "https://l.example/?x=%24%7BCDSP_COUNTRY%7D"
+ },
+ {
+  "name": "повтор одного макроса",
+  "template": "https://l.example/?a=${CDSP_COUNTRY}&b=${CDSP_COUNTRY}",
+  "values": {
+   "COUNTRY": "KZ"
+  },
+  "want": "https://l.example/?a=KZ&b=KZ"
+ },
+ {
+  "name": "два макроса подряд",
+  "template": "https://l.example/?s=${CDSP_WIDTH}x${CDSP_HEIGHT}",
+  "values": {
+   "WIDTH": "300",
+   "HEIGHT": "250"
+  },
+  "want": "https://l.example/?s=300x250"
+ },
+ {
+  "name": "макрос в хосте",
+  "template": "https://${CDSP_DOMAIN}/p",
+  "values": {
+   "DOMAIN": "news.example.kz"
+  },
+  "want": "https://news.example.kz/p"
+ },
+ {
+  "name": "макрос в пути",
+  "template": "https://l.example/${CDSP_COUNTRY}/page",
+  "values": {
+   "COUNTRY": "KZ"
+  },
+  "want": "https://l.example/KZ/page"
+ },
+ {
+  "name": "макрос во фрагменте",
+  "template": "https://l.example/p#${CDSP_COUNTRY}",
+  "values": {
+   "COUNTRY": "KZ"
+  },
+  "want": "https://l.example/p#KZ"
+ },
+ {
+  "name": "неизвестный макрос остаётся",
+  "template": "https://l.example/?c=${CDSP_COUNTY}",
+  "values": {
+   "COUNTRY": "KZ"
+  },
+  "want": "https://l.example/?c=${CDSP_COUNTY}"
+ },
+ {
+  "name": "известный рядом с неизвестным",
+  "template": "https://l.example/?a=${CDSP_COUNTY}&b=${CDSP_COUNTRY}",
+  "values": {
+   "COUNTRY": "KZ"
+  },
+  "want": "https://l.example/?a=${CDSP_COUNTY}&b=KZ"
+ },
+ {
+  "name": "другой регистр не разворачивается",
+  "template": "https://l.example/?c=${cdsp_country}",
+  "values": {
+   "COUNTRY": "KZ"
+  },
+  "want": "https://l.example/?c=${cdsp_country}"
+ },
+ {
+  "name": "макрос SSP не трогаем",
+  "template": "https://t.example/?p=${AUCTION_PRICE}&id=${AUCTION_ID}",
+  "values": {
+   "COUNTRY": "KZ"
+  },
+  "want": "https://t.example/?p=${AUCTION_PRICE}&id=${AUCTION_ID}"
+ },
+ {
+  "name": "макрос SSP рядом с нашим",
+  "template": "https://t.example/?p=${AUCTION_PRICE}&c=${CDSP_COUNTRY}",
+  "values": {
+   "COUNTRY": "KZ"
+  },
+  "want": "https://t.example/?p=${AUCTION_PRICE}&c=KZ"
+ },
+ {
+  "name": "CLICK_URL не затрагивается",
+  "template": "https://t.example/?u=${CLICK_URL}&c=${CDSP_COUNTRY}",
+  "values": {
+   "COUNTRY": "KZ"
+  },
+  "want": "https://t.example/?u=${CLICK_URL}&c=KZ"
+ },
+ {
+  "name": "чужие скобки трекеров не трогаем",
+  "template": "https://t.example/?c={country}&d=[COUNTRY]&e=%%COUNTRY%%",
+  "values": {
+   "COUNTRY": "KZ"
+  },
+  "want": "https://t.example/?c={country}&d=[COUNTRY]&e=%%COUNTRY%%"
+ },
+ {
+  "name": "незакрытый макрос",
+  "template": "https://l.example/?c=${CDSP_COUNTRY",
+  "values": {
+   "COUNTRY": "KZ"
+  },
+  "want": "https://l.example/?c=${CDSP_COUNTRY"
+ },
+ {
+  "name": "пустое имя макроса",
+  "template": "https://l.example/?c=${CDSP_}",
+  "values": {
+   "COUNTRY": "KZ"
+  },
+  "want": "https://l.example/?c=${CDSP_}"
+ },
+ {
+  "name": "лишняя закрывающая скобка",
+  "template": "https://l.example/?c=${CDSP_COUNTRY}}",
+  "values": {
+   "COUNTRY": "KZ"
+  },
+  "want": "https://l.example/?c=KZ}"
+ },
+ {
+  "name": "лишний доллар перед макросом",
+  "template": "https://l.example/?c=$${CDSP_COUNTRY}",
+  "values": {
+   "COUNTRY": "KZ"
+  },
+  "want": "https://l.example/?c=$KZ"
+ },
+ {
+  "name": "пробел в имени макроса",
+  "template": "https://l.example/?c=${CDSP_COUNTRY }",
+  "values": {
+   "COUNTRY": "KZ"
+  },
+  "want": "https://l.example/?c=${CDSP_COUNTRY }"
+ },
+ {
+  "name": "вложенный макрос",
+  "template": "https://l.example/?c=${CDSP_${CDSP_COUNTRY}}",
+  "values": {
+   "COUNTRY": "KZ"
+  },
+  "want": "https://l.example/?c=${CDSP_KZ}"
+ },
+ {
+  "name": "кириллица в статической части",
+  "template": "https://l.example/путь?c=${CDSP_COUNTRY}",
+  "values": {
+   "COUNTRY": "KZ"
+  },
+  "want": "https://l.example/путь?c=KZ"
+ },
+ {
+  "name": "макрос в начале строки",
+  "template": "${CDSP_COUNTRY}-x",
+  "values": {
+   "COUNTRY": "KZ"
+  },
+  "want": "KZ-x"
+ },
+ {
+  "name": "строка только из макроса",
+  "template": "${CDSP_COUNTRY}",
+  "values": {
+   "COUNTRY": "KZ"
+  },
+  "want": "KZ"
+ },
+ {
+  "name": "длинное значение",
+  "template": "https://l.example/?x=${CDSP_CITY}",
+  "values": {
+   "CITY": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "want": "https://l.example/?x=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+ },
+ {
+  "name": "длинное значение с кодированием",
+  "template": "https://l.example/?x=${CDSP_CITY}",
+  "values": {
+   "CITY": "яяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяяя"
+  },
+  "want": "https://l.example/?x=%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F%D1%8F"
+ },
+ {
+  "name": "все макросы пикселя",
+  "template": "https://t.example/i?cb=${CDSP_CACHEBUSTER}&ts=${CDSP_TIMESTAMP}&bid=${CDSP_BID_ID}",
+  "values": {
+   "CACHEBUSTER": "48201733",
+   "TIMESTAMP": "1793124723",
+   "BID_ID": "b3f0"
+  },
+  "want": "https://t.example/i?cb=48201733&ts=1793124723&bid=b3f0"
+ },
+ {
+  "name": "геошаблон",
+  "template": "https://l.example/?country=${CDSP_COUNTRY}&region=${CDSP_REGION}&city=${CDSP_CITY}",
+  "values": {
+   "COUNTRY": "KZ",
+   "REGION": "ALA",
+   "CITY": "Almaty"
+  },
+  "want": "https://l.example/?country=KZ&region=ALA&city=Almaty"
+ }
+]

@@ -26,9 +26,12 @@ from fastapi import APIRouter, HTTPException, Request, Response
 
 logger = logging.getLogger("rtb")
 
+import ctx_match
 import obs_metrics
 import ssp_check
 import ssp_tokens
+import geo_v2
+from country_codes import normalize_country
 from billing_core import bill_win
 from business_day import business_date_str, even_pacing_budget
 from audiences import check_audiences, store_clid_bridge
@@ -51,6 +54,7 @@ from cache import (
 )
 import fx
 import rtb_compat
+import url_macros
 from db import get_pool
 from money import clamp_clearing_price, cpm_to_cost
 from ord.service import feed_gate_sql
@@ -121,7 +125,22 @@ def _imp_ad_type(imp: dict) -> str | None:
 CONNECTION_TYPES = {0: "unknown", 1: "ethernet", 2: "wifi", 3: "cellular", 4: "cellular", 5: "cellular", 6: "cellular"}
 
 
-def _match_targeting(targeting: dict, req: dict) -> bool:
+def _targeting_of(cand) -> dict:
+    t = cand["targeting"]
+    if isinstance(t, str):
+        try:
+            return json.loads(t) or {}
+        except ValueError:
+            return {}
+    return t or {}
+
+
+def _match_targeting(
+    targeting: dict,
+    req: dict,
+    geo_v2_resolved: "geo_v2.Resolved | None" = None,
+    geo_v2_index: "geo_v2.GeoIndex | None" = None,
+) -> bool:
     """Match line item targeting JSON against an OpenRTB 2.5 BidRequest.
 
     Supported keys (all optional; empty = no restriction):
@@ -129,12 +148,14 @@ def _match_targeting(targeting: dict, req: dict) -> bool:
       device_types                                  - mobile / desktop / ctv / tablet
       os, browsers, languages                       - device.os, device.ua match, device.language
       connection_types                              - wifi / cellular / ethernet
-      iab_categories                                - site.cat / app.cat IAB-1..26 allow list
-      iab_block                                     - IAB category block list
+      iab_categories                                - IAB allow list; matches cat/sectioncat/pagecat/content.cat/
+                                                      publisher.cat of site and app (parent code covers subcategory)
+      iab_block                                     - IAB category block list (same matching rule)
       domain_allowlist, domain_blocklist            - site.domain / app.bundle
       age_min, age_max, genders                     - user.yob, user.gender (M/F/O)
       hours (0-23 UTC list), days (0=Mon..6=Sun)    - dayparting
       ssp_allowlist                                 - list of supply partner IDs (checked by caller)
+      iab_allow_unknown, keywords_match, context_mode - контекст v2 (docs/CONTRACTS.md §1.3–1.5)
     """
     from datetime import datetime, timezone
 
@@ -145,7 +166,7 @@ def _match_targeting(targeting: dict, req: dict) -> bool:
 
     # --- Geo ---
     countries = targeting.get("geo_countries") or []
-    if countries and (geo.get("country") or "").upper() not in [c.upper() for c in countries]:
+    if countries and normalize_country(geo.get("country")) not in {normalize_country(c) for c in countries}:
         return False
     regions = targeting.get("geo_regions") or []
     if regions and (geo.get("region") or "").lower() not in [r.lower() for r in regions]:
@@ -153,6 +174,10 @@ def _match_targeting(targeting: dict, req: dict) -> bool:
     cities = targeting.get("geo_cities") or []
     if cities and (geo.get("city") or "").lower() not in [c.lower() for c in cities]:
         return False
+    # GEO v2 (docs/GEO.md): проверяется вместе со старыми ключами (AND).
+    if geo_v2.has_geo_v2(targeting):
+        if not geo_v2.geo_v2_enabled() or not geo_v2.match_geo_v2(targeting, geo_v2_resolved, geo_v2_index):
+            return False
 
     # --- Device ---
     device_types = targeting.get("device_types") or []
@@ -183,12 +208,27 @@ def _match_targeting(targeting: dict, req: dict) -> bool:
             return False
 
     # --- Inventory ---
-    site_cats = [c.upper() for c in (site.get("cat") or [])]
+    # Категории площадки: cat/sectioncat/pagecat/content.cat/publisher.cat site и app;
+    # код таргетинга «IAB7» покрывает подкатегорию запроса «IAB7-3» (ctx_match).
+    req_cats = ctx_match.request_cats(req)
     iab_allow = targeting.get("iab_categories") or []
-    if iab_allow and not any(c.upper() in site_cats for c in iab_allow):
-        return False
+    # Контекст v2: слова v2 (keywords_match) и режим «ИЛИ» (context_mode=any).
+    kw_mode = targeting.get("keywords_match") or ""
+    kw_v2 = kw_mode in ctx_match.KW_MODES
+    kw_allow = targeting.get("keywords_allow") or []
+    kw_block = targeting.get("keywords_block") or []
+    kw_allow_keys = ctx_match.prepare_kw_keys(kw_allow) if kw_v2 else []
+    kw_block_keys = ctx_match.prepare_kw_keys(kw_block) if kw_v2 else []
+    any_mode = targeting.get("context_mode") == "any"
+    has_kw = bool(kw_allow_keys) if kw_v2 else bool(kw_allow)
+    # combined: «тематика ИЛИ слова» объединяются ниже, после обоих стоп-условий.
+    combined = any_mode and bool(iab_allow) and has_kw
+    if iab_allow and not combined and not ctx_match.iab_intersects(iab_allow, req_cats):
+        # «Без тематики»: тематика запроса пуста и опция включена; в режиме any игнорируется.
+        if not (targeting.get("iab_allow_unknown") is True and not any_mode and not req_cats):
+            return False
     iab_block = targeting.get("iab_block") or []
-    if iab_block and any(c.upper() in site_cats for c in iab_block):
+    if iab_block and ctx_match.iab_intersects(iab_block, req_cats):
         return False
 
     domain = (site.get("domain") or site.get("bundle") or "").lower()
@@ -269,17 +309,34 @@ def _match_targeting(targeting: dict, req: dict) -> bool:
         return False
 
     # --- Contextual keywords (site/app/content keywords + page URL) ---
+    content = site.get("content") or {}
     kw_haystack = " ".join([
         (site.get("keywords") or ""),
-        ((site.get("content") or {}).get("keywords") or ""),
+        (content.get("keywords") or ""),
         (site.get("page") or ""),
-        ((site.get("content") or {}).get("title") or ""),
+        (content.get("title") or ""),
     ]).lower()
-    kw_block = targeting.get("keywords_block") or []
-    if kw_block and any(k.lower() in kw_haystack for k in kw_block):
+    kw_text = None
+    if kw_v2:
+        kw_text = ctx_match.build_kw_text(
+            [site.get("keywords"), content.get("keywords"), site.get("page"), content.get("title")]
+        )
+
+    def _kw_allow_ok() -> bool:
+        if kw_v2:
+            return ctx_match.kw_allow_match(kw_mode, kw_allow_keys, kw_text)
+        return any(k.lower() in kw_haystack for k in kw_allow)
+
+    # Стоп-слова всегда первыми и всегда широко.
+    if kw_v2:
+        if kw_block_keys and ctx_match.kw_block_match(kw_block_keys, kw_text):
+            return False
+    elif kw_block and any(k.lower() in kw_haystack for k in kw_block):
         return False
-    kw_allow = targeting.get("keywords_allow") or []
-    if kw_allow and not any(k.lower() in kw_haystack for k in kw_allow):
+    if combined:
+        if not ctx_match.iab_intersects(iab_allow, req_cats) and not _kw_allow_ok():
+            return False
+    elif has_kw and not _kw_allow_ok():
         return False
 
     # --- IP prefix ranges (e.g. "192.168." or "2a00:") ---
@@ -468,7 +525,17 @@ def _view_script(wrap_id: str, view_url: str, click_beacon: str = "") -> str:
     )
 
 
-def _build_adm(creative: dict, base: str, bid_id: str) -> str:
+def _expand_pixel(raw: str, macro_ctx: dict) -> str:
+    """Пиксель с макросами ${CDSP_*}: развёрнутый и перепроверенный safe_url
+    (схема, длина <= 2048, без кавычек/пробелов); непригодный — "" (пикселя нет,
+    ставка идёт). Без макросов — как есть. Зеркало Go rtb.expandPixel."""
+    if not url_macros.find_macros(raw):
+        return raw
+    out = url_macros.expand(raw, macro_ctx)
+    return out if rtb_compat.safe_url(out) else ""
+
+
+def _build_adm(creative: dict, base: str, bid_id: str, macro_ctx: dict | None = None) -> str:
     """Разметка креатива (banner HTML / native JSON / VAST XML) — эталон для
     bidder-go/internal/rtb/adm.go.
 
@@ -483,11 +550,14 @@ def _build_adm(creative: dict, base: str, bid_id: str) -> str:
     # Сторонние трекеры (аудит): пиксель на показ добавляется в разметку,
     # клик-трекер дёргается из клиентского onclick / clicktrackers / VAST.
     third_imp = creative.get("imp_tracker_url") or ""
+    third_click = creative.get("click_tracker_url") or ""
+    if macro_ctx is not None:
+        third_imp = _expand_pixel(third_imp, macro_ctx)
+        third_click = _expand_pixel(third_click, macro_ctx)
     third_imp_px = (
         f'<img src="{_html_escape(third_imp)}" width="1" height="1" style="display:none" alt=""/>'
         if third_imp else ""
     )
-    third_click = creative.get("click_tracker_url") or ""
     erid = creative.get("erid") or ""
     erid_label = _build_ad_info_badge(creative)
     # Токен — [0-9a-zA-Z._-], base — наш конфиг: эти URL не нуждаются в
@@ -1038,6 +1108,12 @@ async def process_bid_request(
     req_os = _device_os(device)
     req_browser = _device_browser(device)
     req_hour = str(datetime.now(_tz.utc).hour)
+    # GEO v2: гео запроса сопоставляется со справочником один раз на запрос,
+    # а не на каждого кандидата. Без флага не нужно: v2-группы fail-closed.
+    req_geo_v2 = req_geo_index = None
+    if geo_v2.geo_v2_enabled() and any(geo_v2.has_geo_v2(_targeting_of(c)) for c in candidates):
+        req_geo_index = await geo_v2.get_index(pool)
+        req_geo_v2 = geo_v2.resolve_request(req_geo_index, str(partner["id"]), req)
 
     seatbids = []
     base = _base_url()
@@ -1139,7 +1215,7 @@ async def process_bid_request(
                 _sb = _scoring_blocks.get(str(c["campaign_id"]))
                 if _sb and req_domain in _sb:
                     continue
-            if not _match_targeting(targeting, req):
+            if not _match_targeting(targeting, req, geo_v2_resolved=req_geo_v2, geo_v2_index=req_geo_index):
                 continue
             if not _match_imp_targeting(targeting, imp):
                 continue
@@ -1266,7 +1342,21 @@ async def process_bid_request(
         nurl = f"{base}/api/rtb/win?bid={event_token}&price=${{AUCTION_PRICE}}"
         # burl (OpenRTB 2.5 §4.3.3, R-07): billable-событие; тот же токен, что и nurl.
         burl = f"{base}/api/rtb/burl?bid={event_token}&price=${{AUCTION_PRICE}}"
-        adm = _build_adm(c, base, event_token)
+        # Макросы ${CDSP_*} — только у креативов, где они есть; остальные идут
+        # прежним путём. Зеркало Go rtb.expandCreativeURLs.
+        macro_ctx = None
+        click_link = ""
+        if url_macros.has_macros(c.get("click_url"), c.get("imp_tracker_url"), c.get("click_tracker_url")):
+            macro_ctx = url_macros.build_context(
+                req=req, imp=imp, creative=c, partner_id=partner["id"], bid_id=bid_id,
+                device_type=DEVICE_TYPES.get(device.get("devicetype", 0), "unknown"),
+                os_name=req_os, browser=req_browser,
+            )
+            if url_macros.find_macros(c.get("click_url")):
+                _link = url_macros.expand(c["click_url"], macro_ctx)
+                if rtb_compat.safe_url(_link):
+                    click_link = _link
+        adm = _build_adm(c, base, event_token, macro_ctx)
 
         # Synchronously cache bid metadata in Redis (sub-ms) so win/imp/click
         # handlers can resolve the bid immediately; the Postgres insert below
@@ -1301,6 +1391,7 @@ async def process_bid_request(
                 "cur": resp_cur,
                 "fx_rate": c["_fx_rate"],
                 **reserve_meta,
+                **({"click_url": click_link} if click_link else {}),
             }),
             ex=3600,
         )
@@ -1879,8 +1970,10 @@ async def click(bid: str, beacon: int = 0):
                     obs_metrics.inc("rtb_clicks_total")
     if beacon:
         return Response(content=_PIXEL, media_type="image/gif")
-    target = ""
-    if row and row["creative_id"]:
+    # Креатив с макросами ${CDSP_*}: биддер кладёт развёрнутую ссылку в bidmeta.click_url;
+    # нет поля (креатив без макросов, bidmeta истёк, PG-fallback) — click_url из БД.
+    target = _row_get(row, "click_url") or ""
+    if not target and row and row["creative_id"]:
         target = await pool.fetchval("SELECT click_url FROM creatives WHERE id = $1", row["creative_id"]) or ""
     if rtb_compat.safe_url(target):
         return Response(status_code=302, headers={"Location": _with_clid(target, bid)})

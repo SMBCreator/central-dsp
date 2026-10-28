@@ -4,7 +4,7 @@
  * и мобильным меню (mobile-drawer.tsx), чтобы поведение Tab/Shift+Tab/Escape/возврата
  * фокуса было одно на всё приложение.
  */
-import { useEffect, type RefObject } from "react"
+import { useEffect, useRef, type RefObject } from "react"
 
 export const FOCUSABLE_SELECTOR =
   'input:not([type=hidden]):not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'
@@ -46,6 +46,16 @@ export function useFocusTrap(
   options: FocusTrapOptions = {},
 ) {
   const { initialFocus, lockScroll = true } = options
+  // Родители обычно передают инлайн-колбэки (onClose={() => setOpen(false)}),
+  // новые на каждый рендер. Если держать их в зависимостях эффекта, ввод символа
+  // перезапускал эффект: фокус уходил на инициатор и обратно в первое поле.
+  // Храним актуальные колбэки в ref — эффект живёт строго от открытия до закрытия.
+  const onCloseRef = useRef(onClose)
+  const initialFocusRef = useRef(initialFocus)
+  useEffect(() => {
+    onCloseRef.current = onClose
+    initialFocusRef.current = initialFocus
+  })
   useEffect(() => {
     if (!active) return
     const container = containerRef.current
@@ -53,7 +63,7 @@ export function useFocusTrap(
     const opener = document.activeElement as HTMLElement | null
 
     const first =
-      initialFocus?.() ??
+      initialFocusRef.current?.() ??
       focusableWithin(container).find((el) => !el.hasAttribute("data-focus-skip")) ??
       null
     ;(first ?? container).focus()
@@ -61,7 +71,7 @@ export function useFocusTrap(
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.stopPropagation()
-        onClose()
+        onCloseRef.current()
         return
       }
       if (e.key !== "Tab") return
@@ -79,7 +89,5 @@ export function useFocusTrap(
       if (lockScroll) document.body.style.overflow = prevOverflow
       opener?.focus?.()
     }
-    // initialFocus — функция-опция, стабильность не требуется: эффект живёт от открытия до закрытия
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, onClose, containerRef, lockScroll])
+  }, [active, containerRef, lockScroll])
 }

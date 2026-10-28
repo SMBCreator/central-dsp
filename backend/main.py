@@ -38,11 +38,14 @@ from routers.share import router as share_router
 from routers.simulator import router as simulator_router
 from routers.stats import router as stats_router
 from routers.supply_partners import router as supply_partners_router
+from routers.id_sync import router as id_sync_router
+from routers.domain_categories import router as domain_categories_router
 
 import validation_i18n
 from audit import AuditMiddleware
 from csrf import OriginGuardMiddleware
 from http_hardening import NoStoreMiddleware
+from startup_checks import is_production as _is_production
 from contextlib import asynccontextmanager
 
 
@@ -115,11 +118,18 @@ async def _lifespan(_app: FastAPI):
         await close_pool()
 
 
+# В production схема API (/docs, /redoc, /openapi.json) не публикуется: это
+# полная карта ручек для постороннего. Локально и на стенде — как раньше.
+_API_DOCS = not _is_production()
+
 app = FastAPI(
     title="CentralDSP API",
     version="1.0.0",
     description="Demand-Side Platform: management API + OpenRTB 2.5 bidder",
     lifespan=_lifespan,
+    docs_url="/docs" if _API_DOCS else None,
+    redoc_url="/redoc" if _API_DOCS else None,
+    openapi_url="/openapi.json" if _API_DOCS else None,
 )
 
 validation_i18n.install(app)
@@ -156,6 +166,8 @@ app.include_router(notifications_router)
 app.include_router(alerts_router)
 app.include_router(moderation_router)
 app.include_router(audit_router)
+app.include_router(id_sync_router)
+app.include_router(domain_categories_router)
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")

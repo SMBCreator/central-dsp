@@ -16,6 +16,8 @@ export interface Advertiser {
   currency: string
   /** C4b/N-03: адреса бизнес-уведомлений; пусто -> email владельца. */
   notify_emails?: string[]
+  /** ТЗ п.5: 'ru' — реклама в РФ (маркировка), 'foreign' — только за пределами РФ. */
+  ad_market?: "ru" | "foreign"
   created_at: string
 }
 
@@ -67,6 +69,12 @@ export interface Targeting {
   geo_countries?: string[]
   geo_regions?: string[]
   geo_cities?: string[]
+  /** GEO v2 (docs/GEO.md): id мест справочника geo_places. AND со старыми geo_*. */
+  geo_place_ids?: number[]
+  geo_exclude_place_ids?: number[]
+  /** Гео запроса не определено: "strict" (по умолчанию) — не показывать, "lenient" — показывать.
+   *  string, а не union: test_targeting_contract сверяет типы по примитивам. */
+  geo_unknown?: string
   device_types?: string[]
   os?: string[]
   browsers?: string[]
@@ -94,6 +102,13 @@ export interface Targeting {
   publisher_block?: string[]
   keywords_allow?: string[]
   keywords_block?: string[]
+  /** Тематика не определена — проверка IAB пройдена. Только при context_mode "all" (в "any" игнорируется). */
+  iab_allow_unknown?: boolean
+  /** Как искать разрешающие слова: "substring" | "word_start" | "whole_word". Нет ключа — легаси (часть слова).
+   *  string, а не union: test_targeting_contract сверяет типы по примитивам. */
+  keywords_match?: string
+  /** Режим разрешающей части: "all" (по умолчанию) — тематика И слова, "any" — тематика ИЛИ слова. */
+  context_mode?: string
   ip_ranges?: string[]
   /* Slot-level */
   banner_positions?: number[] // 1 = above fold, 3 = below fold
@@ -216,6 +231,11 @@ export interface Creative {
   iab_categories?: string[]
   attrs?: number[]
   erid: string | null
+  /** Реквизиты контрагента для плашки «Реклама ⓘ» (GET /creatives, LEFT JOIN). */
+  counterparty_name?: string | null
+  counterparty_inn?: string | null
+  counterparty_ogrn?: string | null
+  counterparty_address?: string | null
   moderation_comment: string | null
   created_at: string
 }
@@ -272,6 +292,28 @@ export interface SupplyPartner {
   billing_event?: "win" | "burl"
   // R-06: freq cap бронируется на nurl, а не на пикселе показа (SSP без imp-пикселя)
   freq_cap_on_win?: boolean
+  // ID sync (миграция 058, docs/ID_SYNC.md); null — не настроен
+  identity?: PartnerIdentity | null
+}
+
+export type PartnerIdentity = {
+  sync_enabled: boolean
+  sync_in_param: string
+  sync_callback_url_template: string | null
+  sync_redirect_hosts: string[]
+  id_source: string
+  ttl_days: number
+  requires_consent: boolean
+}
+
+export type SyncUrls = {
+  enabled_globally: boolean
+  partner_sync_enabled: boolean
+  in_url: string
+  out_url: string | null
+  optout_url: string
+  active_mappings: number
+  secret_configured: boolean
 }
 
 export interface SupplyPartnerMetrics {
@@ -395,7 +437,10 @@ export interface Counterparty {
   name: string
   inn: string | null
   ogrn: string | null
-  legal_type: "ul" | "ip" | "fl" | string | null
+  legal_type: "ul" | "ip" | "fl" | "foreign" | string | null
+  region_number?: string | null
+  tax_id?: string | null
+  registration_number?: string | null
   role: "advertiser" | "agency" | "ors" | "publisher" | string | null
   advertiser_id: string | null
   address: string | null

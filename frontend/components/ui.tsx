@@ -37,6 +37,14 @@ export function CardHeader({ title, subtitle, action }: { title: string; subtitl
   )
 }
 
+/**
+ * ТЗ п.2: тело карточки после CardHeader — тот же горизонтальный отступ, что у
+ * заголовка (px-6), чтобы содержимое не прижималось к рамке.
+ */
+export function CardBody({ children, className = "" }: { children: ReactNode; className?: string }) {
+  return <div className={`px-6 pb-6 pt-2 ${className}`}>{children}</div>
+}
+
 export function KpiCard({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
     <Card className="px-6 py-5">

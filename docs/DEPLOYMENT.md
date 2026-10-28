@@ -567,7 +567,7 @@ dev и CI работают без overlay.
 Все внешние образы закреплены **tag с patch-версией + immutable digest**
 (`postgres:15.19-alpine@sha256:…`, `redis:7.4.11-alpine@…`,
 `python:3.12.14-slim-bookworm@…`, `node:22.23.2-alpine@…`,
-`golang:1.25.14-alpine@…`, `distroless/static-debian12:nonroot@…`,
+`golang:1.26.10-alpine@…`, `distroless/static-debian12:nonroot@…`,
 `caddy:2.11.4-alpine@…`, `prom/*@…`). Плавающие теги (`python:3.12-slim`,
 `postgres:15-alpine`) не используются: они меняют содержимое между двумя
 сборками, и CI, локальная среда и VPS собирают разные образы при неизменном

@@ -27,6 +27,8 @@ COPY --from=build --chown=node:node /app/.next ./.next
 COPY --from=build --chown=root:root /app/node_modules ./node_modules
 COPY --from=build --chown=root:root /app/package.json ./package.json
 COPY --from=build --chown=root:root /app/next.config.ts ./next.config.ts
+# public/brand — логотипы (ТЗ п.1); без этого next start отдаёт 404 на /brand/*.
+COPY --from=build --chown=root:root /app/public ./public
 USER node
 EXPOSE 3000
 CMD ["node", "node_modules/next/dist/bin/next", "start", "-p", "3000"]

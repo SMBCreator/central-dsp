@@ -34,8 +34,12 @@ _TARGETS: dict[str, tuple[str, str, str, str, str | None]] = {
 
 
 def normalize_object_type(raw: str | None) -> str:
-    """ORGANISATION / CONTRACT / CREATIVE / INVOICE / PLATFORM → нижний регистр, иначе unknown."""
-    t = (raw or "").strip().lower()
+    """objectType ОРД → organisation|contract|creative|invoice|platform, иначе unknown.
+
+    Swagger: ERROR_NOTIFICATION_OBJECT_TYPE_CREATIVE и т.п. (в enum спеки — с лишней
+    запятой в конце); короткая форма CREATIVE тоже принимается.
+    """
+    t = (raw or "").strip().rstrip(",").lower().removeprefix("error_notification_object_type_")
     return t if t in OBJECT_TYPES else "unknown"
 
 

@@ -4,6 +4,7 @@ import json
 import logging
 from fastapi import APIRouter, Depends, HTTPException
 
+import ad_market
 from auth import current_user
 from business_day import normalize_spent_today
 from cache import reset_available
@@ -153,6 +154,7 @@ async def confirm_ord_chain(campaign_id: str, user: dict = Depends(require_campa
     если цепочка неполная/невалидная; после подтверждения поля заморожены."""
     pool = await get_pool()
     camp = await _campaign_in_scope(pool, campaign_id, user)
+    await ad_market.assert_campaign_not_foreign(pool, campaign_id)
     return ord_chain.public_chain(await ord_chain.confirm_chain(pool, dict(camp)))
 
 
@@ -197,6 +199,9 @@ async def update_campaign(campaign_id: str, body: CampaignPatch, user: dict = De
     # в production флаг игнорируется (audit L-01/S-04).
     import os as _os
     gate_on = not mock_allowed() or _os.getenv("LAUNCH_GATE", _os.getenv("ORD_LAUNCH_GUARD", "on")) != "off"
+    if updates.get("status") == "active":
+        # ТЗ п.5: рекламодатель «за пределами РФ» + РФ-гео — 422 независимо от LAUNCH_GATE.
+        await ad_market.assert_campaign_geo_allowed(pool, campaign_id)
     if updates.get("status") == "active" and gate_on:
         # Учитываем поля, которые меняются этим же PATCH (например, даты/бюджет).
         merged = dict(camp)
@@ -382,7 +387,7 @@ async def compute_diagnostics(pool, camp, *, assume_active: bool = False) -> dic
 
     # 5. Рекламодатель и баланс
     adv = await pool.fetchrow(
-        "SELECT name, status, balance FROM advertisers WHERE id = $1", camp["advertiser_id"]
+        "SELECT name, status, balance, ad_market FROM advertisers WHERE id = $1", camp["advertiser_id"]
     )
     adv_active = adv is not None and adv["status"] == "active"
     balance = float(adv["balance"]) if adv and adv["balance"] is not None else 0.0
@@ -451,6 +456,17 @@ async def compute_diagnostics(pool, camp, *, assume_active: bool = False) -> dic
     # без подтверждённой цепочки креативы не регистрируются, erid не выдаётся.
     ru_relevant = await campaign_targets_ru(pool, campaign_id)
     chain_confirmed = camp.get("ord_confirmed_at") is not None
+    if adv is not None and adv.get("ad_market") == "foreign":
+        # ТЗ п.5: для «за пределами РФ» РФ-гео недопустимо (в UI скрыто, здесь — для обхода).
+        ru_geo = await ad_market.campaign_has_ru_geo(pool, campaign_id)
+        add(
+            "ad_market_geo",
+            not ru_geo,
+            "blocker",
+            "Гео рекламодателя «за пределами РФ»",
+            "Российские места в гео не выбраны" if not ru_geo
+            else "В гео группы есть российские места или показы без страны — уберите их.",
+        )
     add(
         "ord_chain",
         not ru_relevant or chain_confirmed,

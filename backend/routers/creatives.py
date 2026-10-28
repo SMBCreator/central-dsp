@@ -2,16 +2,22 @@ import json
 import os
 import re
 import struct
+import sys
 import uuid
+from urllib.parse import urlsplit
 
+import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
+from pydantic import ValidationError
 
+import url_macros
+from ad_sizes import AD_SIZES, is_allowed, nearest_sizes, size_key, size_strict
 from auth import current_user
 from rbac import assert_in_scope, assert_owned_by, assert_refs_owned, is_admin, require_creative_manager, scope_for
 from notify import notify_admins
 from db import get_pool
 from ord.service import campaign_targets_ru, register_creative, supersede_current
-from schemas import CreativeIn, CreativePatch
+from schemas import CreativeBatchIn, CreativeIn, CreativePatch
 
 router = APIRouter(prefix="/creatives", tags=["creatives"])
 
@@ -81,50 +87,120 @@ def _validate_type_fields(body: CreativeIn) -> None:
         raise HTTPException(status_code=422, detail=f"Для типа {body.type} обязательны поля: {', '.join(missing)}")
 
 
+@router.get("/sizes")
+async def list_ad_sizes(_user: dict = Depends(current_user)):
+    """Справочник допустимых размеров баннеров (единый источник для UI)."""
+    return AD_SIZES
+
+
+@router.get("/macros")
+async def list_url_macros(_user: dict = Depends(current_user)):
+    """Каталог макросов ${CDSP_*} для ссылки перехода и пикселей (единый источник
+    для UI; подстановка — на бидере в момент ставки)."""
+    return url_macros.CATALOG
+
+
 @router.get("")
 async def list_creatives(campaign_id: str | None = None, user: dict = Depends(current_user)):
     pool = await get_pool()
     scope = await scope_for(user)
+    # Реквизиты контрагента нужны плашке «Реклама ⓘ» в превью; один LEFT JOIN, без N+1.
+    base = f"""
+        SELECT c.*, cp.name AS counterparty_name, cp.inn AS counterparty_inn,
+               cp.ogrn AS counterparty_ogrn, cp.address AS counterparty_address
+        FROM creatives c
+        LEFT JOIN counterparties cp ON cp.id = c.counterparty_id
+        WHERE {scope.where('c.user_id', 1)}"""
     if campaign_id:
-        rows = await pool.fetch(
-            f"SELECT * FROM creatives WHERE {scope.where('user_id', 1)} AND campaign_id = $3 ORDER BY created_at DESC",
-            *scope.params, campaign_id,
-        )
+        rows = await pool.fetch(f"{base} AND c.campaign_id = $3 ORDER BY c.created_at DESC", *scope.params, campaign_id)
     else:
-        rows = await pool.fetch(
-            f"SELECT * FROM creatives WHERE {scope.where('user_id', 1)} ORDER BY created_at DESC", *scope.params
-        )
+        rows = await pool.fetch(f"{base} ORDER BY c.created_at DESC", *scope.params)
     return [_serialize(r) for r in rows]
 
 
-@router.post("", status_code=201)
-async def create_creative(body: CreativeIn, user: dict = Depends(require_creative_manager)):
-    _validate_type_fields(body)
-    pool = await get_pool()
+def _local_upload_name(asset_url: str | None) -> str | None:
+    """Имя файла нашей загрузки (/uploads/<uuid>.<ext>) из asset_url или None."""
+    if not asset_url:
+        return None
+    path = urlsplit(asset_url).path
+    if not path.startswith("/uploads/"):
+        return None
+    name = path[len("/uploads/"):]
+    return name if _UPLOAD_NAME_RE.match(name) else None
+
+
+def _validate_banner_size(body: CreativeIn) -> None:
+    """ТЗ batch п.5.2: размер баннера — только из справочника (ad_sizes), а для
+    файла нашей загрузки заявленный размер должен совпасть с фактическим.
+    Только при создании; native/video/push не затрагиваются.
+    CREATIVE_SIZE_STRICT=0 — аварийный выключатель."""
+    if body.type != "banner" or not size_strict():
+        return
+    w, h = body.width, body.height
+    if not is_allowed(w, h):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "size_not_allowed",
+                "message": f"Размер {w}×{h} не входит в справочник допустимых размеров баннеров",
+                "nearest": nearest_sizes(w or 0, h or 0),
+            },
+        )
+    name = _local_upload_name(body.asset_url) if body.subtype != "html5" else None
+    if not name:
+        return
+    from main import UPLOAD_DIR
+
+    try:
+        with open(os.path.join(UPLOAD_DIR, name), "rb") as fh:
+            dims = image_dimensions(fh.read(64 * 1024))
+    except FileNotFoundError:
+        return
+    if dims and tuple(dims) != (w, h):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "size_mismatch",
+                "message": f"Заявлен размер {w}×{h}, а фактический размер файла — {dims[0]}×{dims[1]}",
+                "actual": size_key(*dims),
+            },
+        )
+
+
+async def _resolve_create_scope(
+    pool, user: dict, campaign_id: str, line_item_id: str | None,
+    counterparty_id: str | None, contract_id: str | None,
+) -> tuple[str, str | None, str | None]:
+    """Общая проверка прав на создание креатива(ов) в кампании.
+
+    Возвращает (владелец кампании, counterparty_id, contract_id) — последние с
+    учётом цепочки ОРД кампании (B13d): креатив наследует её рекламодателя,
+    договор выбирается из цепочки при регистрации (ord.service.resolve_contract).
+    """
     camp = await assert_in_scope(
-        pool, "campaigns", body.campaign_id, await scope_for(user), "Кампания не найдена",
+        pool, "campaigns", campaign_id, await scope_for(user), "Кампания не найдена",
         columns="id, user_id, ord_mode, counterparty_id",
     )
-    # Цепочка ОРД задана на кампании (B13d): креатив наследует её рекламодателя,
-    # договор выбирается из цепочки при регистрации (ord.service.resolve_contract).
     if camp["ord_mode"]:
-        body.counterparty_id = str(camp["counterparty_id"]) if camp["counterparty_id"] else None
-        body.contract_id = None
+        counterparty_id = str(camp["counterparty_id"]) if camp["counterparty_id"] else None
+        contract_id = None
     # Креатив принадлежит владельцу кампании. Ссылочные id должны принадлежать
     # ему же (и группа — этой кампании): иначе креатив можно повесить на чужую
     # группу (уйдёт в чужой фид) или подписать в ОРД чужим контрагентом/договором.
     owner = str(camp["user_id"])
-    if body.line_item_id:
+    if line_item_id:
         await assert_owned_by(
-            pool, "line_items", body.line_item_id, owner, "Группа объявлений не найдена",
-            extra_where="campaign_id = $3", extra_params=(body.campaign_id,),
+            pool, "line_items", line_item_id, owner, "Группа объявлений не найдена",
+            extra_where="campaign_id = $3", extra_params=(campaign_id,),
         )
     await assert_refs_owned(
-        pool, owner, {"counterparty_id": body.counterparty_id, "contract_id": body.contract_id}, _REF_TABLES
+        pool, owner, {"counterparty_id": counterparty_id, "contract_id": contract_id}, _REF_TABLES
     )
-    # Админы модерируют сами себя: креатив сразу approved. Остальные — на модерацию.
-    status = "approved" if is_admin(user) else "pending"
-    row = await pool.fetchrow(
+    return owner, counterparty_id, contract_id
+
+
+async def _insert_creative(pool, body: CreativeIn, owner: str, status: str):
+    return await pool.fetchrow(
         """
         INSERT INTO creatives (campaign_id, line_item_id, user_id, name, type, subtype, width, height,
                                asset_url, click_url, html_snippet, native_title, native_description,
@@ -141,6 +217,19 @@ async def create_creative(body: CreativeIn, user: dict = Depends(require_creativ
         body.imp_tracker_url, body.click_tracker_url, status, body.counterparty_id,
         body.kktu_code, body.kktu_label, body.iab_categories, body.attrs, body.contract_id,
     )
+
+
+@router.post("", status_code=201)
+async def create_creative(body: CreativeIn, user: dict = Depends(require_creative_manager)):
+    _validate_type_fields(body)
+    _validate_banner_size(body)
+    pool = await get_pool()
+    owner, body.counterparty_id, body.contract_id = await _resolve_create_scope(
+        pool, user, body.campaign_id, body.line_item_id, body.counterparty_id, body.contract_id
+    )
+    # Админы модерируют сами себя: креатив сразу approved. Остальные — на модерацию.
+    status = "approved" if is_admin(user) else "pending"
+    row = await _insert_creative(pool, body, owner, status)
     if status == "approved":
         return await _mark_self_approved(pool, row)
     await notify_admins(
@@ -150,6 +239,89 @@ async def create_creative(body: CreativeIn, user: dict = Depends(require_creativ
         "/moderation",
     )
     return _serialize(row)
+
+
+def _item_error(code: str, message: str) -> dict:
+    return {"status": "error", "error": {"code": code, "message": message}}
+
+
+def _http_error(exc: HTTPException) -> dict:
+    d = exc.detail
+    if isinstance(d, dict):
+        return _item_error(str(d.get("code") or "invalid"), str(d.get("message") or d))
+    return _item_error("invalid", str(d))
+
+
+@router.post("/batch")
+async def create_creatives_batch(body: CreativeBatchIn, user: dict = Depends(require_creative_manager)):
+    """ТЗ batch п.5.3: пакет баннеров (до CREATIVE_BATCH_MAX) в одну кампанию.
+
+    Частичный успех: каждый элемент создаётся независимо, ответ — результат по
+    каждому client_id. Повтор того же asset_url в ту же кампанию не создаёт
+    дубль (duplicate: true). Права и область — как у POST /creatives.
+    """
+    pool = await get_pool()
+    c = body.common
+    owner, counterparty_id, contract_id = await _resolve_create_scope(
+        pool, user, body.campaign_id, body.line_item_id, c.counterparty_id, c.contract_id
+    )
+    status = "approved" if is_admin(user) else "pending"
+    results: list[dict] = []
+    created = duplicates = 0
+    for item in body.items:
+        res: dict
+        try:
+            cr = CreativeIn(
+                campaign_id=body.campaign_id, line_item_id=body.line_item_id, name=item.name.strip(),
+                type="banner", subtype=c.subtype, width=item.width, height=item.height,
+                asset_url=item.asset_url, click_url=(item.click_url or "").strip() or c.click_url,
+                imp_tracker_url=(item.imp_tracker_url or "").strip() or c.imp_tracker_url,
+                click_tracker_url=(item.click_tracker_url or "").strip() or c.click_tracker_url,
+                counterparty_id=counterparty_id, contract_id=contract_id,
+                kktu_code=c.kktu_code, kktu_label=c.kktu_label,
+                iab_categories=c.iab_categories, attrs=c.attrs,
+            )
+            _validate_type_fields(cr)
+            _validate_banner_size(cr)
+            existing = await pool.fetchrow(
+                "SELECT * FROM creatives WHERE campaign_id = $1 AND asset_url = $2 ORDER BY created_at LIMIT 1",
+                body.campaign_id, cr.asset_url,
+            )
+            if existing:
+                duplicates += 1
+                res = {"status": "created", "duplicate": True, "creative": _serialize(existing)}
+            else:
+                row = await _insert_creative(pool, cr, owner, status)
+                creative = await _mark_self_approved(pool, row) if status == "approved" else _serialize(row)
+                created += 1
+                res = {"status": "created", "duplicate": False, "creative": creative}
+        except ValidationError as exc:
+            err = exc.errors()[0] if exc.errors() else {}
+            field = ".".join(str(x) for x in err.get("loc", ()))
+            res = _item_error("invalid", f"{field}: {err.get('msg', 'некорректное значение')}".strip(": "))
+        except HTTPException as exc:
+            res = _http_error(exc)
+        except asyncpg.PostgresError as exc:
+            print(f"[creatives.batch] insert failed: {type(exc).__name__}", file=sys.stderr)
+            res = _item_error("db_error", "Не удалось сохранить креатив, попробуйте ещё раз")
+        results.append({"client_id": item.client_id, **res})
+
+    errors = sum(1 for r in results if r["status"] == "error")
+    await pool.execute(
+        """INSERT INTO audit_log (user_id, user_email, user_role, method, path, status_code, entity, entity_id, payload)
+           VALUES ($1, $2, $3, 'POST', '/creatives/batch', 200, 'creatives', $4, $5::jsonb)""",
+        user.get("id"), user.get("email"), user.get("role"), body.campaign_id,
+        json.dumps({"campaign_id": body.campaign_id, "items": len(body.items), "created": created,
+                    "duplicates": duplicates, "errors": errors}),
+    )
+    if created and status == "pending":
+        await notify_admins(
+            "moderation_pending",
+            f"Новые креативы на модерации: {created} шт.",
+            f"Пользователь {user['email']} загрузил пакет баннеров в кампанию.",
+            "/moderation",
+        )
+    return results
 
 
 @router.patch("/{creative_id}")
@@ -397,6 +569,7 @@ async def upload_creative_asset(
         "mime": mime,
         "width": dims[0] if dims else None,
         "height": dims[1] if dims else None,
+        "matched_size": size_key(*dims) if dims and is_allowed(*dims) else None,
     }
 
 

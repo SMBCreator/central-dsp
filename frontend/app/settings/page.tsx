@@ -5,6 +5,7 @@ import useSWR from "swr"
 import { api, fetcher } from "@/lib/api"
 import { Button, Card, CardHeader, EmptyState, Field, PillTabs, Spinner, Table } from "@/components/ui"
 import { MlStatusCard } from "@/components/ml-status-card"
+import { OrdSandboxCard } from "@/components/ord-sandbox-card"
 
 type AppSettings = {
   currency: string
@@ -211,7 +212,7 @@ function OrdCard() {
         title="ОРД Озон (маркировка рекламы)"
         subtitle="API-ключ из кабинета ОРД Озон → Настройки → API. С ключом креативы регистрируются по-настоящему и erid виден в вашем кабинете ОРД. Без ключа в production регистрация недоступна и показы в РФ заблокированы; mock-режим с фиктивными erid работает только на dev-стендах."
       />
-      <div className="space-y-4 p-4 pt-0">
+      <div className="space-y-4 px-6 pb-4">
         {ord ? (
           ord.blocking ? (
             <div
@@ -255,7 +256,7 @@ function OrdCard() {
           <Field label="Окружение" hint="Песочница — для проверки интеграции без публикации">
             <select className={inputCls} value={env} onChange={(e) => setEnv(e.target.value as "production" | "sandbox")}>
               <option value="production">Прод (api-ord.ozon.ru)</option>
-              <option value="sandbox">Песочница (ord-sandbox.ozon.ru)</option>
+              <option value="sandbox">Песочница (api-ord-sandbox.ozon.ru)</option>
             </select>
           </Field>
           <div className="sm:col-span-3">
@@ -297,6 +298,12 @@ function OrdCard() {
   )
 }
 
+function OrdSandboxSection() {
+  const { data: ord } = useSWR<OrdSettings>("/settings/ord", fetcher)
+  if (!ord) return null
+  return <OrdSandboxCard savedSandbox={Boolean(ord.configured && ord.environment === "sandbox")} />
+}
+
 export default function SettingsPage() {
   const { data: settings, mutate: mutateSettings } = useSWR<AppSettings>("/settings", fetcher)
   const { data: fx } = useSWR<FxInfo>("/settings/fx?currency=USD", fetcher)
@@ -315,7 +322,7 @@ export default function SettingsPage() {
     if (markup === null) return
     setSaving(true)
     try {
-      await api("/settings", { method: "PATCH", body: JSON.stringify({ fx_markup_pct: Number(markup) }) })
+      await api("/settings", { method: "PATCH", body: { fx_markup_pct: Number(markup) } })
       setMarkup(null)
       await mutateSettings()
     } finally {
@@ -330,7 +337,7 @@ export default function SettingsPage() {
     try {
       await api("/settings/domain-lists", {
         method: "POST",
-        body: JSON.stringify({ domain: d, list_type: listType, source: "manual" }),
+        body: { domain: d, list_type: listType, source: "manual" },
       })
       setNewDomain("")
       await mutateDomains()
@@ -354,7 +361,7 @@ export default function SettingsPage() {
       <Card>
         <CardHeader title="Валюта и курс" subtitle="Кабинет ведётся в рублях; закупка в $ конвертируется по курсу ЦБ РФ с наценкой" />
         {settings && fx ? (
-          <div className="grid grid-cols-1 gap-4 p-4 pt-0 sm:grid-cols-3">
+          <div className="grid grid-cols-1 gap-4 px-6 pb-4 sm:grid-cols-3">
             <Field label="Валюта кабинета">
               <input className={inputCls} value={settings.currency} disabled />
             </Field>
@@ -385,6 +392,8 @@ export default function SettingsPage() {
 
       <OrdCard />
 
+      <OrdSandboxSection />
+
       <MlStatusCard />
 
       <Card>
@@ -393,7 +402,7 @@ export default function SettingsPage() {
           subtitle="Применяются ко всем кампаниям на этапе бида. Чёрный список — домен никогда не выкупается; белый — если он не пуст, выкупаются только домены из него."
           action={<PillTabs value={listType} onChange={setListType} options={LIST_TABS} />}
         />
-        <div className="flex gap-2 px-4 pb-3">
+        <div className="flex gap-2 px-6 pb-3">
           <input
             className={inputCls}
             value={newDomain}

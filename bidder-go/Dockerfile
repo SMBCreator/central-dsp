@@ -2,7 +2,7 @@
 # Audit O-07 / C6: оба базовых образа закреплены tag + digest (обновлять
 # осознанно, отдельным PR — docs/DEPLOYMENT.md §13). Runtime — distroless
 # :nonroot (uid 65532), без shell и пакетного менеджера.
-FROM golang:1.25.14-alpine@sha256:1ae0735f00daffa3aaf1363a5184c0d2dc55c78e3db4ec70241cdac97bf84b59 AS build
+FROM golang:1.26.10-alpine@sha256:27f2d3b83cfc5803c8078f8e730af0f7c431bf067afaec8f60a36fb763187cba AS build
 WORKDIR /src
 COPY go.mod go.sum* ./
 RUN go mod download

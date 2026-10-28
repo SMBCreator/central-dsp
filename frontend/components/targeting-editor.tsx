@@ -4,10 +4,32 @@ import { useEffect, useRef, useState, type ReactNode } from "react"
 import { Field, inputCls } from "@/components/ui"
 import { MultiSelect } from "@/components/multi-select"
 import { TagInput } from "@/components/tag-input"
+import { Disclosure } from "@/components/disclosure"
 import { GeoDrawer, countryLabel } from "@/components/geo-panel"
+import { GeoV2Picker, geoV2Summary, type GeoConfig } from "@/components/geo-v2-picker"
+import { targetingOutsideRu } from "@/lib/ad-market"
 import useSWR from "swr"
 import { fetcher } from "@/lib/api"
 import { DEVICE_MAKES, IAB_CATEGORIES, VIDEO_PLACEMENTS, VIDEO_PROTOCOLS, type Targeting } from "@/lib/types"
+import {
+  CONTEXT_MODE_OPTIONS,
+  KEYWORDS_MATCH_OPTIONS,
+  LEGACY_KEYWORDS_LABEL,
+  inventoryResetPatch,
+  inventorySummary,
+  keywordsAllowPatch,
+  keywordsMatchValue,
+  showAllowUnknown,
+  showContextMode,
+} from "@/lib/targeting-context"
+import {
+  advancedInventorySummary,
+  hasAdvancedInventory,
+  hasRegulatorySettings,
+  hasSlotSettings,
+  regulatorySummary,
+  slotSummary,
+} from "@/lib/targeting-summary"
 
 export const COUNTRIES = ["RU", "KZ", "BY", "UZ", "KG", "AM", "AZ", "GE", "MD", "TJ", "TM", "UA"]
 export const DEVICES = [
@@ -160,36 +182,50 @@ function norm(next: string[]): string[] | undefined {
   return next.length ? next : undefined
 }
 
-/* ---------- Секция таргетинга: плоская, всегда раскрыта (структура как на Авито) ---------- */
+/* ---------- Секция таргетинга: плоская; collapsible — сворачиваемая (содержимое не размонтируется) ---------- */
 
 function TargetSection({
   title,
   summary,
   onReset,
-  defaultOpen: _defaultOpen = false,
+  collapsible = false,
+  accent = false,
   children,
 }: {
   title: string
   summary: string
   onReset: () => void
-  defaultOpen?: boolean
+  /** Свёрнута по умолчанию; в заголовке видна сводка. */
+  collapsible?: boolean
+  /** Свёрнутая секция содержит ненулевые настройки: сводка выделяется. */
+  accent?: boolean
   children: ReactNode
 }) {
   const isDefault = /^(Весь мир|Все устройства и среды|Весь инвентарь|Все пользователи|Круглосуточно|Любой слот|Без ограничений)$/.test(summary)
+  const resetButton = !isDefault ? (
+    <button
+      type="button"
+      onClick={onReset}
+      className="shrink-0 rounded px-2 py-1 text-xs font-medium text-muted transition-colors hover:text-danger"
+      title="Сбросить все поля секции"
+    >
+      Сбросить
+    </button>
+  ) : null
+  if (collapsible) {
+    return (
+      <section className="rounded-xl border border-border bg-card p-5">
+        <Disclosure title={title} summary={summary} accent={accent} actions={resetButton}>
+          {children}
+        </Disclosure>
+      </section>
+    )
+  }
   return (
     <section className="rounded-xl border border-border bg-card p-5">
       <div className="mb-4 flex items-center justify-between gap-3">
         <h3 className="text-base font-bold text-foreground">{title}</h3>
-        {!isDefault ? (
-          <button
-            type="button"
-            onClick={onReset}
-            className="shrink-0 rounded px-2 py-1 text-xs font-medium text-muted transition-colors hover:text-danger"
-            title="Сбросить все поля секции"
-          >
-            Сбросить
-          </button>
-        ) : null}
+        {resetButton}
       </div>
       <div className="space-y-4">{children}</div>
     </section>
@@ -203,6 +239,8 @@ function geoSummary(t: Targeting): string {
   if (t.geo_countries?.length) parts.push(t.geo_countries.join(", "))
   if (t.geo_regions?.length) parts.push(`${t.geo_regions.length} регион(ов)`)
   if (t.geo_cities?.length) parts.push(`${t.geo_cities.length} город(ов)`)
+  const v2 = geoV2Summary(t)
+  if (v2) parts.push(v2)
   return parts.join(" · ") || "Весь мир"
 }
 
@@ -217,18 +255,6 @@ function deviceEnvSummary(t: Targeting): string {
   if (t.carriers?.length) parts.push(`Операторы: ${t.carriers.length}`)
   if (t.device_makes?.length) parts.push(`Бренды: ${t.device_makes.length}`)
   return parts.join(" · ") || "Все устройства и среды"
-}
-
-function inventorySummary(t: Targeting): string {
-  const parts: string[] = []
-  if (t.ssp_allowlist?.length) parts.push(`SSP: ${t.ssp_allowlist.length}`)
-  if (t.iab_categories?.length) parts.push(`IAB: ${t.iab_categories.length}`)
-  if (t.iab_block?.length) parts.push(`IAB−${t.iab_block.length}`)
-  if (t.traffic_types?.length) parts.push(t.traffic_types.includes("app") ? "Приложения" : "Web")
-  if (t.domain_allowlist?.length) parts.push(`allow×${t.domain_allowlist.length}`)
-  if (t.domain_blocklist?.length) parts.push(`block×${t.domain_blocklist.length}`)
-  if (t.keywords_allow?.length) parts.push(`слова×${t.keywords_allow.length}`)
-  return parts.join(" · ") || "Весь инвентарь"
 }
 
 function audienceSummary(t: Targeting): string {
@@ -247,39 +273,21 @@ function timeSummary(t: Targeting): string {
   return parts.join(" · ") || "Круглосуточно"
 }
 
-function slotSummary(t: Targeting): string {
-  const parts: string[] = []
-  if (t.banner_positions?.length) parts.push("позиция")
-  if (t.interstitial_only) parts.push("interstitial")
-  if (t.exclude_interstitial) parts.push("без interstitial")
-  if (t.rewarded_only) parts.push("rewarded")
-  if (t.secure_only) parts.push("HTTPS")
-  if (t.video_skippable_only) parts.push("skippable")
-  if (t.video_placements?.length) parts.push(`plcmt×${t.video_placements.length}`)
-  if (t.video_protocols?.length) parts.push(`VAST×${t.video_protocols.length}`)
-  if (t.viewability_min) parts.push(`viewability ≥${t.viewability_min}%`)
-  if (t.deal_ids?.length) parts.push(`PMP×${t.deal_ids.length}`)
-  return parts.join(" · ") || "Любой слот"
-}
-
-function regulatorySummary(t: Targeting): string {
-  const parts: string[] = []
-  if (t.block_coppa) parts.push("без COPPA")
-  if (t.block_gdpr) parts.push("без GDPR")
-  if (t.skip_dnt) parts.push("без DNT")
-  if (t.schain_required) parts.push("только с schain")
-  return parts.join(" · ") || "Без ограничений"
-}
-
 /** Full DSP-grade targeting editor. Value maps 1:1 to the backend targeting JSONB.
  *  C2: секции-аккордеоны со сводками; C1: MultiSelect для множественного выбора.
  *  Все переменные таргетинга сохранены — изменилось только представление. */
 export function TargetingEditor({
   value,
   onChange,
+  foreignOnly = false,
+  isNew = false,
 }: {
   value: Targeting
   onChange: (t: Targeting) => void
+  /** Мастер новой кампании: при первом слове без keywords_match пишем "word_start". В карточке существующей кампании ключ автоматически не пишется. */
+  isNew?: boolean
+  /** ТЗ п.5: рекламодатель «за пределами РФ» — российские гео скрыты (сервер их отклонит). */
+  foreignOnly?: boolean
 }) {
   const set = (patch: Partial<Targeting>) => onChange({ ...value, ...patch })
   const [geoOpen, setGeoOpen] = useState(false)
@@ -288,6 +296,10 @@ export function TargetingEditor({
   const ruSelected =
     (value.geo_countries || []).includes("RU") || !!value.geo_regions?.length || !!value.geo_cities?.length
   const otherCountries = (value.geo_countries || []).filter((c) => c !== "RU")
+  const { data: geoConfig } = useSWR<GeoConfig>("/geo/config", fetcher, { revalidateOnFocus: false })
+  const geoV2 = !!geoConfig?.v2_enabled && !!geoConfig.dataset_version
+  const hasLegacyGeo = !!value.geo_countries?.length || !!value.geo_regions?.length || !!value.geo_cities?.length
+  const hasV2Geo = !!value.geo_place_ids?.length || !!value.geo_exclude_place_ids?.length
 
   return (
     <div className="space-y-3">
@@ -295,10 +307,39 @@ export function TargetingEditor({
       <TargetSection
         title="География"
         summary={geoSummary(value)}
-        defaultOpen
-        onReset={() => set({ geo_countries: undefined, geo_regions: undefined, geo_cities: undefined })}
+        onReset={() =>
+          set({
+            geo_countries: undefined,
+            geo_regions: undefined,
+            geo_cities: undefined,
+            geo_place_ids: undefined,
+            geo_exclude_place_ids: undefined,
+            geo_unknown: undefined,
+          })
+        }
       >
-        <Field label="Регионы и города показа" hint="Нажмите на поле — справа откроется список регионов и городов России. Пусто — показ без гео-ограничений">
+        {geoV2 && geoConfig ? <GeoV2Picker value={value} onChange={set} config={geoConfig} foreignOnly={foreignOnly} /> : null}
+        {!geoV2 && hasV2Geo ? (
+          <div className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-xs leading-relaxed text-danger">
+            В группе выбраны места справочника, но GEO v2 сейчас выключен: такая группа не будет показываться,
+            пока его не включат. Сбросьте гео или дождитесь включения.
+          </div>
+        ) : null}
+        {geoV2 && hasLegacyGeo ? (
+          <p className="text-xs leading-relaxed text-muted">
+            Ниже — гео в старом формате (по названиям). Оно действует вместе с местами выше: показ только там, где
+            выполнены оба условия. Новые места добавляйте через поиск выше.
+          </p>
+        ) : null}
+        {geoV2 && !hasLegacyGeo ? null : (
+        <Field
+          label={foreignOnly ? "Страны показа" : "Регионы и города показа"}
+          hint={
+            foreignOnly
+              ? "Нажмите на поле — справа откроется список стран"
+              : "Нажмите на поле — справа откроется список регионов и городов России. Пусто — показ без гео-ограничений"
+          }
+        >
           <button
             type="button"
             onClick={() => setGeoOpen(true)}
@@ -308,7 +349,7 @@ export function TargetingEditor({
             <span className="flex min-w-0 flex-wrap items-center gap-1.5">
               {!value.geo_regions?.length && !value.geo_cities?.length && !otherCountries.length ? (
                 <span className="rounded-md bg-panel px-2.5 py-1 text-sm font-medium text-foreground">
-                  Все регионы и города
+                  {foreignOnly ? "Выберите страны" : "Все регионы и города"}
                 </span>
               ) : (
                 <>
@@ -386,12 +427,14 @@ export function TargetingEditor({
             </svg>
           </button>
         </Field>
+        )}
         <GeoDrawer
           open={geoOpen}
           onClose={() => setGeoOpen(false)}
           regions={value.geo_regions || []}
           cities={value.geo_cities || []}
           countries={otherCountries}
+          foreignOnly={foreignOnly}
           onApply={({ regions, cities, countries }) => {
             // страны: выбранные «другие» + Россия, если заданы её регионы/города
             const ru = regions.length || cities.length ? ["RU"] : []
@@ -403,7 +446,12 @@ export function TargetingEditor({
             })
           }}
         />
-        {ruSelected ? (
+        {foreignOnly && !targetingOutsideRu(value) ? (
+          <p className="text-xs leading-relaxed text-muted">
+            Рекламодатель работает только за пределами РФ: выберите хотя бы одну зарубежную страну или место.
+          </p>
+        ) : null}
+        {ruSelected && !foreignOnly ? (
           <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-400">
             Выбрана Россия: по закону о рекламе перед запуском потребуется маркировка — заполните
             данные рекламодателя (наименование, ИНН, адрес), договор и получите erid в разделе
@@ -503,15 +551,7 @@ export function TargetingEditor({
       <TargetSection
         title="Инвентарь"
         summary={inventorySummary(value)}
-        onReset={() =>
-          set({
-            ssp_allowlist: undefined, iab_categories: undefined, iab_block: undefined, traffic_types: undefined,
-            domain_allowlist: undefined, domain_blocklist: undefined,
-            app_bundles_allow: undefined, app_bundles_block: undefined,
-            publisher_allow: undefined, publisher_block: undefined,
-            keywords_allow: undefined, keywords_block: undefined,
-          })
-        }
+        onReset={() => set(inventoryResetPatch())}
       >
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Field label="SSP-источники" hint="Пусто — все подключённые SSP">
@@ -525,7 +565,10 @@ export function TargetingEditor({
               />
             )}
           </Field>
-          <Field label="Тематика площадок (IAB)" hint="Пусто — все категории">
+          <Field
+            label="Тематика площадок (IAB)"
+            hint="Пусто — все категории. Если выбрано, а площадка тематику не передала — показ пропускается (если не включена опция ниже)"
+          >
             <MultiSelect
               options={Object.entries(IAB_CATEGORIES).map(([code, label]) => ({ value: code, label: `${code} · ${label}` }))}
               selected={value.iab_categories || []}
@@ -540,6 +583,22 @@ export function TargetingEditor({
             />
           </Field>
         </div>
+        {showAllowUnknown(value) ? (
+          <label className="flex cursor-pointer items-start gap-2.5 text-sm text-foreground">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 shrink-0 accent-primary"
+              checked={!!value.iab_allow_unknown}
+              onChange={(e) => set({ iab_allow_unknown: e.target.checked || undefined })}
+            />
+            <span>
+              Показывать, если площадка не передала тематику
+              <span className="block text-xs text-muted">
+                Тематика определяется по полям cat, sectioncat, pagecat и content.cat запроса. Если ни одно не заполнено, проверка тематики считается пройденной.
+              </span>
+            </span>
+          </label>
+        ) : null}
         <Field label="Тип инвентаря" hint="Пусто — web и приложения">
           <div className="flex flex-wrap gap-1.5">
             {[
@@ -552,76 +611,91 @@ export function TargetingEditor({
             ))}
           </div>
         </Field>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Field label="Белый список доменов" hint="Через запятую; пусто — все площадки">
-            <input
-              className={inputCls}
-              defaultValue={(value.domain_allowlist || []).join(", ")}
-              onBlur={(e) => set({ domain_allowlist: csv(e.target.value) })}
-              placeholder="site1.ru, site2.kz"
-            />
-          </Field>
-          <Field label="Чёрный список доменов">
-            <input
-              className={inputCls}
-              defaultValue={(value.domain_blocklist || []).join(", ")}
-              onBlur={(e) => set({ domain_blocklist: csv(e.target.value) })}
-              placeholder="badsite.ru"
-            />
-          </Field>
-        </div>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Field label="App-бандлы (белый список)" hint="com.app.one, id123456">
-            <input
-              className={inputCls}
-              defaultValue={(value.app_bundles_allow || []).join(", ")}
-              onBlur={(e) => set({ app_bundles_allow: csv(e.target.value) })}
-              placeholder="Все приложения"
-            />
-          </Field>
-          <Field label="App-бандлы (чёрный список)">
-            <input
-              className={inputCls}
-              defaultValue={(value.app_bundles_block || []).join(", ")}
-              onBlur={(e) => set({ app_bundles_block: csv(e.target.value) })}
-              placeholder="—"
-            />
-          </Field>
-        </div>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Field label="Паблишеры (белый список)" hint="ID паблишеров из bid request">
-            <input
-              className={inputCls}
-              defaultValue={(value.publisher_allow || []).join(", ")}
-              onBlur={(e) => set({ publisher_allow: csv(e.target.value) })}
-              placeholder="Все паблишеры"
-            />
-          </Field>
-          <Field label="Паблишеры (чёрный список)">
-            <input
-              className={inputCls}
-              defaultValue={(value.publisher_block || []).join(", ")}
-              onBlur={(e) => set({ publisher_block: csv(e.target.value) })}
-              placeholder="—"
-            />
-          </Field>
+        <div className="rounded-lg border border-border bg-surface/40 p-3">
+          <Disclosure
+            title="Дополнительно"
+            summary={advancedInventorySummary(value)}
+            accent={hasAdvancedInventory(value)}
+            titleClassName="text-sm font-semibold text-foreground"
+          >
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label="Белый список доменов" hint="Через запятую; пусто — все площадки">
+              <input
+                key={(value.domain_allowlist || []).join(",")}
+                className={inputCls}
+                defaultValue={(value.domain_allowlist || []).join(", ")}
+                onBlur={(e) => set({ domain_allowlist: csv(e.target.value) })}
+                placeholder="site1.ru, site2.kz"
+              />
+            </Field>
+            <Field label="Чёрный список доменов">
+              <input
+                key={(value.domain_blocklist || []).join(",")}
+                className={inputCls}
+                defaultValue={(value.domain_blocklist || []).join(", ")}
+                onBlur={(e) => set({ domain_blocklist: csv(e.target.value) })}
+                placeholder="badsite.ru"
+              />
+            </Field>
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label="App-бандлы (белый список)" hint="com.app.one, id123456">
+              <input
+                key={(value.app_bundles_allow || []).join(",")}
+                className={inputCls}
+                defaultValue={(value.app_bundles_allow || []).join(", ")}
+                onBlur={(e) => set({ app_bundles_allow: csv(e.target.value) })}
+                placeholder="Все приложения"
+              />
+            </Field>
+            <Field label="App-бандлы (чёрный список)">
+              <input
+                key={(value.app_bundles_block || []).join(",")}
+                className={inputCls}
+                defaultValue={(value.app_bundles_block || []).join(", ")}
+                onBlur={(e) => set({ app_bundles_block: csv(e.target.value) })}
+                placeholder="—"
+              />
+            </Field>
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label="Паблишеры (белый список)" hint="ID паблишеров из bid request">
+              <input
+                key={(value.publisher_allow || []).join(",")}
+                className={inputCls}
+                defaultValue={(value.publisher_allow || []).join(", ")}
+                onBlur={(e) => set({ publisher_allow: csv(e.target.value) })}
+                placeholder="Все паблишеры"
+              />
+            </Field>
+            <Field label="Паблишеры (чёрный список)">
+              <input
+                key={(value.publisher_block || []).join(",")}
+                className={inputCls}
+                defaultValue={(value.publisher_block || []).join(", ")}
+                onBlur={(e) => set({ publisher_block: csv(e.target.value) })}
+                placeholder="—"
+              />
+            </Field>
+          </div>
+          </Disclosure>
         </div>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Field
             label="Ключевые слова (контекст)"
-            hint="Показывать на страницах, где SSP передаёт хотя бы одно из этих слов (site.keywords / content.keywords). Матчинг по подстроке без учёта регистра."
+            hint="Показывать на страницах, где в данных площадки есть хотя бы одно из этих слов. Источники: ключевые слова сайта или страницы, content.keywords, адрес страницы и заголовок. Если площадка не передаёт эти данные, показ по словам невозможен."
           >
             <TagInput
               value={value.keywords_allow || []}
-              onChange={(next) => set({ keywords_allow: norm(next) })}
-              placeholder="Любой контекст — например: ипотека, новостройки"
+              onChange={(next) => set(keywordsAllowPatch(value, next, isNew))}
+              placeholder="Любой контекст — например: ипотек, новостройк"
               ariaLabel="Ключевые слова"
               lowercase
             />
           </Field>
           <Field
             label="Стоп-слова"
-            hint="Не показывать, если в keywords страницы есть любое из этих слов. Стоп-слово приоритетнее ключевого."
+            hint="Не показывать, если слово найдено в данных площадки. Стоп-слова приоритетнее ключевых и ищутся широко: как часть слова, в любых формах."
           >
             <TagInput
               value={value.keywords_block || []}
@@ -632,6 +706,43 @@ export function TargetingEditor({
             />
           </Field>
         </div>
+        {value.keywords_allow?.length ? (
+          <Field label="Как искать слова">
+            <select
+              className={inputCls}
+              value={keywordsMatchValue(value)}
+              onChange={(e) => set({ keywords_match: e.target.value === "legacy" ? undefined : e.target.value })}
+              aria-label="Как искать слова"
+            >
+              {keywordsMatchValue(value) === "legacy" ? <option value="legacy">{LEGACY_KEYWORDS_LABEL}</option> : null}
+              {KEYWORDS_MATCH_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+            {keywordsMatchValue(value) === "word_start" ? (
+              <p className="mt-1.5 text-xs text-muted">
+                Вводите основу слова («ипотек»), чтобы находить все его формы: ипотека, ипотеке, ипотечный.
+              </p>
+            ) : null}
+          </Field>
+        ) : null}
+        {showContextMode(value) ? (
+          <Field label="Совпадать должно" hint="Как объединять тематику площадки и ключевые слова. Стоп-условия работают в обоих режимах.">
+            <div className="flex flex-wrap gap-1.5">
+              {CONTEXT_MODE_OPTIONS.map((o) => (
+                <Chip
+                  key={o.value}
+                  active={(value.context_mode || "all") === o.value}
+                  onClick={() => set({ context_mode: o.value })}
+                >
+                  {o.label}
+                </Chip>
+              ))}
+            </div>
+          </Field>
+        ) : null}
       </TargetSection>
 
       {/* --- Аудитории и демография --- */}
@@ -665,7 +776,7 @@ export function TargetingEditor({
             />
           </Field>
         </div>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
           <Field label="Возраст от">
             <input
               type="number"
@@ -688,12 +799,13 @@ export function TargetingEditor({
               placeholder="99"
             />
           </Field>
+          <div className="col-span-2 min-w-0">
           <Field label="Пол">
-            <div className="grid grid-cols-3 gap-1.5">
+            <div className="flex flex-wrap gap-1.5">
               <button
                 type="button"
                 onClick={() => set({ genders: undefined })}
-                className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
+                className={`min-w-0 flex-1 basis-24 whitespace-nowrap rounded-lg border px-2 py-1.5 text-sm font-medium transition-colors ${
                   !value.genders?.length
                     ? "border-foreground bg-card text-foreground"
                     : "border-border bg-panel text-muted hover:text-foreground"
@@ -706,7 +818,7 @@ export function TargetingEditor({
                   key={g.value}
                   type="button"
                   onClick={() => set({ genders: toggle(value.genders, g.value) })}
-                  className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
+                  className={`min-w-0 flex-1 basis-24 whitespace-nowrap rounded-lg border px-2 py-1.5 text-sm font-medium transition-colors ${
                     (value.genders || []).includes(g.value)
                       ? "border-foreground bg-card text-foreground"
                       : "border-border bg-panel text-muted hover:text-foreground"
@@ -717,6 +829,7 @@ export function TargetingEditor({
               ))}
             </div>
           </Field>
+          </div>
         </div>
       </TargetSection>
 
@@ -750,6 +863,8 @@ export function TargetingEditor({
       <TargetSection
         title="Рекламный слот"
         summary={slotSummary(value)}
+        collapsible
+        accent={hasSlotSettings(value)}
         onReset={() =>
           set({
             banner_positions: undefined, interstitial_only: undefined, exclude_interstitial: undefined,
@@ -791,6 +906,7 @@ export function TargetingEditor({
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Field label="Мин. длительность видео-слота, сек" hint="Для видео-кампаний">
             <input
+              key={value.video_min_duration ?? ""}
               type="number"
               min={0}
               className={inputCls}
@@ -801,6 +917,7 @@ export function TargetingEditor({
           </Field>
           <Field label="PMP-сделки (Deal ID)" hint="Ставки только по этим приватным сделкам">
             <input
+              key={(value.deal_ids || []).join(",")}
               className={inputCls}
               defaultValue={(value.deal_ids || []).join(", ")}
               onBlur={(e) => set({ deal_ids: csv(e.target.value) })}
@@ -829,6 +946,7 @@ export function TargetingEditor({
           hint="По imp.metric type=viewability от SSP. Слоты без метрики отсеиваются, если задано"
         >
           <input
+            key={value.viewability_min ?? ""}
             type="number"
             min={0}
             max={100}
@@ -847,6 +965,8 @@ export function TargetingEditor({
       <TargetSection
         title="Регуляторика и приватность"
         summary={regulatorySummary(value)}
+        collapsible
+        accent={hasRegulatorySettings(value)}
         onReset={() => set({ block_coppa: undefined, block_gdpr: undefined, skip_dnt: undefined, schain_required: undefined })}
       >
         <div className="flex flex-wrap gap-1.5">

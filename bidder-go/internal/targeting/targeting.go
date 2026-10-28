@@ -55,6 +55,13 @@ type Targeting struct {
 	SkipDNT         bool     `json:"skip_dnt,omitempty"`
 	DeviceMakes     []string `json:"device_makes,omitempty"`    // device.make без регистра (apple, samsung, xiaomi)
 	SChainRequired  bool     `json:"schain_required,omitempty"` // source.schain обязателен и complete=1
+
+	// --- Контекст v2 (Фаза 2): все ключи необязательны ---
+	IABAllowUnknown bool   `json:"iab_allow_unknown,omitempty"` // тематика не определена — проверка IAB считается пройденной (только context_mode=all)
+	KeywordsMatch   string `json:"keywords_match,omitempty"`    // "substring" | "word_start" | "whole_word"; пусто = легаси-слова
+	ContextMode     string `json:"context_mode,omitempty"`      // "all" (по умолчанию) | "any": тематика ИЛИ слова
+
+	kw *kwPrepared // слова v2, подготовленные PrepareKeywords при загрузке фида
 }
 
 // ImpTargeting — таргетинг уровня impression (порт _match_imp_targeting).
@@ -87,7 +94,8 @@ type RequestView struct {
 	Carrier    string   // device.carrier (lower)
 	IP         string   // device.ip, иначе device.ipv6
 	DNT        bool     // device.dnt == 1 || device.lmt == 1
-	SiteCats   []string // site.cat | app.cat (upper)
+	CatSource  string   // "request" | "domain_map" | "" (категорий нет): откуда SiteCats
+	SiteCats   []string // объединение cat/sectioncat/pagecat/content.cat/publisher.cat site и app (CollectCats: upper, без дублей)
 	Domain     string   // site.domain | app.bundle (lower)
 	Env        string   // "app" если есть req.app, иначе "site"
 	Bundle     string   // app.bundle (lower); пусто для web
@@ -100,6 +108,9 @@ type RequestView struct {
 	Make       string   // device.make (lower)
 	SChainOK   bool     // source.schain (или source.ext.schain) есть, complete==1, nodes>0
 	Now        time.Time
+
+	KWSrc KWSources // сырые источники текста для слов v2 (keywords, content.keywords, page, title)
+	kwx   *kwText   // текст запроса для слов v2: строится лениво, один раз на запрос
 }
 
 // ImpView — плоское представление одного imp для MatchImp.
@@ -150,20 +161,75 @@ func DeviceBrowser(ua string) string {
 	return "unknown"
 }
 
+// Reason — причина отказа Match: какая группа проверок отсекла кандидата.
+// Значения (кроме ReasonNone) идут в метку reason метрики
+// bidder_targeting_reject_total; порядок и имена зафиксированы тестом против
+// metrics.TargetingRejectReasons.
+type Reason uint8
+
+const (
+	ReasonNone            Reason = iota // кандидат прошёл
+	ReasonGeo                           // страна / регион / город
+	ReasonDevice                        // тип устройства, ОС, браузер, язык, соединение, оператор, версия ОС, производитель, IP
+	ReasonInventoryIAB                  // тематика площадки (IAB allow / block)
+	ReasonInventoryDomain               // белый/чёрный список доменов
+	ReasonInventoryOther                // среда site/app, бандлы, паблишеры, schain
+	ReasonAudience                      // пол и возраст
+	ReasonTime                          // часы и дни недели
+	ReasonKeywords                      // контекстные слова
+	ReasonContext                       // режим «ИЛИ»: не сработали ни тематика, ни слова
+	ReasonRegulatory                    // COPPA / GDPR / DNT
+	ReasonOther                         // не классифицировано
+	ReasonCount
+)
+
+var reasonNames = [ReasonCount]string{
+	"", "geo", "device", "inventory_iab", "inventory_domain", "inventory_other",
+	"audience", "time", "keywords", "context", "regulatory", "other",
+}
+
+// String — значение метки reason (пусто для ReasonNone).
+func (r Reason) String() string {
+	if r >= ReasonCount {
+		return ""
+	}
+	return reasonNames[r]
+}
+
 // Match — порт _match_targeting. Все ключи опциональны; пусто = нет ограничения.
+// Обёртка над MatchReason: результат всегда совпадает (reason == ReasonNone).
 func Match(t *Targeting, r *RequestView) bool {
+	return MatchReason(t, r) == ReasonNone
+}
+
+// MatchReason — то же, что Match, но возвращает причину первого отказа.
+// Порядок проверок совпадает с Python-эталоном; ReasonNone — кандидат проходит.
+func MatchReason(t *Targeting, r *RequestView) Reason {
 	if t == nil {
-		return true
+		return ReasonNone
+	}
+	// Контекст v2: слова v2 и режим «ИЛИ». Для line item без keywords_match и
+	// context_mode флаги остаются нулевыми и работает прежний путь (две проверки длины строк).
+	var kp *kwPrepared
+	var anyMode, combined bool
+	if t.KeywordsMatch != "" || t.ContextMode != "" {
+		if t.KeywordsMatch != "" {
+			kp = t.kwState()
+		}
+		anyMode = t.ContextMode == "any"
+		// combined: «тематика ИЛИ слова» — разрешающие части объединяются ниже,
+		// на месте проверки слов, после обоих стоп-условий.
+		combined = anyMode && len(t.IABCategories) > 0 && hasAllowWords(t, kp)
 	}
 	// --- Geo ---
-	if len(t.GeoCountries) > 0 && !containsFold(t.GeoCountries, r.Country, strings.ToUpper) {
-		return false
+	if len(t.GeoCountries) > 0 && !containsFold(t.GeoCountries, r.Country, NormalizeCountry) {
+		return ReasonGeo
 	}
 	if len(t.GeoRegions) > 0 && !containsFold(t.GeoRegions, r.Region, strings.ToLower) {
-		return false
+		return ReasonGeo
 	}
 	if len(t.GeoCities) > 0 && !containsFold(t.GeoCities, r.City, strings.ToLower) {
-		return false
+		return ReasonGeo
 	}
 	// --- Device ---
 	if len(t.DeviceTypes) > 0 {
@@ -176,11 +242,11 @@ func Match(t *Targeting, r *RequestView) bool {
 			normalized = "mobile"
 		}
 		if !contains(t.DeviceTypes, normalized) && !contains(t.DeviceTypes, dt) {
-			return false
+			return ReasonDevice
 		}
 	}
 	if len(t.OS) > 0 && !containsFold(t.OS, r.OS, strings.ToLower) {
-		return false
+		return ReasonDevice
 	}
 	if len(t.Browsers) > 0 {
 		found := false
@@ -191,11 +257,11 @@ func Match(t *Targeting, r *RequestView) bool {
 			}
 		}
 		if !found {
-			return false
+			return ReasonDevice
 		}
 	}
 	if len(t.Languages) > 0 && !containsFold(t.Languages, r.Language, strings.ToLower) {
-		return false
+		return ReasonDevice
 	}
 	if len(t.ConnectionTypes) > 0 {
 		ct, ok := ConnectionTypes[r.ConnType]
@@ -203,55 +269,59 @@ func Match(t *Targeting, r *RequestView) bool {
 			ct = "unknown"
 		}
 		if !contains(t.ConnectionTypes, ct) {
-			return false
+			return ReasonDevice
 		}
 	}
 	// --- Inventory ---
-	if len(t.IABCategories) > 0 && !intersectsUpper(t.IABCategories, r.SiteCats) {
-		return false
+	if len(t.IABCategories) > 0 && !combined && !IABIntersects(t.IABCategories, r.SiteCats) {
+		// «Без тематики»: тематика запроса пуста и опция включена. В режиме any
+		// опция игнорируется.
+		if !(t.IABAllowUnknown && !anyMode && len(r.SiteCats) == 0) {
+			return ReasonInventoryIAB
+		}
 	}
-	if len(t.IABBlock) > 0 && intersectsUpper(t.IABBlock, r.SiteCats) {
-		return false
+	if len(t.IABBlock) > 0 && IABIntersects(t.IABBlock, r.SiteCats) {
+		return ReasonInventoryIAB
 	}
 	if r.Domain != "" && len(t.DomainBlocklist) > 0 && containsFold(t.DomainBlocklist, r.Domain, strings.ToLower) {
-		return false
+		return ReasonInventoryDomain
 	}
 	if len(t.DomainAllowlist) > 0 && !containsFold(t.DomainAllowlist, r.Domain, strings.ToLower) {
-		return false
+		return ReasonInventoryDomain
 	}
 	// --- Audience ---
 	if len(t.Genders) > 0 && !containsFold(t.Genders, r.Gender, strings.ToUpper) {
-		return false
+		return ReasonAudience
 	}
 	if (t.AgeMin > 0 || t.AgeMax > 0) && r.YOB > 0 {
 		age := r.Now.UTC().Year() - r.YOB
 		if t.AgeMin > 0 && age < t.AgeMin {
-			return false
+			return ReasonAudience
 		}
 		if t.AgeMax > 0 && age > t.AgeMax {
-			return false
+			return ReasonAudience
 		}
 	}
 	// --- Dayparting (UTC) ---
 	now := r.Now.UTC()
 	if len(t.Hours) > 0 && !containsInt(t.Hours, now.Hour()) {
-		return false
+		return ReasonTime
 	}
 	if len(t.Days) > 0 {
 		// Python weekday(): 0=Mon..6=Sun; Go Weekday(): 0=Sun..6=Sat.
 		pyWeekday := (int(now.Weekday()) + 6) % 7
 		if !containsInt(t.Days, pyWeekday) {
-			return false
+			return ReasonTime
 		}
 	}
 	// --- Inventory environment: site (web) vs app ---
 	if len(t.TrafficTypes) > 0 && !contains(t.TrafficTypes, r.Env) {
-		return false
+		return ReasonInventoryOther
 	}
 	// --- Carrier / ISP: подстрока в любую сторону, пустой carrier = мимо ---
 	if len(t.Carriers) > 0 {
 		if r.Carrier == "" {
-			return false
+			return ReasonDevice
 		}
 		found := false
 		for _, c := range t.Carriers {
@@ -265,35 +335,61 @@ func Match(t *Targeting, r *RequestView) bool {
 			}
 		}
 		if !found {
-			return false
+			return ReasonDevice
 		}
 	}
 	// --- Minimum OS version (major.minor, семантика кортежей Python) ---
 	if t.OSVersionMin != "" {
 		if r.OSV == "" || compareVersion(r.OSV, t.OSVersionMin) < 0 {
-			return false
+			return ReasonDevice
 		}
 	}
 	// --- App bundle allow/block (отдельно от web-доменов) ---
 	if r.Bundle != "" && len(t.AppBundlesBlock) > 0 && containsFold(t.AppBundlesBlock, r.Bundle, strings.ToLower) {
-		return false
+		return ReasonInventoryOther
 	}
 	if len(t.AppBundlesAllow) > 0 && !containsFold(t.AppBundlesAllow, r.Bundle, strings.ToLower) {
-		return false
+		return ReasonInventoryOther
 	}
 	// --- Publisher allow/block: точное сравнение id ---
 	if r.PubID != "" && len(t.PublisherBlock) > 0 && contains(t.PublisherBlock, r.PubID) {
-		return false
+		return ReasonInventoryOther
 	}
 	if len(t.PublisherAllow) > 0 && !contains(t.PublisherAllow, r.PubID) {
-		return false
+		return ReasonInventoryOther
 	}
 	// --- Contextual keywords: стоп-слова приоритетнее, подстрока без регистра ---
-	if len(t.KeywordsBlock) > 0 && anySubstring(t.KeywordsBlock, r.Keywords) {
-		return false
+	// Стоп-слова — всегда первыми и всегда широко (v2: nk в N или T).
+	if kp != nil {
+		if len(kp.block) > 0 && kp.blockMatch(r.kwTextOnce()) {
+			return ReasonKeywords
+		}
+	} else if len(t.KeywordsBlock) > 0 && anySubstring(t.KeywordsBlock, r.Keywords) {
+		return ReasonKeywords
 	}
-	if len(t.KeywordsAllow) > 0 && !anySubstring(t.KeywordsAllow, r.Keywords) {
-		return false
+	if combined {
+		// iabOK ИЛИ kwOK; слова считаем только если тематика не прошла.
+		if !IABIntersects(t.IABCategories, r.SiteCats) {
+			var kwOK bool
+			if kp != nil {
+				kwOK = kp.allowMatch(r.kwTextOnce())
+			} else {
+				kwOK = anySubstring(t.KeywordsAllow, r.Keywords)
+			}
+			if !kwOK {
+				return ReasonContext
+			}
+		}
+	} else if hasAllowWords(t, kp) {
+		var kwOK bool
+		if kp != nil {
+			kwOK = kp.allowMatch(r.kwTextOnce())
+		} else {
+			kwOK = anySubstring(t.KeywordsAllow, r.Keywords)
+		}
+		if !kwOK {
+			return ReasonKeywords
+		}
 	}
 	// --- IP prefix ranges ---
 	if len(t.IPRanges) > 0 {
@@ -305,30 +401,30 @@ func Match(t *Targeting, r *RequestView) bool {
 			}
 		}
 		if !found {
-			return false
+			return ReasonDevice
 		}
 	}
 	// --- Regulatory ---
 	if t.BlockCOPPA && r.COPPA {
-		return false
+		return ReasonRegulatory
 	}
 	if t.BlockGDPR && r.GDPR {
-		return false
+		return ReasonRegulatory
 	}
 	if t.SkipDNT && r.DNT {
-		return false
+		return ReasonRegulatory
 	}
 	// --- Device make: без регистра, пустой make у SSP = мимо (как carriers) ---
 	if len(t.DeviceMakes) > 0 {
 		if r.Make == "" || !containsFold(t.DeviceMakes, r.Make, strings.ToLower) {
-			return false
+			return ReasonDevice
 		}
 	}
 	// --- Supply chain: только запросы с полной schain ---
 	if t.SChainRequired && !r.SChainOK {
-		return false
+		return ReasonInventoryOther
 	}
-	return true
+	return ReasonNone
 }
 
 // MatchImp — порт _match_imp_targeting: позиция, interstitial, rewarded,
@@ -563,14 +659,10 @@ func anySubstring(needles []string, haystack string) bool {
 	return false
 }
 
-func intersectsUpper(a, b []string) bool {
-	for _, x := range a {
-		ux := strings.ToUpper(x)
-		for _, y := range b {
-			if strings.ToUpper(y) == ux {
-				return true
-			}
-		}
+// hasAllowWords: заданы разрешающие слова (v2 — после очистки пустых и лишних).
+func hasAllowWords(t *Targeting, kp *kwPrepared) bool {
+	if kp != nil {
+		return len(kp.allow) > 0
 	}
-	return false
+	return len(t.KeywordsAllow) > 0
 }

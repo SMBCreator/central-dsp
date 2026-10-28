@@ -9,6 +9,12 @@ import { AD_TYPE_LABELS, CREATIVE_ATTRS, IAB_CATEGORIES, type Campaign, type Cou
 import { Button, Field, inputCls, Modal } from "@/components/ui"
 import { MultiSelect } from "@/components/multi-select"
 import { CreativePreview } from "@/components/creative-preview"
+import { useAdvertisers } from "@/lib/advertisers"
+import { isForeignAdvertiser } from "@/lib/ad-market"
+import { useAdSizes } from "@/lib/ad-sizes"
+import { isHttpUrl, isSubmittable, isValidPixel, type BatchResultItem } from "@/lib/creative-batch"
+import { MacroField } from "@/components/macro-picker"
+import { BatchResults, CreativeBatchPanel, useCreativeBatch, type BatchResultRow } from "@/components/creative-batch-panel"
 
 type AdType = "banner" | "native" | "video" | "push"
 type StepKey = "type" | "content" | "tracking" | "ord"
@@ -20,7 +26,6 @@ const STEPS: { key: StepKey; label: string }[] = [
   { key: "ord", label: "Маркировка" },
 ]
 
-const SIZES = ["300x250", "728x90", "320x50", "160x600", "300x600", "970x250"]
 const IMAGE_ACCEPT = "image/png,image/jpeg,image/gif,image/webp"
 const VIDEO_ACCEPT = "video/mp4,video/webm"
 const IMAGE_MAX = 2 * 1024 * 1024
@@ -31,14 +36,6 @@ const TYPE_HINT: Record<AdType, string> = {
   native: "Заголовок, описание, изображение и кнопка — подстраивается под дизайн площадки.",
   video: "In-stream / out-stream ролик MP4 или WebM. Длительность 5–120 секунд.",
   push: "Push-уведомление: короткий заголовок, текст и иконка.",
-}
-
-interface BannerAsset {
-  path: string
-  width: number
-  height: number
-  name: string
-  size: number
 }
 
 interface UploadState {
@@ -97,27 +94,6 @@ function fmtBytes(n: number) {
   return `${(n / 1024 / 1024).toFixed(1).replace(".", ",")} МБ`
 }
 
-function isHttpUrl(v: string) {
-  return /^https?:\/\/\S+$/i.test(v.trim())
-}
-
-function readImageSize(file: File): Promise<{ width: number; height: number }> {
-  return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file)
-    const img = new Image()
-    img.crossOrigin = "anonymous"
-    img.onload = () => {
-      URL.revokeObjectURL(url)
-      resolve({ width: img.naturalWidth, height: img.naturalHeight })
-    }
-    img.onerror = () => {
-      URL.revokeObjectURL(url)
-      reject(new Error("Не удалось прочитать изображение"))
-    }
-    img.src = url
-  })
-}
-
 function readVideoDuration(file: File): Promise<number | null> {
   return new Promise((resolve) => {
     const url = URL.createObjectURL(file)
@@ -165,20 +141,25 @@ export function CreativeModal({
   defaultCampaignId?: string
   onOrdResult?: (r: CreativeOrdResult) => void
 }) {
-  const { data: counterparties } = useSWR<Counterparty[]>(open ? "/ord/counterparties" : null, fetcher)
-  const { data: contracts } = useSWR<OrdContract[]>(open ? "/ord/contracts" : null, fetcher)
-
   const [step, setStep] = useState<StepKey>("type")
+  const adSizes = useAdSizes()
   const [type, setType] = useState<AdType>("banner")
   const [form, setForm] = useState<FormState>(() => emptyForm(defaultCampaignId || campaigns[0]?.id || ""))
-  const [bannerAssets, setBannerAssets] = useState<BannerAsset[]>([])
+  // ТЗ п.5: кампания рекламодателя «за пределами РФ» — без маркировки (контрагент, договор, ККТУ).
+  const { data: advertisers } = useAdvertisers()
+  const foreign = isForeignAdvertiser(advertisers, campaigns.find((c) => c.id === form.campaign_id)?.advertiser_id)
+  const { data: counterparties } = useSWR<Counterparty[]>(open && !foreign ? "/ord/counterparties" : null, fetcher)
+  const { data: contracts } = useSWR<OrdContract[]>(open && !foreign ? "/ord/contracts" : null, fetcher)
   const [uploads, setUploads] = useState<Record<string, UploadState>>({})
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
-  const [dragOver, setDragOver] = useState(false)
   // пути, загруженные в этой сессии модалки, но ещё не привязанные к креативу
   const orphanPaths = useRef<Set<string>>(new Set())
   const wasOpen = useRef(false)
+  // ТЗ batch п.3/п.6: пакет баннеров — карточка на файл, загрузка очередью
+  const batch = useCreativeBatch(adSizes, orphanPaths)
+  const [batchRows, setBatchRows] = useState<BatchResultRow[]>([])
+  const { cancelAll: cancelBatch } = batch
 
   // Сброс при каждом открытии
   useEffect(() => {
@@ -186,18 +167,29 @@ export function CreativeModal({
       setStep("type")
       setType("banner")
       setForm(emptyForm(defaultCampaignId || campaigns[0]?.id || ""))
-      setBannerAssets([])
+      cancelBatch()
+      setBatchRows([])
       setUploads({})
       setError(null)
       setSaving(false)
       orphanPaths.current = new Set()
     }
     wasOpen.current = open
-  }, [open, defaultCampaignId, campaigns])
+  }, [open, defaultCampaignId, campaigns, cancelBatch])
 
   const selectedCp = useMemo(
     () => (counterparties || []).find((cp) => cp.id === form.counterparty_id) || null,
     [counterparties, form.counterparty_id],
+  )
+  const advertiser = useMemo(
+    () => ({
+      name: selectedCp?.name ?? null,
+      inn: selectedCp?.inn ?? null,
+      ogrn: selectedCp?.ogrn ?? null,
+      address: selectedCp?.address ?? null,
+      erid: null,
+    }),
+    [selectedCp],
   )
   // Договоры, по которым можно получить erid: зарегистрированы в ОРД и заказчик — выбранный контрагент.
   // Если такой ровно один — бэкенд подберёт его сам при approve; при нескольких выбор обязателен.
@@ -208,7 +200,10 @@ export function CreativeModal({
       ),
     [contracts, form.counterparty_id],
   )
-  const uploading = Object.keys(uploads).length > 0
+  const batchMode = type === "banner" && batch.items.length > 0
+  const readyItems = useMemo(() => batch.items.filter(isSubmittable), [batch.items])
+  const batchUploading = batch.items.some((i) => i.phase === "uploading" || i.phase === "queued")
+  const uploading = Object.keys(uploads).length > 0 || (type === "banner" && batchUploading)
 
   const patch = (p: Partial<FormState>) => setForm((f) => ({ ...f, ...p }))
 
@@ -219,7 +214,9 @@ export function CreativeModal({
       const res = await apiUpload<UploadResult>("/creatives/upload", file, {
         onProgress: (p) => setUploads((u) => (u[key] ? { ...u, [key]: { ...u[key], progress: p } } : u)),
       })
-      const path = res.path || res.url
+      // Абсолютный URL: CreativeUrl на сервере принимает только http(s) с хостом
+      // (относительный /uploads/… отклонялся 422).
+      const path = res.url || res.path
       orphanPaths.current.add(path)
       return { ...res, path }
     } finally {
@@ -227,29 +224,6 @@ export function CreativeModal({
         const { [key]: _drop, ...rest } = u
         return rest
       })
-    }
-  }
-
-  const uploadBannerFiles = async (files: FileList | File[] | null) => {
-    if (!files || files.length === 0) return
-    setError(null)
-    const list = Array.from(files)
-    const bad = list.map((f) => precheck(f, "image")).find(Boolean)
-    if (bad) {
-      setError(bad)
-      return
-    }
-    try {
-      for (const file of list) {
-        const key = `banner:${file.name}:${file.size}`
-        const [dims, res] = await Promise.all([readImageSize(file), trackUpload(key, file)])
-        const width = res.width || dims.width
-        const height = res.height || dims.height
-        setBannerAssets((prev) => [...prev, { path: res.path, width, height, name: file.name.replace(/\.[^.]+$/, ""), size: res.size }])
-        if (!form.name) patch({ name: file.name.replace(/\.[^.]+$/, "") })
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Ошибка загрузки файлов")
     }
   }
 
@@ -282,18 +256,10 @@ export function CreativeModal({
     }
   }
 
-  const removeBannerAsset = (i: number) => {
-    const a = bannerAssets[i]
-    setBannerAssets((prev) => prev.filter((_, j) => j !== i))
-    if (a && orphanPaths.current.has(a.path)) {
-      orphanPaths.current.delete(a.path)
-      void apiDeleteUpload(a.path)
-    }
-  }
-
   const handleClose = () => {
     if (saving) return
-    // отмена — подчищаем всё, что не легло в креатив
+    // отмена — останавливаем загрузки и подчищаем всё, что не легло в креатив
+    cancelBatch()
     for (const p of orphanPaths.current) void apiDeleteUpload(p)
     orphanPaths.current = new Set()
     onClose()
@@ -303,11 +269,21 @@ export function CreativeModal({
   const stepErrors = useMemo(() => {
     const e: Partial<Record<StepKey, string>> = {}
     if (!form.campaign_id) e.type = "Выберите кампанию"
-    else if (type === "banner" && bannerAssets.length === 0 && !form.asset_url) e.type = "Загрузите изображение или укажите URL"
+    else if (type === "banner" && !batchMode && !form.asset_url) e.type = "Загрузите изображение или укажите URL"
+    else if (batchMode && readyItems.length === 0 && !batchUploading) e.type = "Нет готовых файлов: исправьте ошибки или добавьте другие файлы"
     else if ((type === "native" || type === "push") && !form.asset_url && type === "push") e.type = "Для push нужна иконка/изображение"
     else if (type === "video" && !form.video_url) e.type = "Загрузите видео или укажите URL"
 
-    if (!form.name.trim()) e.content = "Укажите название"
+    const noName = batchMode ? readyItems.find((i) => !i.name.trim()) : undefined
+    const badUrl = batchMode ? readyItems.find((i) => !isHttpUrl(i.clickUrl.trim() || form.click_url)) : undefined
+    if (noName) e.content = `Укажите название для файла «${noName.fileName}»`
+    else if (badUrl)
+      e.content = badUrl.clickUrl.trim()
+        ? `Некорректная ссылка перехода у файла «${badUrl.fileName}»`
+        : "Укажите корректную ссылку перехода (https://…)"
+    else if (batchMode) {
+      // название и ссылка — по файлу, общие поля не обязательны
+    } else if (!form.name.trim()) e.content = "Укажите название"
     else if (!isHttpUrl(form.click_url)) e.content = "Укажите корректную ссылку перехода (https://…)"
     else if ((type === "native" || type === "push") && !form.native_title.trim()) e.content = "Укажите заголовок"
     else if (type === "video" && !(Number(form.video_duration) >= 5 && Number(form.video_duration) <= 120)) e.content = "Длительность 5–120 сек"
@@ -315,13 +291,19 @@ export function CreativeModal({
     if (form.imp_tracker_url && !isHttpUrl(form.imp_tracker_url)) e.tracking = "Трекер показа: некорректный URL"
     else if (form.click_tracker_url && !isHttpUrl(form.click_tracker_url)) e.tracking = "Трекер клика: некорректный URL"
 
+    if (batchMode && !e.type) {
+      const badPixel = readyItems.find((i) => !isValidPixel(i.impTrackerUrl) || !isValidPixel(i.clickTrackerUrl))
+      if (badPixel) e.type = `Файл «${badPixel.fileName}»: пиксель должен быть адресом вида https://…`
+    }
+
+    if (foreign) return e
     if (!form.kktu_code) e.ord = "Выберите классификатор ККТУ"
     else if (form.counterparty_id && eligibleContracts.length > 1 && !form.contract_id)
       e.ord = "У контрагента несколько договоров в ОРД — выберите, по какому регистрировать erid"
     return e
-  }, [form, type, bannerAssets.length, eligibleContracts.length])
+  }, [form, type, batchMode, readyItems, batchUploading, eligibleContracts.length, foreign])
 
-  const canSubmit = Object.keys(stepErrors).length === 0 && !uploading && !saving
+  const canSubmit = Object.keys(stepErrors).length === 0 && !uploading && !saving && (!batchMode || readyItems.length > 0)
   const stepIdx = STEPS.findIndex((s) => s.key === step)
 
   const goNext = () => {
@@ -352,32 +334,72 @@ export function CreativeModal({
         campaign_id: form.campaign_id,
         name: form.name.trim(),
         type,
-        counterparty_id: form.counterparty_id || null,
-        contract_id: form.contract_id || null,
-        kktu_code: form.kktu_code || null,
-        kktu_label: form.kktu_label || null,
+        counterparty_id: foreign ? null : form.counterparty_id || null,
+        contract_id: foreign ? null : form.contract_id || null,
+        kktu_code: foreign ? null : form.kktu_code || null,
+        kktu_label: foreign ? null : form.kktu_label || null,
         iab_categories: form.iab_categories,
         attrs: form.attrs,
         click_url: form.click_url.trim(),
         imp_tracker_url: form.imp_tracker_url.trim() || null,
         click_tracker_url: form.click_tracker_url.trim() || null,
       }
-      const created: string[] = []
-      if (type === "banner" && bannerAssets.length > 0) {
-        for (const a of bannerAssets) {
-          await api("/creatives", {
-            method: "POST",
-            body: {
-              ...base,
-              name: bannerAssets.length > 1 ? `${base.name} — ${a.width}×${a.height}` : base.name,
-              width: a.width,
-              height: a.height,
-              asset_url: a.path,
+      if (batchMode) {
+        const sent = readyItems
+        const results = await api<BatchResultItem[]>("/creatives/batch", {
+          method: "POST",
+          body: {
+            campaign_id: form.campaign_id,
+            line_item_id: null,
+            common: {
+              click_url: form.click_url.trim() || null,
+              imp_tracker_url: base.imp_tracker_url,
+              click_tracker_url: base.click_tracker_url,
+              counterparty_id: base.counterparty_id,
+              contract_id: base.contract_id,
+              kktu_code: base.kktu_code,
+              kktu_label: base.kktu_label,
+              iab_categories: form.iab_categories,
+              attrs: form.attrs,
             },
-          })
-          created.push(a.path)
-          orphanPaths.current.delete(a.path)
+            items: sent.map((i) => ({
+              client_id: i.id,
+              name: i.name.trim(),
+              click_url: i.clickUrl.trim() || null,
+              imp_tracker_url: i.impTrackerUrl.trim() || null,
+              click_tracker_url: i.clickTrackerUrl.trim() || null,
+              asset_url: i.assetUrl,
+              width: i.width,
+              height: i.height,
+            })),
+          },
+        })
+        const byId = new Map(sent.map((i) => [i.id, i]))
+        setBatchRows(
+          results.map((r) => {
+            const item = byId.get(r.client_id)
+            return {
+              key: r.client_id,
+              fileName: item?.fileName ?? r.client_id,
+              name: r.creative?.name ?? item?.name ?? r.client_id,
+              ok: r.status === "created",
+              message: r.error?.message ?? null,
+              ord: r.creative?.ord ? { ...r.creative.ord, erid: r.creative.erid ?? null } : null,
+              duplicate: !!r.duplicate,
+            }
+          }),
+        )
+        batch.applyResults(results)
+        const done = results.filter((r) => r.status === "created" && r.creative)
+        if (done.length === 1 && done[0].creative?.ord && onOrdResult) {
+          const c = done[0].creative
+          onOrdResult({ name: c.name, erid: c.erid ?? null, status: c.ord!.status, error: c.ord!.error })
         }
+        await mutate("/creatives")
+        await mutate((key) => typeof key === "string" && key.startsWith("/creatives?"), undefined, { revalidate: true })
+        // окно остаётся открытым с итоговой таблицей; неудавшиеся — в списке для повтора
+        if (results.some((r) => r.status === "error")) setStep("type")
+        return
       } else {
         const body = { ...base }
         if (type === "banner") {
@@ -417,39 +439,16 @@ export function CreativeModal({
   }
 
   // ----------------------------------------------------------------- preview
+  const previewItem =
+    type === "banner" ? readyItems[0] ?? batch.items.find((i) => i.previewUrl && i.status !== "error") : undefined
   const previewSize = useMemo(() => {
-    if (type === "banner" && bannerAssets.length > 0) return { w: bannerAssets[0].width, h: bannerAssets[0].height }
+    if (previewItem?.width && previewItem.height) return { w: previewItem.width, h: previewItem.height }
     const [w, h] = form.size.split("x").map(Number)
     return { w: w || 300, h: h || 250 }
-  }, [type, bannerAssets, form.size])
-  const previewAsset = type === "banner" && bannerAssets.length > 0 ? bannerAssets[0].path : form.asset_url
+  }, [previewItem, form.size])
+  const previewAsset = previewItem ? previewItem.assetUrl || previewItem.previewUrl : form.asset_url
 
   // ------------------------------------------------------------------ render
-  const dropZone = (
-    <label
-      onDragOver={(e) => {
-        e.preventDefault()
-        setDragOver(true)
-      }}
-      onDragLeave={() => setDragOver(false)}
-      onDrop={(e) => {
-        e.preventDefault()
-        setDragOver(false)
-        void uploadBannerFiles(e.dataTransfer.files)
-      }}
-      className={`flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-lg border border-dashed px-4 py-8 text-center transition-colors ${
-        dragOver ? "border-primary bg-primary/5" : "border-border bg-surface hover:bg-panel"
-      }`}
-    >
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true" className="text-muted">
-        <path d="M12 16V4m0 0l-4 4m4-4l4 4M4 20h16" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-      <span className="text-xs font-medium text-foreground">Выбрать файлы или перетащить сюда</span>
-      <span className="text-[11px] text-muted">PNG, JPG, GIF, WebP · до {fmtBytes(IMAGE_MAX)} каждый · можно несколько</span>
-      <input type="file" multiple accept={IMAGE_ACCEPT} className="sr-only" onChange={(e) => void uploadBannerFiles(e.target.files)} />
-    </label>
-  )
-
   const fileBtn = (field: "asset_url" | "native_icon_url" | "video_url", accept: string) => {
     const u = uploads[field]
     return (
@@ -514,7 +513,7 @@ export function CreativeModal({
                   >
                     {invalid ? i + 1 : "✓"}
                   </span>
-                  {s.label}
+                  {foreign && s.key === "ord" ? "Сигналы площадок" : s.label}
                 </button>
               )
             })}
@@ -557,39 +556,22 @@ export function CreativeModal({
 
               {type === "banner" ? (
                 <div className="space-y-3">
-                  {dropZone}
-                  {progressList}
-                  {bannerAssets.length > 0 ? (
-                    <ul className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                      {bannerAssets.map((a, i) => (
-                        <li key={`${a.path}-${i}`} className="relative rounded-lg border border-border bg-surface p-1.5">
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img src={assetUrl(a.path) || "/placeholder.svg"} alt={`Баннер ${a.width}×${a.height}`} className="mx-auto max-h-20 rounded object-contain" />
-                          <p className="mt-1 truncate text-center font-mono text-[10px] text-muted">
-                            {a.width}×{a.height} · {fmtBytes(a.size)}
-                          </p>
-                          <button
-                            type="button"
-                            onClick={() => removeBannerAsset(i)}
-                            className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full border border-border bg-card text-muted hover:text-danger"
-                            aria-label={`Убрать баннер ${a.width}×${a.height}`}
-                          >
-                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                              <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
-                            </svg>
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
+                  <CreativeBatchPanel
+                    batch={batch}
+                    defaultClickUrl={form.click_url.trim()}
+                    defaultImpTracker={form.imp_tracker_url.trim()}
+                    defaultClickTracker={form.click_tracker_url.trim()}
+                    advertiser={advertiser}
+                  />
+                  {batch.items.length === 0 ? (
                     <details className="rounded-lg border border-border bg-surface px-3 py-2">
                       <summary className="cursor-pointer text-xs text-muted">Или указать URL изображения вручную</summary>
                       <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
                         <Field label="Размер">
                           <select value={form.size} onChange={(e) => patch({ size: e.target.value })} className={inputCls}>
-                            {SIZES.map((s) => (
-                              <option key={s} value={s}>
-                                {s}
+                            {adSizes.map((s) => (
+                              <option key={s.size} value={s.size}>
+                                {s.size} · {s.label}
                               </option>
                             ))}
                           </select>
@@ -599,7 +581,7 @@ export function CreativeModal({
                         </Field>
                       </div>
                     </details>
-                  )}
+                  ) : null}
                 </div>
               ) : null}
 
@@ -637,12 +619,22 @@ export function CreativeModal({
 
           {step === "content" ? (
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <Field label="Название" hint="Внутреннее имя — видно только в кабинете">
-                <input required value={form.name} onChange={(e) => patch({ name: e.target.value })} className={inputCls} placeholder="Баннер 300×250 осень" />
-              </Field>
-              <Field label="Ссылка перехода (click URL)">
-                <input type="url" required value={form.click_url} onChange={(e) => patch({ click_url: e.target.value })} className={inputCls} placeholder="https://site.ru/promo" />
-              </Field>
+              {batchMode ? null : (
+                <Field label="Название" hint="Внутреннее имя — видно только в кабинете">
+                  <input required value={form.name} onChange={(e) => patch({ name: e.target.value })} className={inputCls} placeholder="Баннер 300×250 осень" />
+                </Field>
+              )}
+              <div className="sm:col-span-2">
+                <MacroField
+                  id="creative-modal-click-url"
+                  label={batchMode ? "Ссылка перехода по умолчанию" : "Ссылка перехода (click URL)"}
+                  hint={batchMode ? "Применяется ко всем файлам пакета, у которых не задана своя ссылка. Название задаётся в карточке файла." : undefined}
+                  kind="click"
+                  value={form.click_url}
+                  onChange={(v) => patch({ click_url: v })}
+                  placeholder="https://site.ru/promo"
+                />
+              </div>
 
               {type === "native" || type === "push" ? (
                 <>
@@ -666,12 +658,12 @@ export function CreativeModal({
                 </Field>
               ) : null}
 
-              {type === "banner" && bannerAssets.length === 0 ? (
+              {type === "banner" && batch.items.length === 0 ? (
                 <Field label="Размер">
                   <select value={form.size} onChange={(e) => patch({ size: e.target.value })} className={inputCls}>
-                    {SIZES.map((s) => (
-                      <option key={s} value={s}>
-                        {s}
+                    {adSizes.map((s) => (
+                      <option key={s.size} value={s.size}>
+                        {s.size} · {s.label}
                       </option>
                     ))}
                   </select>
@@ -683,21 +675,39 @@ export function CreativeModal({
           {step === "tracking" ? (
             <div className="space-y-4">
               <p className="text-xs leading-relaxed text-muted">
-                Опционально. Сторонние пиксели аудита (adriver, weborama, mediascope) вызываются при показе и клике дополнительно к нашим трекерам. Макросы SSP не поддерживаются — только готовые URL.
+                Опционально. Сторонние пиксели аудита (adriver, weborama, mediascope) вызываются при показе и клике дополнительно к нашим трекерам. В адрес можно добавить макросы {"${CDSP_…}"} — подставим при показе. {batchMode ? "Эти значения — общие для пакета: у файла можно задать свои в его карточке." : ""}
               </p>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <Field label="Трекер показа" hint="GET-пиксель 1×1, вызывается при отрисовке">
-                  <input type="url" value={form.imp_tracker_url} onChange={(e) => patch({ imp_tracker_url: e.target.value })} className={inputCls} placeholder="https://tracker.ru/imp?..." />
-                </Field>
-                <Field label="Трекер клика" hint="Клик-редирект трекера, финально ведёт на click URL">
-                  <input type="url" value={form.click_tracker_url} onChange={(e) => patch({ click_tracker_url: e.target.value })} className={inputCls} placeholder="https://tracker.ru/click?..." />
-                </Field>
+                <MacroField
+                  id="creative-modal-imp-tracker"
+                  label={batchMode ? "Пиксель показа (общий для пакета)" : "Трекер показа"}
+                  hint="GET-пиксель 1×1, вызывается при отрисовке"
+                  kind="pixel"
+                  value={form.imp_tracker_url}
+                  onChange={(v) => patch({ imp_tracker_url: v })}
+                  placeholder="https://tracker.ru/imp?cb=${CDSP_CACHEBUSTER}"
+                />
+                <MacroField
+                  id="creative-modal-click-tracker"
+                  label={batchMode ? "Пиксель клика (общий для пакета)" : "Трекер клика"}
+                  hint="Клик-редирект трекера, финально ведёт на click URL"
+                  kind="pixel"
+                  value={form.click_tracker_url}
+                  onChange={(v) => patch({ click_tracker_url: v })}
+                  placeholder="https://tracker.ru/click?cb=${CDSP_CACHEBUSTER}"
+                />
               </div>
             </div>
           ) : null}
 
           {step === "ord" ? (
             <div className="space-y-4">
+              {foreign ? (
+                <p className="text-xs leading-relaxed text-muted">
+                  Рекламодатель работает только за пределами РФ — маркировка (контрагент, договор, ККТУ, erid) не требуется.
+                </p>
+              ) : (
+              <>
               <p className="text-xs leading-relaxed text-muted">
                 По 38-ФЗ наименование, ИНН/ОГРН и адрес рекламодателя показываются в инфо-значке на креативе и уходят в ОРД.
                 erid присваивается автоматически после одобрения модератором — по договору с контрагентом.
@@ -770,6 +780,8 @@ export function CreativeModal({
                   "Обязательное поле: категория товара/услуги уходит в ОРД вместе с erid."
                 )}
               </p>
+              </>
+              )}
 
               <div className="flex flex-col gap-3 border-t border-border pt-4">
                 <div>
@@ -798,6 +810,8 @@ export function CreativeModal({
             </div>
           ) : null}
 
+          <BatchResults rows={batchRows} showOrd={!foreign} />
+
           {error ? (
             <p role="alert" className="rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-xs text-danger">
               {error}
@@ -806,7 +820,7 @@ export function CreativeModal({
 
           <div className="flex items-center justify-between gap-2 border-t border-border pt-4">
             <Button variant="ghost" onClick={handleClose} disabled={saving}>
-              Отмена
+              {batchRows.length > 0 && batch.items.length === 0 ? "Закрыть" : "Отмена"}
             </Button>
             <div className="flex gap-2">
               {stepIdx > 0 ? (
@@ -820,7 +834,7 @@ export function CreativeModal({
                 </Button>
               ) : null}
               <Button onClick={save} disabled={!canSubmit}>
-                {saving ? "Сохранение…" : uploading ? "Загрузка…" : bannerAssets.length > 1 ? `Создать ${bannerAssets.length} креатива` : "Создать креатив"}
+                {saving ? "Сохранение…" : uploading ? "Загрузка…" : batchMode ? `Создать креативы: ${readyItems.length}` : "Создать креатив"}
               </Button>
             </div>
           </div>
@@ -855,16 +869,20 @@ export function CreativeModal({
                 }}
               />
             </div>
-            {type === "banner" && bannerAssets.length > 1 ? (
-              <p className="mt-2 text-[11px] text-muted">Показан первый из {bannerAssets.length} баннеров; каждый станет отдельным креативом.</p>
+            {type === "banner" && readyItems.length > 1 ? (
+              <p className="mt-2 text-[11px] text-muted">Показан первый из {readyItems.length} баннеров; каждый станет отдельным креативом.</p>
             ) : null}
             <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px]">
               <dt className="text-muted">Кампания</dt>
               <dd className="truncate text-foreground">{campaigns.find((c) => c.id === form.campaign_id)?.name || "—"}</dd>
               <dt className="text-muted">Переход</dt>
               <dd className="truncate text-foreground">{form.click_url || "—"}</dd>
-              <dt className="text-muted">ККТУ</dt>
-              <dd className={form.kktu_code ? "text-foreground" : "text-warning"}>{form.kktu_code || "не задан"}</dd>
+              {foreign ? null : (
+                <>
+                  <dt className="text-muted">ККТУ</dt>
+                  <dd className={form.kktu_code ? "text-foreground" : "text-warning"}>{form.kktu_code || "не задан"}</dd>
+                </>
+              )}
               <dt className="text-muted">Модерация</dt>
               <dd className="text-foreground">после создания — «На модерации»</dd>
             </dl>

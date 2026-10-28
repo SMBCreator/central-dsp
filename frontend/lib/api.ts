@@ -189,6 +189,8 @@ export interface UploadOptions {
   /** Таймаут в мс; по умолчанию 60 с для картинок и 5 мин для видео */
   timeoutMs?: number
   signal?: AbortSignal
+  /** Не показывать тост об ошибке — вызывающий сам выводит её (пакетная загрузка). */
+  silent?: boolean
 }
 
 export interface UploadResult {
@@ -213,7 +215,7 @@ export function apiUpload<T = UploadResult>(path: string, file: File, opts: Uplo
     xhr.withCredentials = true
 
     const fail = (status: number, detail: string) => {
-      if (typeof window !== "undefined") {
+      if (typeof window !== "undefined" && !opts.silent) {
         import("@/components/toaster").then(({ toastError }) => toastError(detail)).catch(() => {})
       }
       reject(new ApiError(status, detail))

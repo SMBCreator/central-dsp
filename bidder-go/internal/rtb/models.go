@@ -144,30 +144,62 @@ func (n *Native) UnmarshalJSON(b []byte) error {
 }
 
 type Site struct {
-	ID        string     `json:"id,omitempty"`
-	Domain    string     `json:"domain,omitempty"` // проверяется против global+campaign white/blacklist
-	Page      string     `json:"page,omitempty"`
-	Cat       []string   `json:"cat,omitempty"`
-	Keywords  string     `json:"keywords,omitempty"` // CSV контекстных слов страницы
-	Publisher *Publisher `json:"publisher,omitempty"`
-	Content   *Content   `json:"content,omitempty"`
+	ID         string     `json:"id,omitempty"`
+	Domain     string     `json:"domain,omitempty"` // проверяется против global+campaign white/blacklist
+	Page       string     `json:"page,omitempty"`
+	Cat        []string   `json:"cat,omitempty"`
+	SectionCat CatList    `json:"sectioncat,omitempty"`
+	PageCat    CatList    `json:"pagecat,omitempty"`
+	Keywords   string     `json:"keywords,omitempty"` // CSV контекстных слов страницы
+	Publisher  *Publisher `json:"publisher,omitempty"`
+	Content    *Content   `json:"content,omitempty"`
 }
 
 type App struct {
-	ID        string     `json:"id,omitempty"`
-	Bundle    string     `json:"bundle,omitempty"`
-	Domain    string     `json:"domain,omitempty"`
-	Cat       []string   `json:"cat,omitempty"`
-	Keywords  string     `json:"keywords,omitempty"`
-	Publisher *Publisher `json:"publisher,omitempty"`
-	Content   *Content   `json:"content,omitempty"`
+	ID         string     `json:"id,omitempty"`
+	Bundle     string     `json:"bundle,omitempty"`
+	Domain     string     `json:"domain,omitempty"`
+	Cat        []string   `json:"cat,omitempty"`
+	SectionCat CatList    `json:"sectioncat,omitempty"`
+	PageCat    CatList    `json:"pagecat,omitempty"`
+	Keywords   string     `json:"keywords,omitempty"`
+	Publisher  *Publisher `json:"publisher,omitempty"`
+	Content    *Content   `json:"content,omitempty"`
 }
 
 // Publisher — site.publisher / app.publisher (publisher_allow/block в таргетинге).
 type Publisher struct {
-	ID     string `json:"id,omitempty"`
-	Name   string `json:"name,omitempty"`
-	Domain string `json:"domain,omitempty"`
+	ID     string  `json:"id,omitempty"`
+	Name   string  `json:"name,omitempty"`
+	Domain string  `json:"domain,omitempty"`
+	Cat    CatList `json:"cat,omitempty"`
+}
+
+// CatList — список кодов категорий, который не роняет разбор всего BidRequest:
+// принимает массив строк или одну строку, нестроковые элементы и прочие типы
+// игнорирует. Новые поля категорий (sectioncat, pagecat, publisher.cat) раньше
+// биддером не читались, и SSP с нестандартным значением не должен получать
+// parse_error из-за них.
+type CatList []string
+
+// UnmarshalJSON никогда не возвращает ошибку.
+func (c *CatList) UnmarshalJSON(b []byte) error {
+	*c = nil
+	var arr []json.RawMessage
+	if json.Unmarshal(b, &arr) == nil {
+		for _, raw := range arr {
+			var s string
+			if json.Unmarshal(raw, &s) == nil {
+				*c = append(*c, s)
+			}
+		}
+		return nil
+	}
+	var s string
+	if json.Unmarshal(b, &s) == nil {
+		*c = CatList{s}
+	}
+	return nil
 }
 
 // Content — контекст страницы/видео (keywords_allow/block в таргетинге).
@@ -198,7 +230,7 @@ type Device struct {
 }
 
 type Geo struct {
-	Country string  `json:"country,omitempty"` // ISO-3166-1 alpha-3 в OpenRTB; Python нормализует к alpha-2
+	Country string  `json:"country,omitempty"` // ISO-3166-1 alpha-3 в OpenRTB; к alpha-2 приводится только при сравнении с таргетингом (targeting.NormalizeCountry)
 	Region  string  `json:"region,omitempty"`
 	City    string  `json:"city,omitempty"`
 	Lat     float64 `json:"lat,omitempty"`

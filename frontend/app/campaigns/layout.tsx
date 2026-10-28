@@ -4,7 +4,7 @@ import { PAGE_TITLES } from "@/lib/nav"
 
 // template — для вложенных сегментов (new, [id]); без него они теряют суффикс.
 export const metadata: Metadata = {
-  title: { default: PAGE_TITLES["campaigns"], template: "%s — CentralDSP" },
+  title: { default: PAGE_TITLES["campaigns"], template: "%s — Central ADV" },
 }
 
 export default function Layout({ children }: { children: ReactNode }) {

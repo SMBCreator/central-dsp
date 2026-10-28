@@ -11,6 +11,7 @@ import time
 from fastapi import APIRouter, HTTPException, Request
 
 import conversion_attribution as attribution
+from ad_market import foreign_campaign_sql
 import obs_metrics
 from business_day import business_date
 from cache import avail_adv_key, avail_camp_key, clear_stale_daily_spend, get_redis, res_adv_key, res_camp_key
@@ -237,6 +238,30 @@ async def audience_sync(request: Request):
     return result
 
 
+@router.get("/id-sync-purge")
+@_cron_job("id_sync_purge")
+async def id_sync_purge(request: Request):
+    """ID sync (A.4): просроченные строки id_sync_map. Флаг off — no-op."""
+    _check_secret(request)
+    import id_sync
+
+    if not id_sync.enabled():
+        return {"skipped": "disabled"}
+    return {"deleted": await id_sync.purge_expired(await get_pool())}
+
+
+@router.get("/rebuild-idsync")
+@_cron_job("rebuild_idsync")
+async def rebuild_idsync(request: Request):
+    """ID sync (A.4): idsync:* в Redis из PostgreSQL. Флаг off — no-op."""
+    _check_secret(request)
+    import id_sync
+
+    if not id_sync.enabled():
+        return {"skipped": "disabled"}
+    return {"written": await id_sync.rebuild_redis(await get_pool())}
+
+
 @router.get("/ord-notifications")
 @_cron_job("ord_notifications")
 async def ord_notifications(request: Request):
@@ -301,6 +326,17 @@ async def ml_train(request: Request):
     return {"ok": True, **result}
 
 
+@router.get("/domcat-learn")
+@_cron_job("domcat_learn")
+async def domcat_learn(request: Request):
+    """Перенос обученных «домен → тематика» из Redis (domcat:learn) в БД."""
+    _check_secret(request)
+    import domain_categories
+
+    result = await domain_categories.flush_learned(await get_pool(), get_redis())
+    return {"ok": True, **result}
+
+
 @router.get("/domain-quality")
 @_cron_job("domain_quality")
 async def domain_quality_recompute(request: Request):
@@ -311,6 +347,11 @@ async def domain_quality_recompute(request: Request):
     pool = await get_pool()
     result = await quality.recompute(pool)
     return {"ok": True, **result}
+
+
+# ТЗ п.5: показы рекламодателей «за пределами РФ» не уходят в ОРД и не считаются
+# «рекламой без erid» (маркировка для них не требуется).
+_FOREIGN_STATS_SQL = foreign_campaign_sql("s.campaign_id")
 
 
 @router.get("/ord-export")
@@ -369,6 +410,7 @@ async def _ord_export_locked(conn, period, kind, force, _json, external_creative
     # поэтому часы этого окна корректно остаются за старой версией.
     rows = await conn.fetch(
         """SELECT s.creative_id, oc.version, oc.erid,
+                  min(li.bid_type)   AS payment_type,
                   sum(s.impressions) AS impressions,
                   sum(s.clicks)      AS clicks,
                   sum(s.spend)       AS spend
@@ -381,7 +423,9 @@ async def _ord_export_locked(conn, period, kind, force, _json, external_creative
                  AND COALESCE(o.registered_at, o.created_at) < s.ts_hour + interval '1 hour'
                ORDER BY COALESCE(o.registered_at, o.created_at) DESC LIMIT 1
            ) oc ON true
+           LEFT JOIN line_items li ON li.id = s.line_item_id
            WHERE to_char(s.ts_hour, 'YYYY-MM') = $1
+             AND NOT """ + _FOREIGN_STATS_SQL + """
            GROUP BY s.creative_id, oc.version, oc.erid
            HAVING sum(s.impressions) > 0
            ORDER BY s.creative_id, oc.version""",
@@ -397,6 +441,7 @@ async def _ord_export_locked(conn, period, kind, force, _json, external_creative
             "impressions": int(r["impressions"]),
             "clicks": int(r["clicks"]),
             "spend": str(r["spend"]),
+            "payment_type": r["payment_type"] or "cpm",
         }
         for r in rows
     ]
@@ -405,8 +450,9 @@ async def _ord_export_locked(conn, period, kind, force, _json, external_creative
     # viewsCountByFact остаётся фактом, viewsCountByInvoice/moneySpent — из акта.
     if stats:
         inv_rows = await conn.fetch(
-            """SELECT it.external_statistic_id, it.impressions, it.spend, it.unit_cost, it.period_start, it.period_end
-                 FROM ord_invoice_items it
+            """SELECT it.external_statistic_id, it.impressions, it.spend, it.unit_cost, it.period_start, it.period_end,
+                      it.payment_type, i.vat_rate, i.is_vat
+                 FROM ord_invoice_items it JOIN ord_invoices i ON i.id = it.invoice_id
                 WHERE it.status = 'accepted' AND it.external_statistic_id = ANY($1::text[])""",
             [s["external_statistic_id"] for s in stats],
         )
@@ -417,6 +463,9 @@ async def _ord_export_locked(conn, period, kind, force, _json, external_creative
                 s["invoice_impressions"] = int(it["impressions"])
                 s["invoice_spend"] = str(it["spend"])
                 s["unit_cost"] = str(it["unit_cost"])
+                s["payment_type"] = it["payment_type"]
+                s["with_vat"] = bool(it["is_vat"])
+                s["vat_rate"] = it["vat_rate"]
                 s["date_start"] = it["period_start"].isoformat()
                 s["date_end"] = it["period_end"].isoformat()
     # Показы были, а действовавшего erid нет — в ОРД такое отправить нельзя,
@@ -425,6 +474,7 @@ async def _ord_export_locked(conn, period, kind, force, _json, external_creative
         """SELECT s.creative_id, s.campaign_id, sum(s.impressions) AS impressions
            FROM stats_hourly s
            WHERE to_char(s.ts_hour, 'YYYY-MM') = $1
+             AND NOT """ + _FOREIGN_STATS_SQL + """
              AND NOT EXISTS (
                SELECT 1 FROM ord_creatives o
                WHERE o.creative_id = s.creative_id

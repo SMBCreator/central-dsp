@@ -181,3 +181,32 @@ def test_dirty_domains_omitted_when_no_campaign_opts_in(env):
             await conn.close()
 
     asyncio.run(scenario())
+
+
+def test_feed_passes_context_keys_as_is_and_old_targeting_unchanged(env):
+    # Контекст v2: ключи едут в Go как есть; у старой кампании JSON прежний (ничего не добавляется).
+    async def scenario():
+        conn = await asyncpg.connect(DATABASE_URL)
+        ids = await _seed(conn, clean_traffic=False)
+        try:
+            body = await _fetch_feed()
+            cand = next(c for c in body["candidates"] if str(c["li_id"]) == ids["li"])
+            assert cand["targeting"] == {"geo_countries": ["US"]}
+
+            new = {
+                "geo_countries": ["US"],
+                "iab_categories": ["IAB1"],
+                "iab_allow_unknown": True,
+                "keywords_allow": ["ипотек"],
+                "keywords_match": "word_start",
+                "context_mode": "all",
+            }
+            await conn.execute("UPDATE line_items SET targeting = $1::jsonb WHERE id = $2", json.dumps(new), ids["li"])
+            body = await _fetch_feed()
+            cand = next(c for c in body["candidates"] if str(c["li_id"]) == ids["li"])
+            assert cand["targeting"] == new
+        finally:
+            await conn.execute("DELETE FROM users WHERE id = $1", ids["user"])
+            await conn.close()
+
+    asyncio.run(scenario())

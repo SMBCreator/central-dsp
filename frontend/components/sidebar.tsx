@@ -11,6 +11,7 @@ import { useMe } from "@/lib/use-me"
 import { NAV_SECTIONS, PROFILE_ITEM, isItemActive, sectionOfPath, type NavItem } from "@/lib/nav"
 import { isEditableTarget, useSidebar } from "@/lib/use-sidebar"
 import { ThemeToggle } from "@/components/theme-toggle"
+import { BrandLogo } from "@/components/brand-logo"
 
 function Icon({ d, size = 16 }: { d: string; size?: number }) {
   return (
@@ -146,16 +147,12 @@ export function Sidebar({
       }`}
     >
       <div className={`flex items-center py-4 ${collapsed ? "flex-col gap-3 px-2" : "justify-between px-4"}`}>
-        <Link href="/" className="flex items-center gap-2.5" aria-label="CentralDSP — на дашборд">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-sidebar-primary">
-            <span className="font-mono text-sm font-bold text-sidebar-primary-foreground">C</span>
-          </div>
-          {!collapsed ? (
-            <div>
-              <p className="text-sm font-semibold leading-tight text-sidebar-foreground">CentralDSP</p>
-              <p className="text-[10px] leading-tight text-muted">Programmatic-платформа</p>
-            </div>
-          ) : null}
+        <Link
+          href="/"
+          className="flex items-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          aria-label="Central ADV — на дашборд"
+        >
+          {collapsed ? <BrandLogo variant="mark" height={24} alt="" /> : <BrandLogo height={26} alt="" />}
         </Link>
         <ThemeToggle />
       </div>

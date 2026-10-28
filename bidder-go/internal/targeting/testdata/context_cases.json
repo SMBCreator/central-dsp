@@ -1,0 +1,9286 @@
+{
+ "match": [
+  {
+   "name": "cats=none text=hit iab=1 kw=none unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ]
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=none unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=none unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=none unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=none unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=none unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=legacy unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ]
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=legacy unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=legacy unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=legacy unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=legacy unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=legacy unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=v2 unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=v2 unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=v2 unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=v2 unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=v2 unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=v2 unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=0 kw=none unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {},
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=0 kw=none unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=0 kw=none unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=0 kw=none unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=0 kw=none unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=0 kw=none unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=0 kw=legacy unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ]
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=0 kw=legacy unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=0 kw=legacy unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=0 kw=legacy unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=0 kw=legacy unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=0 kw=legacy unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=0 kw=v2 unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=0 kw=v2 unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=0 kw=v2 unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=0 kw=v2 unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=0 kw=v2 unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=0 kw=v2 unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=miss iab=1 kw=none unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ]
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=none text=miss iab=1 kw=none unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=none text=miss iab=1 kw=none unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=none text=miss iab=1 kw=none unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=miss iab=1 kw=none unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=miss iab=1 kw=none unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=none text=miss iab=1 kw=legacy unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ]
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=none text=miss iab=1 kw=legacy unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=none text=miss iab=1 kw=legacy unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": false,
+   "reason": "context"
+  },
+  {
+   "name": "cats=none text=miss iab=1 kw=legacy unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=none text=miss iab=1 kw=legacy unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=none text=miss iab=1 kw=legacy unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": false,
+   "reason": "context"
+  },
+  {
+   "name": "cats=none text=miss iab=1 kw=v2 unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=none text=miss iab=1 kw=v2 unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=none text=miss iab=1 kw=v2 unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": false,
+   "reason": "context"
+  },
+  {
+   "name": "cats=none text=miss iab=1 kw=v2 unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=none text=miss iab=1 kw=v2 unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=none text=miss iab=1 kw=v2 unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": false,
+   "reason": "context"
+  },
+  {
+   "name": "cats=none text=miss iab=0 kw=none unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {},
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=miss iab=0 kw=none unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=miss iab=0 kw=none unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=miss iab=0 kw=none unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=miss iab=0 kw=none unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=miss iab=0 kw=none unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=miss iab=0 kw=legacy unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ]
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=none text=miss iab=0 kw=legacy unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=none text=miss iab=0 kw=legacy unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=none text=miss iab=0 kw=legacy unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=none text=miss iab=0 kw=legacy unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=none text=miss iab=0 kw=legacy unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=none text=miss iab=0 kw=v2 unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=none text=miss iab=0 kw=v2 unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=none text=miss iab=0 kw=v2 unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=none text=miss iab=0 kw=v2 unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=none text=miss iab=0 kw=v2 unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=none text=miss iab=0 kw=v2 unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     }
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=none unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ]
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=none unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=none unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=none unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=none unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=none unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=legacy unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ]
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=legacy unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=legacy unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=legacy unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=legacy unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=legacy unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=v2 unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=v2 unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=v2 unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=v2 unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=v2 unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=v2 unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=0 kw=none unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {},
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=0 kw=none unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=0 kw=none unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=0 kw=none unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=0 kw=none unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=0 kw=none unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=0 kw=legacy unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ]
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=0 kw=legacy unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=0 kw=legacy unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=0 kw=legacy unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=0 kw=legacy unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=0 kw=legacy unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=0 kw=v2 unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=0 kw=v2 unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=0 kw=v2 unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=0 kw=v2 unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=0 kw=v2 unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=0 kw=v2 unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=miss iab=1 kw=none unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ]
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=miss iab=1 kw=none unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=miss iab=1 kw=none unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=miss iab=1 kw=none unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=miss iab=1 kw=none unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=miss iab=1 kw=none unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=miss iab=1 kw=legacy unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ]
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=match text=miss iab=1 kw=legacy unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=match text=miss iab=1 kw=legacy unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=miss iab=1 kw=legacy unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=match text=miss iab=1 kw=legacy unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=match text=miss iab=1 kw=legacy unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=miss iab=1 kw=v2 unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=match text=miss iab=1 kw=v2 unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=match text=miss iab=1 kw=v2 unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=miss iab=1 kw=v2 unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=match text=miss iab=1 kw=v2 unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=match text=miss iab=1 kw=v2 unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=miss iab=0 kw=none unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {},
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=miss iab=0 kw=none unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=miss iab=0 kw=none unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=miss iab=0 kw=none unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=miss iab=0 kw=none unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=miss iab=0 kw=none unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=miss iab=0 kw=legacy unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ]
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=match text=miss iab=0 kw=legacy unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=match text=miss iab=0 kw=legacy unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=match text=miss iab=0 kw=legacy unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=match text=miss iab=0 kw=legacy unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=match text=miss iab=0 kw=legacy unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=match text=miss iab=0 kw=v2 unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=match text=miss iab=0 kw=v2 unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=match text=miss iab=0 kw=v2 unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=match text=miss iab=0 kw=v2 unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=match text=miss iab=0 kw=v2 unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=match text=miss iab=0 kw=v2 unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=none unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ]
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=none unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=none unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=none unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=none unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=none unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=legacy unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ]
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=legacy unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=legacy unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=legacy unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=legacy unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=legacy unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=v2 unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=v2 unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=v2 unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=v2 unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=v2 unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=v2 unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=hit iab=0 kw=none unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {},
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=hit iab=0 kw=none unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=hit iab=0 kw=none unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=hit iab=0 kw=none unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=hit iab=0 kw=none unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=hit iab=0 kw=none unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=hit iab=0 kw=legacy unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ]
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=hit iab=0 kw=legacy unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=hit iab=0 kw=legacy unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=hit iab=0 kw=legacy unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=hit iab=0 kw=legacy unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=hit iab=0 kw=legacy unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=hit iab=0 kw=v2 unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=hit iab=0 kw=v2 unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=hit iab=0 kw=v2 unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=hit iab=0 kw=v2 unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=hit iab=0 kw=v2 unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=hit iab=0 kw=v2 unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=miss iab=1 kw=none unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ]
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=miss iab=1 kw=none unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=miss iab=1 kw=none unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=miss iab=1 kw=none unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=miss iab=1 kw=none unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=miss iab=1 kw=none unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=miss iab=1 kw=legacy unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ]
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=miss iab=1 kw=legacy unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=miss iab=1 kw=legacy unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "context"
+  },
+  {
+   "name": "cats=other text=miss iab=1 kw=legacy unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=miss iab=1 kw=legacy unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=miss iab=1 kw=legacy unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "context"
+  },
+  {
+   "name": "cats=other text=miss iab=1 kw=v2 unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=miss iab=1 kw=v2 unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=miss iab=1 kw=v2 unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "context"
+  },
+  {
+   "name": "cats=other text=miss iab=1 kw=v2 unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=miss iab=1 kw=v2 unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=miss iab=1 kw=v2 unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "context"
+  },
+  {
+   "name": "cats=other text=miss iab=0 kw=none unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {},
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=miss iab=0 kw=none unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=miss iab=0 kw=none unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=miss iab=0 kw=none unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=miss iab=0 kw=none unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=miss iab=0 kw=none unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=miss iab=0 kw=legacy unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ]
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=other text=miss iab=0 kw=legacy unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=other text=miss iab=0 kw=legacy unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=other text=miss iab=0 kw=legacy unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=other text=miss iab=0 kw=legacy unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=other text=miss iab=0 kw=legacy unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=other text=miss iab=0 kw=v2 unknown=0 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=other text=miss iab=0 kw=v2 unknown=0 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=other text=miss iab=0 kw=v2 unknown=0 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=other text=miss iab=0 kw=v2 unknown=1 mode=- iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=other text=miss iab=0 kw=v2 unknown=1 mode=all iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=other text=miss iab=0 kw=v2 unknown=1 mode=any iab_block=0 kw_block=0",
+   "targeting": {
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Погода завтра"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=none unknown=1 mode=- iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=none unknown=1 mode=- iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=none unknown=1 mode=- iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=none unknown=1 mode=all iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=none unknown=1 mode=all iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=none unknown=1 mode=all iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=none unknown=1 mode=any iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=none unknown=1 mode=any iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=none unknown=1 mode=any iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=legacy unknown=1 mode=- iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=legacy unknown=1 mode=- iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=legacy unknown=1 mode=- iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=legacy unknown=1 mode=all iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=legacy unknown=1 mode=all iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=legacy unknown=1 mode=all iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=legacy unknown=1 mode=any iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=legacy unknown=1 mode=any iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=legacy unknown=1 mode=any iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=v2 unknown=1 mode=- iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=v2 unknown=1 mode=- iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=v2 unknown=1 mode=- iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=v2 unknown=1 mode=all iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=v2 unknown=1 mode=all iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=v2 unknown=1 mode=all iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=v2 unknown=1 mode=any iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=v2 unknown=1 mode=any iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=hit iab=1 kw=v2 unknown=1 mode=any iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=block iab=1 kw=none unknown=1 mode=- iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=block iab=1 kw=none unknown=1 mode=- iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     }
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=none text=block iab=1 kw=none unknown=1 mode=- iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     }
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=none text=block iab=1 kw=none unknown=1 mode=all iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=block iab=1 kw=none unknown=1 mode=all iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     }
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=none text=block iab=1 kw=none unknown=1 mode=all iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     }
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=none text=block iab=1 kw=none unknown=1 mode=any iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     }
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=none text=block iab=1 kw=none unknown=1 mode=any iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     }
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=none text=block iab=1 kw=none unknown=1 mode=any iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     }
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=none text=block iab=1 kw=legacy unknown=1 mode=- iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=block iab=1 kw=legacy unknown=1 mode=- iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     }
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=none text=block iab=1 kw=legacy unknown=1 mode=- iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     }
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=none text=block iab=1 kw=legacy unknown=1 mode=all iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=block iab=1 kw=legacy unknown=1 mode=all iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     }
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=none text=block iab=1 kw=legacy unknown=1 mode=all iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     }
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=none text=block iab=1 kw=legacy unknown=1 mode=any iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=block iab=1 kw=legacy unknown=1 mode=any iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     }
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=none text=block iab=1 kw=legacy unknown=1 mode=any iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     }
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=none text=block iab=1 kw=v2 unknown=1 mode=- iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=block iab=1 kw=v2 unknown=1 mode=- iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     }
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=none text=block iab=1 kw=v2 unknown=1 mode=- iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     }
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=none text=block iab=1 kw=v2 unknown=1 mode=all iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=block iab=1 kw=v2 unknown=1 mode=all iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     }
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=none text=block iab=1 kw=v2 unknown=1 mode=all iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     }
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=none text=block iab=1 kw=v2 unknown=1 mode=any iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     }
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=none text=block iab=1 kw=v2 unknown=1 mode=any iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     }
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=none text=block iab=1 kw=v2 unknown=1 mode=any iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     }
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=none unknown=1 mode=- iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=none unknown=1 mode=- iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=none unknown=1 mode=- iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=none unknown=1 mode=all iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=none unknown=1 mode=all iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=none unknown=1 mode=all iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=none unknown=1 mode=any iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=none unknown=1 mode=any iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=none unknown=1 mode=any iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=legacy unknown=1 mode=- iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=legacy unknown=1 mode=- iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=legacy unknown=1 mode=- iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=legacy unknown=1 mode=all iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=legacy unknown=1 mode=all iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=legacy unknown=1 mode=all iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=legacy unknown=1 mode=any iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=legacy unknown=1 mode=any iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=legacy unknown=1 mode=any iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=v2 unknown=1 mode=- iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=v2 unknown=1 mode=- iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=v2 unknown=1 mode=- iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=v2 unknown=1 mode=all iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=v2 unknown=1 mode=all iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=v2 unknown=1 mode=all iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=v2 unknown=1 mode=any iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=v2 unknown=1 mode=any iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=match text=hit iab=1 kw=v2 unknown=1 mode=any iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=block iab=1 kw=none unknown=1 mode=- iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=block iab=1 kw=none unknown=1 mode=- iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=match text=block iab=1 kw=none unknown=1 mode=- iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=block iab=1 kw=none unknown=1 mode=all iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=block iab=1 kw=none unknown=1 mode=all iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=match text=block iab=1 kw=none unknown=1 mode=all iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=block iab=1 kw=none unknown=1 mode=any iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=block iab=1 kw=none unknown=1 mode=any iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=match text=block iab=1 kw=none unknown=1 mode=any iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=block iab=1 kw=legacy unknown=1 mode=- iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=block iab=1 kw=legacy unknown=1 mode=- iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=match text=block iab=1 kw=legacy unknown=1 mode=- iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=block iab=1 kw=legacy unknown=1 mode=all iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=block iab=1 kw=legacy unknown=1 mode=all iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=match text=block iab=1 kw=legacy unknown=1 mode=all iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=block iab=1 kw=legacy unknown=1 mode=any iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=block iab=1 kw=legacy unknown=1 mode=any iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=match text=block iab=1 kw=legacy unknown=1 mode=any iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=block iab=1 kw=v2 unknown=1 mode=- iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=block iab=1 kw=v2 unknown=1 mode=- iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=match text=block iab=1 kw=v2 unknown=1 mode=- iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=block iab=1 kw=v2 unknown=1 mode=all iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=block iab=1 kw=v2 unknown=1 mode=all iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=match text=block iab=1 kw=v2 unknown=1 mode=all iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=block iab=1 kw=v2 unknown=1 mode=any iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=match text=block iab=1 kw=v2 unknown=1 mode=any iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=match text=block iab=1 kw=v2 unknown=1 mode=any iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB1"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=none unknown=1 mode=- iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=none unknown=1 mode=- iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=none unknown=1 mode=- iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=none unknown=1 mode=all iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=none unknown=1 mode=all iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=none unknown=1 mode=all iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=none unknown=1 mode=any iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=none unknown=1 mode=any iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=none unknown=1 mode=any iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=legacy unknown=1 mode=- iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=legacy unknown=1 mode=- iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=legacy unknown=1 mode=- iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=legacy unknown=1 mode=all iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=legacy unknown=1 mode=all iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=legacy unknown=1 mode=all iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=legacy unknown=1 mode=any iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=legacy unknown=1 mode=any iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=legacy unknown=1 mode=any iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=v2 unknown=1 mode=- iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=v2 unknown=1 mode=- iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=v2 unknown=1 mode=- iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=v2 unknown=1 mode=all iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=v2 unknown=1 mode=all iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=v2 unknown=1 mode=all iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=v2 unknown=1 mode=any iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=v2 unknown=1 mode=any iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=hit iab=1 kw=v2 unknown=1 mode=any iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека в Москве"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=block iab=1 kw=none unknown=1 mode=- iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=block iab=1 kw=none unknown=1 mode=- iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=block iab=1 kw=none unknown=1 mode=- iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=block iab=1 kw=none unknown=1 mode=all iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=block iab=1 kw=none unknown=1 mode=all iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=block iab=1 kw=none unknown=1 mode=all iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=block iab=1 kw=none unknown=1 mode=any iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=block iab=1 kw=none unknown=1 mode=any iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=block iab=1 kw=none unknown=1 mode=any iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=block iab=1 kw=legacy unknown=1 mode=- iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=block iab=1 kw=legacy unknown=1 mode=- iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=block iab=1 kw=legacy unknown=1 mode=- iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=block iab=1 kw=legacy unknown=1 mode=all iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=block iab=1 kw=legacy unknown=1 mode=all iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=block iab=1 kw=legacy unknown=1 mode=all iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=block iab=1 kw=legacy unknown=1 mode=any iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=block iab=1 kw=legacy unknown=1 mode=any iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=other text=block iab=1 kw=legacy unknown=1 mode=any iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=other text=block iab=1 kw=v2 unknown=1 mode=- iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=block iab=1 kw=v2 unknown=1 mode=- iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=block iab=1 kw=v2 unknown=1 mode=- iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=block iab=1 kw=v2 unknown=1 mode=all iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=block iab=1 kw=v2 unknown=1 mode=all iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=block iab=1 kw=v2 unknown=1 mode=all iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "all"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "inventory_iab"
+  },
+  {
+   "name": "cats=other text=block iab=1 kw=v2 unknown=1 mode=any iab_block=1 kw_block=0",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": true,
+   "reason": ""
+  },
+  {
+   "name": "cats=other text=block iab=1 kw=v2 unknown=1 mode=any iab_block=0 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  },
+  {
+   "name": "cats=other text=block iab=1 kw=v2 unknown=1 mode=any iab_block=1 kw_block=1",
+   "targeting": {
+    "iab_categories": [
+     "IAB1"
+    ],
+    "iab_block": [
+     "IAB1"
+    ],
+    "keywords_allow": [
+     "ипотек"
+    ],
+    "keywords_match": "word_start",
+    "keywords_block": [
+     "порно"
+    ],
+    "iab_allow_unknown": true,
+    "context_mode": "any"
+   },
+   "req": {
+    "site": {
+     "page": "https://shop.example/page",
+     "content": {
+      "title": "Ипотека, порно"
+     },
+     "cat": [
+      "IAB9"
+     ]
+    }
+   },
+   "want": false,
+   "reason": "keywords"
+  }
+ ]
+}

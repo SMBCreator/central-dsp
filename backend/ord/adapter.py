@@ -82,6 +82,10 @@ class OrdAdapter(Protocol):
     async def list_error_notifications(self, gt_id: int = 0, page_size: int = 100) -> list[dict[str, Any]]: ...
 
 
+# Ранее сохранённый в platform_settings неверный хост песочницы (до сверки со swagger).
+_LEGACY_BASE_URLS = {"https://ord-sandbox.ozon.ru": "https://api-ord-sandbox.ozon.ru"}
+
+
 async def get_ord_settings() -> dict:
     """Настройки ОРД: сперва БД (platform_settings.ord_ozon), затем env."""
     try:
@@ -96,7 +100,8 @@ async def get_ord_settings() -> dict:
             if cfg.get("api_key"):
                 return {
                     "api_key": cfg["api_key"],
-                    "base_url": cfg.get("base_url") or "https://api-ord.ozon.ru",
+                    "base_url": _LEGACY_BASE_URLS.get(cfg.get("base_url") or "", cfg.get("base_url"))
+                    or "https://api-ord.ozon.ru",
                     "platform_url": cfg.get("platform_url") or "",
                     "source": "db",
                 }

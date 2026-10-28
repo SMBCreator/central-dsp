@@ -1,9 +1,15 @@
 "use client"
 
 import { useState } from "react"
-import { assetUrl } from "@/lib/api"
+import { apiDeleteUpload, assetUrl } from "@/lib/api"
+import { FALLBACK_AD_SIZES, useAdSizes } from "@/lib/ad-sizes"
 import { Button, Field, inputCls, Panel } from "@/components/ui"
+import { MacroField } from "@/components/macro-picker"
+import { PixelFieldsBlock } from "@/components/pixel-fields"
+import { isValidPixel } from "@/lib/creative-batch"
 import { ImageCropper } from "@/components/image-cropper"
+import { WizardBannerBatch } from "@/components/creative-wizard-batch"
+import type { AdvertiserInfo } from "@/lib/creative-badge"
 
 export type AdFormat = "banner" | "native" | "video" | "push"
 
@@ -15,6 +21,8 @@ export type CreativeDraft = {
   height: number | null
   asset_url: string | null
   click_url: string
+  imp_tracker_url?: string | null
+  click_tracker_url?: string | null
   html_snippet: string | null
   native_title: string | null
   native_description: string | null
@@ -30,7 +38,7 @@ export const FORMAT_META: Record<AdFormat, { label: string; description: string;
   banner: {
     label: "Баннер",
     description: "Статика, GIF или HTML5. Стандартные IAB-размеры.",
-    specs: "Топ-размеры: 300x250, 728x90, 320x50, 320x100, 300x600, 336x280, 970x250, 160x600, 240x400",
+    specs: `Допустимые размеры: ${FALLBACK_AD_SIZES.map((s) => s.size).join(", ")}`,
   },
   native: {
     label: "Нативный",
@@ -53,14 +61,12 @@ export const FORMAT_LABELS: Record<string, string> = Object.fromEntries(
   Object.entries(FORMAT_META).map(([k, v]) => [k, v.label]),
 )
 
-const BANNER_SIZES = ["300x250", "728x90", "320x50", "320x100", "300x600", "336x280", "970x250", "160x600", "240x400"]
-
 export function emptyDraft(type: AdFormat): CreativeDraft {
   return {
     name: "", type,
     subtype: type === "banner" ? "static" : type === "video" ? "instream" : null,
     width: type === "banner" ? 300 : null, height: type === "banner" ? 250 : null,
-    asset_url: null, click_url: "", html_snippet: null,
+    asset_url: null, click_url: "", imp_tracker_url: null, click_tracker_url: null, html_snippet: null,
     native_title: null, native_description: null, native_cta: null, native_icon_url: null,
     video_url: null, video_duration: type === "video" ? 15 : null, vast_xml: null, crop: null,
   }
@@ -145,12 +151,15 @@ export function CreativePreview({ d }: { d: CreativeDraft }) {
 /** Per-format creative editing form. Emits the finished draft via onAdd. */
 export function CreativeForm({ format, onAdd }: { format: AdFormat; onAdd: (d: CreativeDraft) => void }) {
   const [d, setD] = useState<CreativeDraft>(() => emptyDraft(format))
+  const adSizes = useAdSizes()
   const [err, setErr] = useState<string | null>(null)
   const set = (patch: Partial<CreativeDraft>) => setD((prev) => ({ ...prev, ...patch }))
 
   const validate = (): string | null => {
     if (!d.name.trim()) return "Укажите название креатива"
     if (!d.click_url.trim().startsWith("http")) return "Укажите корректную ссылку перехода (https://…)"
+    if (!isValidPixel(d.imp_tracker_url ?? "")) return "Пиксель показа: укажите адрес вида https://…"
+    if (!isValidPixel(d.click_tracker_url ?? "")) return "Пиксель клика: укажите адрес вида https://…"
     if (format === "banner") {
       if (d.subtype === "html5" && !d.html_snippet) return "Для HTML5-баннера вставьте HTML-код"
       if (d.subtype !== "html5" && !d.asset_url) return "Укажите изображение баннера (URL или загрузка)"
@@ -168,7 +177,7 @@ export function CreativeForm({ format, onAdd }: { format: AdFormat; onAdd: (d: C
     const v = validate()
     setErr(v)
     if (v) return
-    onAdd(d)
+    onAdd({ ...d, imp_tracker_url: d.imp_tracker_url?.trim() || null, click_tracker_url: d.click_tracker_url?.trim() || null })
     setD(emptyDraft(format))
   }
 
@@ -178,9 +187,22 @@ export function CreativeForm({ format, onAdd }: { format: AdFormat; onAdd: (d: C
         <Field label="Название креатива">
           <input value={d.name} onChange={(e) => set({ name: e.target.value })} className={inputCls} placeholder="Креатив 1" />
         </Field>
-        <Field label="Ссылка перехода (лендинг)">
-          <input value={d.click_url} onChange={(e) => set({ click_url: e.target.value })} className={inputCls} placeholder="https://site.ru/offer" />
-        </Field>
+        <MacroField
+          id={`creative-form-${format}-click-url`}
+          label="Ссылка перехода (лендинг)"
+          kind="click"
+          value={d.click_url}
+          onChange={(v) => set({ click_url: v })}
+          placeholder="https://site.ru/offer"
+        />
+        <PixelFieldsBlock
+          idPrefix={`creative-form-${format}`}
+          title="Пиксели (необязательно)"
+          imp={d.imp_tracker_url ?? ""}
+          click={d.click_tracker_url ?? ""}
+          onImp={(v) => set({ imp_tracker_url: v })}
+          onClick={(v) => set({ click_tracker_url: v })}
+        />
 
         {format === "banner" ? (
           <>
@@ -201,8 +223,8 @@ export function CreativeForm({ format, onAdd }: { format: AdFormat; onAdd: (d: C
                   }}
                   className={inputCls}
                 >
-                  {BANNER_SIZES.map((s) => (
-                    <option key={s} value={s}>{s}</option>
+                  {adSizes.map((s) => (
+                    <option key={s.size} value={s.size}>{s.size} · {s.label}</option>
                   ))}
                 </select>
               </Field>
@@ -295,12 +317,22 @@ export function CreativeBuilder({
   format,
   creatives,
   onChange,
+  advertiser,
 }: {
   format: string
   creatives: CreativeDraft[]
   onChange: (list: CreativeDraft[]) => void
+  advertiser?: AdvertiserInfo
 }) {
   const f = format as AdFormat
+
+  const removeAt = (idx: number) => {
+    const c = creatives[idx]
+    // Файл, загруженный пакетным загрузчиком, больше не нужен (внешние URL игнорируются).
+    if (c && c.type === "banner") void apiDeleteUpload(c.asset_url)
+    onChange(creatives.filter((_, j) => j !== idx))
+  }
+
   return (
     <div className="space-y-4">
       <Panel className="p-4">
@@ -309,7 +341,19 @@ export function CreativeBuilder({
       </Panel>
 
       <Panel className="p-4">
-        <CreativeForm format={f} onAdd={(d) => onChange([...creatives, d])} />
+        {f === "banner" ? (
+          <div className="space-y-4">
+            <WizardBannerBatch creatives={creatives} onChange={onChange} advertiser={advertiser} />
+            <details className="rounded-lg border border-border bg-surface px-3 py-2">
+              <summary className="cursor-pointer text-xs text-muted">Добавить вручную (HTML5, изображение по ссылке)</summary>
+              <div className="mt-3">
+                <CreativeForm format={f} onAdd={(d) => onChange([...creatives, d])} />
+              </div>
+            </details>
+          </div>
+        ) : (
+          <CreativeForm format={f} onAdd={(d) => onChange([...creatives, d])} />
+        )}
       </Panel>
 
       {creatives.length > 0 ? (
@@ -328,13 +372,23 @@ export function CreativeBuilder({
                     </div>
                   )}
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-medium text-foreground">{c.name}</p>
+                    <p className="flex items-center gap-1.5 truncate text-sm font-medium text-foreground">
+                      <span className="truncate">{c.name}</span>
+                      {c.imp_tracker_url || c.click_tracker_url ? (
+                        <span
+                          className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary"
+                          title={[c.imp_tracker_url ? "Пиксель показа задан" : "", c.click_tracker_url ? "Пиксель клика задан" : ""].filter(Boolean).join("; ")}
+                        >
+                          пиксели
+                        </span>
+                      ) : null}
+                    </p>
                     <p className="truncate text-[11px] text-muted">
                       {c.type === "banner" ? `${c.subtype} · ${c.width}x${c.height}` : c.type === "video" ? `${c.subtype} · ${c.video_duration}с` : c.native_title}
                     </p>
                   </div>
                 </div>
-                <Button variant="ghost" onClick={() => onChange(creatives.filter((_, j) => j !== i))}>
+                <Button variant="ghost" onClick={() => removeAt(i)}>
                   Убрать
                 </Button>
               </li>

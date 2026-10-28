@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import sys
 from pathlib import Path
 
@@ -40,7 +39,8 @@ def test_ozon_error_list_request_and_mapping():
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen["path"] = request.url.path
-        seen["body"] = request.read().decode()
+        seen["method"] = request.method
+        seen["params"] = dict(request.url.params)
         return httpx.Response(200, json={"notification": [
             {"id": "12", "objectId": "o-1", "externalId": "abc:v2", "objectType": "CREATIVE",
              "text": "bad", "date": "2026-09-11T10:00:00Z", "updatedAt": None, "url": "https://x"},
@@ -62,6 +62,17 @@ def test_ozon_error_list_request_and_mapping():
     finally:
         httpx.AsyncClient = orig
     assert seen["path"] == "/api/external/notification/error_list"
-    assert json.loads(seen["body"]) == {"pageSize": 50, "gtNotificationId": 7}
+    assert seen["method"] == "GET"  # swagger: GET /api/external/notification/error_list
+    assert seen["params"] == {"pageSize": "50", "gtNotificationId": "7"}
     assert out == [{"id": 12, "object_id": "o-1", "external_id": "abc:v2", "object_type": "CREATIVE",
                     "text": "bad", "date": "2026-09-11T10:00:00Z", "updated_at": None, "url": "https://x"}]
+
+
+def test_normalize_object_type_accepts_swagger_enum():
+    from ord.notifications import normalize_object_type
+
+    assert normalize_object_type("ERROR_NOTIFICATION_OBJECT_TYPE_CREATIVE") == "creative"
+    assert normalize_object_type("ERROR_NOTIFICATION_OBJECT_TYPE_CONTRACT,") == "contract"
+    assert normalize_object_type("ERROR_NOTIFICATION_OBJECT_TYPE_INVALID") == "unknown"
+    assert normalize_object_type("INVOICE") == "invoice"
+    assert normalize_object_type(None) == "unknown"

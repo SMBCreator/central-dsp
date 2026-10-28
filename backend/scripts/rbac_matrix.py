@@ -42,6 +42,7 @@ NO_COOKIE_AUTH_PREFIX = {
     "/alerts/webhook": "Bearer ALERT_WEBHOOK_SECRET (Alertmanager)",
     "/rtb-feed/": "Bearer RTB_API_TOKEN",
     "/rtb/": "endpoint_key / event-токен (HMAC)",
+    "/sync/": "публично (ID sync, ID_SYNC_ENABLED; только cookie dsp_uid, rate-limit, /out — HMAC)",
 }
 
 # Мутирующие маршруты только с current_user: проверка прав внутри хендлера
@@ -53,6 +54,7 @@ CURRENT_USER_ONLY = {
     ("POST", "/notifications/{notification_id}/read"): "self-service: WHERE user_id = me",
     ("POST", "/simulator/run"): "владелец SSP-партнёра (WHERE user_id = me); engine=go (по умолчанию) — боевой Go-биддер, все запросы OpenRTB test=1 (события is_test); engine=python_reference — только вне production и с SIMULATOR_ALLOW_PYTHON_REFERENCE=1, без тихого фолбэка",
     ("POST", "/stats/report"): "чтение через POST (тело = фильтры), scope visible_user_ids",
+    ("POST", "/geo/places/resolve"): "чтение через POST (тело = список названий до 500 строк): поиск по общему справочнику geo_places, без записи",
 }
 
 READ_ONLY_ROLES = ("viewer", "analyst")

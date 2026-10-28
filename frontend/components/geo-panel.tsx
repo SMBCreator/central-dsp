@@ -221,6 +221,7 @@ export function GeoDrawer({
   cities,
   countries = [],
   onApply,
+  foreignOnly = false,
 }: {
   open: boolean
   onClose: () => void
@@ -229,6 +230,8 @@ export function GeoDrawer({
   /** ISO-коды выбранных стран, кроме России */
   countries?: string[]
   onApply: (next: { regions: string[]; cities: string[]; countries: string[] }) => void
+  /** ТЗ п.5: рекламодатель «за пределами РФ» — регионы и города России не предлагаются. */
+  foreignOnly?: boolean
 }) {
   const [selRegions, setSelRegions] = useState<string[]>(regions)
   const [selCities, setSelCities] = useState<string[]>(cities)
@@ -242,11 +245,11 @@ export function GeoDrawer({
   // при каждом открытии — синхронизация с текущим значением
   useEffect(() => {
     if (open) {
-      setSelRegions(regions)
-      setSelCities(cities)
+      setSelRegions(foreignOnly ? [] : regions)
+      setSelCities(foreignOnly ? [] : cities)
       setSelCountries(countries.filter((c) => c !== "RU"))
       setExpanded([])
-      setCountriesOpen(countries.some((c) => c !== "RU"))
+      setCountriesOpen(foreignOnly || countries.some((c) => c !== "RU"))
       setQ("")
       setCityResults([])
     }
@@ -257,7 +260,7 @@ export function GeoDrawer({
   useEffect(() => {
     if (timer.current) clearTimeout(timer.current)
     const query = q.trim()
-    if (query.length < 2) {
+    if (foreignOnly || query.length < 2) {
       setCityResults([])
       return
     }
@@ -272,19 +275,21 @@ export function GeoDrawer({
     return () => {
       if (timer.current) clearTimeout(timer.current)
     }
-  }, [q])
+  }, [q, foreignOnly])
 
   const query = q.trim().toLowerCase()
   const shownRegions = useMemo(
     () =>
-      query
+      foreignOnly
+        ? []
+        : query
         ? RU_REGIONS.filter(
             (r) =>
               r.toLowerCase().includes(query) ||
               (REGION_CITIES[r] || []).some((c) => c.toLowerCase().includes(query)),
           )
         : RU_REGIONS,
-    [query],
+    [query, foreignOnly],
   )
   const shownCountries = useMemo(
     () => (query ? OTHER_COUNTRIES.filter((c) => c.label.toLowerCase().includes(query)) : OTHER_COUNTRIES),
@@ -350,8 +355,8 @@ export function GeoDrawer({
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Регион или город"
-            aria-label="Поиск региона или города"
+            placeholder={foreignOnly ? "Страна" : "Регион или город"}
+            aria-label={foreignOnly ? "Поиск страны" : "Поиск региона или города"}
             className="h-10 w-full rounded-lg border border-input bg-surface pl-9 pr-3 text-sm text-foreground placeholder:text-muted focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/40"
           />
         </div>
@@ -360,7 +365,7 @@ export function GeoDrawer({
         <div className="flex flex-wrap gap-1.5">
           {allSelected ? (
             <span className="inline-flex items-center gap-1.5 rounded-lg bg-panel px-3 py-1.5 text-sm font-medium text-foreground">
-              Все регионы и города
+              {foreignOnly ? "Страны не выбраны" : "Все регионы и города"}
             </span>
           ) : (
             <>
@@ -430,6 +435,7 @@ export function GeoDrawer({
         ) : null}
 
         {/* «Все регионы и города» + список регионов с раскрытием городов */}
+        {foreignOnly ? null : (
         <div>
           <label className="flex cursor-pointer items-center gap-2.5 border-b border-border py-2.5 text-sm font-medium text-foreground">
             <input
@@ -507,11 +513,12 @@ export function GeoDrawer({
                 </li>
               )
             })}
-            {shownRegions.length === 0 && cityResults.length === 0 && shownCountries.length === 0 ? (
+            {!foreignOnly && shownRegions.length === 0 && cityResults.length === 0 && shownCountries.length === 0 ? (
               <li className="py-3 text-sm text-muted">Ничего не найдено</li>
             ) : null}
           </ul>
         </div>
+        )}
 
         {/* Другие страны */}
         <div className="rounded-lg border border-border">

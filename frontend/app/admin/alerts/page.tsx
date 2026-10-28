@@ -366,7 +366,7 @@ function AlertingSettingsCard({
           </Button>
         }
       />
-      <div className="flex flex-col gap-4 px-5 pb-5">
+      <div className="flex flex-col gap-4 px-6 pb-5">
         <p className={"text-xs " + (settings.effective_recipients.length ? "text-muted" : "text-danger")} role={settings.effective_recipients.length ? undefined : "alert"}>
           {recipientsLine}
         </p>

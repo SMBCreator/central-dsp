@@ -3,6 +3,7 @@
 import { useState } from "react"
 import useSWR from "swr"
 import { api, fetcher } from "@/lib/api"
+import { useSubmitGuard } from "@/lib/use-submit-guard"
 import type { PublicSettings } from "@/lib/types"
 import { Button, Card, CardHeader, Field, Modal, EmptyState, Spinner, inputCls } from "@/components/ui"
 import { ConfirmDialog } from "@/components/confirm-dialog"
@@ -50,6 +51,7 @@ export default function PixelsPage() {
   const [createModal, setCreateModal] = useState(false)
   const [selected, setSelected] = useState<Pixel | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const { submitting, guard } = useSubmitGuard()
   const [copied, setCopied] = useState(false)
 
   const [pName, setPName] = useState("")
@@ -198,7 +200,7 @@ export default function PixelsPage() {
             <Button variant="secondary" onClick={() => setCreateModal(false)}>
               Отмена
             </Button>
-            <Button onClick={createPixel} disabled={!pName || !pDomain}>
+            <Button onClick={guard(createPixel)} disabled={!pName || !pDomain || submitting}>
               Создать
             </Button>
           </div>
@@ -302,13 +304,13 @@ function SetupGuide() {
             <button
               type="button"
               onClick={() => setOpenStep(openStep === i ? null : i)}
-              className="flex w-full items-center justify-between p-4 text-left transition-colors hover:bg-surface"
+              className="flex w-full items-center justify-between px-6 py-4 text-left transition-colors hover:bg-surface"
               aria-expanded={openStep === i}
             >
               <span className="text-sm font-medium text-foreground">{s.title}</span>
               <span className="font-mono text-xs text-muted">{openStep === i ? "−" : "+"}</span>
             </button>
-            {openStep === i ? <div className="px-4 pb-4">{s.body}</div> : null}
+            {openStep === i ? <div className="px-6 pb-4">{s.body}</div> : null}
           </div>
         ))}
       </div>
@@ -320,6 +322,7 @@ function PixelDetail({ pixel, onClose }: { pixel: Pixel; onClose: () => void }) 
   const { data: goals, mutate: mutateGoals } = useSWR<Goal[]>(`/pixels/${pixel.id}/goals`, fetcher)
   const { data: stats } = useSWR<PixelStats>(`/pixels/${pixel.id}/stats?hours=168`, fetcher)
   const [error, setError] = useState<string | null>(null)
+  const { submitting, guard } = useSubmitGuard()
 
   const [gName, setGName] = useState("")
   const [gType, setGType] = useState("event")
@@ -450,7 +453,7 @@ function PixelDetail({ pixel, onClose }: { pixel: Pixel; onClose: () => void }) 
             </div>
             {error ? <p className="text-sm text-danger">{error}</p> : null}
             <div className="flex justify-end">
-              <Button onClick={createGoal} disabled={!gName || !gMatch}>
+              <Button onClick={guard(createGoal)} disabled={!gName || !gMatch || submitting}>
                 Добавить цель
               </Button>
             </div>

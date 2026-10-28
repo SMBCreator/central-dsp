@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/config"
+	"github.com/SMBCreator/central-dsp/bidder-go/internal/domcat"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/feed"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/metrics"
 	"github.com/SMBCreator/central-dsp/bidder-go/internal/prefilter"
@@ -170,8 +171,16 @@ func main() {
 	pf := prefilter.New(pfCfg, dcSource)
 	pf.Refresh()
 	h.SetPrefilter(pf)
+	// ID sync (docs/ID_SYNC.md): по умолчанию off — идентификация как раньше.
+	idSync := os.Getenv("ID_SYNC_ENABLED")
+	h.SetIDSync(idSync == "1" || strings.EqualFold(idSync, "true"))
+	slog.Info("id sync", "enabled", h.IDSyncEnabled())
 	slog.Info("prefilter", "enabled", pfCfg.Enabled, "countries", len(pfCfg.Countries),
 		"require_device_id", pfCfg.RequireDeviceID, "dc_cache", dcSource != nil)
+
+	geoOpts := rtb.GeoOptionsFromEnv()
+	h.SetGeoOptions(geoOpts)
+	slog.Info("geo v2", "latlon", geoOpts.LatLon, "radius_km", geoOpts.RadiusKM)
 
 	// Prometheus-метрики: счётчики hot path + gauges состояния (GAP-011).
 	reg := metrics.New()
@@ -214,6 +223,8 @@ func main() {
 	// (draft->testing должен попасть в снапшот сразу, а не через 30 с).
 	// Только с internal-токеном; Caddy этот путь наружу не проксирует.
 	mux.HandleFunc("POST /internal/feed/reload", h.FeedReload)
+	// GEO v2: топ несопоставленных region/city от SSP (для geo_ssp_alias).
+	mux.HandleFunc("GET /internal/geo/unmatched", h.GeoUnmatched)
 
 	srv := &http.Server{
 		Addr:              addr,
@@ -224,10 +235,25 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
+	// Справочник «домен → тематика» (Фаза 3): подставляет категории, когда SSP их
+	// не прислала, и обучается по трафику. DOMCAT_ENABLED=0 — полное выключение.
+	var domMap *domcat.Map
+	if v := strings.ToLower(strings.TrimSpace(os.Getenv("DOMCAT_ENABLED"))); v != "0" && v != "false" {
+		domMap = &domcat.Map{}
+		var learner *domcat.Learner
+		if rc != nil {
+			learner = domcat.NewLearner(domcat.RedisWriter{Client: rc.Raw()}, domcat.DefaultGateTTL, domcat.DefaultGateCap)
+		}
+		h.SetDomainCats(domMap, learner)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	go store.Run(ctx)
+	if domMap != nil {
+		go domMap.Run(ctx, store.GetJSON, domcat.DefaultRefresh)
+	}
 
 	// Audit M-06: sweeper резервов. Бид без win/loss дольше DefaultReserveTTL
 	// переводится в expired и возвращает деньги на все ключи. Терминальное
