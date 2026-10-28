@@ -338,14 +338,23 @@ export function Modal({
   )
 }
 
-export function Table({ headers, children }: { headers: string[]; children: ReactNode }) {
+export function Table({
+  headers,
+  children,
+  headerClassNames = {},
+}: {
+  headers: string[]
+  children: ReactNode
+  /** Доп. классы заголовка по тексту (например, скрыть колонку на узких экранах). */
+  headerClassNames?: Record<string, string>
+}) {
   return (
     <div className="overflow-x-auto px-2 pb-2">
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-border">
             {headers.map((h) => (
-              <th key={h} className="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium text-muted">
+              <th key={h} className={`whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium text-muted ${headerClassNames[h] || ""}`}>
                 {h}
               </th>
             ))}

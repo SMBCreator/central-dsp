@@ -33,6 +33,11 @@ _CONTENT_FIELDS = frozenset({
 # в ОРД: новые данные договора/заказчика = новый externalCreativeId (B13, L-02).
 _LEGAL_FIELDS = frozenset({"counterparty_id", "contract_id", "kktu_code"})
 
+# Сторонние пиксели: не входят в содержимое для ОРД (erid и версия не меняются),
+# но их правка у одобренного креатива требует повторной модерации у не-админа:
+# иначе после approve можно подменить адрес, который вызывается у пользователя.
+_PIXEL_FIELDS = ("imp_tracker_url", "click_tracker_url")
+
 _REQUIRED_BY_TYPE = {
     "banner": ["width", "height", "click_url"],
     "native": ["native_title", "click_url"],
@@ -327,13 +332,28 @@ async def create_creatives_batch(body: CreativeBatchIn, user: dict = Depends(req
 @router.patch("/{creative_id}")
 async def update_creative(creative_id: str, body: CreativePatch, user: dict = Depends(require_creative_manager)):
     updates = body.model_dump(exclude_none=True)
+    # Пустая строка / null у пикселя очищает поле: валидатор превращает "" в None,
+    # а exclude_none его отбросил бы — берём явно переданные поля.
+    for k in _PIXEL_FIELDS:
+        if k in body.model_fields_set and getattr(body, k) is None:
+            updates[k] = None
     if not updates:
         raise HTTPException(status_code=400, detail="Нет полей для обновления")
     pool = await get_pool()
     cur = await assert_in_scope(
         pool, "creatives", creative_id, await scope_for(user), "Креатив не найден",
-        columns="id, user_id, status, erid, name, ord_locked_at, counterparty_id, contract_id, kktu_code",
+        columns="id, user_id, status, erid, name, ord_locked_at, counterparty_id, contract_id, kktu_code, imp_tracker_url, click_tracker_url",
     )
+    pixel_changes = {
+        k: {"old": cur[k], "new": updates[k]}
+        for k in _PIXEL_FIELDS
+        if k in updates and (updates[k] or None) != (cur[k] or None)
+    }
+    for k in _PIXEL_FIELDS:
+        if k in updates and k not in pixel_changes:
+            del updates[k]
+    if not updates:
+        return _serialize(await pool.fetchrow("SELECT * FROM creatives WHERE id = $1", creative_id))
     owner = str(cur["user_id"])
     await assert_refs_owned(pool, owner, {k: updates.get(k) for k in _REF_TABLES}, _REF_TABLES)
     if cur["ord_locked_at"] is not None:
@@ -367,6 +387,10 @@ async def update_creative(creative_id: str, body: CreativePatch, user: dict = De
         else:
             remoderate = True
             updates["status"] = "pending"
+    pixel_remoderate = False
+    if pixel_changes and not remoderate and "status" not in updates and cur["status"] == "approved" and not is_admin(user):
+        pixel_remoderate = True
+        updates["status"] = "pending"
     sets, values = [], []
     for i, (k, v) in enumerate(updates.items(), start=3):
         sets.append(f"{k} = ${i}")
@@ -381,6 +405,21 @@ async def update_creative(creative_id: str, body: CreativePatch, user: dict = De
         # Старая версия остаётся в истории со своим erid: статистика за часы до
         # superseded_at уйдёт в ОРД под ним, новая версия получит новый erid.
         await supersede_current(pool, creative_id)
+    if pixel_changes:
+        await pool.execute(
+            """INSERT INTO audit_log (user_id, user_email, user_role, method, path, status_code, entity, entity_id, payload)
+               VALUES ($1, $2, $3, 'PATCH', $4, 200, 'creatives', $5, $6::jsonb)""",
+            user.get("id"), user.get("email"), user.get("role"),
+            f"/creatives/{creative_id}/pixels", creative_id,
+            json.dumps({"pixels": pixel_changes, "remoderation": pixel_remoderate}),
+        )
+    if pixel_remoderate:
+        await notify_admins(
+            "moderation_pending",
+            f"Пиксели изменены, повторная модерация: «{row['name']}»",
+            f"Пользователь {user['email']} изменил пиксели одобренного креатива.",
+            "/moderation",
+        )
     if remark:
         return await _mark_self_approved(pool, row)
     if remoderate:

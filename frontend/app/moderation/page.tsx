@@ -7,6 +7,7 @@ import { AD_TYPE_LABELS } from "@/lib/types"
 import { Button, Card, CardHeader, EmptyState, Modal, Spinner, inputCls } from "@/components/ui"
 import { CreativeThumb } from "@/components/creative-thumb"
 import { CreativePreviewModal } from "@/components/creative-preview-modal"
+import { TrackingBlock } from "@/components/creative-tracking"
 
 interface QueueItem {
   id: string
@@ -17,6 +18,8 @@ interface QueueItem {
   height: number | null
   asset_url: string | null
   click_url: string | null
+  imp_tracker_url: string | null
+  click_tracker_url: string | null
   native_title: string | null
   native_description: string | null
   native_cta: string | null
@@ -273,6 +276,7 @@ export default function ModerationPage() {
                       </p>
                     ) : null}
                   </div>
+                  <TrackingBlock creative={item} />
                   {!item.counterparty_name && tab === "pending" ? (
                     <p className="rounded border border-warning/40 bg-warning/10 px-2 py-1.5 text-xs text-warning">
                       К креативу не привязан контрагент — при одобрении erid не будет присвоен, и креатив не попадёт в показы на РФ.

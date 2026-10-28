@@ -24,6 +24,11 @@ export function advertiserLines(a: AdvertiserInfo): string[] {
 
 /** Поля креатива/элемента очереди модерации, из которых собирается превью. */
 export interface PreviewCreative {
+  id?: string
+  status?: string
+  click_url?: string | null
+  imp_tracker_url?: string | null
+  click_tracker_url?: string | null
   name: string
   type: "banner" | "native" | "video" | "push"
   width?: number | null

@@ -9,6 +9,7 @@ import { Button, Card, CardHeader, EmptyState, Spinner, StatusBadge, Table } fro
 import { CreativeModal } from "@/components/creative-modal"
 import { CreativeThumb } from "@/components/creative-thumb"
 import { CreativePreviewModal } from "@/components/creative-preview-modal"
+import { PixelBadges } from "@/components/creative-tracking"
 import { canWrite, isAdminRole } from "@/lib/roles"
 import { useMe } from "@/lib/use-me"
 
@@ -83,7 +84,10 @@ export default function CreativesPage() {
         <CardHeader title="Все креативы" subtitle={creatives ? `Всего: ${creatives.length}` : undefined} />
         {creatives ? (
           creatives.length > 0 ? (
-            <Table headers={["Превью", "ID", "Название", "Тип", "Классификатор", "Размер", "Статус", "erid", "Кампания", ""]}>
+            <Table
+              headers={["Превью", "ID", "Название", "Тип", "Классификатор", "Размер", "Пиксели", "Статус", "erid", "Кампания", ""]}
+              headerClassNames={{ Пиксели: "hidden lg:table-cell" }}
+            >
               {creatives.map((c) => {
                 const camp = campaigns?.find((x) => x.id === c.campaign_id)
                 return (
@@ -106,6 +110,9 @@ export default function CreativesPage() {
                     </td>
                     <td className="px-4 py-3 font-mono text-xs text-muted">
                       {c.width && c.height ? `${c.width}×${c.height}` : c.video_duration ? `${c.video_duration} сек` : "—"}
+                    </td>
+                    <td className="hidden px-4 py-3 lg:table-cell">
+                      <PixelBadges imp={c.imp_tracker_url} click={c.click_tracker_url} />
                     </td>
                     <td className="px-4 py-3" title={c.moderation_comment || undefined}>
                       <StatusBadge status={c.status} />
@@ -170,6 +177,17 @@ export default function CreativesPage() {
         creative={previewing}
         campaignName={campaigns?.find((x) => x.id === previewing?.campaign_id)?.name}
         onClose={() => setPreviewing(null)}
+        pixelEdit={
+          writable
+            ? {
+                admin,
+                onSaved: async (updated) => {
+                  setPreviewing((p) => (p ? { ...p, ...updated } as Creative : p))
+                  await mutate("/creatives")
+                },
+              }
+            : undefined
+        }
       />
 
       <CreativeModal
