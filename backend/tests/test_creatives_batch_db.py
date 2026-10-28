@@ -270,6 +270,61 @@ def test_batch_partial_success(env):
     _run(scenario())
 
 
+def test_batch_item_pixels_override_inherit_and_isolate_errors(env):
+    async def scenario():
+        conn = await asyncpg.connect(DATABASE_URL)
+        t = await _Tenant().setup(conn)
+        try:
+            async with _client(t.user()) as c:
+                items = [
+                    _item("own", imp_tracker_url="https://own.test/i?cb=${CDSP_CACHEBUSTER}",
+                          click_tracker_url="https://own.test/c"),
+                    _item("inherit"),
+                    _item("blank", imp_tracker_url="  ", click_tracker_url=""),
+                    _item("bad", 728, 90, imp_tracker_url="javascript:alert(1)"),
+                    _item("typo", 160, 600, click_tracker_url="https://own.test/c?x=${CDSP_COUNTY}"),
+                ]
+                r = await c.post("/creatives/batch", json=_batch(
+                    t, items, imp_tracker_url="https://common.test/i", click_tracker_url="https://common.test/c"))
+                assert r.status_code == 200, r.text
+                res = {x["client_id"]: x for x in r.json()}
+                own = res["own"]["creative"]
+                assert own["imp_tracker_url"] == "https://own.test/i?cb=${CDSP_CACHEBUSTER}"
+                assert own["click_tracker_url"] == "https://own.test/c"
+                for cid in ("inherit", "blank"):
+                    cr = res[cid]["creative"]
+                    assert cr["imp_tracker_url"] == "https://common.test/i"
+                    assert cr["click_tracker_url"] == "https://common.test/c"
+                for cid in ("bad", "typo"):
+                    assert res[cid]["status"] == "error" and res[cid]["error"]["code"] == "invalid", res[cid]
+                assert "imp_tracker_url" in res["bad"]["error"]["message"]
+                assert "click_tracker_url" in res["typo"]["error"]["message"]
+            n = await conn.fetchval("SELECT count(*) FROM creatives WHERE campaign_id = $1", t.ids["camp"])
+            assert n == 3
+        finally:
+            await t.teardown(conn)
+            await conn.close()
+
+    _run(scenario())
+
+
+def test_batch_without_new_fields_behaves_as_before(env):
+    async def scenario():
+        conn = await asyncpg.connect(DATABASE_URL)
+        t = await _Tenant().setup(conn)
+        try:
+            async with _client(t.user()) as c:
+                r = await c.post("/creatives/batch", json=_batch(t, [_item("a")]))
+                assert r.status_code == 200, r.text
+                cr = r.json()[0]["creative"]
+                assert not cr.get("imp_tracker_url") and not cr.get("click_tracker_url")
+        finally:
+            await t.teardown(conn)
+            await conn.close()
+
+    _run(scenario())
+
+
 def test_batch_limit_30(env):
     async def scenario():
         conn = await asyncpg.connect(DATABASE_URL)

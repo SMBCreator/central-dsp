@@ -40,12 +40,26 @@ function Harness() {
     setTick((t) => t + 1)
   }, [])
   const onClickUrl = useCallback((id: string, clickUrl: string) => dispatch({ type: "setClickUrl", id, clickUrl }), [])
+  const onImp = useCallback((id: string, url: string) => dispatch({ type: "setImpTracker", id, url }), [])
+  const onClickTracker = useCallback((id: string, url: string) => dispatch({ type: "setClickTracker", id, url }), [])
   const noop = useCallback(() => {}, [])
   return createElement(
     "ul",
     null,
     items.map((item) =>
-      createElement(BatchItemCard, { key: item.id, item, defaultClickUrl: "https://site.test/", onRename, onClickUrl, onRemove: noop, onRetry: noop }),
+      createElement(BatchItemCard, {
+        key: item.id,
+        item,
+        defaultClickUrl: "https://site.test/",
+        defaultImpTracker: "https://common.test/i",
+        defaultClickTracker: "",
+        onRename,
+        onClickUrl,
+        onImpTracker: onImp,
+        onClickTracker,
+        onRemove: noop,
+        onRetry: noop,
+      }),
     ),
   )
 }
@@ -82,5 +96,38 @@ describe("BatchItemCard", () => {
     typeInto(url, "https://a.test")
     expect(url.value).toBe("https://a.test")
     expect(document.activeElement).toBe(url)
+  })
+
+  it("U1: блок «Свои пиксели» свёрнут, после ввода в заголовке отметки; фокус сохраняется", () => {
+    act(() => root.render(createElement(Harness)))
+    const toggle = (id: string) =>
+      document.querySelector<HTMLButtonElement>(`[data-batch-item="${id}"] button[aria-controls="batch-${id}-pixels"]`) as HTMLButtonElement
+    expect(toggle("second").getAttribute("aria-expanded")).toBe("false")
+    expect(document.getElementById("batch-second-imp")).toBeNull()
+    act(() => toggle("second").click())
+    expect(toggle("second").getAttribute("aria-expanded")).toBe("true")
+    const imp = byId<HTMLInputElement>("batch-second-imp")
+    expect(imp.placeholder).toBe("Общий: https://common.test/i")
+    act(() => imp.focus())
+    typeInto(imp, "https://own.test/i")
+    expect(byId<HTMLInputElement>("batch-second-imp")).toBe(imp)
+    expect(document.activeElement).toBe(imp)
+    expect(toggle("second").textContent).toContain("показ")
+    expect(toggle("second").textContent).not.toContain("клик")
+    expect(toggle("first").getAttribute("aria-expanded")).toBe("false")
+    expect(toggle("first").textContent).not.toContain("показ")
+  })
+
+  it("U10: пиксель по http:// показывает предупреждение, а мусор — ошибку", () => {
+    act(() => root.render(createElement(Harness)))
+    const btn = document.querySelector<HTMLButtonElement>('[data-batch-item="first"] button[aria-controls="batch-first-pixels"]') as HTMLButtonElement
+    act(() => btn.click())
+    const imp = byId<HTMLInputElement>("batch-first-imp")
+    typeInto(imp, "http://px.test/i")
+    expect(host.textContent).toContain("может блокироваться браузером")
+    expect(host.textContent).not.toContain("Укажите адрес вида")
+    const click = byId<HTMLInputElement>("batch-first-click")
+    typeInto(click, "not a url")
+    expect(host.textContent).toContain("Укажите адрес вида")
   })
 })

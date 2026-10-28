@@ -4,6 +4,9 @@ import { useState } from "react"
 import { apiDeleteUpload, assetUrl } from "@/lib/api"
 import { FALLBACK_AD_SIZES, useAdSizes } from "@/lib/ad-sizes"
 import { Button, Field, inputCls, Panel } from "@/components/ui"
+import { MacroField } from "@/components/macro-picker"
+import { PixelFieldsBlock } from "@/components/pixel-fields"
+import { isValidPixel } from "@/lib/creative-batch"
 import { ImageCropper } from "@/components/image-cropper"
 import { WizardBannerBatch } from "@/components/creative-wizard-batch"
 import type { AdvertiserInfo } from "@/lib/creative-badge"
@@ -18,6 +21,8 @@ export type CreativeDraft = {
   height: number | null
   asset_url: string | null
   click_url: string
+  imp_tracker_url?: string | null
+  click_tracker_url?: string | null
   html_snippet: string | null
   native_title: string | null
   native_description: string | null
@@ -61,7 +66,7 @@ export function emptyDraft(type: AdFormat): CreativeDraft {
     name: "", type,
     subtype: type === "banner" ? "static" : type === "video" ? "instream" : null,
     width: type === "banner" ? 300 : null, height: type === "banner" ? 250 : null,
-    asset_url: null, click_url: "", html_snippet: null,
+    asset_url: null, click_url: "", imp_tracker_url: null, click_tracker_url: null, html_snippet: null,
     native_title: null, native_description: null, native_cta: null, native_icon_url: null,
     video_url: null, video_duration: type === "video" ? 15 : null, vast_xml: null, crop: null,
   }
@@ -153,6 +158,8 @@ export function CreativeForm({ format, onAdd }: { format: AdFormat; onAdd: (d: C
   const validate = (): string | null => {
     if (!d.name.trim()) return "Укажите название креатива"
     if (!d.click_url.trim().startsWith("http")) return "Укажите корректную ссылку перехода (https://…)"
+    if (!isValidPixel(d.imp_tracker_url ?? "")) return "Пиксель показа: укажите адрес вида https://…"
+    if (!isValidPixel(d.click_tracker_url ?? "")) return "Пиксель клика: укажите адрес вида https://…"
     if (format === "banner") {
       if (d.subtype === "html5" && !d.html_snippet) return "Для HTML5-баннера вставьте HTML-код"
       if (d.subtype !== "html5" && !d.asset_url) return "Укажите изображение баннера (URL или загрузка)"
@@ -170,7 +177,7 @@ export function CreativeForm({ format, onAdd }: { format: AdFormat; onAdd: (d: C
     const v = validate()
     setErr(v)
     if (v) return
-    onAdd(d)
+    onAdd({ ...d, imp_tracker_url: d.imp_tracker_url?.trim() || null, click_tracker_url: d.click_tracker_url?.trim() || null })
     setD(emptyDraft(format))
   }
 
@@ -180,9 +187,22 @@ export function CreativeForm({ format, onAdd }: { format: AdFormat; onAdd: (d: C
         <Field label="Название креатива">
           <input value={d.name} onChange={(e) => set({ name: e.target.value })} className={inputCls} placeholder="Креатив 1" />
         </Field>
-        <Field label="Ссылка перехода (лендинг)">
-          <input value={d.click_url} onChange={(e) => set({ click_url: e.target.value })} className={inputCls} placeholder="https://site.ru/offer" />
-        </Field>
+        <MacroField
+          id={`creative-form-${format}-click-url`}
+          label="Ссылка перехода (лендинг)"
+          kind="click"
+          value={d.click_url}
+          onChange={(v) => set({ click_url: v })}
+          placeholder="https://site.ru/offer"
+        />
+        <PixelFieldsBlock
+          idPrefix={`creative-form-${format}`}
+          title="Пиксели (необязательно)"
+          imp={d.imp_tracker_url ?? ""}
+          click={d.click_tracker_url ?? ""}
+          onImp={(v) => set({ imp_tracker_url: v })}
+          onClick={(v) => set({ click_tracker_url: v })}
+        />
 
         {format === "banner" ? (
           <>
@@ -352,7 +372,17 @@ export function CreativeBuilder({
                     </div>
                   )}
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-medium text-foreground">{c.name}</p>
+                    <p className="flex items-center gap-1.5 truncate text-sm font-medium text-foreground">
+                      <span className="truncate">{c.name}</span>
+                      {c.imp_tracker_url || c.click_tracker_url ? (
+                        <span
+                          className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary"
+                          title={[c.imp_tracker_url ? "Пиксель показа задан" : "", c.click_tracker_url ? "Пиксель клика задан" : ""].filter(Boolean).join("; ")}
+                        >
+                          пиксели
+                        </span>
+                      ) : null}
+                    </p>
                     <p className="truncate text-[11px] text-muted">
                       {c.type === "banner" ? `${c.subtype} · ${c.width}x${c.height}` : c.type === "video" ? `${c.subtype} · ${c.video_duration}с` : c.native_title}
                     </p>

@@ -10,6 +10,7 @@ import { TargetingEditor, targetingSummary } from "@/components/targeting-editor
 import { KktuSelect } from "@/components/kktu-select"
 import { EMPTY_CHAIN, OrdChainEditor, OrdChainSummaryView, type OrdChainSummary, type OrdChainValues } from "@/components/ord-chain-setup"
 import { kktuShortLabel } from "@/lib/kktu"
+import { creativeLaunchBody } from "@/lib/creative-wizard"
 import type { Advertiser, Counterparty, Targeting } from "@/lib/types"
 import { advertiserOptionLabel, useAdvertisers } from "@/lib/advertisers"
 import { useSubmitGuard } from "@/lib/use-submit-guard"
@@ -193,14 +194,14 @@ export default function NewCampaignPage() {
       for (const cr of creatives) {
         await api("/creatives", {
           method: "POST",
-          body: {
-            ...cr,
-            campaign_id: camp.id,
-            line_item_id: li.id,
-            ...(foreign
-              ? {}
-              : { counterparty_id: chain.counterparty_id, kktu_code: kktuCode || null, kktu_label: kktuLabel || null }),
-          },
+          body: creativeLaunchBody(cr, {
+            campaignId: camp.id,
+            lineItemId: li.id,
+            foreign,
+            counterpartyId: chain.counterparty_id,
+            kktuCode,
+            kktuLabel,
+          }),
         })
       }
       await api(`/campaigns/${camp.id}`, { method: "PATCH", body: { status: "active" } })

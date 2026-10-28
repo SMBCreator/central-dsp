@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { BatchItem } from "@/lib/creative-batch"
-import { effectiveClickUrl, effectiveName, itemToBannerDraft, planWizardBatch } from "@/lib/creative-wizard"
+import { creativeLaunchBody, effectiveClickUrl, effectiveName, itemToBannerDraft, planWizardBatch } from "@/lib/creative-wizard"
+import { emptyDraft } from "@/components/creative-builder"
 
 const LINK = "https://site.ru/offer"
 const ASSET = "https://dsp.example.ru/uploads/0123456789abcdef0123456789abcdef.png"
@@ -18,6 +19,8 @@ function item(over: Partial<BatchItem> = {}): BatchItem {
     clientHeight: 250,
     name: "banner-300x250",
     clickUrl: "",
+    impTrackerUrl: "",
+    clickTrackerUrl: "",
     status: "ready",
     reasons: [],
     matched: null,
@@ -83,5 +86,58 @@ describe("planWizardBatch", () => {
     const plan = planWizardBatch([bad, loading], LINK)
     expect(plan.ready).toHaveLength(0)
     expect(plan.needLink).toHaveLength(0)
+  })
+})
+
+describe("пиксели файлов (U2)", () => {
+  const shared = { imp: "https://common.test/i", click: "https://common.test/c" }
+
+  it("общие пиксели наследуются, свои перекрывают", () => {
+    const a = itemToBannerDraft(item({ id: "a" }), LINK, shared)
+    expect(a.imp_tracker_url).toBe(shared.imp)
+    expect(a.click_tracker_url).toBe(shared.click)
+    const own = itemToBannerDraft(item({ id: "b", impTrackerUrl: " https://own.test/i ", clickTrackerUrl: "https://own.test/c" }), LINK, shared)
+    expect(own.imp_tracker_url).toBe("https://own.test/i")
+    expect(own.click_tracker_url).toBe("https://own.test/c")
+  })
+
+  it("можно задать только один из своих пикселей", () => {
+    const d = itemToBannerDraft(item({ impTrackerUrl: "https://own.test/i" }), LINK, shared)
+    expect(d.imp_tracker_url).toBe("https://own.test/i")
+    expect(d.click_tracker_url).toBe(shared.click)
+  })
+
+  it("пустые значения становятся null, а не пустой строкой", () => {
+    const d = itemToBannerDraft(item({ impTrackerUrl: "  " }), LINK)
+    expect(d.imp_tracker_url).toBeNull()
+    expect(d.click_tracker_url).toBeNull()
+  })
+
+  it("файл с некорректным пикселем не попадает в ready", () => {
+    const ok = item({ id: "ok", impTrackerUrl: "https://own.test/i?cb=${CDSP_CACHEBUSTER}" })
+    const bad = item({ id: "bad", clickTrackerUrl: "javascript:alert(1)" })
+    const plan = planWizardBatch([ok, bad], LINK, shared)
+    expect(plan.ready.map((i) => i.id)).toEqual(["ok"])
+    expect(plan.badPixel.map((i) => i.id)).toEqual(["bad"])
+  })
+
+  it("некорректный общий пиксель блокирует файлы без своего", () => {
+    const plan = planWizardBatch([item({ id: "a" }), item({ id: "b", impTrackerUrl: "https://own.test/i" })], LINK, { imp: "oops", click: "" })
+    expect(plan.ready.map((i) => i.id)).toEqual(["b"])
+    expect(plan.badPixel.map((i) => i.id)).toEqual(["a"])
+  })
+})
+
+describe("creativeLaunchBody (U11)", () => {
+  it("пиксели черновика доходят до тела запроса вместе с привязками", () => {
+    const draft = { ...emptyDraft("banner"), name: "n", click_url: LINK, imp_tracker_url: "https://p.test/i", click_tracker_url: null }
+    const body = creativeLaunchBody(draft, { campaignId: "c1", lineItemId: "l1", foreign: false, counterpartyId: "cp", kktuCode: "30.10", kktuLabel: "x" })
+    expect(body).toMatchObject({ imp_tracker_url: "https://p.test/i", click_tracker_url: null, campaign_id: "c1", line_item_id: "l1", counterparty_id: "cp", kktu_code: "30.10" })
+  })
+
+  it("для иностранного рекламодателя ОРД-поля не добавляются", () => {
+    const body = creativeLaunchBody(emptyDraft("banner"), { campaignId: "c1", lineItemId: "l1", foreign: true, counterpartyId: "cp" })
+    expect(body).not.toHaveProperty("counterparty_id")
+    expect(body.imp_tracker_url).toBeNull()
   })
 })

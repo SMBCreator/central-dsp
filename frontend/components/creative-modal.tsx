@@ -12,7 +12,8 @@ import { CreativePreview } from "@/components/creative-preview"
 import { useAdvertisers } from "@/lib/advertisers"
 import { isForeignAdvertiser } from "@/lib/ad-market"
 import { useAdSizes } from "@/lib/ad-sizes"
-import { isHttpUrl, isSubmittable, type BatchResultItem } from "@/lib/creative-batch"
+import { isHttpUrl, isSubmittable, isValidPixel, type BatchResultItem } from "@/lib/creative-batch"
+import { MacroField } from "@/components/macro-picker"
 import { BatchResults, CreativeBatchPanel, useCreativeBatch, type BatchResultRow } from "@/components/creative-batch-panel"
 
 type AdType = "banner" | "native" | "video" | "push"
@@ -290,6 +291,11 @@ export function CreativeModal({
     if (form.imp_tracker_url && !isHttpUrl(form.imp_tracker_url)) e.tracking = "Трекер показа: некорректный URL"
     else if (form.click_tracker_url && !isHttpUrl(form.click_tracker_url)) e.tracking = "Трекер клика: некорректный URL"
 
+    if (batchMode && !e.type) {
+      const badPixel = readyItems.find((i) => !isValidPixel(i.impTrackerUrl) || !isValidPixel(i.clickTrackerUrl))
+      if (badPixel) e.type = `Файл «${badPixel.fileName}»: пиксель должен быть адресом вида https://…`
+    }
+
     if (foreign) return e
     if (!form.kktu_code) e.ord = "Выберите классификатор ККТУ"
     else if (form.counterparty_id && eligibleContracts.length > 1 && !form.contract_id)
@@ -360,6 +366,8 @@ export function CreativeModal({
               client_id: i.id,
               name: i.name.trim(),
               click_url: i.clickUrl.trim() || null,
+              imp_tracker_url: i.impTrackerUrl.trim() || null,
+              click_tracker_url: i.clickTrackerUrl.trim() || null,
               asset_url: i.assetUrl,
               width: i.width,
               height: i.height,
@@ -548,7 +556,13 @@ export function CreativeModal({
 
               {type === "banner" ? (
                 <div className="space-y-3">
-                  <CreativeBatchPanel batch={batch} defaultClickUrl={form.click_url.trim()} advertiser={advertiser} />
+                  <CreativeBatchPanel
+                    batch={batch}
+                    defaultClickUrl={form.click_url.trim()}
+                    defaultImpTracker={form.imp_tracker_url.trim()}
+                    defaultClickTracker={form.click_tracker_url.trim()}
+                    advertiser={advertiser}
+                  />
                   {batch.items.length === 0 ? (
                     <details className="rounded-lg border border-border bg-surface px-3 py-2">
                       <summary className="cursor-pointer text-xs text-muted">Или указать URL изображения вручную</summary>
@@ -610,12 +624,17 @@ export function CreativeModal({
                   <input required value={form.name} onChange={(e) => patch({ name: e.target.value })} className={inputCls} placeholder="Баннер 300×250 осень" />
                 </Field>
               )}
-              <Field
-                label={batchMode ? "Ссылка перехода по умолчанию" : "Ссылка перехода (click URL)"}
-                hint={batchMode ? "Применяется ко всем файлам пакета, у которых не задана своя ссылка. Название задаётся в карточке файла." : undefined}
-              >
-                <input type="url" required value={form.click_url} onChange={(e) => patch({ click_url: e.target.value })} className={inputCls} placeholder="https://site.ru/promo" />
-              </Field>
+              <div className="sm:col-span-2">
+                <MacroField
+                  id="creative-modal-click-url"
+                  label={batchMode ? "Ссылка перехода по умолчанию" : "Ссылка перехода (click URL)"}
+                  hint={batchMode ? "Применяется ко всем файлам пакета, у которых не задана своя ссылка. Название задаётся в карточке файла." : undefined}
+                  kind="click"
+                  value={form.click_url}
+                  onChange={(v) => patch({ click_url: v })}
+                  placeholder="https://site.ru/promo"
+                />
+              </div>
 
               {type === "native" || type === "push" ? (
                 <>
@@ -656,15 +675,27 @@ export function CreativeModal({
           {step === "tracking" ? (
             <div className="space-y-4">
               <p className="text-xs leading-relaxed text-muted">
-                Опционально. Сторонние пиксели аудита (adriver, weborama, mediascope) вызываются при показе и клике дополнительно к нашим трекерам. Макросы SSP не поддерживаются — только готовые URL.
+                Опционально. Сторонние пиксели аудита (adriver, weborama, mediascope) вызываются при показе и клике дополнительно к нашим трекерам. В адрес можно добавить макросы {"${CDSP_…}"} — подставим при показе. {batchMode ? "Эти значения — общие для пакета: у файла можно задать свои в его карточке." : ""}
               </p>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <Field label="Трекер показа" hint="GET-пиксель 1×1, вызывается при отрисовке">
-                  <input type="url" value={form.imp_tracker_url} onChange={(e) => patch({ imp_tracker_url: e.target.value })} className={inputCls} placeholder="https://tracker.ru/imp?..." />
-                </Field>
-                <Field label="Трекер клика" hint="Клик-редирект трекера, финально ведёт на click URL">
-                  <input type="url" value={form.click_tracker_url} onChange={(e) => patch({ click_tracker_url: e.target.value })} className={inputCls} placeholder="https://tracker.ru/click?..." />
-                </Field>
+                <MacroField
+                  id="creative-modal-imp-tracker"
+                  label={batchMode ? "Пиксель показа (общий для пакета)" : "Трекер показа"}
+                  hint="GET-пиксель 1×1, вызывается при отрисовке"
+                  kind="pixel"
+                  value={form.imp_tracker_url}
+                  onChange={(v) => patch({ imp_tracker_url: v })}
+                  placeholder="https://tracker.ru/imp?cb=${CDSP_CACHEBUSTER}"
+                />
+                <MacroField
+                  id="creative-modal-click-tracker"
+                  label={batchMode ? "Пиксель клика (общий для пакета)" : "Трекер клика"}
+                  hint="Клик-редирект трекера, финально ведёт на click URL"
+                  kind="pixel"
+                  value={form.click_tracker_url}
+                  onChange={(v) => patch({ click_tracker_url: v })}
+                  placeholder="https://tracker.ru/click?cb=${CDSP_CACHEBUSTER}"
+                />
               </div>
             </div>
           ) : null}

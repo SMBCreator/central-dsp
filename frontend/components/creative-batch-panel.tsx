@@ -5,6 +5,8 @@ import { apiDeleteUpload, apiUpload, assetUrl, type UploadResult } from "@/lib/a
 import { formatSize, type AdSize } from "@/lib/ad-sizes-catalog"
 import { AdInfoBadge, CreativePreview } from "@/components/creative-preview"
 import type { AdvertiserInfo } from "@/lib/creative-badge"
+import { MacroUrlInput } from "@/components/macro-picker"
+import { PixelFieldsBlock } from "@/components/pixel-fields"
 import {
   BATCH_MAX_FILES,
   IMAGE_ACCEPT,
@@ -176,6 +178,8 @@ export function useCreativeBatch(sizes: AdSize[], orphanPaths: MutableRefObject<
   )
   const rename = useCallback((id: string, name: string) => dispatch({ type: "rename", id, name }), [])
   const setClickUrl = useCallback((id: string, clickUrl: string) => dispatch({ type: "setClickUrl", id, clickUrl }), [])
+  const setImpTracker = useCallback((id: string, url: string) => dispatch({ type: "setImpTracker", id, url }), [])
+  const setClickTracker = useCallback((id: string, url: string) => dispatch({ type: "setClickTracker", id, url }), [])
   const retry = useCallback(
     (id: string) => {
       if (!files.current.has(id)) return
@@ -214,7 +218,7 @@ export function useCreativeBatch(sizes: AdSize[], orphanPaths: MutableRefObject<
 
   useEffect(() => () => cancelAll(), [cancelAll])
 
-  return { items, notices, addFiles, remove, rename, setClickUrl, retry, applyResults, cancelAll }
+  return { items, notices, addFiles, remove, rename, setClickUrl, setImpTracker, setClickTracker, retry, applyResults, cancelAll }
 }
 
 export type CreativeBatch = ReturnType<typeof useCreativeBatch>
@@ -244,13 +248,30 @@ interface CardProps {
   /** Стабильная ссылка (useMemo у владельца): карточка обёрнута в memo, пакет до 30 файлов. */
   advertiser?: AdvertiserInfo
   defaultClickUrl: string
+  /** Общие пиксели пакета — только для подсказки в placeholder. */
+  defaultImpTracker: string
+  defaultClickTracker: string
   onRename: (id: string, name: string) => void
   onClickUrl: (id: string, url: string) => void
+  onImpTracker: (id: string, url: string) => void
+  onClickTracker: (id: string, url: string) => void
   onRemove: (id: string) => void
   onRetry: (id: string) => void
 }
 
-export const BatchItemCard = memo(function BatchItemCard({ item, advertiser = NO_ADVERTISER, defaultClickUrl, onRename, onClickUrl, onRemove, onRetry }: CardProps) {
+export const BatchItemCard = memo(function BatchItemCard({
+  item,
+  advertiser = NO_ADVERTISER,
+  defaultClickUrl,
+  defaultImpTracker,
+  defaultClickTracker,
+  onRename,
+  onClickUrl,
+  onImpTracker,
+  onClickTracker,
+  onRemove,
+  onRetry,
+}: CardProps) {
   const [expanded, setExpanded] = useState(false)
   const meta = STATUS_META[item.submitError ? "error" : item.status]
   const phase = phaseLabel(item)
@@ -341,26 +362,39 @@ export const BatchItemCard = memo(function BatchItemCard({ item, advertiser = NO
           ) : null}
 
           {item.status !== "error" ? (
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              <div>
-                <label htmlFor={nameId} className="mb-1 block text-[11px] font-medium text-muted">
-                  Название
-                </label>
-                <input id={nameId} value={item.name} maxLength={200} onChange={(e) => onRename(item.id, e.target.value)} className={smallInputCls} />
+            <div className="space-y-2">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <div>
+                  <label htmlFor={nameId} className="mb-1 block text-[11px] font-medium text-muted">
+                    Название
+                  </label>
+                  <input id={nameId} value={item.name} maxLength={200} onChange={(e) => onRename(item.id, e.target.value)} className={smallInputCls} />
+                </div>
+                <div>
+                  <label htmlFor={urlId} className="mb-1 block text-[11px] font-medium text-muted">
+                    Ссылка перехода
+                  </label>
+                  <MacroUrlInput
+                    id={urlId}
+                    kind="click"
+                    value={item.clickUrl}
+                    onChange={(v) => onClickUrl(item.id, v)}
+                    inputClassName={smallInputCls}
+                    placeholder={defaultClickUrl ? `Общая: ${defaultClickUrl}` : "Общая ссылка (шаг «Контент»)"}
+                  />
+                </div>
               </div>
-              <div>
-                <label htmlFor={urlId} className="mb-1 block text-[11px] font-medium text-muted">
-                  Ссылка перехода
-                </label>
-                <input
-                  id={urlId}
-                  type="url"
-                  value={item.clickUrl}
-                  onChange={(e) => onClickUrl(item.id, e.target.value)}
-                  className={smallInputCls}
-                  placeholder={defaultClickUrl ? `Общая: ${defaultClickUrl}` : "Общая ссылка (шаг «Контент»)"}
-                />
-              </div>
+              <PixelFieldsBlock
+                idPrefix={`batch-${item.id}`}
+                title="Свои пиксели (необязательно)"
+                imp={item.impTrackerUrl}
+                click={item.clickTrackerUrl}
+                onImp={(v) => onImpTracker(item.id, v)}
+                onClick={(v) => onClickTracker(item.id, v)}
+                sharedImp={defaultImpTracker}
+                sharedClick={defaultClickTracker}
+                inputClassName={smallInputCls}
+              />
             </div>
           ) : null}
         </div>
@@ -380,7 +414,15 @@ export const BatchItemCard = memo(function BatchItemCard({ item, advertiser = NO
   )
 })
 
-export function BatchItemList({ batch, defaultClickUrl, advertiser }: { batch: CreativeBatch; defaultClickUrl: string; advertiser?: AdvertiserInfo }) {
+interface ListProps {
+  batch: CreativeBatch
+  defaultClickUrl: string
+  defaultImpTracker?: string
+  defaultClickTracker?: string
+  advertiser?: AdvertiserInfo
+}
+
+export function BatchItemList({ batch, defaultClickUrl, defaultImpTracker = "", defaultClickTracker = "", advertiser }: ListProps) {
   if (batch.items.length === 0) return null
   return (
     <ul className="space-y-2" aria-label="Файлы пакета">
@@ -390,8 +432,12 @@ export function BatchItemList({ batch, defaultClickUrl, advertiser }: { batch: C
           item={item}
           advertiser={advertiser}
           defaultClickUrl={defaultClickUrl}
+          defaultImpTracker={defaultImpTracker}
+          defaultClickTracker={defaultClickTracker}
           onRename={batch.rename}
           onClickUrl={batch.setClickUrl}
+          onImpTracker={batch.setImpTracker}
+          onClickTracker={batch.setClickTracker}
           onRemove={batch.remove}
           onRetry={batch.retry}
         />
@@ -408,7 +454,7 @@ function UploadIcon() {
   )
 }
 
-export function CreativeBatchPanel({ batch, defaultClickUrl, advertiser }: { batch: CreativeBatch; defaultClickUrl: string; advertiser?: AdvertiserInfo }) {
+export function CreativeBatchPanel({ batch, defaultClickUrl, defaultImpTracker = "", defaultClickTracker = "", advertiser }: ListProps) {
   const [dragOver, setDragOver] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
   const folderInput = useRef<HTMLInputElement>(null)
@@ -529,7 +575,13 @@ export function CreativeBatchPanel({ batch, defaultClickUrl, advertiser }: { bat
         </div>
       ) : null}
 
-      <BatchItemList batch={batch} defaultClickUrl={defaultClickUrl} advertiser={advertiser} />
+      <BatchItemList
+        batch={batch}
+        defaultClickUrl={defaultClickUrl}
+        defaultImpTracker={defaultImpTracker}
+        defaultClickTracker={defaultClickTracker}
+        advertiser={advertiser}
+      />
 
       {s.total > 0 ? (
         <p className="text-xs text-muted" aria-live="polite">
