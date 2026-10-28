@@ -213,6 +213,9 @@ export interface BatchItem {
   name: string
   /** Пусто — используется общая ссылка перехода. */
   clickUrl: string
+  /** Свои пиксели файла; пусто — используется общий для пакета. */
+  impTrackerUrl: string
+  clickTrackerUrl: string
   status: ItemStatus
   reasons: Reason[]
   matched: AdSize | null
@@ -241,6 +244,8 @@ export function makeItem(input: NewItemInput, sizes: AdSize[], limits: FileLimit
     clientHeight: input.height,
     name: baseName(input.fileName),
     clickUrl: "",
+    impTrackerUrl: "",
+    clickTrackerUrl: "",
     status: c.status,
     reasons: c.reasons,
     matched: c.match,
@@ -265,6 +270,8 @@ export type BatchAction =
   | { type: "remove"; id: string }
   | { type: "rename"; id: string; name: string }
   | { type: "setClickUrl"; id: string; clickUrl: string }
+  | { type: "setImpTracker"; id: string; url: string }
+  | { type: "setClickTracker"; id: string; url: string }
   | { type: "uploadStart"; id: string }
   | { type: "uploadProgress"; id: string; progress: number }
   | { type: "uploadDone"; id: string; assetUrl: string; width: number | null; height: number | null; sizes: AdSize[]; limits?: FileLimits }
@@ -286,6 +293,10 @@ export function batchReducer(state: BatchItem[], action: BatchAction): BatchItem
       return patchItem(state, action.id, (i) => ({ ...i, name: action.name, submitError: null }))
     case "setClickUrl":
       return patchItem(state, action.id, (i) => ({ ...i, clickUrl: action.clickUrl, submitError: null }))
+    case "setImpTracker":
+      return patchItem(state, action.id, (i) => ({ ...i, impTrackerUrl: action.url, submitError: null }))
+    case "setClickTracker":
+      return patchItem(state, action.id, (i) => ({ ...i, clickTrackerUrl: action.url, submitError: null }))
     case "uploadStart":
       return patchItem(state, action.id, (i) => ({ ...i, phase: "uploading", progress: 0, uploadError: null }))
     case "uploadProgress":
@@ -330,6 +341,32 @@ export function isSubmittable(i: BatchItem): boolean {
 
 export function isHttpUrl(v: string): boolean {
   return /^https?:\/\/\S+$/i.test(v.trim())
+}
+
+/** Пиксели пакета: общие значения для файлов без своих. */
+export interface BatchTrackers {
+  imp: string
+  click: string
+}
+
+export const NO_TRACKERS: BatchTrackers = { imp: "", click: "" }
+
+/** Пиксель файла: свой, а если не задан — общий; пусто -> null (не пустая строка). */
+export function effectiveTracker(own: string, shared: string): string | null {
+  return own.trim() || shared.trim() || null
+}
+
+/** Корректность пикселя: пустой допустим, иначе http(s)-адрес. */
+export function isValidPixel(v: string): boolean {
+  return !v.trim() || isHttpUrl(v)
+}
+
+/** Какие свои пиксели заданы у файла — для отметки в свёрнутом заголовке блока. */
+export function ownPixelMarks(i: Pick<BatchItem, "impTrackerUrl" | "clickTrackerUrl">): string[] {
+  const marks: string[] = []
+  if (i.impTrackerUrl.trim()) marks.push("показ")
+  if (i.clickTrackerUrl.trim()) marks.push("клик")
+  return marks
 }
 
 export interface BatchSummary {

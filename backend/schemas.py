@@ -355,6 +355,11 @@ class CreativeBatchItem(BaseModel):
     client_id: str = Field(min_length=1, max_length=64)
     name: str = Field(min_length=1, max_length=200)
     click_url: str | None = None
+    # Свои пиксели элемента. Проверяются при сборке CreativeIn, чтобы неверный URL
+    # давал ошибку только этого элемента, а не 422 на весь пакет. Пустая строка
+    # или не задано — берётся значение из common.
+    imp_tracker_url: str | None = Field(default=None, max_length=2048)
+    click_tracker_url: str | None = Field(default=None, max_length=2048)
     asset_url: str = Field(min_length=1, max_length=2048)
     width: int = Field(ge=1, le=4096)
     height: int = Field(ge=1, le=4096)
