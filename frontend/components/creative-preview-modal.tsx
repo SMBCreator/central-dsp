@@ -4,6 +4,7 @@ import type { ReactNode } from "react"
 import { assetUrl } from "@/lib/api"
 import { Modal } from "@/components/ui"
 import { CreativePreview } from "@/components/creative-preview"
+import { PixelEditor, TrackingBlock, type PixelEditTarget } from "@/components/creative-tracking"
 import { advertiserFromCreative, previewSubtitle, type PreviewCreative } from "@/lib/creative-badge"
 
 /**
@@ -16,11 +17,14 @@ export function CreativePreviewModal({
   campaignName,
   onClose,
   footer,
+  pixelEdit,
 }: {
   creative: PreviewCreative | null
   campaignName?: string | null
   onClose: () => void
   footer?: ReactNode
+  /** Передаётся только ролям с правом править креативы: показывает «Изменить пиксели». */
+  pixelEdit?: { admin: boolean; onSaved: (updated: PixelEditTarget) => void }
 }) {
   return (
     <Modal open={!!creative} onClose={onClose} size="xl" title={creative?.name || "Креатив"} subtitle={creative ? previewSubtitle(creative, campaignName) : undefined}>
@@ -43,6 +47,15 @@ export function CreativePreviewModal({
               />
             </div>
           </div>
+          <TrackingBlock creative={creative} />
+          {pixelEdit && creative.id ? (
+            <PixelEditor
+              key={creative.id}
+              creative={{ id: creative.id, status: creative.status || "", imp_tracker_url: creative.imp_tracker_url, click_tracker_url: creative.click_tracker_url }}
+              admin={pixelEdit.admin}
+              onSaved={pixelEdit.onSaved}
+            />
+          ) : null}
           {footer ? <div className="flex justify-end gap-2">{footer}</div> : null}
         </div>
       ) : null}

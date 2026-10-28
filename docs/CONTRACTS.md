@@ -267,3 +267,25 @@ superadmin, admin, agency. manager (его наценка задана admin-о�
 
 Контракт закреплён `tests/test_stats_presentation.py` (в т.ч. проверка, что в
 роутерах не осталось ad-hoc `round(... * 1000)`/`* 100` расчётов).
+
+## 6. Пиксели креатива и макросы `${CDSP_…}` (`creatives.imp_tracker_url` / `click_tracker_url`)
+
+* Каталог макросов — `backend/url_macros.json` (фронтенд получает его через
+  `GET /creatives/macros`); Go-бидер (`bidder-go/internal/macros`) сверяется с ним
+  общими векторами `bidder-go/internal/macros/testdata/macro_cases.json`. Макросы заданы только для
+  ссылки перехода и пикселей; IP, идентификаторы устройств, координаты, название
+  SSP и цена клиринга в каталог не входят.
+* Валидация (`CreativeIn`, `CreativePatch`, батч): абсолютный http(s)-URL, неизвестный
+  `${CDSP_…}` → 422 с подсказкой; макросы SSP и `${CLICK_URL…}` не проверяются.
+* `PATCH /creatives/{id}` с пикселями: пустая строка или `null` очищает поле (`NULL`);
+  значение, равное текущему, — no-op. Любое реальное изменение пишет в `audit_log`
+  строку `PATCH /creatives/{id}/pixels` с `payload.pixels.<поле> = {old, new}`.
+* Пользователь без прав администратора, меняющий пиксель у `approved` креатива:
+  статус → `pending`, модераторам уходит уведомление `moderation_pending`. Пиксели не
+  входят в содержимое для ОРД: `erid` и текущая версия в `ord_creatives` не сбрасываются.
+  У администратора статус не меняется. Креатив в `pending`/`rejected` статус не меняет.
+* Права: `can_manage_creatives` (viewer/analyst и client без флага получают 403).
+* `GET /creatives` и `GET /moderation/queue` отдают оба поля. Изменение доходит до
+  бидера с очередным обновлением фида (до ~30 секунд).
+
+Контракт закреплён `tests/test_creative_pixels_patch_db.py`.

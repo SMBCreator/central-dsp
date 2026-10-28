@@ -214,6 +214,9 @@ export interface Creative {
   height: number | null
   asset_url: string | null
   click_url: string | null
+  /** Сторонние пиксели показа и клика (могут содержать макросы ${CDSP_…}). */
+  imp_tracker_url?: string | null
+  click_tracker_url?: string | null
   html_snippet: string | null
   native_title: string | null
   native_description: string | null
